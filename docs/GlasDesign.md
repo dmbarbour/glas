@@ -1,10 +1,69 @@
-## Glas Design
+# Glas Design
 
-This document describes Glas design at a high level, and links other resources.
+## Motive (Why Another Language?)
+
+Purely functional programming has nice properties - easy to reason about, easy to test, easy to share and reuse. 
+
+But the conventional approaches, based on lambda calculus or combinatory logic, are flawed. It is difficult in those models to explicitly represent structure sharing, or efficiently support concurrent decompositions (such as Kahn Process Networks). Partial evaluation is awkward. Also, these models are unsuitable for [direct manipulation interfaces](https://en.wikipedia.org/wiki/Direct_manipulation_interface), which benefit from stable structure over evaluation and the ability to typefully arrange inputs and outputs into the same region of the screen.
+
+Further, most functional programming languages are unsuitable for distributed computing at the large scale, or embedded real-time and FPGA programming at the small scale. This is largely due to inadequate type systems, ad-hoc escape hatches for mutability or FFI, type-indexed generics, security concerns, or the problems of managing versioned libraries at scale.
+
+Glas is a purely functional language based on confluent graph rewriting. The graph provides an explicit, formal basis for structure sharing. Unification, one of two rewrite rules, offers a convenient basis for partial and concurrent evaluations. The graph is stable even with garbage-collection. Meanwhile, Glas leverages content-addressed dependencies to support robust computing at scale. 
+
+## 
+
+
+
+
+
+
+
+
+are relatively awkward for representing interactive computations, deterministic concurrency (such as Kahn Process Networks), structure sharing, and partial evaluations.
+
+Glas solves these problems by taking confluent graph rewriting as an alternative basis for functional programming. The graph structure can represent sharing. Unification is good for partial evaluation, interaction, and deterministic concurrency. 
+
+Further, I'm interested in . Today, every user-interface is a walled garden, difficult to compose or integrate, with many hand-written layers of indirection to the program logic. Ideally, we could automatically produce a good user interface from an interface type and a few style annotations. But lambdas and combinators are unsuitable for direct manipulation due to how they partition inputs from outputs, and the unstable structure over incremental evaluations.
+
+Glas supports direct manipulation
+
+
+Another interest is computing at large scales (distributed computing) and small scales (embedded real-time or FPGA targets).
+
+
+by rejecting lambda calculus and combinatory logic. Instead, Glas is based on confluent graph rewriting, with rules for unification and application. 
+
+
+
+
+Evaluation destabilizes user input.  
+
+Elements are being replaced or renamed during evaluation. 
+
+ This instability hinders treating the f
+
+ and tend to separate inputs and outputs spatially.  elements being replaced or renamed during evaluation. This instability hinders a lot of external tooling
+ lambdas are unstable due to su
+
+Glas is based instead on graph rewriting via unification and application.
+
+
+A Glas program is a structured graph with labeled, directed edges. There ar
+
+
+Another interest is distributed computing. For computing at large scales, structure sharing is 
+
+
+## Programs as Stable, Structured Graphs
+
+
+
 
 ## Session Types
 
-[Session types](https://groups.inf.ed.ac.uk/abcd/) essentially describe input-output patterns. In Glas, we apply session types to input-output parameters of pure functions. For example, a session type of form `(?A . !B . ?C . !D)` might say that `A` is required as an input, then `B` is available as an output, followed by `C` is an input and `D` as an output. With conventional FP, we might represent this type using continuation passing, e.g. `A -> (B, (C -> D))`. 
+[Session types](https://groups.inf.ed.ac.uk/abcd/) essentially describe patterns of input and output
+
+input-output patterns. In Glas, we apply session types to input-output parameters of pure functions. For example, a session type of form `(?A . !B . ?C . !D)` might say that `A` is required as an input, then `B` is available as an output, followed by `C` is an input and `D` as an output. With conventional FP, we might represent this type using continuation passing, e.g. `A -> (B, (C -> D))`. 
 
 More sophisticated session types further describe *recursion* and *choice* patterns, enabling expression of long-lived, branching interactions. Conventional data types are easily subsumed by session types: they're effectively output-only (or input-only) sessions.
 
