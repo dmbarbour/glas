@@ -2,15 +2,156 @@
 
 ## Motive (Why Another Language?)
 
-Purely functional programming has nice properties - easy to reason about, easy to test, easy to share and reuse. 
+Purely functional programming has many nice properties.
 
-But the conventional approaches, based on lambda calculus or combinatory logic, are flawed. It is difficult in those models to explicitly represent structure sharing, or efficiently support concurrent decompositions (such as Kahn Process Networks). Partial evaluation is awkward. Also, these models are unsuitable for [direct manipulation interfaces](https://en.wikipedia.org/wiki/Direct_manipulation_interface), which benefit from stable structure over evaluation and the ability to typefully arrange inputs and outputs into the same region of the screen.
+Unfortunately, the two most popular foundations for functional programming - lambda calculus and combinatory logic - are not convenient for modeling interaction, concurrency, partial evaluation, or structure sharing. Further, evaluation of these models is based on in-place rewriting, e.g. `multiply(6,7)` rewrites to `42`. This destabilizes references into the program, hindering development of [direct manipulation interfaces](https://en.wikipedia.org/wiki/Direct_manipulation_interface).
 
-Further, most functional programming languages are unsuitable for distributed computing at the large scale, or embedded real-time and FPGA programming at the small scale. This is largely due to inadequate type systems, ad-hoc escape hatches for mutability or FFI, type-indexed generics, security concerns, or the problems of managing versioned libraries at scale.
+Further, most FP languages do not scale nicely for a mess of reasons. FFI escape hatches or other features often tie computation to an OS process. Ability to serialize functions and closures is often sacrificed for performance. Named modules or dependencies are a form of mutable reference, which undermines concise representation of large immutable functions. Closed-source modules optimize for separate compilation or protection of intellectual-property at cost of optimizations and ad-hoc model-checking. Nominal types are convenient for application-local type-indexed generic overloads, but don't work nicely with pluggable architectures, mobile code, and open distributed computing.
 
-Glas is a purely functional language based on confluent graph rewriting. The graph provides an explicit, formal basis for structure sharing. Unification, one of two rewrite rules, offers a convenient basis for partial and concurrent evaluations. The graph is stable even with garbage-collection. Meanwhile, Glas leverages content-addressed dependencies to support robust computing at scale. 
+Glas is purely functional language based on unification. Unification easily represents interactive concurrent computation, and supports fine-grained partial evaluation without special effort. Further, it is monotonic and easily stabilized for direct manipulation. Session types are adapted to prevent conflict or deadlock. Further, Glas is designed with careful attention to both upwards and downward scalability. 
 
-## 
+## Glas Basics
+
+A Glas program is a pure function, represented by a structured, directed subgraph with labeled edges. Evaluation rewrites the graph. There are two primary rewrite rules: application and unification. 
+
+Application is the basis for computation. A function is applied to a node. At the lowest level, application is based on primitive functions. For example, if we apply a primitive `multiply` function to a node, it might read edges `arg1 -> 6` and `arg2 -> 7`, then write edge `result -> 42`. Assuming there is no conflict, multiple functions may be applied to a node. However, it is usually better to apply only one function to a node.
+
+Unification is the basis for dataflow. Unification merges two nodes. For inner nodes, unification implicitly propagates for matching labels. For terminal nodes, Glas enforces a single-assignment semantics, i.e. it would be a type error for `result` to be written twice, even with the same value. But we could unify `result` with an unassigned `arg` to another applied function.
+
+Unification of inner nodes can model deferred and bi-directional dataflows. For example, we can directly model a list of request-response elements: one function adds requests to the end of the list then reads responses, while another loop reads requests from the head of the list then writes responses. Effectively, this would model coroutines that rendezvous on the list.
+
+Defined functions have a clear boundary and a tree-like structure, with a private root node for intermediate computations, and a public node for all input and output parameters. When applied, the function subgraph is copied, then the public node of the copy is unified with the applicand. Unification enables further evaluation.
+
+## Glas Syntax
+
+The textual syntax for Glas takes advantage of the graph's tree-like structure. 
+
+Glas syntax takes advantage of the tree-like structure and labeled edges. We initially define a labeled tree structure, then use relative-path references within the tree for unification or application.
+
+However, I'm still selecting a syntax for representing this tree. 
+
+Option A.
+
+        :m !glas.multiply 
+           :arg1 6 
+           :arg2 7
+        :c !glas.equal
+           :arg1 m.result
+           :arg2 40
+
+
+
+## Glas Structure and Evaluation Basics
+
+A Glas program is represented by a structured, directed graph with labeled edges. Evaluation proceeds by two primary rewrite rules: application and unification.
+
+Normally, we'll apply only  source code for each application. However, assuming there is no conflict, multiple functions may be applied to a node.
+
+Unification is the basis for dataflow. Unification merges two nodes. In the trivial case, we could unify the `result` of multiplying two numbers with the `arg` of another operation. In the more general case, we can unify inner graph nodes. Unification will implicitly propagate based on matching labels, allowing bi-directional dataflows.
+
+Glas modules and programs are essentially user-defined functions. When applied, the function body is logically copied, then the designated 'public' node is unified with the applicand. User-defined functions also have a private node, providing a scratch space for intermediate computations.
+
+## Glas Syntax
+
+Under normal circumstances, we'll designate a 'variable' node for each application:
+
+        m !multiply
+        m.arg1 = 6
+        m.arg2 = 7
+
+
+
+## Single-Assignment Semantics
+
+Functions are pure, so application is logically idempotent. However, Glas will enforce a single-assignment semantics for terminal graph nodes. It is a type error for a program to write `result` twice, even with the same value.
+
+
+
+
+For inner nodes, unification will implicitly propagate based on matching labels. This allows for flexible dataflow patterns. For example, we can model a request-response list, where the writer adds new requests to the end of the list then waits for responses.
+
+
+
+
+
+
+ Importantly, unification is symmetric. If we unify the result of a multiplication with another node, we can infer direction based on the associated applications. But, in general, we
+
+ with another node, we know the 
+
+For example, if we unify the `result` from a multiply with an argument to a comparison function, then we'll represent a dataflow between multiply and comparison. Unification is symmetric and does not specify where the data comes from, so 
+
+Unification of internal graph nodes will implicitly propagate based on matching labels, allowing partial structures to be shared.
+
+Unification is symmetric and idempotent. Importantly, by unifying inner graph nodes, we can represent bi-directional dataflows. 
+
+A user-defined function is represented 
+
+ a bounded subgraph with a public node. When applied, the function is logically copied into the current graph, and the public node is unified with the applicand. A Glas module or program is ultimately a user-defined function, albeit with a suitable type.
+
+
+
+
+ with a private root and a public node designated by a special edge. When applied, the public node is unified with the 
+
+
+
+
+
+ Logically, unification is symmetric and idempotent. However, the Glas type system will enforce single-assignment semantics for types such as numbers, so 
+
+Application is monotonic: the edges `arg1` and `arg2` are not erased or replaced.
+
+
+A function can only be applied to a node. 
+
+Application is represented by special edge from a node to another node representing a function. 
+
+We apply a function to another node. 
+
+
+A Glas function is represented by a bounded subgraph, with a unique edge from 
+
+A function is a bounded subgraph
+
+
+ 
+
+A funct 
+
+
+
+
+Application is specified by a special edge from a node to another node designating the applied function. 
+
+
+The graph is struc
+
+The program graph has labeled, directed edges
+
+There are only two rewrite rules: application and unification. 
+
+
+A Glas program is a represented by a structured, directed graph with labeled edges. 
+
+
+This graph has a clear 'root' node, which can be uniquely identified by a special edge from the root node to the public node. 
+
+There is a special edge that designates the public node and private root node.
+
+
+ are pure functions. 
+
+modules and programs are pure functions. 
+
+
+Glas programs modules represent functions. 
+
+
+A Glas program is a structured graph describing a function. 
+
+ structured graph
+
 
 
 
