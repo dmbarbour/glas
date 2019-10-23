@@ -12,153 +12,86 @@ Glas is purely functional language based on unification. Unification easily repr
 
 ## Semantics Overview
 
-A Glas program is represented by a *structured*, directed graph with labeled edges. Evaluation rewrites this graph. There are two primary rewrite rules: *application* and *unification*.
+A Glas program is a pure function represented by a structured, directed graph with labeled edges. Evaluation rewrites this graph, using two primary rewrite rules: *unification* and *application*.
 
 *Application* is the basis for computation. A function is applied to a node, called the applicand. Parameters and results are represented as labeled edges. For example, if we apply a `multiply` function to a node, it may read edges `arg1 -> 6` and `arg2 -> 7` then write edge `result -> 42`. Glas defines a usable set of primitive functions and terminal values.
 
-*Unification* is the basis for dataflow. Unification merges two nodes. For example, the node at `result` may be unified with the argument of another applied function. For terminal types, such as numbers or functions, Glas enforces a single-assignment semantics. For inner nodes, unification implicitly propagates over outbound edges with matching labels. 
+*Unification* is the basis for dataflow. Unification merges two nodes. For example, the node at `result` may be unified with the argument of another applied function. For terminal types, such as numbers or functions, Glas enforces a single-assignment semantics. For inner nodes, unification implicitly propagates over outbound edges with matching labels. Logically, a node has all labels, but unused labels aren't shown.
 
-*Structure* is the basis for interfaces. Glas restricts graph structure to simplify syntax, composition, extension, modularity, visualization, direct manipulation, and other convenient features. There are many entangled concerns, so the constraints are described in later sections.
+Glas restricts the structure of the graph to simplify syntax, composition, extension, visualization, and other features. There are many entangled concerns with this aspect, so it is detailed in later sections.
 
 ## Effects Model
 
-Glas programs are pure functions. To produce effects, output must be interpreted by an external agent, and input must be fed back into the computation. Glas unification semantics make this easy: we can model an unbounded list of request-response pairs. The agent would simply read a request, perform effects as needed, write the response, repeat. 
+Glas programs are pure functions. To produce effects, output must be interpreted by external agents, and input fed back into the computation. Fortunately, unification-based dataflow makes this interface easy. For example, a program can directly output a stream of request-response pairs. Responses, when written into the stream, would reach the correct location within the computation.
 
-In practice, the 'external agent' will usually be specified by annotations or compiler flags, then installed by the compiler. One advantage of compiling the agent directly into the program is that we can fuse the agent loop into the computation, saving a context switch. 
+A Glas compiler will integrate a simple effects interpreter, parameterized by annotations or compiler flags. At this layer, the effects models will be designed for wide utility, performance, and ease of implementation. For example, requests might be translated to C calls based on a declarative FFI description, and the compiler could inline the calls based on static analysis of dataflow.
 
-Initial effects models will likely involve translating requests to C FFI calls. However, Glas is not tied to a specific effects model. We could design alternative models based on repeating transactions or specific to web-applications or so on.
+Effects also need attention within the program. Without implicit parameters, threading the tail of a request-response stream through a program too easily becomes a chore. And we'll generally want to abstract over the stream, to support application-layer effects.
 
 ## Modules and Binaries
 
-A Glas program may contain references to external modules and binaries. A module is a function defined in another file. Binary references enable programs to integrate ad-hoc data without relying on the effects model or fighting with Glas syntax.
+Glas programs may contain references to external modules and binary data. 
 
-During development, references will be symbolic, corresponding to file-paths or a package system. However, for compilation or distribution, we will 'freeze' references by transitively rewriting symbolic references to content-addressed secure hashes. We can also annotate each frozen reference with relative file path to support a subsequent 'thaw' operation. 
+During development, these references will be symbolic, corresponding to file-paths. This allows for conventional file-based development environments. 
 
-Content-addressed dependencies greatly simplifies problems related to versioning, structure sharing, incremental processing, work sharing via proxy compiler, and distributed computing. Further, the same model of content-addressed code and data can be leveraged as a form of virtual memory.
+Before compilation or package distribution, Glas systems will 'freeze' references via transitive rewrite to content-addressed secure-hashes. The modules and binaries are copied into a content-addressed storage space. Use of content-addressed references simplifies concurrent versions, configuration management, incremental compilation, separate compilation, distributed computing, and many related features.
 
-Module abstract types will be supported via *existential types*.
+Frozen modules should include annotations to support a 'thaw' operation, which reverses freeze. 
 
-In practice, Glas modules should have relatively shallow dependencies, favoring parameterization of modules. This is partially encouraged by use of existential types: different instances of the same module will result in incompatible existential types. 
+In practice, Glas modules should have shallow dependencies. Modules are functions, and may instead be parameterized with their dependencies. The same module instantiated twice will have incompatible existential types. External references should be isolated to aggregator modules where feasible.
 
-## Type System
+Favored hash: [BLAKE2b](https://blake2.net/), 512-bit, encoded as 128 base-16 characters with alphabet `bcdfghjkmnlpqrst`. Hashes are not normally seen while editing, so we don't compromise length. The base-16 consonant encoding will resist accidental spelling of offensive words.
 
-Glas will emphasize static analysis.
-
-Code reuse requires *universal types*. Implementation hiding modularity requires *existential types*. Unification with single-assignment is very expressive, but requires *session types* and *linear types*. These are the initial targets.
-
-Beyond the basics, support for embedded DSLs benefits greatly from *GADTs*. To support real-time systems, I'd be interested in typed termination, performance, and allocation behaviors. We may also benefit from *dependent types* and more ad-hoc approaches to model checking for mission-critical systems.
-
-However, Glas does not have a semantic dependency on the type system. For example, there are no type-indexed generics, no built-in `typeof` function. Further, content-addressed Glas modules are naturally white-box. Under these conditions, it is quite feasible for Glas to start with simple types and advance iteratively.
-
-With advanced static analysis, type inference is infeasible. Glas will heavily use annotations to support its type systems.
+Security Note: Content-address can be understood as an object capability for lookup, and it should be protected. To resist time-leaks, content-address should not directly be used as a lookup key. However, preserving a few bytes is convenient for manual lookup when debugging. I propose to use `take(8,content-address) + take((KeyLen - 8),hash(content-address))` as a lookup key.
 
 ## Annotations
 
-Glas models 'annotations' as special functions with identity semantics. Annotations use a distinct symbol such as `#author` or `#origin`. Annotations influence static safety analysis, performance optimizations, program visualization, automatic testing, debugger output, and etc.. However, annotations may not affect observable behavior within the program. 
+Glas models 'annotations' as special functions with identity semantics. Annotations use a distinct symbol prefix such as `#author` or `#origin` or `#type`. Annotations may influence static safety analysis, performance optimizations, program visualization, automatic testing, debugger output, and etc.. However, annotations shall not affect observable behavior within the program. 
+
+## Records and Variants
+
+Records in Glas can be modeled by an inner node. Each label serves as a field. To update a record requires a primitive function that computes a record the same as the original except at one label. Update naturally includes erasure: to erase a label, update to a fresh node.
+
+Variants in Glas can be modeled as specialized, dependently-typed pairs: an inner node has a special edge to indicate the choice of label, then the second label depends on the choice. We can use variants as a proxy to working with labels.
+
+Variants can records are normally typed based on their structure. But with suitable type annotations, it is feasible to support GADTs, where we type a structure based on its interpretation. 
+
+Note: Glas cannot meaningfully 'copy' nodes. No shallow copy, no deep copy. Due to unification semantics, a copy would be equivalent to the original because we would also copying all 'unused' edges.
+
+## First-Class Codebase
+
+
+
+## Loops
+
+## Failure and Error Handling
 
 ## Tacit Programming
 
-## Unification Variables
-
-
+Why not lambdas? (E.g. with `$` refs to public node). 
 
 
 ## (Topics)
 
-
+* Syntax
+* Concurrency, KPNs
 * Projectional Editing
 * Embedded DSLs and GADTs
 * Direct Manipulation
 * Reactive Streams
+* Type System Details
 
 
+## Type System
 
+Glas will heavily emphasize static analysis. Glas must support universal types, existential types, row-polymorphic types, multi-party session types, and linear types. Beyond these, desiderata include dependent types, exception types, performance and allocation types, and general model checking.
 
+Advanced types cannot be fully inferred. Type annotations are required.
+
+Glas does not have any semantic dependency on the type system: no type-indexed generics, no `typeof`. Thus, types primarily support safety and performance. 
 
 
 ## ....
-
-Glas restricts the structure of this graph in order to simplify syntax, composition, visualization, and other features. Thus, 
-
-
-
- in order to simplify various features.
-
- the structure of this graph in order to simplify a wide variety of features. 
-
-visualization
-
-constrains the structure of this graph in order to simplify syntax, visualization, and other features. 
-
-
-The Glas graph structure is very tree-like. A function has a private 'root' node, with a special edge to a public node. When applied, the function's public node is unified with the applicand. Thus, besides labeled out
-
- with a special edge to a  node. When unif
-
-
-
-Unification is the basis for dataflow. Unification merges two nodes. For inner nodes, unification implicitly propagates for matching labels. For terminal nodes, Glas enforces a single-assignment semantics, i.e. it would be a type error for `result` to be written twice, even with the same value. But we could unify `result` with an unassigned `arg` to another applied function.
-
-Unification of inner nodes can model deferred and bi-directional dataflows. For example, we can directly model a list of request-response elements: one function adds requests to the end of the list then reads responses, while another loop reads requests from the head of the list then writes responses. Effectively, this would model coroutines that rendezvous on the list.
-
-Defined functions have a clear boundary and a tree-like structure, with a private root node for intermediate computations, and a public node for all input and output parameters. When applied, the function subgraph is copied, then the public node of the copy is unified with the applicand. Unification enables further evaluation.
-
-
-
-
-
-Glas programs modules represent functions. 
-
-
-A Glas program is a structured graph describing a function. 
-
- structured graph
-
-
-
-
-
-
-
-
-
-are relatively awkward for representing interactive computations, deterministic concurrency (such as Kahn Process Networks), structure sharing, and partial evaluations.
-
-Glas solves these problems by taking confluent graph rewriting as an alternative basis for functional programming. The graph structure can represent sharing. Unification is good for partial evaluation, interaction, and deterministic concurrency. 
-
-Further, I'm interested in . Today, every user-interface is a walled garden, difficult to compose or integrate, with many hand-written layers of indirection to the program logic. Ideally, we could automatically produce a good user interface from an interface type and a few style annotations. But lambdas and combinators are unsuitable for direct manipulation due to how they partition inputs from outputs, and the unstable structure over incremental evaluations.
-
-Glas supports direct manipulation
-
-
-Another interest is computing at large scales (distributed computing) and small scales (embedded real-time or FPGA targets).
-
-
-by rejecting lambda calculus and combinatory logic. Instead, Glas is based on confluent graph rewriting, with rules for unification and application. 
-
-
-
-
-Evaluation destabilizes user input.  
-
-Elements are being replaced or renamed during evaluation. 
-
- This instability hinders treating the f
-
- and tend to separate inputs and outputs spatially.  elements being replaced or renamed during evaluation. This instability hinders a lot of external tooling
- lambdas are unstable due to su
-
-Glas is based instead on graph rewriting via unification and application.
-
-
-A Glas program is a structured graph with labeled, directed edges. There ar
-
-
-Another interest is distributed computing. For computing at large scales, structure sharing is 
-
-
-## Programs as Stable, Structured Graphs
-
 
 
 
@@ -178,90 +111,6 @@ Static allocation and linking is a valuable property in domains of embedded or r
 
 Glas language will enable developers to assert within session types that functions are 'static' after a subset of input parameters are provided. Glas might also support a weaker constraint of 'stack' allocation, to simplify reasoning about performance and memory management for many higher applications.
 
-## Commutative Monoids
-
-A commutative monoid is any type together with a commutative composition operator and an identity element. Examples of commutative monoids:
-
-* sums of integers
-* maximum of natural numbers
-* unions of sets or multi-sets
-* all [conflict-free replicated data types (CRDTs)](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type)
-
-Commutative monoids are intriguing for two reasons. First, they can model open systems with contributions from multiple sources.
-
-
- Second, they 
-
- purely functional, deterministic computation while reducing the need
-
- support
-
- unordered contributions while producing a deterministic result, and thus fit nicely within the determinism constraints of 
-
-multiple unknown sources, and we can compute an incremental result
-
-
-
-
-With session types, it is not difficult to model interactive construction of commutative monoids. Essentially, we have a tree of operations
-
-
-
-
-
-
-
-
-## Allocation Types
-
-
-
-
-
-
-
-
- by envisioning functions as having an unbounded set of input and output parameters. At the lowest level, we have simple 
-
-named input and output parameters. 
-
-
-
-* **Session Types** to model interaction, concurrency, and effects
-* **Graph Rewriting** to support partial evaluation and rendering
-* **Projectional Editing** for extensible visualization and editing
-* **Allocation Types** to control GC, support hardware synthesis
-* **Content-Addressed** dependencies for large-scale systems, block-chains
-
-Glas solves weaknesses of conventional functional programming. As a consequence, it is very non-conventional, and will benefit from a different programming environment.
-
-## Interactive Computation
-
-We can define an interactive computation as one that produces some outputs before all inputs are provided. Most FP languages use an applicative syntax of form `outputs = fn(inputs)`, and a semantics where all inputs are provided before any outputs are observed. Thus, interaction must be explicitly and indirectly modeled via continuation passing style or monadic types or algebraic effects. 
-
-In contrast, a Glas program enables interaction directly between pure functions. This requires a non-conventional syntax, and opportunistic semantics for internal evaluations. A Glas program or function is represented by a subgraph, with a bundle of labeled edges for inputs and outputs. This graph reduces by opportunistic rewriting. 
-
-Start with a trivial example:
-
-
-        (6)-(inc)--x              (7)----x
-           \a
-            (mul)---y     =>      (42)---y
-           /b
-        (7)
-
-We can take a 'subgraph' by separating the inputs:
-
-        ---a--(inc)----x--
-            \
-             (mul)-----y--
-            /        
-        ---b
-
-A client of this subgraph could feed `(6)` to the `a` input, read the `x` output, increment it, then feed backwards to the `b` input in order to compute `y`. Although this interaction is trivial, it's surprisingly awkward to represent in conventional FP languages.
-
-A question is how to 'type' this subgraph and reason about it. Trivially, we can observe the basic types of the edges: `{a:int, b:int, x:int, y:int}`. We can augment this with directionality: `{a?int, b?int, x!int, y!int}`. Further, we can observe that `x` is available as an output even before `b` is provided as input, so we could augment our type with a sequential ordering: `{a?int . x!int . b?int . y!int}`. At this point, we have reinvented a primordial version of session types.
-
 ## Session Types
 
 The [simple session](http://simonjf.com/2016/05/28/session-type-implementations.html) type `{a?int . x!int . b?int . y!int}` tells us that it's perfectly safe to increment output `x` then feed it as input `b`. That is, we can safely compose interactions without risk of deadlock, without deep knowledge of subgraph implementation details. But for complex or long-lived interactions, this is far from sufficient for systems programming. Fortunately, session types offer a viable path forward, with *choice* and *recursion*:
@@ -280,210 +129,5 @@ Intriguingly, session types fully subsume conventional data types. A conventiona
 
 Glas adapts session types to support interactive computations between functions, and to improve expressiveness over conventional FP languages.
 
-## Effects System
-
-Recursive session types easily support a simple effects system:
-
-        type Effects =
-            &{ eff1: ... . more:Effects
-             | eff2: ... . more:Effects
-             | quit: status!int 
-             }
-
-This would have a linear structure and would roughly correspond to an algebraic or monadic effects system. Further, it is also feasible to support forks and threads via `fork: left:Effects * right:Effects` or similar, assuming `*` here represents commutative sessions (whereas `.` represents sequential sessions).
-
-l
-
-
-
 ## Deterministic Concurrency
-
-We can reasonably define a 'concurrent' system as one that interacts with multiple agents and services. Importantly, concurrent systems introduce the 'problem' where events may arrive from
-
- two independent sources
-
- Importantly, we shouldn't need a grand central dispatch or any form of 
-
-
-
- between independently defined subcomputations. This is very convenient for expression of complex systems. However, Glas is purely functional and deterministic: modulo debuggers, we cannot observe race-conditions, which sub-computations finish first.
-
-
-
- Deterministic concurrency is convenient for large-scale computations. We can easily leverage cloud computation, for example. Kahn Process Ne
-
- concurrency preserves observable determinism - i.e. we cannot observe race conditions between computations, but we can see which computations finish 'first'.
-
- Further, a great deal of task-parallel computation is feasible insofar as these subcomputations are expensive compared to the communications.
-
-
-
- However, for purity, this in this case concurrency is fully deterministic, similar to Kahn Process 
-
-
-With sophisticated session types, we can independently define and maintain subprograms that cooperate to compute a result. Hence, we can model basic forms of concurrency. Additionally, a great deal of parallelism is feasible, albeit only insofar as loops are designed for relatively coarse-grained communications.
-
-
-
-
-
-
-
-
-A reasonable question is: what does it even mean to adapt these session types to 
-
-
-In this case, we have a function that effectively supports a stream of `Mul` or `Add` methods, terminated by a `Quit` method. 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-Use of session types can enable us to track which interactions are 'safe' against problems like deadlock (where we have a loop of dataflow dependencies). Further, they offer an intriguin
-
-
-
-
-        
-        
-
-
-
-        
-
-
-
-
-
-
-with some directionality information: `{a?int, b?int, x!int, y!int}`. Here, `?` represents input while `!` represents output. However, this type still doesn't capture that `x` output only requires the `a` input. So, we augment our type with some ordering: `{a?int, x!int, b?int, y!int}`. At this
-
-
-
-In this case, we could understand our 'bundle' as a record of three edges like `{a:int, b:int, x:int, y:int}`, except we should further augment this with directionality like `{x?int, y?int, r!int}` where `?` represents an input and `!` an output. We could give `mul` a type based on this bundle. For a convenient textual projection of the graph, we could even call `mul` based on it:
-
-        g : {x?int, y?int, r!int}
-
-        var p = mul()
-        p.x = 6
-        p.y = 7
-        ... do something with p.r ...
-
-As a slightly more complicated example, we could have two outputs
-
-
-
-        
-
-
-
-
-
-        
-
-Computatio
-
-
-
-        
-
-
- with a bundle of labeled edges for inputs and outputs. Computation is opportunistic, via rewriting. I'll eventuall
-
-This requires a different syntax
-
- partial outputs to be provided based on partial input. 
-
-
-
-Thus, it is difficult to represent interaction syntactically, so we're forced to work around
-
-instead of `output = fn(inputs)`, which requires providing the inputs up front before any outputs
-
- This is achieved by requiring all inputs to a function are produced before any outputs
-
- interaction between subprograms written in a direct style. This idea is two-fold: first, instead of requiring all inputs to a function before producing any outputs, we allow 
-
-outputs from a function may be computed before all inputs are provided, thus we 
-
-
-First, support for interaction, effects, and concurrency remains awkward. As a community, we have experimented with monadic composition, algebraic effects, linear types. Yet, it remains difficult to model separate loops interacting with messages to produce a result. Further, the models often hinder the forms of reasoning and refactoring that functional purity promises in the first place. 
-
-Second, it is difficult to visualize computation in these languages. The original lambda calculus has a rewriting semantics, which enables rendering intermediate steps and final results. But FP languages today rarely offer any means to even render first-class functions, much less the intermediate computations. This weakness hinders debugging, explanation of code, and creates a barrier between programming and user-interfaces.
-
-
-
-[Kahn Process Networks](https://en.wikipedia.org/wiki/Kahn_process_networks) offer an intriguing alternative, preserving the locality of  but don't really fit the type systems for functional 
-
- Second, it is difficult to visualize and debug computation - lambda calculus has a rewriting semantics, but most functional programming languages have a s
-
- We have developed some usable models - based for example on monadic composition, algebraic effects. But these solutions introduce some rigid structure on computation. 
-
-Conventional F
-
-
-
-* **Session Types** support interaction, effects, futures, and concurrency.
-* **Term Rewriting** interpretation supports partial evaluation and caching.
-* **Projectional Editing** for extensible visualization of code and results.
-* **Static Allocation** types support real-time systems or hardware synthesis.
-* **Concatenative Style** simplifies composition, refactoring, and streaming.
-* **Content-Addressed** dependencies support large-scale systems, block-chains.
-
-As a concatenative language, all functions in Glas operate on an implicit environment. In Glas, this environment includes a record of labeled data and futures. This record includes a data stack, which serves as a convenient intermediate location for literals and computations. Meanwhile, the labeled data is a more convenient route for partial evaluation and fine-grained interactions: we can statically determine or constrain which labels a subprogram touches. 
-
-In Glas, the record environment includes the 'dictionary' or codebase. Hence, the entire codebase is subject to programmatic manipulation. For convenience, Glas supports a lexically scoped environment as a standard access pattern.
-
-Concurrency in Glas is based on fine-grained interactions and partial evaluation. With session types, we can track whether an output from a function is available before all inputs are provided.
-
-
-
-
-
-
-Glas is a low-level programming language: common fixed-width numeric types and arrays are built-in, and have predictable representation. Glas also supports generic 
-
-
-
-
-## Adapting Session Types t Pure Functions
-
-Session types were or
-
-
-In context of pure functions, session types represent a dependency graph between function inputs and outputs. Session types can achieve this with greater convenience and precision than conventional functional programming languages. 
-
-For example, in a conventional language we might have a function of type `(A,B,C) -> (X,Y)`. If we want `X` as an earlier output, we might change the type to `A -> (X, (B,C) -> Y)`. Unfortunately, there is no implicit subtype relationship between these function types, and we'll often need to restructure both caller and the implementation to support this change. In contrast, with session types, we have something closer to `?A !X ?B ?C !Y`, and this is a subtype of `?A ?B ?C !X !Y` or even of `!X ?A !Y ?B !Z`. Further, these programs can be written in a direct style: the types are based on data dependencies, not program structure.
-
-## Interactions and Effects
-
-Intermediate outputs can be observed by the caller then influence future inputs. This is a simple interaction. 
-
-Session types enable convenient expression of *interactive* computations. We can adapt choice and recursive session types to pure functions. A choice of sessions can model variants or object-oriented interfaces or remote server APIs. A recursive session can model unbounded request-response streams or collaborative decision trees.
-
-With session types, we can model streaming data, or streams of request-response interactions. The latter might serve as an effects model, a viable alternative to monads or algebraic effects.
-
-## Process Networks and Deterministic Concurrency
-
-Although interactions start with the caller, they may be delegated to another function call. By abstracting or translating how interactions are handled through other function calls, we essentialy model a concurrent process network. However, unlike most process models, the determinism of pure functions is preserved.
-
-*Aside:* Use of session types with pure functions subsumes [Kahn Process Networks](https://en.wikipedia.org/wiki/Kahn_process_networks): we can model streaming data channels, but we aren't constrained by them. A streaming interaction can effectively model cooperative concurrency between coroutines.
-
-## Other Glas Features or Goals
-
-Glas aims to become a robust, high-performance, systems-level programming language. Glas has many low-level numeric types. Programmers may declare that a program must be statically allocated for embedded or mission-critical systems. Termination up to input should be guaranteed by static analysis. External modules or packages will be robustly referenced, shared, and versioned by secure hash (although development modules may use normal filenames).
-
 
