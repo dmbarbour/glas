@@ -12,37 +12,35 @@ Glas is purely functional language based on unification. Unification easily repr
 
 ## Semantics Overview
 
-A Glas program is a pure function represented by a structured, directed graph with labeled edges. Evaluation rewrites this graph, using two primary rewrite rules: *unification* and *application*.
+A Glas program is represented by a structured, directed graph with labeled edges. Evaluation rewrites this graph, using two primary rewrite rules: *unification* and *application*.
 
 *Application* is the basis for computation. A function is applied to a node, called the applicand. Parameters and results are represented as labeled edges. For example, if we apply a `multiply` function to a node, it may read edges `arg1 -> 6` and `arg2 -> 7` then write edge `result -> 42`. Glas defines a usable set of primitive functions and terminal values.
 
-*Unification* is the basis for dataflow. Unification merges two nodes. For example, the node at `result` may be unified with the argument of another applied function. For terminal types, such as numbers or functions, Glas enforces a single-assignment semantics. For inner nodes, unification implicitly propagates over outbound edges with matching labels. Logically, a node has all labels, but unused labels aren't shown.
+*Unification* is the basis for dataflow. Unification merges two nodes. For example, the node at `result` may be unified with the argument of another applied function. For terminal types, such as numbers or functions, Glas enforces a single-assignment semantics. For inner nodes, unification propagates to outbound labeled edges, with missing labels treated as unassigned nodes. 
 
-Glas restricts the structure of the graph to simplify syntax, composition, extension, visualization, and other features. There are many entangled concerns with this aspect, so it is detailed in later sections.
+Glas restricts structure of the graph to simplify syntax, composition, extension, visualization, and other features. There are many entangled concerns with this aspect, so it is detailed in later sections.
 
 ## Effects Model
 
-Glas programs are pure functions. To produce effects, output must be interpreted by external agents, and input fed back into the computation. Fortunately, unification-based dataflow makes this interface easy. For example, a program can directly output a stream of request-response pairs. Responses, when written into the stream, would reach the correct location within the computation.
+Glas programs are pure functions. To produce effects, output must be interpreted by external agents. To progress, input must feed back into the computation. Fortunately, unification-based dataflow makes this interface easy. For example, a program can directly output a stream of request-response pairs. The agent could loop over this list, handle each request then directly write the response. The response would unify with the correct destination in the program. 
 
-A Glas compiler will integrate a simple effects interpreter, parameterized by annotations or compiler flags. At this layer, the effects models will be designed for wide utility, performance, and ease of implementation. For example, requests might be translated to C calls based on a declarative FFI description, and the compiler could inline the calls based on static analysis of dataflow.
+A Glas compiler will integrate a simple effects interpreter. The intended interpreter can be specified by annotation. With loop-fusion and inline optimizations, it is feasible to efficiently integrate effects with the computation similar to an imperative language.
 
-Effects also need attention within the program. Without implicit parameters, threading the tail of a request-response stream through a program too easily becomes a chore. And we'll generally want to abstract over the stream, to support application-layer effects.
+In practice, applications should specify effects at a high level, based on the problem they solve. This allows application behavior to be tested independently of an interpretation to lower level effects.
 
 ## Modules and Binaries
 
-Glas programs may contain references to external modules and binary data. 
+Glas programs will contain references to external modules and binary data. 
 
-During development, these references will be symbolic, corresponding to file-paths. This allows for conventional file-based development environments. 
+Before compilation or package distribution, Glas systems will 'freeze' references via transitive rewrite to content-addressed secure-hashes. The modules and binaries are moved to content-addressed storage. Frozen modules should include annotations to support a 'thaw' operation, which reverses freeze. 
 
-Before compilation or package distribution, Glas systems will 'freeze' references via transitive rewrite to content-addressed secure-hashes. The modules and binaries are copied into a content-addressed storage space. Use of content-addressed references simplifies concurrent versions, configuration management, incremental compilation, separate compilation, distributed computing, and many related features.
-
-Frozen modules should include annotations to support a 'thaw' operation, which reverses freeze. 
+Use of content-addressed references for compilation or deployment simplifies concurrent versions, configuration management, incremental compilation, separate compilation, distributed computing, and many related features.
 
 In practice, Glas modules should have shallow dependencies. Modules are functions, and may instead be parameterized with their dependencies. The same module instantiated twice will have incompatible existential types. External references should be isolated to aggregator modules where feasible.
 
 Favored hash: [BLAKE2b](https://blake2.net/), 512-bit, encoded as 128 base-16 characters with alphabet `bcdfghjkmnlpqrst`. Hashes are not normally seen while editing, so we don't compromise length. The base-16 consonant encoding will resist accidental spelling of offensive words.
 
-Security Note: Content-address can be understood as an object capability for lookup, and it should be protected. To resist time-leaks, content-address should not directly be used as a lookup key. However, preserving a few bytes is convenient for manual lookup when debugging. I propose to use `take(8,content-address) + take((KeyLen - 8),hash(content-address))` as a lookup key.
+Security Note: Content-address can be understood as an object capability for lookup, and it should be protected. To resist time-leaks, content-address should not directly be used as a lookup key. However, preserving a few bytes in prefix is convenient for manual lookup when desperately debugging. I propose `take(8,content-address) + take(24,hash(content-address))` as a lookup key.
 
 ## Annotations
 
@@ -50,26 +48,18 @@ Glas models 'annotations' as special functions with identity semantics. Annotati
 
 ## Records and Variants
 
-Records in Glas can be modeled by an inner node. Each label serves as a field. To update a record requires a primitive function that computes a record the same as the original except at one label. Update naturally includes erasure: to erase a label, update to a fresh node.
+Records in Glas can be modeled by a node with labeled edges. Each label serves as a record field. To update a record, we will need a primitive function that can combine a record and a variant into an updated record. This can feasibly be implemented by a prototyping strategy.
 
-Variants in Glas can be modeled as specialized, dependently-typed pairs: an inner node has a special edge to indicate the choice of label, then the second label depends on the choice. We can use variants as a proxy to working with labels.
+Variants in Glas can be modeled as specialized, dependently-typed pairs: an inner node has a special edge to indicate the choice of label, then the second label depends on the choice. Operations on variants may involve matching another variant, or selecting an operation from a record.
 
-Variants can records are normally typed based on their structure. But with suitable type annotations, it is feasible to support GADTs, where we type a structure based on its interpretation. 
+Records and variants can support row-polymorphic structural types. With type annotations, we could also require compatibility with a GADT.
 
-Note: Glas cannot meaningfully 'copy' nodes. No shallow copy, no deep copy. Due to unification semantics, a copy would be equivalent to the original because we would also copying all 'unused' edges.
-
-## First-Class Codebase
-
-
+## Definition Environment
 
 ## Loops
 
-## Failure and Error Handling
 
-## Tacit Programming
-
-Why not lambdas? (E.g. with `$` refs to public node). 
-
+## Syntax
 
 ## (Topics)
 
