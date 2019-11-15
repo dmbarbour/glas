@@ -1,12 +1,14 @@
 # Glas Language
 
-Syntactically, Glas looks and feels like a conventional procedural or object-oriented language, albeit limited to linear objects. Semantically, Glas is a purely functional programming language based on *graph unification*.
+Glas is an object-oriented, imperative, concurrent, purely functional language. Programs are expressed imperatively with linear objects, single-assignment variables, and explicit threads. The resulting computations are deterministic, interactive, pure, and cacheable. Glas adapts [session types](https://groups.inf.ed.ac.uk/abcd/) to prevent deadlock.
 
-Unification expresses interactive, concurrent computations. Graphs can directly represent shared, labeled structure. Graph unification is stable, monotonic, well suited for [direct manipulation interfaces](https://en.wikipedia.org/wiki/Direct_manipulation_interface).
+Interactions in Glas are generally modeled as data structures containing unassigned variables. For example, it is possible to model a question-answer list where later questions are incrementally computed based on previous answers. This list would serve a similar role as a 'rendezvous'. A channel is simply an output-only or input-only list where the tail is deferred.
 
-Glas supports robust configuration management, concurrent versions, incremental processing, and separate proxy compilation. This is achieved by a simple feature: before compilation or deployment, program source is 'frozen' by transitively rewriting named dependencies to content-addressed secure hashes. The program can be thawed for editing.
+This model of interaction is very convenient for [direct manipulation interfaces](https://en.wikipedia.org/wiki/Direct_manipulation_interface). We can simply render the structure to the user. Alternative views can be supported via lenses (editable projections). Multiple users and background effects can be supported by partitioning a larger interactive data structure. Real-time systems can be supported using frames and timeouts.
 
-Glas is a richly typed language. [Session types](https://groups.inf.ed.ac.uk/abcd/) are adapted to the Glas computation model to prevent deadlock. Existential types support modularity. [GADTs](https://en.wikipedia.org/wiki/Generalized_algebraic_data_type) will support embedded languages. Dependent types and model checking are also goals. However, Glas does not have typeful semantics - no type-indexed generics or `typeof` operation.
+Direct manipulation interfaces lower the artifical barriers between UI and API. For example, it is feasible for end-users to compose 'applications', wiring outputs from one as inputs to another. They can also peek within the application to observe what's happening, using similar graphical projections. 
+
+Ultimately, one motive of Glas is to give more control of software to end users. Other aspects of Glas design also support this vision, especially the module system. However, Glas is also intended to be safe, efficient, and effective for programming low-level and mission-critical systems. To that end, Glas supports flexible static analysis, and types to construct statically-allocated hard real-time programs.
 
 See [design](docs/GlasDesign.md) document for details.
 
@@ -14,17 +16,13 @@ See [design](docs/GlasDesign.md) document for details.
 
 This project has several goals:
 
-* fully define Glas syntax and semantics
-* bootstrap untyped interpreter or compiler
-* self-hosting type-checker and compiler
-* effective error analysis and reporting
-* compilation targeting JavaScript + DOM
-* develop IDE with projectional editing
+* define Glas syntax and semantics
+* bootstrap interpreter or compiler
+* self-hosting types and cross compiler 
+* tooling: linter, doc-gen, package manager
 * proof of concept for direct manipulation
 
-To produce applications, a Glas compiler will integrate an effectful interpretation of the program's session type. The bootstrap will support only filesystem and console. The self-hosting compiler should support a more flexible effects model. This may involve an annotation specifying how requests are translated to the compiler's intermediate language, which should be sufficiently low-level to support OS calls.
-
-Desiderata are to keep this project *small* and *self-contained*. I take considerable inspiration from [Red language](https://www.red-lang.org/p/about.html) that this can be achieved. Modulo JavaScript+DOM, which is a mess.
+Desiderata include keeping this project small and self-contained. 
 
 ## Status of Language
 
