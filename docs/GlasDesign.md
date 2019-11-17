@@ -18,11 +18,11 @@ Glas has built-in support for records, e.g. `(x:6, y:7)`. Records are encoded in
 
 Glas distinguishes open and closed records. Closed records prevent adding new fields via unification, but contain an implicit summary of which fields are defined, allowing limited reflection. Glas records are closed by default. Open records are indicated by an ellipsis as the last field, e.g. `(x:6, y:7, ...)`. 
 
-The empty, closed record `()` serves as the Glas unit value. The empty, open record `(...)` is effectively an anonymous unfication variable.
+The empty, closed record `()` serves as the Glas unit type and value.
 
-A variant is encoded as a closed, singleton record, e.g. `circle:(radius:3, color:red)`. Variants are the primary basis for conditional behavior with pattern matching. Logically, pattern matching relies on the implicit summary field. Glas has special support for variants in the type system. The unit variant `foo:()` is common for simple enumerations, but ugly and noisy, so Glas provides a convenient shorthand `'foo`.
+A variant is encoded as a closed, singleton record, e.g. `circle:(radius:3, color:red)`. Variants are the primary basis for conditional behavior with pattern matching. Logically, pattern matching relies on the implicit summary field. Glas has special support for variants in the type system. The unit variant `foo:()` is common for simple enumerations. Glas provides a convenient shorthand: `'foo` is equivalent to `foo:()`
 
-Closed records are frequently used as function arguments in Glas. Closed records conveniently support named parameters, optional parameters, and `'flag` parameters.
+Closed records are frequently used as function arguments in Glas. Closed records conveniently support named parameters, optional parameters, and optional `'flag` parameters.
 
 ## Lists, Tuples, Arrays
 
@@ -30,21 +30,100 @@ Lists are easily modeled as a recursive structure of records and variants:
 
         type List a = list:(head: a, tail: List a) | 'null
 
-Glas provides a syntactic shorthand for lists. For example, `[1,2,3]` expands to a structure of record and variants of form `list:(head:1, tail:[2,3])`, and `[]` expands to `'null`. Also, `[x|rem]` expands to `list:(head:x, tail:rem)`.
+Glas provides a shorthand: `[1,2,3]` is equivalent to `list:(head:1, tail:[2,3])`, and `[]` expands to `'null`.
 
-Tuples in Glas are modeled as invariant-length, heterogeneous lists, e.g. `[1, "hello", (x:6, y:7)]`. Functions on lists that don't require homogeneous type, e.g. to compute length or zip lists, also work on tuples. A Glas compiler should optimize tuple representation - any short, invariant-length list.
+Tuples in Glas are encoded as invariant-length, heterogeneous lists, e.g. `[1, "hello", (x:6, y:7)]`. Functions on lists that don't assume homogeneous type - such as length or zip - should be designed to also work for tuples. Tuples may be distinguished from normal lists in the type system, to protect features such as unboxed representation.
 
-Arrays in Glas are also modeled by lists. However, arrays are distinguished from regular lists in the type-system to robustly support adjacent representation in memory, offset-based indexing, and linear in-place updates.
+Arrays are homogeneous lists with specialized representation. Arrays are distinguished from regular lists in the type-system to protect adjacent representation in memory, offset-based indexing, and linear in-place updates.
+
+## Imperative Environment
+
+Glas supports a conventional environment of variables and named objects. Variables must be declared, and are immutable by default. Mutable variables may be updated in an imperative style, e.g. from the body of a `while` loop, `if-then` conditional statements, or pass-by-reference parameters.
+
+In the underlying model, this environment is represented as a record, sequentially threaded from one statement to the next and updated incrementally. A consequence is that Glas cannot model shared references to mutable variables. Only one function or thread may own a mutable variable at a time. This may involve static analysis similar to Rust language's borrow checker.
+
+An intriguing consequence is that mutable variables do not need to preserve 'type' at every step. We can model objects whose type depends on prior method calls. However, Glas will generally require compatible types after conditional branches, and invariant types within loops.
+
+In addition to the lexical environment, functions in Glas are implicitly parameterized by a pass-by-reference parameter representing [dynamic scope](https://en.wikipedia.org/wiki/Scope_%28computer_science%29#Dynamic_scoping). This dynamic environment object conveniently models 'effects' such as access to a console or network, drawing turtle graphics to a canvas, or construction of a constraint model for staged programming.
+
+A consequence of this design is that Glas has a very imperative programming style. Programmers will generally think about programs imperatively, with control-flow semantics. However, functions are still 'pure' with regards to partial evaluation, testing, refactoring, reuse in a different context.
+
+## Unification Variables
+
+Glas exposes the underlying unification semantics via unification variables. Variables may be declared before they are assigned. Deferred assignment is convenient for recursive structure or modeling deferred output from a thread. The empty, open record `(...)` serves as an anonymous unification variable.
+
+Glas will use a distinct syntax for unification vs. mutable variable update. The current proposal is `x := value` for unification vs. `x = value` for update.
+
+Unification variables are 'single assignment' when the value is fully defined. However, it is possible to unify multiple partial values. For example, `(x:6, ...)` and `(y:7, ...)` would unify as `(x:6, y:7, ...)`. More generally, `pt:(x:6, ...)` and `pt:(x:(...), y:7)` would unify as `pt:(x:6, y:7)`. That is, unification will merge records, but closed records require matching fields.
+
+## Pass-by-Reference Parameters
+
+Pass-by-reference parameters are convenient for abstract manipulations of mutable variables. As a trivial example, we might abstract `x = x + 1` to `increment(&x)`. Due to the underlying model, Glas does not support true variable references. Instead, pass-by-reference is simulated via intermediate rewrite to in-out parameters with unification.
+
+Glas will effectively expand `increment(&x)` to:
+
+        { 
+            let tmp_x = (in:x, out:(...));
+            x = tmp_x.out;
+            increment(tmp_x)
+        }
+
+Here, `tmp_x` is a fresh variable that won't conflict with other variables in scope. Unification with output is leveraged to capture the updated `x`. Finally, `increment` is called, and in the general case may have a return value. 
+
+Programmers may explicitly define `increment` in terms of in-out parameters:
+
+        fn increment(x) { x.out := x.in + 1; }
+
+However, for clarity and consistency, Glas supports reference patterns:
+
+        fn increment(&x) { x = x + 1; }
+
+In this case, we'll effectively rewrite to:
+
+        fn increment(tmp_x) {
+            let mut x = tmp_x.in;
+            x = x + 1;
+            tmp_x.out := x;
+        }
+
+In general, we'll assign `tmp_x.out` just after the last update to `x`. A minor disadvantage of pass-by-reference patterns is that they may require some unwind protection in case of exceptions.
+
+## Loops
+
+Glas does not innovate loops. Common variations on imperative loops, e.g. `for` and `while` and `do-while` will be supported with built-in syntax. These implicitly operate on the imperative environment, e.g. if we have `x = x + 1` within a `while` loop, then the updated `x` would be used when checking the condition in the next iteration. Glas can also express loops as recursive functions with tail-call optimization. 
+
+## Threads
+
+The model underlying Glas allows deterministic concurrency based on dataflow. But dataflow in Glas is usually sequential due to the imperative environment. Thus, Glas will provide means to restrict dependency on the imperative envrionment and expose the underlying concurrency.
+
+A promising option is `fork fn` to wrap a function. The wrapper immediately returns the dynamic environment, and also a unification variable for the result. The function is evaluated instead in a fresh dynamic environment, e.g. the unit value. Parameters to the wrapped function are still evaluated in the caller's environment, but may involve pass-by-reference, channels, rendezvous, and similar patterns. 
+
+This design has an advantage of being relatively easy to abstract. For example, we can build a `forkenv` function above `fork` that provides and returns an alternative dynamic environment.
 
 ## Channels and Rendezvous
 
+## Modeling Effects
 
-## Lexical Environment
+## Modeling Shared Objects
+
+## Modeling Reactive Systems
+
+## Direct Application
+
+In the underlying model, functions are 'applied' to a single node, and interact with that node via unification. In Glas, this underlying node includes the imperative environment, parameter, and return value and is not directly exposed to the programmer. However, we can simulate this: we can develop identity functions that return their argument, and also unify with it. 
+
+## Syntactic Abstraction
+
+
+By explicitly controlling the lexical and dynamic environment, Glas language can be adapted to different problems, although this is certainly weaker than syntactic abstraction. 
 
 
 
 
-## Unification Variables
+## Content-Addressed Modules and Binaries
+
+# OLD STUFF, NEEDS REVIEW
+
 
 
 ## Object-Oriented, Concurrent, Imperative Programming
@@ -52,60 +131,6 @@ Arrays in Glas are also modeled by lists. However, arrays are distinguished from
 Glas programs have a very imperative, object-oriented style. A program environment is implicitly threaded through a sequence of statements and method calls, modeling lexical variables and stateful manipulations. Concurrent computations may explicitly fork this sequence, and communicate via channels or unification variables.
 
 Glas programs ultimately have a purely functional behavior and dataflow semantics. However, it would not be obvious by looking at the program, and most reasoning about a program will be imperative. The main difference from a conventional imperative control is that programmers cannot easily represent shared mutable objects. Sharing must be carefully modeled.
-
-
-
-
-## Linear Objects
-
-Linear objects arise naturally with single-assignment semantics. For example, the write-end of a channel is implicitly linear. However, 
-
-Linearity is also convenient for high-performance memory-management. For example, if we know an array is manipulated 
-
- computation will apply linear updates to an array, we can copy 
-
-, to ensure purely functional 'update' to a record or array is implemented by as an in-place mutation.
-
-
-## Glas Environment
-
-Glas will leverage records to model the definitions environment of a program. 
-
-For example, when we declare `let foo = 42`, field `foo` should be added to a record that is accessible by later statements within the current scope. Like many imperative-functional languages, Glas will permit update of a variable only if it was explicitly declared mutable, e.g. `let mut foo = 42` might permit a subsequent `foo = foo + 1`.
-
-Mutation in Glas is necessarily linear. But that's sufficient for many use cases. Glas will have many linear objects when modeling channels for concurrency or effects. Linear update is adequate for many imperative algorithms. And a compiler can potentially take advantage to implement linear update by in-place mutation.
-
-However, holding the entire record to update one element hinders concurrency. If we have a loop like `while(x > 1) { ++stepct; collatz(&x); }`, it should not block subsequent operations that do not depend on `x` or `stepct`.
-
-
-
-
-        
-
-
-Glas shall support records in standard syntax. The current proposal uses parentheses and commas, e.g. `(x:6, y:7)`. This aligns the empty record `()` with a unit value, and does not interfere with use of parentheses for other expressions. It's also convenient for record-based parameters to function calls, such as `foo(x:6, y:7)`.
-
-
-
-
-
-We can also support 'mutable' 
-
-
- 'environment' of a program. 
-
-
-
-There are no variables, but
-
-## Modeling Shared Objects
-
-## Effects Modeling
-
-## Concurrency
-
-## Content-Addressed Modules and Binaries
-
 
 
 ## Effects Model
