@@ -1,8 +1,8 @@
 # Glas Language
 
-Glas is an object-oriented, imperative, concurrent, purely functional language. Programs are expressed imperatively with linear objects, single-assignment variables, and explicit threads. The resulting computations are deterministic, interactive, pure, and cacheable. Glas adapts [session types](https://groups.inf.ed.ac.uk/abcd/) to prevent deadlock.
+Glas is an imperative, object-oriented, concurrent, purely functional language. Programs are expressed imperatively with linear objects, transparent futures, and explicit threads. The resulting computations are deterministic, interactive, pure, and cacheable. Glas will detect potential deadlock at compile time. 
 
-Interactions in Glas are generally modeled as data structures containing unassigned variables. For example, it is possible to model a question-answer list where later questions are incrementally computed based on previous answers. This list would serve a similar role as a 'rendezvous'. A channel is simply an output-only or input-only list where the tail is deferred.
+Interactions in Glas are generally modeled as data structures containing unassigned futures. For example, it is possible to model a question-answer list where later questions are incrementally computed based on previous answers. This list would serve a similar role as a 'rendezvous'. A channel is simply an output-only or input-only list where the tail is deferred.
 
 This model of interaction is very convenient for [direct manipulation interfaces](https://en.wikipedia.org/wiki/Direct_manipulation_interface). We can simply render the structure to the user. Alternative views can be supported via lenses (editable projections). Multiple users and background effects can be supported by partitioning a larger interactive data structure. Real-time systems can be supported using frames and timeouts.
 
