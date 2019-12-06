@@ -16,37 +16,33 @@ Glas provides an imperative-style syntax to work conveniently with this model.
 
 ## Records and Variants
 
-Glas has built-in support for records using a syntax of form `(x:6, y:7)`. 
-
-In the underlying model, records are encoded as a trie of graph nodes, with outbound labeled edges for each byte in the label and `:` as the sentinel label. However, the Glas compiler will favor a flat, unboxed representation similar to C structures.
+Glas has built-in support for records using a syntax of form `(x:6, y:7)`. In the underlying model, records are encoded as a trie with one node per character in the label, and `:` as a sentinel. The compiler may use a more optimal representation.
 
 Records are immutable. However, we can model record 'update' by a function that produces a copy of the record except for specified labels, which are added, removed, or have a value replaced. Glas provides syntax for record updates, and supports [row-polymorphic updates](https://en.wikipedia.org/wiki/Row_polymorphism).
 
-Glas distinguishes 'open' and 'closed' records. Closed records are the default. An open record is represented as `(x:6, y:7, ...)`. Open records allow fields to be added via unification. Closed records include an implicit field to support reflection on the set of defined fields, but forbid adding new fields via unification. We can unify closed records, so long as no new fields are added.
+Glas distinguishes 'open' and 'closed' records. Closed records are the default. An open record is represented as `(x:6, y:7, ...)`. Open records allow fields to be added via unification. Closed records include an implicit field to support reflection on the set of defined fields, but forbid adding new fields via unification. Reflection on closed records is the basis for pattern matching and optional parameters. 
 
-Glas variants are modeled as closed, singleton records, e.g. `circle:(radius:3, color:red)`. Glas can leverage the closed record reflection field for pattern matching on variants and records. The trivial case of a singleton variants can be recognized by a compiler and encoded with zero overhead, and is suitable as a symbolic type wrapper. 
+Glas variants can be modeled as closed, singleton records, e.g. `circle:(radius:3, color:red)` vs. `square:(side:3, color:blue)`. Variants are very common for modeling tree-structured data, and may receive specialized support from the Glas type system and compiler. A 'singleton' variant, having only one choice, can be useful as a type wrapper to guard against accidental use of data in the wrong context.
 
-The empty, closed record `()` serves as the Glas unit type and value. The unit variant `foo:()` is very convenient for modeling simple enumerations, so Glas provides a convenient shorthand: `'foo` is equivalent to `foo:()`.
+The empty, closed record `()` serves as the Glas unit type and value. The unit variant `foo:()` is convenient for modeling simple enumerations or flag parameters. Glas provides a convenient shorthand: `'foo` is equivalent to `foo:()`.
 
 *Aside:* The empty, open record `(...)` serves as an anonymous future. Use of parentheses around an unlabeled expression, such as `(expr)`, can usefully serve as a precedence indicator.
 
 ## Lists, Tuples, Arrays
 
-Glas lists are modeled as a recursive structure of variants and records:
+Lists can be modeled as a recursive structure of variants and records:
 
-        type List a = list:(head: a, tail: List a) | 'null
+        type List a = cons:(head: a, tail: List a) | 'null
 
-Lists are very useful, so Glas provides a convenient shorthand: `[1,2,3]` expands to `list:(head:1, tail:[2,3])`, and `[]` trivially expands to `'null`.
+Glas provides a convenient shorthand: `[1,2,3]` essentially expands to `cons:(head:1, tail:[2,3])`, and `[]` expands to `'null`. This isn't the exact model Glas uses, but it's adequate to illustrate. Support for list comprehensions is still under consideration.
 
-Tuples can be modeled as invariant-length, heterogeneous lists, e.g. `[1, "hello", (x:6, y:7)]`. Tuples would generally be typed as records, rather than lists. Many functions on lists - length, zip, index, split, concatenation, etc. - should be carefully typed so they also work for tuples.
+Tuples can be modeled as invariant-length, heterogeneous lists, e.g. `[1, "hello", (x:6, y:7)]`. Tuples would be typed as records, rather than as lists. Many methods on lists - length, zip, index, split, concatenation, etc. - will apply to tuples. Some, such as map and fold, may work for tuples with homogeneous type.
 
-Arrays are essentially lists with an optimized representation. Glas does not distinguish arrays from lists in syntax, but does distinguish arrays the type system to support array-optimized list functions and prevent accidental conversions.
-
-*Aside:* Support for list comprehensions is still under consideration. Support for abstraction of the list tail, e.g. `[1, ... rem]` as `list:(head:1, tail:rem)` is viable, but also not fully accepted yet.
+Arrays are essentially lists with an explicitly optimized representation. In many cases, Glas requires explicit conversion from list to array representation or back to prevent accidental conversions.
 
 ## Imperative Programming
 
-Glas syntax has a familiar, imperative style. Programs consist largely of declared variables, sequential statements, loops, and conditional behaviors.
+Glas syntax has a familiar, imperative style. Glas supports imperative functions, objects and methods, exceptions, and multi-threading. A Glas function consists largely of declared variables, sequential statements, loops, and conditional behaviors. 
 
         fn collatz(n) {
           var x = n;
@@ -62,21 +58,17 @@ Glas syntax has a familiar, imperative style. Programs consist largely of declar
           return ct;
         }
 
-In the underlying model, a record-based environment of variables is threaded through loops and conditionals. Each statement may return an updated record, and thus model mutation. Some variables may be immutable, depending on declaration. The current proposal is `const x` for declaration of constants.
+In the underlying model, an immutable environment of variables is threaded from one statement to the next. Mutation of variables is modeled by statements returning the updated environment. Glas also permits `const x = 42` to declare immutable variables.
 
-Due to the underlying model, Glas must restrict how mutable variables are 'shared', especially in context of closures, concurrency, and simulated pass-by-reference. Instead of structural restrictions, Glas shall use static analysis to prevent variables from being used in an ambiguous manner, where order of assignment is unclear.
+However, Glas cannot directly share mutable variables. Glas diverges from conventional imperative programming when it's necessary to share mutable state (e.g. for threads, callbacks, shared console, etc.). I'll describe the Glas approach after building up to it.
 
-*Note:* Glas does not require an invariant 'type' for variables, e.g. it's permissible to say `foo = (x:6); foo.y = 7` resulting in `foo = (x:6, y:7)`. However, all branches of a conditional statement should have a consistent output type for variables that are later read.
+## Semi-Transparent Futures
 
-## Transparent Futures
+The empty, open record `(...)` serves as an anonymous placeholder for a value. This placeholder may later be 'assigned' via unification. This pattern is historically called a [future](https://en.wikipedia.org/wiki/Futures_and_promises). In Glas, futures are semi-transparent in the sense that any variable or data field may be a future without requiring a change in reader syntax. However, futures are tracked in the type system.
 
-The empty, open record `(...)` serves as an anonymous placeholder for a value. This placeholder may later be 'assigned' via unification. This pattern is historically called a [future](https://en.wikipedia.org/wiki/Futures_and_promises). In Glas, futures are transparent in the sense that any variable or data field may be a future without requiring a change in reader syntax.
+Glas will support futures. Programmers can declare variables like `var x;` as shorthand for `var x = (...);` or `vars x,y,z;` as shorthand for `var x = (...); var y = (...); var z = (...);`. We can write `x := 42` to explicitly unify `x` with `42`. Due to the underlying semantics, Glas can support partial unification via open records. For example, `(x:6, ...)` and `(y:7, ...)` would unify as `(x:6, y:7, ...)`. However, constants such as `6` or `7` do not unify further, not even with themselves. Effectively, Glas has a single-assignment semantics for futures. 
 
-Glas will support futures. Programmers can declare variables like `var x;` as shorthand for `var x = (...);` or `vars x,y,z;` as shorthand for `var x = (...); var y = (...); var z = (...);`. We can write `x &= 42` to explicitly unify `x` with `42`. Due to the underlying semantics, Glas can support partial unification via open records. For example, `(x:6, ...)` and `(y:7, ...)` would unify as `(x:6, y:7, ...)`. However, constants such as `6` or `7` do not unify further, not even with themselves. Effectively, Glas has a single-assignment semantics for futures. 
-
-Futures are suitable for *interaction* models. We can define 'interaction' as future inputs depending on partial outputs. With transparent futures, we can directly model partial outputs and future inputs as normal data structures. For example, a 'channel' can naively be modeled as a list with a future tail.
-
-Glas will ensure 'safe' use of futures via static analysis, leveraging session types and linear types. There is a paper ["Transparent First-class Futures and Distributed Components" by Cansando et al.](https://www.sciencedirect.com/science/article/pii/S1571066109005180) that also seems relevant. Static analysis comes with a cost to expressiveness: there are many valid programs that cannot easily be analyzed.
+Static analysis with futures will leverage session types and linear types, and perhaps constraint satisfaction. There is a paper ["Transparent First-class Futures and Distributed Components" by Cansando et al.](https://www.sciencedirect.com/science/article/pii/S1571066109005180) that also seems relevant. Static analysis comes with a cost to expressiveness because there are many valid patterns that cannot easily be analyzed. 
 
 ## Pass-by-Reference Parameters
 
@@ -86,87 +78,70 @@ Pass-by-reference parameters are convenient for abstract manipulation of mutable
         x = tmp_x.out;
         increment(tmp_x)
 
-Here, `tmp_x` should be a fresh variable that does not conflict with other variables in scope. Unification with output is leveraged to capture the updated `x`. Finally, `increment` is called, and may have a return value in addition to the effect of updating its parameter. Programmers may explicitly define `increment` in terms of in-out parameters. However, for clarity and consistency, Glas has pass-by-reference patterns. 
+Here, `tmp_x` should be a fresh variable that does not conflict with other variables in scope. Unification with output is leveraged to capture the updated `x`. Finally, `increment` is called, and may have a return value in addition to the effect of updating its parameter. Programmers may explicitly define `increment` in terms of in-out parameters. However, for clarity and consistency, Glas will support pass-by-reference patterns. 
 
-        fn increment(x) { x.out &= x.in + 1; }
+        fn increment(x) { x.out := x.in + 1; }
         fn increment(&x) { x = x + 1; }
 
-In the latter case, we'll unify the output after the final update to `x`.
+In the latter case, we unify the output just after the final update to `x`.
 
-*Note:* Glas will perform a Rust-like static analysis for 'ownership' of variables to prohibit problematic aliasing. However, there are significant differences regarding closures.
+## Object-Oriented Programming
 
-## Objects and Interfaces
+Objects in Glas are simply modeled as records of fields and methods. There is no strong distinction between records and objects. Methods are simply functions with a `(self:, args:)` parameter pair. Glas provides syntactic sugar to invoke methods: `foo!bar(x)` desugars to `foo.bar(self:&foo, args:(x))`, and `foo?bar(x)` desugars to `foo.bar(self:foo, args:(x))`.
 
-For this document, define 'object' as an abstract value accessed by interface. Relevantly, concrete implementation details such as the data structure used under the hood are hidden from the client. This enables the client to be generic over certain implementation details.
+Glas should also support convenient construction of objects, e.g. using delegation, composition, mixins, or inheritance. Private fields or methods might be be protected by the type system. I haven't settled many details yet.
 
-In object-oriented languages, 'objects' are usually modeled as a `(vtable:, field1:, field2:, ...)` structure. Here, the `vtable` (virtual method table) has a collection of methods, and each `field` represents data within the object. Abstraction is achieved via support from a type-system, which rejects programs that directly touch private fields or methods. The object is passed as an implicit argument for every method call, leveraging pass-by-reference for methods that update the object.
-
-Glas will support data-objects with dedicated syntax. One proposal is to treat `foo!bar(a)` as desugaring to `foo.vtable.bar(self:&foo, args:a)`, or similar. Glas will also provide syntax for defining and constructing objects. 
-
-Objects in Glas are mostly useful for limited forms of generic programming. Glas cannot directly model shared mutable objects. Also, I have been unable to unify the syntax for 'everything is an object' without sacrificing other desired features of Glas, such as avoiding type-driven behavior.
-
-## Concurrent Channels
-
-Glas can model concurrent interactions as data structures with futures. For example, a channel can naively be modeled as a future list, where one thread writes the tail and another reads the head:
-
-        fn write(channel:ch, data:x) = 
-            // assume a pass-by-reference channel
-            ch.in &= list:(head: x, tail: ch.out);
-
-        fn close(channel:ch) =
-            ch.in &= 'null;
-
-        write(&c, 1);
-        write(&c, 2);
-        ...
-
-        // another thread
-        fn read(channel:ch) =
-            match(ch.in) {
-            | list:(head:x, tail:xs) -> ch.out &= xs; x
-            | 'null -> ch.out &= (); raise 'eoc;
-            }
-
-        const x = read(&c);
-        const y = read(&c); 
-        ...
-
-Unfortunately, this naive model has several weaknesses: A fast producer, paired with a slow consumer, too easily results in a memory leak. The consumer cannot close the channel after it has read what it wants. Also, it could be difficult to robustly model heterogeneous channels, where type of elements vary based on a protocol.
-
-We can tweak the model to solve some of these weaknesses. For example, we could put the reader in charge of adding to the tail of the list:
-
-        fn write(channel:ch, data:x) =
-            match(ch.in) {
-            | list:cell -> 
-                cell.head := x;
-                cell.tail := ch.out;
-            | 'null -> 
-                ch.out := 'null;
-                raise 'eoc;
-            }
-
-        fn read(channel:ch) =
-            const x = (...);
-            ch.in := list:(head:x, tail:ch.out);
-            return x;
-
-In this case, the consumer controls the buffer. The producer will wait for the consumer to signal its readiness. The consumer may 'read' several future elements in advance, but will often wait on the elements themselves. This makes it easy to control memory usage. However, the writer has lost the ability to signal when there is no more data. Also, it is awkward to buffer multiple writes ahead of the reader requesting them, which can be inconvenient for pipeline parallelism. 
-
-A third option is to model a naive channel in each direction. The reader sends a stream of requests for data, and the writer responds. Generalizing, we ultimately have full bi-directional communication channels. Glas can model channels of many kinds. The greater difficulty is reasoning about channels, especially if we want safe use of heterogeneous types.
-
-Glas will provide abstract, bi-directional, bounded-buffer channels as a built-in feature. This makes it easier to provide dedicated support in the type system, e.g. using [session types](https://groups.inf.ed.ac.uk/abcd/) to model heterogeneous protocols over channels. This also makes channels more accessible to the optimizer, e.g. to decide optimal buffer size, or even eliminate some buffers in favor of loop fusion.
-
-Programmers will likely use channels more often than direct use of futures. Built-in channels will likely be abstracted as *objects*. 
+Glas may weakly support *everything is an object*. When we write `6 * 7` it might mean `6 ?times (7)` or similar, allowing for operator overloading. Lists and strings are also objects.
 
 ## Effects Model
 
-Glas programs usually interact with an external environment - e.g. console, filesystem, network. This is achieved by an implicit pass-by-reference parameter to provide access to the environment, and unification variables to model the interaction. 
+Imperative programs often interact with the outside world via console, canvas, filesystem, or network. In Glas, this is modeled by an implicit environment object, threaded through the program. This environment object may have fields and methods, with fields serving a role similar as thread-local storage variables.
 
-Programmers can control the environment used by a subprogram. Thus, it is possible to provide a sandboxed or simulated console and filesystem, or to model an alternative environment with a canvas and turtle graphics as the only 'effects'. The environment expected by a function will be described in the function's type.
-
-A limitation of Glas is that we cannot directly model 'shared' resources, such as 
+I haven't settled the details of how this environment is accessed. Viable solutions include a special symbol like `$` or eliding a variable via `!bar(x)` or `?baz(y)` or `.xyzzy`. Or we could try a special keyword like `withenv \&env { ... ops on env ... }`, to access or update the environment locally like any other variable.
 
 ## Exceptions
+
+
+## Threads
+
+
+
+The model underlying Glas allows deterministic concurrency based on dataflow. But dataflow in Glas is usually sequential due to the imperative environment. Thus, Glas will provide means to restrict dependency on the imperative envrionment and expose the underlying concurrency.
+
+A promising option is `fork fn` to wrap a function. The wrapper immediately returns the dynamic environment, and also a unification variable for the result. The function is evaluated instead in a fresh dynamic environment, e.g. the unit value. Parameters to the wrapped function are still evaluated in the caller's environment, but may involve pass-by-reference, channels, rendezvous, and similar patterns. 
+
+This design has an advantage of being relatively easy to abstract. For example, we can build a `forkenv` function above `fork` that provides and returns an alternative dynamic environment.
+
+
+
+## Concurrent Channels
+
+With futures, concurrent interactions can be modeled as data structures. For example, a channel can be naively modeled as a future list. A producer thread can write the tail of the list via unification, while a separate consumer thread reads the head of the list. We could also read and write the channel within the same loop.
+
+        fn write(channel:ch, data:x) = 
+            // assume a pass-by-reference channel
+            ch.in := list:(head: x, tail: ch.out);
+
+        fn read(channel:ch) =
+            match(ch.in) {
+            | list:(head:x, tail:xs) -> ch.out := xs; x
+            | 'null -> ch.out := (); raise 'eoc;
+            }
+
+I describe this model of channels as 'naive' because it lacks support for bounded-buffers, early termination by the reader, or other useful features. But it does demonstrate how channels can be modeled above futures for sharing between threads. Glas will have built-in support for abstract channels with nicer properties, with protocols modeled by session types. Abstract channels will be modeled as objects.
+
+
+
+
+
+## Pattern Matching
+
+Various patterns including:
+
+        foo:    - same as `foo:foo`
+
+
+
 
 ## Closures
 
@@ -195,16 +170,6 @@ Glas programs mostly use imperative-style loops - e.g. `for` loops over collecti
 Loops support continue, break, and early return statements. Glas may also support labeled break and continue to support nested loops, but I haven't decided a syntax for this yet.
 
 Glas can also support recursive functions. However, in context of exceptions and unwind protection, it may be difficult to support tail-call optimization. This will need to be examined.
-
-## Threads
-
-
-
-The model underlying Glas allows deterministic concurrency based on dataflow. But dataflow in Glas is usually sequential due to the imperative environment. Thus, Glas will provide means to restrict dependency on the imperative envrionment and expose the underlying concurrency.
-
-A promising option is `fork fn` to wrap a function. The wrapper immediately returns the dynamic environment, and also a unification variable for the result. The function is evaluated instead in a fresh dynamic environment, e.g. the unit value. Parameters to the wrapped function are still evaluated in the caller's environment, but may involve pass-by-reference, channels, rendezvous, and similar patterns. 
-
-This design has an advantage of being relatively easy to abstract. For example, we can build a `forkenv` function above `fork` that provides and returns an alternative dynamic environment.
 
 
 ## Channels and Rendezvous
