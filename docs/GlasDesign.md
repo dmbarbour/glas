@@ -12,7 +12,7 @@ A Glas function is defined by a bounded subgraph with a designated public node. 
 
 Edges are labeled from a finite alphabet. However, arbitrary labels can be modeled via composition. For example, a label `result:` may involve seven nodes in a sequence - one for each character, with `:` as sentinel. Together with unification, this implies a trie-like structure when multiple labels start with the same character.
 
-Glas provides an imperative-style syntax to work conveniently with this model.
+Glas syntax favors the imperative-OO style to work conveniently with this model.
 
 ## Records and Variants
 
@@ -34,41 +34,63 @@ Lists can be modeled as a recursive structure of variants and records:
 
         type List a = cons:(head: a, tail: List a) | 'null
 
-Glas provides a convenient shorthand: `[1,2,3]` essentially expands to `cons:(head:1, tail:[2,3])`, and `[]` expands to `'null`. This isn't the exact model Glas uses, but it's adequate to illustrate. Support for list comprehensions is still under consideration.
+Glas will provide a convenient shorthand: `[1,2,3]` essentially expands to `cons:(head:1, tail:[2,3])`, and `[]` expands to `'null`. Support for list comprehensions or methods is still under consideration.
 
 Tuples can be modeled as invariant-length, heterogeneous lists, e.g. `[1, "hello", (x:6, y:7)]`. Tuples would be typed as records, rather than as lists. Many methods on lists - length, zip, index, split, concatenation, etc. - will apply to tuples. Some, such as map and fold, may work for tuples with homogeneous type.
 
 Arrays are essentially lists with an explicitly optimized representation. In many cases, Glas requires explicit conversion from list to array representation or back to prevent accidental conversions.
+
+## Numerics
+
+Glas will support many numeric literals such as `6`, `2/3`, and `3.14`. Complex numbers may also be supported.
+
+I'm still contemplating how to deal with representation concerns - bit width, fixed point, rationals, floating point, etc.. I'm not satisfied with convention in this regard - too many unintuitive features and abstraction leaks.
+
+Fixed-width representations are essential for performance reasons. Perhaps I can approach this in terms of refinement types, operating on well-defined ranges of numbers, much like we should support fixed-width lists.
+
+At least for now, I intend to maintain full precision for numbers as the default. This may also require some support for symbolic numbers like pi.
+
+### Units of Measure
+
+Units of measure are convenient for type-safe use of numbers. To a first approximation, they're also easy to model: e.g. `(watts:1, m:-2)` would represent `watts/m^2`. 
+
+This is purely symbolic. Glas won't have any built-in knowledge of units. To convert from watts to joules/second would require an explicit conversion. To convert from `kilometers` to `feet` would similarly require an explicit conversion. 
+
+Symbolic units of measure can be used for counting in radians, or to distinguish a count of apples vs. oranges. But users will need to beware of limitations, e.g. if working with non-linear or non-zero-based units such as decibels. 
+
+The current idea is that units of measure will be supported as shadow types in the type system, requiring suitable type annotations.
 
 ## Imperative Programming
 
 Glas syntax has a familiar, imperative style. Glas supports imperative functions, objects and methods, exceptions, and multi-threading. A Glas function consists largely of declared variables, sequential statements, loops, and conditional behaviors. 
 
         fn collatz(n) {
-          var x = n;
-          var ct = 0;
-          while(x > 1) {
-            ct = ct + 1;
-            if(even(x)) {
-              x = x / 2;
-            } else { 
-              x = 3*x + 1;
+            var x = n;
+            var ct = 0;
+            while(x > 1) {
+                ct = ct + 1;
+                if(even(x)) {
+                    x = x / 2;
+                } else { 
+                    x = 3*x + 1;
+                }
             }
-          }
-          return ct;
+            return ct;
         }
 
-In the underlying model, an immutable environment of variables is threaded from one statement to the next. Mutation of variables is modeled by statements returning the updated environment. Glas also permits `const x = 42` to declare immutable variables.
+In the underlying model, an environment of variables is threaded from one statement to the next. Mutation of variables is modeled by statements returning an updated environment. This is similar to record update - we're actually returning a fresh environment with some differences. 
 
-However, Glas cannot directly share mutable variables. Glas diverges from conventional imperative programming when it's necessary to share mutable state (e.g. for threads, callbacks, shared console, etc.). I'll describe the Glas approach after building up to it.
+Glas uses `const` instead of `var` to declare constant variables. Constant variables forbid update. Programmers should be encouraged to use constants instead of vars where feasible, because it simplifies reasoning about code.
 
-## Semi-Transparent Futures
+Glas cannot directly share mutable variables. Glas deviates from conventional imperative programming mostly where sharing is a requirement, e.g. for aliasing, callbacks, sharing a log between threads. I'll return to sharing in a later section.
 
-The empty, open record `(...)` serves as an anonymous placeholder for a value. This placeholder may later be 'assigned' via unification. This pattern is historically called a [future](https://en.wikipedia.org/wiki/Futures_and_promises). In Glas, futures are semi-transparent in the sense that any variable or data field may be a future without requiring a change in reader syntax. However, futures are tracked in the type system.
+## Transparent Futures
 
-Glas will support futures. Programmers can declare variables like `var x;` as shorthand for `var x = (...);` or `vars x,y,z;` as shorthand for `var x = (...); var y = (...); var z = (...);`. We can write `x := 42` to explicitly unify `x` with `42`. Due to the underlying semantics, Glas can support partial unification via open records. For example, `(x:6, ...)` and `(y:7, ...)` would unify as `(x:6, y:7, ...)`. However, constants such as `6` or `7` do not unify further, not even with themselves. Effectively, Glas has a single-assignment semantics for futures. 
+The empty, open record `(...)` serves as an anonymous placeholder for a value. This placeholder may later be 'assigned' via unification. This pattern is historically called a [future](https://en.wikipedia.org/wiki/Futures_and_promises). In Glas, futures are transparent in the sense that any variable or data field may be a future without requiring a change in the reader's syntax (e.g. no `force` action).
 
-Static analysis with futures will leverage session types and linear types, and perhaps constraint satisfaction. There is a paper ["Transparent First-class Futures and Distributed Components" by Cansando et al.](https://www.sciencedirect.com/science/article/pii/S1571066109005180) that also seems relevant. Static analysis comes with a cost to expressiveness because there are many valid patterns that cannot easily be analyzed. 
+Glas will support futures. Programmers can declare variables like `var x;` as shorthand for `var x = (...);` or `vars x,y,z;` as shorthand for `var x = (...); var y = (...); var z = (...);`. We can write `x := 42` to explicitly unify `x` with `42`. Due to the underlying semantics, Glas can support partial unification via open records. For example, `(x:6, ...)` and `(y:7, ...)` would unify as `(x:6, y:7, ...)`. However, constants such as `6` or `7` do not unify further, not even with themselves. Effectively, Glas has a single-assignment semantics for futures.
+
+Static analysis with futures will leverage session types and linear types, and perhaps constraint satisfaction. There is a paper ["Transparent First-class Futures and Distributed Components" by Cansando et al.](https://www.sciencedirect.com/science/article/pii/S1571066109005180) that also seems relevant. Static analysis comes with a cost to expressiveness because there are many valid patterns that cannot easily be analyzed.
 
 ## Pass-by-Reference Parameters
 
@@ -87,22 +109,106 @@ In the latter case, we unify the output just after the final update to `x`.
 
 ## Object-Oriented Programming
 
-Objects in Glas are simply modeled as records of fields and methods. There is no strong distinction between records and objects. Methods are simply functions with a `(self:, args:)` parameter pair. Glas provides syntactic sugar to invoke methods: `foo!bar(x)` desugars to `foo.bar(self:&foo, args:(x))`, and `foo?bar(x)` desugars to `foo.bar(self:foo, args:(x))`.
+Objects in Glas are simply modeled as records of fields and methods. There is no strong distinction between records and objects. Methods are simply functions with a `(self:, args:)` parameter pair. Glas provides syntactic sugar to invoke methods: `foo!bar(x)` desugars to `foo.bar(self:&foo, args:(x))`. Similarly, `foo?baz(y)` desugars to `foo.baz(self:foo, args:(y))` for queries on constant objects.
 
-Glas should also support convenient construction of objects, e.g. using delegation, composition, mixins, or inheritance. Private fields or methods might be be protected by the type system. I haven't settled many details yet.
+Glas should also support convenient construction of objects, e.g. using delegation, composition, mixins, or inheritance. Functions declared as methods or queries will implicitly have the `self` argument. Private fields or methods should be protected by the type system. 
 
 Glas may weakly support *everything is an object*. When we write `6 * 7` it might mean `6 ?times (7)` or similar, allowing for operator overloading. Lists and strings are also objects.
 
-## Effects Model
+## Dynamic Environment
 
-Imperative programs often interact with the outside world via console, canvas, filesystem, or network. In Glas, this is modeled by an implicit environment object, threaded through the program. This environment object may have fields and methods, with fields serving a role similar as thread-local storage variables.
+In addition to a lexical environment for declared variables, Glas supports a dynamic environment for effects handlers. This environment is threaded implicitly into every function call, and serves a similar role as thread-local storage or dynamic scope.
 
-I haven't settled the details of how this environment is accessed. Viable solutions include a special symbol like `$` or eliding a variable via `!bar(x)` or `?baz(y)` or `.xyzzy`. Or we could try a special keyword like `withenv \&env { ... ops on env ... }`, to access or update the environment locally like any other variable.
+### Candidate A - Stack of Second-Class Objects
+
+Effects are invoked as `!action(args)` - i.e. a method invocation, but without a specified object. This operates on the implicit environment. The environment is accessed only through object methods. 
+
+Programmers can control the environment using `with &obj { actions }`. Here, `&obj` must be a pass-by-reference variable or an in-out pair. When invoked, the `self` parameter will contain the object, while effects used within handlers will pass onwards to the the parent environment.
+
+Importantly, this solves a problem: if we're calling first-class functions, we can choose to use `with &self { args.fn(y) }` or similar, to ensure we restore the caller's environment. Unfortunately, for this reason, we cannot support simple extension of effects.
+
+It's unclear how to support `?query(args)` with composable or transitive read-only behavior. We'd be unable to represent `with &self { effects }` within a query.
+
+### Candidate B - Singular First-Class Object
+
+In this option, clients have access to the object as a first-class value, perhaps using `getenv` and `setenv` operations if not something more sophisticated. Because we aren't hiding anything, we may require more typeful control over the environment object to guard it from abuse.
+
+In context of exceptions, `getenv` and `setenv` may prove awkward. A scoped option might be closer to `withenv e { actions }`, or simply define `$` to be the environment. 
+
+
+
+
+* implicit parameter `env` - becomes awkward for `env!foo()`, environment is passed-by-reference as both `self` and `env`. 
+* `getenv` and `setenv` - non-linear treatment of environment...
+* `swapenv` - linear, but for temp access is not very robust for exceptions
+* `withenv e { ... }` - like a scoped `var e = swapenv (); unwind { swapenv(e);}`. This is not bad at all. It
+* `withenv (pattern) { ... }` - swapenv to pattern within scope, but unclear what to swap back... 
+* `withenv var { ... }` - not bad, can set environment to unit within scope.  esp. if we also use `withenv { ... }` as shorthand for `withenv env { ... }`.
+
+
+
+
+
+and `withenv { ... }` as shorthand for `withenv env { ... }`
+
+ - scoped var, not too bad, though a little awkward that 90% of cases we'll want to just use `env`.
+* `withenv { ... }` - not
+
+not too bad, a little awkward syntactically.
+* special function declarations - 
+* `getenv` and `setenv` - main issue is that these don't treat the environment a linear object. 
+
+Additionally, Glas may provide convenient shorthand via `!action(args)`, `?query(args)`, and `.field`, eliding lexical variables.
+
+
+
+The environment parameter could be leveraged for tacit stack-based programming, or specialized for a subprogram such as adding a canvas for for turtle graphics.
 
 ## Exceptions
 
+Statements in Glas may fail with `raise (exception)`. Exceptions can be caught via a `try { block } catch (pattern) { block } ...` sequences. Glas also supports `finally` clauses like Java, and `unwind {}` actions that will execute upon leaving the current scope (whether by return or exception). 
 
-## Threads
+Glas also supports a `use x = ...` variable declaration for RAII patterns. This effective desugars to `var x = ...; unwind { x!dispose(); };` 
+
+
+
+ Glas will support the conventional gamut of `try`, `raise`, `catch` keywords and support for `unwind` actions. 
+
+In the underlying model, exceptions are modeled as a variant return value. The Glas compiler should optimize such exception handling has near-zero runtime overhead when no exception is raised.
+
+Exceptions in Glas are not resumable. However, Glas can pass error handlers via the implicit environment, which can solve a similar problem.
+
+Programmers may require via the type-system that some subprograms do not raise exceptions.
+
+*Aside:* Glas is effectively programmed in a state-error monad: state for implicit environment, error for exceptions.
+
+## Concurrency
+
+The underlying model for Glas naturally supports fine-grained concurrency, limited by unification dataflow. However, Glas has several features, most notably the implicit environment and exceptions, that imply sequential computation by default.
+
+Instead, Glas supports concurrent evaluation explicitly via `async (env) {}` block. This evaluates `(env)` synchronously, then evaluates the block asynchronously. All mutable variables are implicitly pass-by-reference to the async block, effectively returned after final assignment.
+
+The return value from `async` is a future `(env:, result:)` pair. The `env` field will contain the final implicit environment value. The `result` is modeled as `return:(val) | raise:(exception)`. Glas may provide a standard function `force`:
+
+        fn force(x) {
+                
+        }
+
+ such as `force (async)` that will  re-raise the exception (if any)
+
+
+
+returning an `(env:, result:)` pair for future output. The `result` will be modeled as a variant `return:val | raise:exception`.
+
+
+
+they'll be returned 
+
+The Glas compiler is free to evaluate the `async` block immediately, in another thread, or even as a coroutine. 
+
+This `async` block may capture mutable variables in lexical scope. These will implicitly be passed-by-reference to the async computation, and will be available as output 
+
+
 
 
 
@@ -129,6 +235,13 @@ With futures, concurrent interactions can be modeled as data structures. For exa
             }
 
 I describe this model of channels as 'naive' because it lacks support for bounded-buffers, early termination by the reader, or other useful features. But it does demonstrate how channels can be modeled above futures for sharing between threads. Glas will have built-in support for abstract channels with nicer properties, with protocols modeled by session types. Abstract channels will be modeled as objects.
+
+
+
+## Postfix and Infix Function Calls
+
+We 
+
 
 
 

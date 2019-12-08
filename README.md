@@ -1,14 +1,10 @@
 # Glas Language
 
-Glas is an imperative, object-oriented, concurrent, purely functional language. Programs are expressed imperatively with linear objects, transparent futures, and explicit threads. The resulting computations are deterministic, interactive, pure, and cacheable. Glas will detect potential deadlock at compile time. 
+Glas is a purely functional language with transparent futures, programmed in an imperative and object-oriented style. Glas leverages futures to model pass-by-reference parameters and interactive computations. Objects build upon pass-by-reference with a dash of syntactic sugar.
 
-Interactions in Glas are generally modeled as data structures containing unassigned futures. For example, it is possible to model a question-answer list where later questions are incrementally computed based on previous answers. This list would serve a similar role as a 'rendezvous'. A channel is simply an output-only or input-only list where the tail is deferred.
+Glas is designed to support [direct manipulation interfaces](https://en.wikipedia.org/wiki/Direct_manipulation_interface). Transparent futures are an essential aspect of this, enabling interactions to be modeled as simple data structures. Glas is ultimately intended for end-user programming and lightweight sharing of software artifacts. These features would build upon the direct manipulation interfaces and functional purity.
 
-This model of interaction is very convenient for [direct manipulation interfaces](https://en.wikipedia.org/wiki/Direct_manipulation_interface). We can simply render the structure to the user. Alternative views can be supported via lenses (editable projections). Multiple users and background effects can be supported by partitioning a larger interactive data structure. Real-time systems can be supported using frames and timeouts.
-
-Direct manipulation interfaces lower the artifical barriers between UI and API. For example, it is feasible for end-users to compose 'applications', wiring outputs from one as inputs to another. They can also peek within the application to observe what's happening, using similar graphical projections. 
-
-Ultimately, one motive of Glas is to give more control of software to end users. Other aspects of Glas design also support this vision, especially the module system. However, Glas is also intended to be safe, efficient, and effective for programming low-level and mission-critical systems. To that end, Glas supports flexible static analysis, and types to construct statically-allocated hard real-time programs.
+Glas is intended to be a full-spectrum language, with good performance and access to hardware acceleration via FPGA, GPGPU, and cloud computing. To support this without violating purity, Glas will support rich static analysis and flexible annotations. 
 
 See [design](docs/GlasDesign.md) document for details.
 
