@@ -12,7 +12,7 @@ A Glas function is defined by a bounded subgraph with a designated public node. 
 
 Edges are labeled from a finite alphabet. However, arbitrary labels can be modeled via composition. For example, a label `result:` may involve seven nodes in a sequence - one for each character, with `:` as sentinel. Together with unification, this implies a trie-like structure when multiple labels start with the same character.
 
-Glas syntax favors the imperative-OO style to work conveniently with this model.
+Glas syntax favors the imperative-OO style to work with this model.
 
 ## Records and Variants
 
@@ -44,11 +44,11 @@ Arrays are essentially lists with an explicitly optimized representation. In man
 
 Glas will support many numeric literals such as `6`, `2/3`, and `3.14`. Complex numbers may also be supported.
 
-I'm still contemplating how to deal with representation concerns - bit width, fixed point, rationals, floating point, etc.. I'm not satisfied with convention in this regard - too many unintuitive features and abstraction leaks.
+I'm still contemplating how to deal with representation concerns - bit width, fixed point, rationals, floating point, etc.. I'm not satisfied with convention in this regard - too many unintuitive features and abstraction leaks. However, fixed-width representation is essential for performance and memory control. It seems feasible to approach this in terms of refinement types, operating on well-defined ranges of numbers, much like we might support fixed-width lists.
 
-Fixed-width representations are essential for performance reasons. Perhaps I can approach this in terms of refinement types, operating on well-defined ranges of numbers, much like we should support fixed-width lists.
+I intend to maintain full precision for numbers as the default, and require explicit conversions for any loss (e.g. converting `2/3` to a float). I may also desire support for symbolic numbers like pi.
 
-At least for now, I intend to maintain full precision for numbers as the default. This may also require some support for symbolic numbers like pi.
+Should the default type for number be a 'numeric formula' DSL?
 
 ### Units of Measure
 
@@ -111,114 +111,49 @@ In the latter case, we unify the output just after the final update to `x`.
 
 Objects in Glas are simply modeled as records of fields and methods. There is no strong distinction between records and objects. Methods are simply functions with a `(self:, args:)` parameter pair. Glas provides syntactic sugar to invoke methods: `foo!bar(x)` desugars to `foo.bar(self:&foo, args:(x))`. Similarly, `foo?baz(y)` desugars to `foo.baz(self:foo, args:(y))` for queries on constant objects.
 
-Glas should also support convenient construction of objects, e.g. using delegation, composition, mixins, or inheritance. Functions declared as methods or queries will implicitly have the `self` argument. Private fields or methods should be protected by the type system. 
+To improve concision, Glas will allow implicit `self` in most cases, via specialized function declarations for action and query methods, and via implicit self when the object variable is elided:
+
+        .field => self.field
+        ?query(args) => self?query(args)
+        !action(args) => self!action(args)
+
+Finally, Glas will provide some flexible abstractions to construct and type objects, e.g. with interface types and mixin-based inheritance. The details will need more attention, of course.
 
 Glas may weakly support *everything is an object*. When we write `6 * 7` it might mean `6 ?times (7)` or similar, allowing for operator overloading. Lists and strings are also objects.
 
-## Dynamic Environment
+## Implicit Environment
 
-In addition to a lexical environment for declared variables, Glas supports a dynamic environment for effects handlers. This environment is threaded implicitly into every function call, and serves a similar role as thread-local storage or dynamic scope.
+Imperative programs typically operate on an implicit environment containing console, filesystem, network, etc.. To achieve a similar interface, Glas will implicitly thread a pass-by-reference parameter, `env`, to every function and method call. Thus, `env` may serve roles such as thread-local storage or dynamic scope.
 
-### Candidate A - Stack of Second-Class Objects
+It is left to developers to provide a usable and extensible model for this environment. For example, we could use `env.stack` to model `push, pop, dup, drop` and a stack-based programming API, then introduce `env.canvas` to model turtle graphics. With unification-based channels, we can model concurrent reads and writes to the outside world.
 
-Effects are invoked as `!action(args)` - i.e. a method invocation, but without a specified object. This operates on the implicit environment. The environment is accessed only through object methods. 
+The environment type will be included in function type. Effects can be controlled typefully, and it's possible to enforce purity for certain subprograms.
 
-Programmers can control the environment using `with &obj { actions }`. Here, `&obj` must be a pass-by-reference variable or an in-out pair. When invoked, the `self` parameter will contain the object, while effects used within handlers will pass onwards to the the parent environment.
+## Error Handling
 
-Importantly, this solves a problem: if we're calling first-class functions, we can choose to use `with &self { args.fn(y) }` or similar, to ensure we restore the caller's environment. Unfortunately, for this reason, we cannot support simple extension of effects.
+For programs, it's convenient if we can focus program logic on a 'happy path' without repetitive, conditional error-handling code. Glas provides several features suitable for error handling. 
 
-It's unclear how to support `?query(args)` with composable or transitive read-only behavior. We'd be unable to represent `with &self { effects }` within a query.
+First, the implicit environment can carry a set of error handlers, logging, etc.. This can model effectful or resumable error handling.
 
-### Candidate B - Singular First-Class Object
+Second, Glas provides a syntactic sugar `^expr` which implements a convenient early-return pattern:
 
-In this option, clients have access to the object as a first-class value, perhaps using `getenv` and `setenv` operations if not something more sophisticated. Because we aren't hiding anything, we may require more typeful control over the environment object to guard it from abuse.
+        ^expr => 
+            match(expr) {
+            | val:v => v
+            | other => return other;     
+            }
 
-In context of exceptions, `getenv` and `setenv` may prove awkward. A scoped option might be closer to `withenv e { actions }`, or simply define `$` to be the environment. 
+That is, `^expr` will either extract a value or return early with to the function's caller with an `other` variant. This is not the same as exceptions because propagation must be explicit at each step. But the pattern is concise, catchable, and extensible, so may serve a similar role. 
 
+Third, Glas will support [RAII](https://en.wikipedia.org/wiki/Resource_acquisition_is_initialization) patterns to avoid repetitive cleanup code otherwise common for early returns. Programmers may write `unwind { actions }` to specify that `actions` should be evaluated just before leaving the current block scope. The statement `use x = expr` is shorthand for `var x = expr; unwind { x!dispose() }`. Anonymous `use expr` is also supported, and is convenient for managing the implicit environment.
 
+Finally, Glas program may `abort` with some message. Abort cannot be caught or observed, so the error information is intended for developers. Relatedly, `absurd` can document conditions that should be provably unreachable at runtime. If an assumption of absurdity has not been discharged, it behaves as `abort` at runtime. Annotations can control runtime use of abort, e.g. for mission-critical or embedded systems.
 
-
-* implicit parameter `env` - becomes awkward for `env!foo()`, environment is passed-by-reference as both `self` and `env`. 
-* `getenv` and `setenv` - non-linear treatment of environment...
-* `swapenv` - linear, but for temp access is not very robust for exceptions
-* `withenv e { ... }` - like a scoped `var e = swapenv (); unwind { swapenv(e);}`. This is not bad at all. It
-* `withenv (pattern) { ... }` - swapenv to pattern within scope, but unclear what to swap back... 
-* `withenv var { ... }` - not bad, can set environment to unit within scope.  esp. if we also use `withenv { ... }` as shorthand for `withenv env { ... }`.
-
-
-
-
-
-and `withenv { ... }` as shorthand for `withenv env { ... }`
-
- - scoped var, not too bad, though a little awkward that 90% of cases we'll want to just use `env`.
-* `withenv { ... }` - not
-
-not too bad, a little awkward syntactically.
-* special function declarations - 
-* `getenv` and `setenv` - main issue is that these don't treat the environment a linear object. 
-
-Additionally, Glas may provide convenient shorthand via `!action(args)`, `?query(args)`, and `.field`, eliding lexical variables.
-
-
-
-The environment parameter could be leveraged for tacit stack-based programming, or specialized for a subprogram such as adding a canvas for for turtle graphics.
-
-## Exceptions
-
-Statements in Glas may fail with `raise (exception)`. Exceptions can be caught via a `try { block } catch (pattern) { block } ...` sequences. Glas also supports `finally` clauses like Java, and `unwind {}` actions that will execute upon leaving the current scope (whether by return or exception). 
-
-Glas also supports a `use x = ...` variable declaration for RAII patterns. This effective desugars to `var x = ...; unwind { x!dispose(); };` 
-
-
-
- Glas will support the conventional gamut of `try`, `raise`, `catch` keywords and support for `unwind` actions. 
-
-In the underlying model, exceptions are modeled as a variant return value. The Glas compiler should optimize such exception handling has near-zero runtime overhead when no exception is raised.
-
-Exceptions in Glas are not resumable. However, Glas can pass error handlers via the implicit environment, which can solve a similar problem.
-
-Programmers may require via the type-system that some subprograms do not raise exceptions.
-
-*Aside:* Glas is effectively programmed in a state-error monad: state for implicit environment, error for exceptions.
+Overall, Glas programs are not too different from other imperative-OO languages for error handling.
 
 ## Concurrency
 
-The underlying model for Glas naturally supports fine-grained concurrency, limited by unification dataflow. However, Glas has several features, most notably the implicit environment and exceptions, that imply sequential computation by default.
-
-Instead, Glas supports concurrent evaluation explicitly via `async (env) {}` block. This evaluates `(env)` synchronously, then evaluates the block asynchronously. All mutable variables are implicitly pass-by-reference to the async block, effectively returned after final assignment.
-
-The return value from `async` is a future `(env:, result:)` pair. The `env` field will contain the final implicit environment value. The `result` is modeled as `return:(val) | raise:(exception)`. Glas may provide a standard function `force`:
-
-        fn force(x) {
-                
-        }
-
- such as `force (async)` that will  re-raise the exception (if any)
-
-
-
-returning an `(env:, result:)` pair for future output. The `result` will be modeled as a variant `return:val | raise:exception`.
-
-
-
-they'll be returned 
-
-The Glas compiler is free to evaluate the `async` block immediately, in another thread, or even as a coroutine. 
-
-This `async` block may capture mutable variables in lexical scope. These will implicitly be passed-by-reference to the async computation, and will be available as output 
-
-
-
-
-
-The model underlying Glas allows deterministic concurrency based on dataflow. But dataflow in Glas is usually sequential due to the imperative environment. Thus, Glas will provide means to restrict dependency on the imperative envrionment and expose the underlying concurrency.
-
-A promising option is `fork fn` to wrap a function. The wrapper immediately returns the dynamic environment, and also a unification variable for the result. The function is evaluated instead in a fresh dynamic environment, e.g. the unit value. Parameters to the wrapped function are still evaluated in the caller's environment, but may involve pass-by-reference, channels, rendezvous, and similar patterns. 
-
-This design has an advantage of being relatively easy to abstract. For example, we can build a `forkenv` function above `fork` that provides and returns an alternative dynamic environment.
-
-
+Glas naturally supports fine-grained dataflow concurrency. However, between early returns and the implicit environment, dataflow is sequential by default. To solve this, Glas uses `async (e) { actions }` to forbid early returns, control the environment, and document the intention of concurrency. This immediately returns an `(env:, result:)` pair of futures, while computing in a background thread.
 
 ## Concurrent Channels
 
@@ -238,11 +173,7 @@ I describe this model of channels as 'naive' because it lacks support for bounde
 
 
 
-## Postfix and Infix Function Calls
-
-We 
-
-
+## Postfix Function Calls
 
 
 
@@ -288,9 +219,6 @@ Glas can also support recursive functions. However, in context of exceptions and
 ## Channels and Rendezvous
 
 Naively, a channel can be modeled as a deferred list. For example, 
-
-## Disposable Objects
-
 
 ## Channels and Rendezvous
 
