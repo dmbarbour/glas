@@ -60,6 +60,10 @@ Symbolic units of measure can be used for counting in radians, or to distinguish
 
 The current idea is that units of measure will be supported as shadow types in the type system, requiring suitable type annotations.
 
+## Booleans
+
+Booleans could trivially be modeled as `'true | 'false`, but I'm uncertain whether this is the best way to model them. Perhaps they should be modeled as objects, so we can model boolean operators as method calls? TBD.
+
 ## Imperative Programming
 
 Glas syntax has a familiar, imperative style. Glas supports imperative functions, objects and methods, exceptions, and multi-threading. A Glas function consists largely of declared variables, sequential statements, loops, and conditional behaviors. 
@@ -94,18 +98,20 @@ Static analysis with futures will leverage session types and linear types, and p
 
 ## Pass-by-Reference Parameters
 
-Pass-by-reference parameters are convenient for abstract manipulation of mutable variables. As a trivial example, we could abstract `x = x + 1` to `increment(&x)`. Although the underlying model cannot represent true variable references, Glas can simulate pass-by-reference via in-out parameters and futures. Glas will effectively expand `increment(&x)` to:
+Pass-by-reference parameters are convenient for abstract manipulation of mutable variables. As a trivial example, we could abstract `x = x + 1` to `increment(&x)`. Glas simulates pass-by-reference via in-out parameters and futures. 
 
-        const tmp_x = (in:x, out:(...));
-        x = tmp_x.out;
-        increment(tmp_x)
+Glas will effectively rewrite the `&x` expression to `{ const prev = x; x = (...); (in:prev_x, out:x) }`. That is, `&x` becomes an `(in:, out:)` pair where the previous value is `in:` and the future value assigned to `out:` is implicitly assigned to `x`. 
 
-Here, `tmp_x` should be a fresh variable that does not conflict with other variables in scope. Unification with output is leveraged to capture the updated `x`. Finally, `increment` is called, and may have a return value in addition to the effect of updating its parameter. Programmers may explicitly define `increment` in terms of in-out parameters. However, for clarity and consistency, Glas will support pass-by-reference patterns. 
+The receiver may explicitly use in-out parameters. However, Glas also supports `&x` in patterns. 
 
         fn increment(x) { x.out := x.in + 1; }
         fn increment(&x) { x = x + 1; }
 
-In the latter case, we unify the output just after the final update to `x`.
+Glas also supports declared reference variables:
+
+        ref x = &annoyingly_large_name;
+
+This will allow use of `x` as a regular variable, but when it's about to leave scope we'll assign the final value of `x` to the `out:` future. This can be used to improve concision, but it can also be used with arbitrary expressions returning `(in:, out:)` pairs.
 
 ## Object-Oriented Programming
 
@@ -117,17 +123,33 @@ To improve concision, Glas will allow implicit `self` in most cases, via special
         ?query(args) => self?query(args)
         !action(args) => self!action(args)
 
-Finally, Glas will provide some flexible abstractions to construct and type objects, e.g. with interface types and mixin-based inheritance. The details will need more attention, of course.
+A useful pattern for OOP is method call chaining, e.g. we would say something like `obj.with_x(a).with_y(b).with_z(c);` This cannot directly be achieved in Glas due to how pass-by-reference is simulated. However, it is feasible to say `{ ref self = &obj; !with_x(a); !with_y(b); !with_z(c); }`, overriding `self` within a limited scope. If concision is the goal, use of `ref o = &large_object_name` should also prove convenient.
+
+Glas will also provide flexible abstractions to construct and type objects, e.g. with interface types and mixin-based inheritance. The details will receive more attention under *Object Definition*. 
 
 Glas may weakly support *everything is an object*. When we write `6 * 7` it might mean `6 ?times (7)` or similar, allowing for operator overloading. Lists and strings are also objects.
 
-## Implicit Environment
+## RAII Patterns
+
+Glas supports [RAII](https://en.wikipedia.org/wiki/Resource_acquisition_is_initialization) patterns to simplify cleanup in context of early returns (e.g. `return`, `break`, `continue`). The following features are supported via local rewriting:
+
+        unwind { action }
+        use x = expr; 
+        use expr;
+
+All `unwind { action }` statements execute in reverse-order, as the program leaves the scope in which they were defined. Relevantly, this works for early returns, too. The `use x = expr;` is shorthand for `var x = expr; unwind { x!dispose(); }`. And `use expr;` has the same behavior but with an anonymous variable.
+
+*Aside:* Reference variables and patterns may also be understood in terms of RAII, i.e. `ref x = expr;` as shorthand for `const _ref_x = expr; var x = _ref_x.in; unwind { _ref_x.out := x; }` where `_ref_x` is anonymous to the client.
+
+## Implicit Environment Parameter
 
 Imperative programs typically operate on an implicit environment containing console, filesystem, network, etc.. To achieve a similar interface, Glas will implicitly thread a pass-by-reference parameter, `env`, to every function and method call. Thus, `env` may serve roles such as thread-local storage or dynamic scope.
 
 It is left to developers to provide a usable and extensible model for this environment. For example, we could use `env.stack` to model `push, pop, dup, drop` and a stack-based programming API, then introduce `env.canvas` to model turtle graphics. With unification-based channels, we can model concurrent reads and writes to the outside world.
 
-The environment type will be included in function type. Effects can be controlled typefully, and it's possible to enforce purity for certain subprograms.
+The environment type will be included in function type. Effects can be controlled typefully, and it's possible to enforce purity for certain subprograms. 
+
+*Aside:* Developers may declare `var env` or `ref env` to override the environment within the variable's scope. The `use` declaration or `unwind {... }` statements from Error Handling RAII should also be useful for controlling the environment. 
 
 ## Error Handling
 
@@ -139,21 +161,64 @@ Second, Glas provides a syntactic sugar `^expr` which implements a convenient ea
 
         ^expr => 
             match(expr) {
-            | val:v => v
-            | other => return other;     
+            | ok:v => v
+            | (err:_) as e => return e;     
             }
 
-That is, `^expr` will either extract a value or return early with to the function's caller with an `other` variant. This is not the same as exceptions because propagation must be explicit at each step. But the pattern is concise, catchable, and extensible, so may serve a similar role. 
+That is, `^expr` either extracts a value or propagates an error upwards to the function's caller via early return. Although propagation is explicit, it is clear and concise. Use of RAII patterns enables early return without cleanup clutter.
 
-Third, Glas will support [RAII](https://en.wikipedia.org/wiki/Resource_acquisition_is_initialization) patterns to avoid repetitive cleanup code otherwise common for early returns. Programmers may write `unwind { actions }` to specify that `actions` should be evaluated just before leaving the current block scope. The statement `use x = expr` is shorthand for `var x = expr; unwind { x!dispose() }`. Anonymous `use expr` is also supported, and is convenient for managing the implicit environment.
-
-Finally, Glas program may `abort` with some message. Abort cannot be caught or observed, so the error information is intended for developers. Relatedly, `absurd` can document conditions that should be provably unreachable at runtime. If an assumption of absurdity has not been discharged, it behaves as `abort` at runtime. Annotations can control runtime use of abort, e.g. for mission-critical or embedded systems.
+Third, a Glas program may `abort` with some message. Abort cannot be observed or caught within the program (modulo advanced uses of reflection). Relatedly, `absurd` has the same behavior as `abort`, but additionally documents that the error should be provably unreachable.
 
 Overall, Glas programs are not too different from other imperative-OO languages for error handling.
 
+## Loops
+
+Glas supports conventional imperative loops. 
+
+        while(cond) { }
+        do { } while(cond);
+        for x in (seq) { }
+
+Here `seq` refers to an object interface to step through or generate a sequence of values on demand (details TBD). The `while` and `do-while` loops behave as one familiar with imperative programming would expect.
+
+In addition, loops support the conventional `break` and `continue` statements. To support nested loops, I intend to also permit labels on loops that may be used in `break` or `continue`. A proposed syntax:
+
+        foo: while(cond1) {
+            ...
+            while(cond2) {
+                if(cond3) { continue 'foo; }
+            }
+        }
+
+Labels at the statement layer are thus treated distinctly from labels at the expression layer, but with some relationship. Labels are second class; `'foo` would be a syntactic element, not an expression.
+
+Glas will support several variations on loops for convenience and clarity:
+
+        until(cond) { } => while(not (cond)) { }
+        do { } until(cond); => do { } while(not (cond));
+        loop { } => while(true) { }
+        cyclic { } => do { } while(false);
+
+Use of `cyclic` would mostly support invariant type-constraints like loops, or use of (potentially labeled) `break` to exit the block early. 
+
+Note: Glas does not encourage use of recursive functions as a basis for loops. There will be no tail-call optimization, and a warning may be issued if the compiler cannot guarantee bounded call-depth.
+
+## Conditionals and Pattern Matching
+
+## Function Definition
+
+
+
+## Postfix Function Calls
+
+
+## Object Definition
+
+
+
 ## Concurrency
 
-Glas naturally supports fine-grained dataflow concurrency. However, between early returns and the implicit environment, dataflow is sequential by default. To solve this, Glas uses `async (e) { actions }` to forbid early returns, control the environment, and document the intention of concurrency. This immediately returns an `(env:, result:)` pair of futures, while computing in a background thread.
+Glas naturally supports fine-grained dataflow concurrency. However, between early returns and the implicit environment, dataflow is sequential by default. To solve this, Glas uses `async &e { ... }` to control the environment, forbid or isolate early returns to limited scope, and document the intention for concurrency. This statement immediately returns a future result and environment (the latter by reference), and may evaluate the body in a separate thread.
 
 ## Concurrent Channels
 
@@ -171,9 +236,6 @@ With futures, concurrent interactions can be modeled as data structures. For exa
 
 I describe this model of channels as 'naive' because it lacks support for bounded-buffers, early termination by the reader, or other useful features. But it does demonstrate how channels can be modeled above futures for sharing between threads. Glas will have built-in support for abstract channels with nicer properties, with protocols modeled by session types. Abstract channels will be modeled as objects.
 
-
-
-## Postfix Function Calls
 
 
 
@@ -195,32 +257,10 @@ Various patterns including:
 Functions in Glas have a single explicit argument. But we'll often model this argument as a closed record. By leveraging reflection over closed records, functions can support optional parameters. We can further leverage `('foo, 'bar, 'baz)` as shorthand for `(foo:(), bar:(), baz:())` to concisely represent optional flag parameters. In addition to the explicit argument, functions may have an implicit in-out  representing the external environment.  
 
 
-## Loops
-
-Glas programs mostly use imperative-style loops - e.g. `for` loops over collections, and `while` loops over arbitrary boolean conditions. As a common case, `loop { op }` acts as `do { op } while(true);`. 
-
-        for var in (expr) {
-            ...
-        }
-
-        while (cond) {
-            ...
-        }
-
-        do {
-            ...
-        } while(cond);
-
-Loops support continue, break, and early return statements. Glas may also support labeled break and continue to support nested loops, but I haven't decided a syntax for this yet.
-
-Glas can also support recursive functions. However, in context of exceptions and unwind protection, it may be difficult to support tail-call optimization. This will need to be examined.
-
 
 ## Channels and Rendezvous
 
 Naively, a channel can be modeled as a deferred list. For example, 
-
-## Channels and Rendezvous
 
 ## Modeling Shared Objects
 
