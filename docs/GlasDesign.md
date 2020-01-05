@@ -6,59 +6,161 @@ A Glas program is modeled by a directed graph with labeled edges. Evaluation rew
 
 *Application* is the basis for computation. A function is applied to a node, called the applicand. Input and output parameters are modeled as labeled edges from the applicand. For example, a multiply function might read edges `x -> 6` and `y -> 7` then write `result -> 42`.
 
-*Unification* is the basis for dataflow and concurrency. Unification merges two nodes and propagates over matching edge labels. For terminal values, such as numbers or functions, further unification is considered a type-error. 
+*Unification* is the basis for dataflow and concurrency. Unification merges two nodes and propagates over matching edge labels. For terminal values, such as numbers or functions, further unification is considered a type-error. Effectively, unification can model transparent futures with single-assignment semantics.
 
-Functions are defined as bounded subgraphs with designated public nodes. When applied, the subgraph is copied, and the public node of the copy is unified with the applicand.
+Functions are bounded subgraphs with a designated public node. When applied, the subgraph is copied inline, and the copy's public node is unified with the applicand. This logically results in monotonic, deterministic expansion of the graph, but subgraphs may be garbage collected when they become irrelevant.
 
-Edges are labeled from a finite alphabet. However, arbitrary labels can be modeled via composition. For example, a label `result:` may involve seven nodes in a sequence - one for each character, with `:` as sentinel. This implies a trie-like structure.
+Edges are labeled from a finite alphabet. However, arbitrary labels can be modeled via composition. For example, the label `result` may involve seven nodes in a sequence - one for each character, followed by a sentinel. This implies a trie-like structure.
 
-The Glas language favors an imperative-OO style to conveniently work with this model. 
+## Data Models
 
-## Records and Variants
+### Records
 
-Glas has built-in support for records using a syntax of form `(x:6, y:7)`. In the underlying model, records are encoded as a trie with one node per character in the label, and `:` as a sentinel. The compiler may use a more optimal representation.
+In the underlying model, records such as `(x:6, y:7)` are encoded as a node with a labeled edge for each field. The Glas compiler should optimize representation of records to minimize unnecessary indirection.
 
 Records are immutable. However, we can model record 'update' by a function that produces a copy of the record except for specified labels, which are added, removed, or have a value replaced. Glas provides syntax for record updates, and supports [row-polymorphic updates](https://en.wikipedia.org/wiki/Row_polymorphism).
 
-Glas distinguishes 'open' and 'closed' records. Closed records are the default. An open record is represented as `(x:6, y:7, ...)`. Open records allow fields to be added via unification. Closed records include an implicit field to support reflection on the set of defined fields, but forbid adding new fields via unification. Reflection on closed records is the basis for pattern matching and optional parameters. 
+Glas distinguishes 'open' and 'closed' records. An open record is represented as `(x:6, y:7, ...)`. Open records allow new fields to be added via unification. Closed records are the default, such as `(x:6, y:7)`. Closed records will include a hidden, implicit field to support limited reflection over the set of defined fields. Closed records may not add new fields via unification!
 
-Glas variants can be modeled as closed, singleton records, e.g. `circle:(radius:3, color:red)` vs. `square:(side:3, color:blue)`. Variants are very common for modeling tree-structured data, and may receive specialized support from the Glas type system and compiler. A 'singleton' variant, having only one choice, can be useful as a type wrapper to guard against accidental use of data in the wrong context.
+The empty, closed record `()` serves as the Glas unit type and value. The empty, open record `(...)` effectively serves as an anonymous future. It is possible to reflect on closed records, e.g. to support optional fields.
 
-The empty, closed record `()` serves as the Glas unit type and value. The unit variant `foo:()` is convenient for modeling simple enumerations or flag parameters. Glas provides a convenient shorthand: `'foo` is equivalent to `foo:()`.
+*Aside:* Use of parentheses around an unlabeled expression, such as `(expr)`, can serve as a precedence indicator.
 
-*Aside:* The empty, open record `(...)` serves as an anonymous future. Use of parentheses around an unlabeled expression, such as `(expr)`, can usefully serve as a precedence indicator.
+### Variants
 
-## Lists, Tuples, Arrays
+Glas variants can be modeled as closed, singleton records, e.g. `circle:(radius:3, color:red)` vs. `square:(side:3, color:blue)`. As closed records, a case function may reflect over which field is defined. Additionally, variants may receive special support from type system and compiler.
 
-Lists can be modeled as a recursive structure of variants and records:
+The unit variant `foo:()` is convenient for modeling enumerations or flag parameters. Glas will provide a convenient shorthand: `'foo` is equivalent to `foo:()`.
+
+*Aside:* A singleton variant can be optimized to use zero runtime overhead. This can be leveraged to resist accidents.
+
+### Lists
+
+List data can be modeled as a recursive structure of variants and records:
 
         type List a = cons:(head: a, tail: List a) | 'null
 
-Glas will provide a convenient shorthand: `[1,2,3]` essentially expands to `cons:(head:1, tail:[2,3])`, and `[]` expands to `'null`. Support for list comprehensions or methods is still under consideration.
+Glas will provide a convenient syntactic sugar, such that: `[1,2,3]` essentially expands to `cons:(head:1, tail:[2,3])`, and `[]` expands to `'null`.
 
-Tuples can be modeled as invariant-length, heterogeneous lists, e.g. `[1, "hello", (x:6, y:7)]`. Tuples would be typed as records, rather than as lists. Many methods on lists - length, zip, index, split, concatenation, etc. - will apply to tuples. Some, such as map and fold, may work for tuples with homogeneous type.
+### Tuples
 
-Arrays are essentially lists with an explicitly optimized representation. In many cases, Glas requires explicit conversion from list to array representation or back to prevent accidental conversions.
+Glas will model tuples as invariant-length, heterogeneous lists, e.g. `[1, "hello", (x:6, y:7)]`. Many operations on lists - such as length, zip, concatenation, indexed access - should also work for tuples. Glas type system and compiler will give special support for invariant-length lists and static indexing.
 
-## Numerics
+### Arrays
 
-Glas will support many numeric literals such as `6`, `2/3`, and `3.14`. Complex numbers might also be supported. 
+Arrays are essentially lists with a specialized representation - one that optimizes certain operations, such as indexed access, at expense of other operations. Glas may support explicit conversion of representations between arrays and lists.
 
-I'm still contemplating how to control representation, fixed-width memory  concerns, etc.. I'm not satisfied with convention in this regard (too many abstraction leaks!), so I'm hoping to find or develop safe, lossless approaches. Likely based around refinement and shadow types.
+#### In-Place Mutation
 
-### Units of Measure
+Records, tuples, and arrays can be updated in-place if the compiler can guarantee the prior value will not be read. This can be understood as an optimization of a garbage collection process: we're recycling memory for the old value at the same time that we compute a new value.
 
-Units of measure are convenient for type-safe use of numbers. To a first approximation, they're also easy to model: e.g. `(watts:1, m:-2)` would represent `watts/m^2`. 
+This optimization is mostly valuable for arrays, where update otherwise has a cost proportional to array length. In contrast, records and tuples usually have a small, constant size.
 
-This is purely symbolic. Glas won't have any built-in knowledge of units. To convert from watts to joules/second would require an explicit conversion. To convert from `kilometers` to `feet` would similarly require an explicit conversion. 
+Glas shall robustly support this optimization via the type system, i.e. distinguishing linear mutable arrays from shared frozen arrays.
 
-Symbolic units of measure can be used for counting in radians, or to distinguish a count of apples vs. oranges. But users will need to beware of limitations, e.g. if working with non-linear or non-zero-based units such as decibels. 
+### Nominal and Opaque Data
 
-The current idea is that units of measure will be supported as shadow types in the type system, requiring suitable type annotations.
+It is feasible to protect data in Glas using unique, unforgeable labels. Such labels cannot be directly written in source code, but may be produced as a compile-time effect while parsing a program. See *Module Level Languages*, below.
+
+Glas will support nominal and opaque data types based on this mechanisms, together with support from the type system. This allows developers to enforce implementation hiding and smart-constructor patterns. Unique labels could feasibly also be leveraged to model type-driven overloading.
+
+### Data Objects
+
+We can model objects as an opaque record containing fields and method functions, together with syntactic sugar suitable for convenient construction and method invocation. This will be detailed in a later section.
+
+### Numerics (Incomplete)
+
+Glas will support numeric literals such as `6`, `2/3`, and `3.14`, and arithmetic functions. 
+
+However, I'm still contemplating how numbers should be represented concretely, and how programmers should control this representation. I would prefer to avoid the ad-hoc and awkward abstraction leaks of numeric representations in conventional languages. I have some ideas to use of refinement and shadow types, and explicit modulus, to restrict ranges precisely and typefully.
+
+I'm also interested in support for units of measure. This might also involve shadow types.
+
+## Glas Module System
+
+The module system is an important part of a language's user experience.
+
+A Glas 'module' is a value defined externally, usually in another file. Glas modules do not export symbols or definitions in the general case, e.g. the value defined could be a function or binary. But it is feasible to import symbols from closed records into lexical scope, like a conventional module system.
+
+*Note:* Futures or open records in a module's value cannot be assigned by the client of the module. They simply remain opaque and undefined.
+
+### Binary File Modules
+
+For a subset of files, their 'value' is simply their content as a binary array. This ability to modularize binary data, without relying on filesystem effects, is convenient for partial evaluation, caching, DSLs, and distributing resources such as documentation or training sets for machine learning.
+
+Which files are treated as binary data is determined by file extension. Files with a `.g` suffix use the Glas language, while all other files are valued by their binary content. Currently, this is not configurable. However, it is feasible to load and process binary data at compile-time.
+
+File extensions are not exposed to clients of a file module. Thus, a developer could switch transparently between including a binary or computing it without modifying module clients.
+
+### Filesystem Directories
+
+In Glas, a module may be represented by a directory containing files and subdirectories. 
+
+The default value for a directory is to map the files and subdirectories into an open record. However, if a directory contains a `public.g` file module, the value of the directory module becomes the value defined by this file, hiding the directory structure from the client.
+
+*Note:* If filesystem names are problematic, e.g. if ambiguous or not portable, the compiler should issue a warning or error. Also, file or directory names starting with `.` are hidden and not considered part of the module. 
+
+### Module Dependencies
+
+Dependencies are restricted: a file may only access modules within the same directory, or distribution packages from the network (see below). Relevantly, it is not permitted to reference modules in the parent directory, and Glas does not use a filesystem search path.
+
+This restriction ensures that Glas directories are effectively stand-alone, easily shared and reused assuming they don't depend on any uncommon packages.
+
+### Distribution Packages
+
+Glas packages are essentially modules from the network instead of the filesystem. A package will be always represented by filesystem directory. This simplifies inclusion of documentation, unit tests, digital signatures, and other metadata.
+
+However, there are too many problems with managing packages individually. An update to a package can silently break other packages that depend upon it. If we depend on several packages, it becomes a constraint problem to ensure all versions work together. Further, it can be difficult for anyone other than the package 'owner' to maintain packages provided via centralized server.
+
+To avoid these problems, Glas packages will come from distributions, which have only one version of each package. Packages in a distribution can be typed, tested, and verified to work cohesively. Any problems can be made visible, and the programmer could choose to fix or remove broken packages. Distributions will support DVCS patterns such as fork, merge, and pull requests.
+
+A Glas development environment will be configured with target distributions for a package under development. Dependencies can be downloaded for local evaluation.
+
+*Note:* A package may be shared between several distributions. There is a possibility of naming conflicts. However, in practice, this should not be a significant problem. A developer should simply work with community distributions to stake a claim on a name if needed.
+
+## Glas Language Manipulation
+
+Glas is a general purpose language, designed for a text-based development environment. Consequently, Glas is not optimal for any specific purpose, and is not suitable for alternative development environments.
+
+To solve this, Glas provides a mechanism for ad-hoc language manipulation.
+
+
+
+*Note:* I use the word 'manipulation' instead of 'extension' because this mechanism is not incremental or compositional in nature. 
+
+
+Glas supports user-defined languages within a module, based on parser combinators.
+
+
+ at the top of the file, e.g. via `%lang` (or perhaps `%lang` - still thinking about aesthetics).
+
+A file will indicate its language based on file extension and compiler configuration. Binary files are the most trivial module-level language.
+
+A 'language' will be defined by parser combinator operating on an abstract linear object representing the compile-time environment. By invoking methods, programmers can incrementally parse the input and construct an abstract result, meanwhile annotating things to simplify tooling and debugging. 
+
+Compile-time effects, such as imports or generating unique labels, are also supported.
+
+Glas is defined as a module-level language, and will provides mechanisms for its own extension. Glas is intended to be effective for general purpose programming within the limits of the underlying model.
+
+Alternative languages should usually be domain-specific, e.g. optimized for constraint programming or machine learning. One exception is adapting the Glas system to alternative development environments, e.g. developing a syntax optimized for convenient rendering and layout.
+
+*Aside:* A weakness of parser combinators is that they're often slow, because they prevent a lot of optimizations. This could be mitigated by defining module-level BNF language that can be optimized before generating the parser combinator.
+
+
+## User Experience
+
+Glas favors a linear imperative-OO style to work with the underlying model. The standard Glas language shall support mutable variables, while loops, and method calls. There is an implicit parameter to represent the ambient environment, e.g. access to console or network.
+
+Imperative programming style is convenient in context of single-assignment semantics. Effects, such as reading or writing to console, are ultimately based on futures and partial evaluation. 
+
+However, linearity hinders modeling of software design patterns that involve shared mutable state. In these cases, developers may simulate a shared environment or adopt design patterns originally developed for purely functional languages.
+
+Glas programs are deterministic by default. Non-determinism should be modeled as an effect, if necessary.
+
 
 ## Booleans
 
-Booleans could trivially be modeled as `'true | 'false`, but I'm uncertain whether this is the best way to model them, e.g. in potential context of operator overloading. Instead, developers will have access to `true` and `false` in lexical scope as abstract primitive objects.
+Booleans could trivially be modeled as `'true | 'false`, but I'm uncertain whether this is the best way to model them, e.g. in context of operator overloading. Instead, developers may have access to `true` and `false` primitive objects.
 
 ## Imperative Programming
 
