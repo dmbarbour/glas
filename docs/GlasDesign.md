@@ -12,6 +12,29 @@ Functions are bounded subgraphs with a designated public node. When applied, the
 
 Edges are labeled from a finite alphabet. However, arbitrary labels can be modeled via composition. For example, the label `result` may involve seven nodes in a sequence - one for each character, followed by a sentinel. This implies a trie-like structure.
 
+## Glas Module System
+
+The module system is an important part of a language's user experience. See the [Glas Module System](GlasModules.md) document for the details. TLDR: 
+
+Filesystem modules are referenced as `module foo`, and are limited to the same directory. There is no filesystem search path. Glas modules use `.g` file extension, and represent the returned value. Files with extensions other than `.g` are valued by their binary content. A subdirectory is valued based on the contained `public.g` file, if it exists, otherwise an open record reflecting directory structure.
+
+Distribution packages are referenced as `package foo`. A distribution will only have one version of each package, typed and tested to work cohesively. A Glas development environment may be configured to target multiple distributions, for concurrent testing.
+
+Modules define values, not symbols per se. However, for concision, Glas should also support importing fields from a closed record into lexical scope, e.g. `import (a:1, b:2)` may be equivalent to `let a = 1; let b = 2`.
+
+## Glas Language Extension
+
+Glas has a standard syntax, adequate for most use cases, but Glas is not constrained by this syntax. See the [Glas Language Extension](GlasLangExt.md) document for details. TLDR:
+
+
+
+
+
+## Glas Effects
+
+Glas does not, and will not, support foreign function interfaces. 
+
+
 ## Data Models
 
 ### Records
@@ -76,75 +99,6 @@ However, I'm still contemplating how numbers should be represented concretely, a
 
 I'm also interested in support for units of measure. This might also involve shadow types.
 
-## Glas Module System
-
-The module system is an important part of a language's user experience.
-
-A Glas 'module' is a value defined externally, usually in another file. Glas modules do not export symbols or definitions in the general case, e.g. the value defined could be a function or binary. But it is feasible to import symbols from closed records into lexical scope, like a conventional module system.
-
-*Note:* Futures or open records in a module's value cannot be assigned by the client of the module. They simply remain opaque and undefined.
-
-### Binary File Modules
-
-For a subset of files, their 'value' is simply their content as a binary array. This ability to modularize binary data, without relying on filesystem effects, is convenient for partial evaluation, caching, DSLs, and distributing resources such as documentation or training sets for machine learning.
-
-Which files are treated as binary data is determined by file extension. Files with a `.g` suffix use the Glas language, while all other files are valued by their binary content. Currently, this is not configurable. However, it is feasible to load and process binary data at compile-time.
-
-File extensions are not exposed to clients of a file module. Thus, a developer could switch transparently between including a binary or computing it without modifying module clients.
-
-### Filesystem Directories
-
-In Glas, a module may be represented by a directory containing files and subdirectories. 
-
-The default value for a directory is to map the files and subdirectories into an open record. However, if a directory contains a `public.g` file module, the value of the directory module becomes the value defined by this file, hiding the directory structure from the client.
-
-*Note:* If filesystem names are problematic, e.g. if ambiguous or not portable, the compiler should issue a warning or error. Also, file or directory names starting with `.` are hidden and not considered part of the module. 
-
-### Module Dependencies
-
-Dependencies are restricted: a file may only access modules within the same directory, or distribution packages from the network (see below). Relevantly, it is not permitted to reference modules in the parent directory, and Glas does not use a filesystem search path.
-
-This restriction ensures that Glas directories are effectively stand-alone, easily shared and reused assuming they don't depend on any uncommon packages.
-
-### Distribution Packages
-
-Glas packages are essentially modules from the network instead of the filesystem. A package will be always represented by filesystem directory. This simplifies inclusion of documentation, unit tests, digital signatures, and other metadata.
-
-However, there are too many problems with managing packages individually. An update to a package can silently break other packages that depend upon it. If we depend on several packages, it becomes a constraint problem to ensure all versions work together. Further, it can be difficult for anyone other than the package 'owner' to maintain packages provided via centralized server.
-
-To avoid these problems, Glas packages will come from distributions, which have only one version of each package. Packages in a distribution can be typed, tested, and verified to work cohesively. Any problems can be made visible, and the programmer could choose to fix or remove broken packages. Distributions will support DVCS patterns such as fork, merge, and pull requests.
-
-A Glas development environment will be configured with target distributions for a package under development. Dependencies can be downloaded for local evaluation.
-
-*Note:* A package may be shared between several distributions. There is a possibility of naming conflicts. However, in practice, this should not be a significant problem. A developer should simply work with community distributions to stake a claim on a name if needed.
-
-## Glas Language Manipulation
-
-Glas is a general purpose language, designed for a text-based development environment. Consequently, Glas is not optimal for any specific purpose, and is not suitable for alternative development environments.
-
-To solve this, Glas provides a mechanism for ad-hoc language manipulation.
-
-
-
-*Note:* I use the word 'manipulation' instead of 'extension' because this mechanism is not incremental or compositional in nature. 
-
-
-Glas supports user-defined languages within a module, based on parser combinators.
-
-
- at the top of the file, e.g. via `%lang` (or perhaps `%lang` - still thinking about aesthetics).
-
-A file will indicate its language based on file extension and compiler configuration. Binary files are the most trivial module-level language.
-
-A 'language' will be defined by parser combinator operating on an abstract linear object representing the compile-time environment. By invoking methods, programmers can incrementally parse the input and construct an abstract result, meanwhile annotating things to simplify tooling and debugging. 
-
-Compile-time effects, such as imports or generating unique labels, are also supported.
-
-Glas is defined as a module-level language, and will provides mechanisms for its own extension. Glas is intended to be effective for general purpose programming within the limits of the underlying model.
-
-Alternative languages should usually be domain-specific, e.g. optimized for constraint programming or machine learning. One exception is adapting the Glas system to alternative development environments, e.g. developing a syntax optimized for convenient rendering and layout.
-
-*Aside:* A weakness of parser combinators is that they're often slow, because they prevent a lot of optimizations. This could be mitigated by defining module-level BNF language that can be optimized before generating the parser combinator.
 
 
 ## User Experience
