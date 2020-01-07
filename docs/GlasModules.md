@@ -6,39 +6,43 @@ A Glas 'module' is a value defined externally, usually in another file. Glas mod
 
 *Note:* Futures or open records in a module's value cannot be assigned by the client of the module. They simply remain opaque and undefined.
 
-## Binary File Modules
+## Files as Modules
 
-For a subset of files, their 'value' is simply their content as a binary array. This ability to modularize binary data, without relying on filesystem effects, is convenient for partial evaluation, caching, DSLs, and distributing resources such as documentation or training sets for machine learning.
+Glas will flexibly interpret most files as modules.
 
-Which files are treated as binary data is determined by file extension. Files with a `.g` suffix use the Glas language, while all other files are valued by their binary content. To keep it simple, this is not configurable. However, it is feasible to process binary data at compile-time (via [Glas Language Extensions](GlasLangExt.md)).
+The interpretation of a file into a value will depend on the file extension. The `.g` file extension is used for Glas language modules. The default behavior for all other file extensions is to return file content as a binary array. 
 
-File extensions are not included in module references. Thus, a developer may switch transparently between directly including a binary or computing it.
+This behavior is configurable as part of the [Glas Language Extension](GlasLangExt.md) features. By defining a language module, developers may report errors, return structured data, or implement domain-specific languages. Because file-extensions are non-invasive, it's relatively easy to work with ad-hoc files written using other tools.
 
-## Filesystem Directories
+## Folders as Modules
 
-A Glas module is often represented by a directory containing files and subdirectories. 
+Glas will also interpret most folders (aka directories) as modules.
 
-The default value for a directory maps contained files and subdirectories into an open record. However, if the directory contains a 'public' module (usually a `public.g` file), the value for the directory becomes the value defined by this module, and other directory content is implicitly private.
+The default interpretation of a folder is simply the closed record of contained modules. However, if the folder contains a 'public' module (e.g. a `public.g` file), the value from this module becomes the value of the folder. This enables folders to hide implementation details like any other module.
 
-*Note:* If filesystem names are problematic, e.g. if ambiguous or not portable, the compiler should issue a suitable warning or error. File and directory names starting with `.` are hidden and not considered part of a module. 
+## Filesystem Names
+
+Glas compilers should reject files and folders that are awkwardly or ambiguously named, with a suitable warning or error. This is heuristic. Developers are encouraged to favor short, simple names that would be good as symbols in a record value.
+
+Files and folders whose names start with `.` are explicitly excluded as Glas modules. These can be leveraged for extraneous features - DVCS, caching, project management, ad-hoc compiler options, etc..
 
 ## Filesystem Dependencies
 
-Glas restricts filesystem dependencies: a file may only depend on modules defined in the same filesystem directory, or distribution packages. Relevantly, Glas does not permit reference to arbitrary directories, and there is no filesystem search path like very many languages use.
+Glas does not support filesystem search paths, and forbids upwards references into parent directories. Thus, a file may only depend on modules defined the same folder, or upon distribution packages (see below).
 
-This restriction simplifies reuse and sharing. A directory may easily be copied between projects, or evaluated as a stand-alone project, assuming compatible distributions.
+One consequence of this design is that folders are effectively stand-alone projects. This is even true for subdirectories within a project, which may easily be copied into another project as a form of sharing and reuse outside of the package distribution model.
 
 ## Distribution Packages
 
-Glas packages are essentially modules from the network instead of the filesystem. A package will be concretely represented by filesystem directory. Packages should include documentation, unit tests, and other metadata in addition to the public value.
+Glas packages are essentially modules from the network instead of the filesystem. A package should be represented by a folder, and should contain documentation, tests, and other metadata - not just a public value.
 
-However, there are many problems with conventional package managers. It is challenging to find a set of package versions that work together. A package update can silently break other packages. It also can be difficult to work around an unresponsive package owner.
+Glas groups packages into distributions. A distribution has only one version of each package. Packages in a distribution should generally be typed, tested, and verified to work cohesively. After breaking changes, problems can be made visible and a developer could repair or remove broken packages.
 
-To mitigate these issues, Glas groups packages into 'distributions'. A distribution has one version of each package. The packages in a distribution can be typed, tested, and verified to work cohesively. If there are any problems, they will be visible. The developer can repair or remove broken packages after a breaking change.
+This design simplifies configuration management and avoids many problems of conventional package managers.
 
-A Glas development environment can be configured with more than one target distribution, enabling a project to be verified across multiple configurations, or even committed to multiple distributions.
+Distributions will generally be maintained by a community or company, and favor DVCS-style tactics - fork, merge, pull request, etc. - for sharing and distribution. A Glas project might edit multiple packages and target multiple distributions, enabling verification of compatibility with multiple configurations.
 
-*Note:* Because packages are shared by many distributions, naming conflicts are possible. Glas assumes these conflicts will be solved socially, e.g. by staking claim to a name or prefix in a popular community distribution.
+*Note:* Glas assumes naming conflicts will be solved socially, e.g. by staking claim to a name or prefix within a popular community distribution.
 
 ## Distribution Journal
 
@@ -59,14 +63,4 @@ It seems to worthwhile to develop distribution metadata for robust sharing indep
 
 ## Module and Package References
 
-I'm still contemplating syntax and aesthetics for module and package references. In the language extension layer, we can treat module and package access as methods.
-
-One simple option is to treat it as a keyword, e.g. `module foo` would reference the local filesystem module, while `package foo` would reference the distribution package. The parser should bind these keywords with high precedence, such that `module foo.bar.baz` is equivalent to `(module foo).bar.baz`.
-
-Another viable option is to model package and module references as an open record in lexical scope, e.g. `extern.package.foo` vs. `extern.module.foo`. This approach has an advantage of being close to the semantics - the values are simply out there, defined outside module scope. However, this would complicate parse-time analysis of module dependencies, because of stuff like `let m = extern.module; ... m.foo ...`.
-
-For now, I'm inclined to favor `module foo` and `package foo`.
-
-
-
-
+The syntax for module and package reference may vary based on language extensions. However, the Glas language syntax introduces `module` and `package` as keywords, binding a single symbol such that `module foo.bar(y)` is equivalent to `(module foo).bar(y)`. Modules and packages are separate namespaces.

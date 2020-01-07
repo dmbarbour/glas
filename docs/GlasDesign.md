@@ -14,26 +14,19 @@ Edges are labeled from a finite alphabet. However, arbitrary labels can be model
 
 ## Glas Module System
 
-The module system is an important part of a language's user experience. See the [Glas Module System](GlasModules.md) document for the details. TLDR: 
+The module system is an important part of a language's user experience. 
 
-Filesystem modules are referenced as `module foo`, and are limited to the same directory. There is no filesystem search path. Glas modules use `.g` file extension, and represent the returned value. Files with extensions other than `.g` are valued by their binary content. A subdirectory is valued based on the contained `public.g` file, if it exists, otherwise an open record reflecting directory structure.
+The Glas module system is based on the filesystem (at small scales) and community maintained package distributions (at larger scales). Files and folders can be treated as modules. Folders can be added to a distribution as packages. A distribution has only one version of each package, which simplifies configuration management and integration testing.
 
-Distribution packages are referenced as `package foo`. A distribution will only have one version of each package, typed and tested to work cohesively. A Glas development environment may be configured to target multiple distributions, for concurrent testing.
-
-Modules define values, not symbols per se. However, for concision, Glas should also support importing fields from a closed record into lexical scope, e.g. `import (a:1, b:2)` may be equivalent to `let a = 1; let b = 2`.
+See the [Glas Module System](GlasModules.md) document for details. 
 
 ## Glas Language Extension
 
-Glas has a standard syntax, adequate for most use cases, but Glas is not constrained by this syntax. See the [Glas Language Extension](GlasLangExt.md) document for details. TLDR:
+In general, Glas systems support one language per file, based on file extension. This can be leveraged for domain-specific languages, parsing structured data, or adding a convenient set of macro-like extensions to the Glas language within a project.
 
+See the [Glas Language Extension](GlasLangExt.md) document for details.
 
-
-
-
-## Glas Effects
-
-Glas does not, and will not, support foreign function interfaces. 
-
+## Glas Effects Model
 
 ## Data Models
 

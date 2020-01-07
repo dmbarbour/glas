@@ -1,81 +1,65 @@
 # Glas Language Extension
 
-Glas is a general purpose language designed for text-based development environments. Consequently, Glas is neither optimal for any specific purpose, nor suitable for alternative development environments (e.g. visual, augmented reality). 
+The primary Glas language extension model is based on file extensions specifying the language for a module. Compared to macros, this design reduces boilerplate, improves performance, and simplifies tooling.
 
-To address this weakness, Glas provides a mechanisms for users to extend and manipulate the language.
+To extend the Glas language involves creating a new language that's mostly the same as Glas except with a few extra features. To create this language, we would first develop a package that implements Glas in an openly extensible way. The new language would then be mapped to a file extension, such as `.gg`, so we can write code in this language.
 
-## Design Constraints and Considerations
+We are not limited to 'extensions'. A new language doesn't need to look anything like Glas. Because language manipulation is non-invasive, we may even develop parsers for ad-hoc files produced by other tools.
 
-The meaning of a program should be under the author's control. The client of a module or function should not need to know implementation details, such as which language extensions it uses. Between these, language must never depend on parameters from a client. This excludes fexpr-like mechanisms.
+## Mapping File Extensions
 
-Developers should be able to abstract, reuse, and share useful language manipulations. Language extensions in Glas must be represented by first-class values so they may be shared and reused via the Glas module system, and optionally abstracted through parameterized functions.
+We map a file extension to languages by defining a 'language' module whose value is a record of defined file extensions. For example, the `foo` language would be defined at `module language.foo`. See the [Glas module system](GlasModules.md). Language extensions only apply within the same folder. 
 
-Language extensions should be composable. Extensions should not interfere in unpredictable ways or have strange interactions with scoping. It would be convenient if we can analyze a set of extensions for conflicts ahead of time, e.g. by knowing statically which tokens are expected.
+If a language becomes popular, it should reference a corresponding package - e.g. the content of `language/foo.g` might simply be `package lang_foo`. 
 
-External tooling, such as syntax highlighting, source mapping, debugging, and auto-formatting, are important features of a language's ecosystem. Language extension should be carefully designed to support tooling. This excludes many `AST -> AST` or `Text -> Text` approaches, which easily lose metadata about origin or intention.
+Undefined languages will return the binary content of a file. However, it can be useful to define a language and still return the binary, mostly to support debugging and tooling. For example, we could configure the `.txt` language to warn about spelling errors or inconsistent line endings.
 
-## Parser Combinators
+*Aside:* Language module per folder does become a form of repetitive boilerplate, but it's less repetitive than defining or importing macros at the top of each file.
 
+## Language Definition
 
+Minimally, a language must parse a file and produce a value while supporting debuggers. However, a complete language package may provide several more features - auto-formatting, code completion, code reduction, projectional editing, and more. Extensibility is a relevant concern.
 
+So, a language will be defined as a record, which contains at least the `parse` function.
 
+## The Parse Function
 
-Use of multiple languages within a modules is a significant source of boiler-plate and complications. For example, we must ensure lexical scope for one language is visible to other languages. 
- be accessible to another. However, we can mitigate this by defining a single language with multiple sublanguages built-in. 
+Naively, we could implement a pure `Binary -> Value` function. However, this would not support module access or generation of unique labels for opaque types. Also, it would not preserve metadata for effective debugging.
 
-Incremental manipulation of a language is problematic for tooling if it must reproduce the manipulation logic. Thus, we should either avoid incremental manipulation, or provide means to easily share the logic.
+My proposal that a parser is defined by a function that operates on an opaque compile time environment object. This opaque object will provide methods for reading input, abstract value constructors, imports and unique label generation, annotations for optimization or debugging, and alternative choice with backtracking. An abstract parser combinator, of sorts.
 
+This design allows us to maintain metadata about where values come from. We can also try multiple alternatives to detect ambiguity, guarantee ensure the full input is consumed, report which types or tokens are expected at a given step, and even recommend changes to code.
 
+A disadvantage of this approach is lackluster performance. This can be mitigated by developing an intermediate language can be optimized and compiled into a state-machine-like parser function, avoiding deep recursion and backtracking.
 
+## Compile Time Methods 
 
+### Value Injection
 
- language they want for reuse in many modules, as a one-liner. Th
+The compile-time environment shall provide a method to inject arbitrary values into the abstract runtime. Perhaps simply `!inject(value)`. This is a one-way path, we cannot extract abstract values because that would hinder parsing in the presence of errors for debugging.
 
+### Scope Control
 
-The Glas module system defines modules as values. This may hinder 
+The compile-time environment shall provide a method to limit scope of one parse action relative to another, e.g. `!scoped(scope:P1, parser:P2)` extracts a range of input based on `P1` then returns the result of `P2` exposing only this input range.
 
-Glas cannot 'import' macros from the module system
+The main motive for this is error isolation, especially with DSLs or distrusted parser functions.
 
+### Region Annotation
 
+### Type Annotations
 
-Ideally, extensions should compose in a comprehensible way, without interfering. 
+### Static Evaluation
 
+### Function Definition
 
-Languages will often require access to compile-time effects, such as module imports or generation of unique symbols.
+### Unification
 
-To track provenance metadata, it's very convenient if we have some insight about the parser's expectations, and how parsed objects are being composed. 
+### Module and Package Access
 
- It should not be difficult to provide access to these e
-
-
-
-
-
- is a recipe for boiler-plate, and will complicate tooling (such as syntax highlighting).
-
-
-
-
-
-
-
+### Unique Symbol Generation
 
 
-
-
- at the top of the file, e.g. via `%lang` (or perhaps `%lang` - still thinking about aesthetics).
-
-A file will indicate its language based on file extension and compiler configuration. Binary files are the most trivial module-level language.
-
-A 'language' will be defined by parser combinator operating on an abstract linear object representing the compile-time environment. By invoking methods, programmers can incrementally parse the input and construct an abstract result, meanwhile annotating things to simplify tooling and debugging. 
-
-Compile-time effects, such as imports or generating unique labels, are also supported.
-
-Glas is defined as a module-level language, and will provides mechanisms for its own extension. Glas is intended to be effective for general purpose programming within the limits of the underlying model.
-
-Alternative languages should usually be domain-specific, e.g. optimized for constraint programming or machine learning. One exception is adapting the Glas system to alternative development environments, e.g. developing a syntax optimized for convenient rendering and layout.
-
-*Aside:* A weakness of parser combinators is that they're often slow, because they prevent a lot of optimizations. This could be mitigated by defining module-level BNF language that can be optimized before generating the parser combinator.
+## Glas Compile Time
 
 ## Environment Methods
 
