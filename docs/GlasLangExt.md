@@ -26,7 +26,7 @@ So, a language will be defined as a record, which contains at least the `parse` 
 
 Naively, we could implement a pure `Binary -> Value` function. However, this would not support module access or generation of unique labels for opaque types. Also, it would not preserve metadata for effective debugging.
 
-My proposal that a parser is defined by a function that operates on an opaque compile time environment object. This opaque object will provide methods for reading input, abstract value constructors, imports and unique label generation, annotations for optimization or debugging, and alternative choice with backtracking. An abstract parser combinator, of sorts.
+My proposal that a parser is defined by a function that operates on an opaque compile time environment object. This opaque object will provide methods for reading input, abstract value constructors, module access, unique label generation, annotations for optimization or debugging, and alternative choice with backtracking. 
 
 This design allows us to maintain metadata about where values come from. We can also try multiple alternatives to detect ambiguity, guarantee ensure the full input is consumed, report which types or tokens are expected at a given step, and even recommend changes to code.
 
@@ -36,13 +36,20 @@ A disadvantage of this approach is lackluster performance. This can be mitigated
 
 ### Value Injection
 
-The compile-time environment shall provide a method to inject arbitrary values into the abstract runtime. Perhaps simply `!inject(value)`. This is a one-way path, we cannot extract abstract values because that would hinder parsing in the presence of errors for debugging.
+        !inject(value)
+
+A parser may inject arbitrary values into the abstract runtime. This is one-way path - we cannot extract abstract values because that would hinder parsing in the presence of errors for debugging.
 
 ### Scope Control
 
 The compile-time environment shall provide a method to limit scope of one parse action relative to another, e.g. `!scoped(scope:P1, parser:P2)` extracts a range of input based on `P1` then returns the result of `P2` exposing only this input range.
 
 The main motive for this is error isolation, especially with DSLs or distrusted parser functions.
+
+### Module and Package Access
+
+The compilet-ime en
+
 
 ### Region Annotation
 
@@ -54,7 +61,6 @@ The main motive for this is error isolation, especially with DSLs or distrusted 
 
 ### Unification
 
-### Module and Package Access
 
 ### Unique Symbol Generation
 

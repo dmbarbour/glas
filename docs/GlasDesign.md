@@ -16,7 +16,7 @@ Edges are labeled from a finite alphabet. However, arbitrary labels can be model
 
 The module system is an important part of a language's user experience. 
 
-The Glas module system is based on the filesystem (at small scales) and community maintained package distributions (at larger scales). Files and folders can be treated as modules. Folders can be added to a distribution as packages. A distribution has only one version of each package, which simplifies configuration management and integration testing.
+Glas modules represent arbitrary values, not symbol definitions. The Glas module system is based on the files and folders (at small scales) and community maintained package distributions (at larger scales). A distribution has only one version of each package, which simplifies configuration management, integration testing, and deployment.
 
 See the [Glas Module System](GlasModules.md) document for details. 
 

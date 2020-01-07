@@ -1,8 +1,6 @@
 # Glas Module System
 
-The module system is an important part of a language's user experience.
-
-A Glas 'module' is a value defined externally, usually in another file. Glas modules do not export symbols or definitions in the general case, e.g. the value defined could be a function or binary. But it is feasible to import symbols from closed records into lexical scope, like a conventional module system.
+A Glas 'module' is a value defined externally, usually in another file. Glas modules do not export symbols or definitions in the general case, e.g. the value defined could be a function, a record of values, or binary.
 
 *Note:* Futures or open records in a module's value cannot be assigned by the client of the module. They simply remain opaque and undefined.
 
@@ -64,3 +62,9 @@ It seems to worthwhile to develop distribution metadata for robust sharing indep
 ## Module and Package References
 
 The syntax for module and package reference may vary based on language extensions. However, the Glas language syntax introduces `module` and `package` as keywords, binding a single symbol such that `module foo.bar(y)` is equivalent to `(module foo).bar(y)`. Modules and packages are separate namespaces.
+
+## Namespace Management
+
+Conventional language support importing symbols from a module into the lexical scope. For Glas, the equivalent is `let (a:, b:, c:, _) = module foo`, leveraging patterns (here `a:`  is short for `a:a`).
+
+*Note:* Glas does not support direct import of symbols from a record value because it's too complicated to reason about the state of lexical scope without static evaluation or in the presence of optional record fields.
