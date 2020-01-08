@@ -4,33 +4,37 @@ The primary Glas language extension model is based on file extensions specifying
 
 To extend the Glas language involves creating a new language that's mostly the same as Glas except with a few extra features. To create this language, we would first develop a package that implements Glas in an openly extensible way. The new language would then be mapped to a file extension, such as `.gg`, so we can write code in this language.
 
-We are not limited to 'extensions'. A new language doesn't need to look anything like Glas. Because language manipulation is non-invasive, we may even develop parsers for ad-hoc files produced by other tools.
+A new language doesn't need to look anything like Glas. Developers may even develop parsers for ad-hoc binaries produced by other tools.
+
+Glas may be defined as a Glas language extension after bootstrapping. 
 
 ## Mapping File Extensions
 
-We map a file extension to languages by defining a 'language' module whose value is a record of defined file extensions. For example, the `foo` language would be defined at `module language.foo`. See the [Glas module system](GlasModules.md). Language extensions only apply within the same folder. 
+The Glas distribution should contain a 'language' package whose value is a record mapping file extensions to language definitions. By default, to find definition for file extension `.gg`, the compiler will try `(package language).gg`. If the package or extension is not found, the compiler will value the file as its binary content.
 
-If a language becomes popular, it should reference a corresponding package - e.g. the content of `language/foo.g` might simply be `package lang_foo`. 
+The language package may be overridden within a folder by defining a language module. This offers more control to the programmer, to personalize languages or support project-specific languages.
 
-Undefined languages will return the binary content of a file. However, it can be useful to define a language and still return the binary, mostly to support debugging and tooling. For example, we could configure the `.txt` language to warn about spelling errors or inconsistent line endings.
-
-*Aside:* Language module per folder does become a form of repetitive boilerplate, but it's less repetitive than defining or importing macros at the top of each file.
+See [Glas module system document](GlasModules.md) for more information.
 
 ## Language Definition
 
-Minimally, a language must parse a file and produce a value while supporting debuggers. However, a complete language package may provide several more features - auto-formatting, code completion, code reduction, projectional editing, and more. Extensibility is a relevant concern.
+Minimally, the language definition must parse a file and produce a value.
 
-So, a language will be defined as a record, which contains at least the `parse` function.
+To support debugging, the parser and produced value should preserve location metadata for source mapping, isolate errors, and robustly continue to report many likely errors rather than stopping on the first error.
+
+Beyond compiler support, a complete language definition should support external tooling: syntax highlighting, auto-formatting, projectional editing, code completion, code reduction. Because there is no limit to potential tooling, language definitions must also be extensible. Further, a language definition could feasibly include documentation, examples, tutorials.
+
+Glas will define languages as records that minimally define the `parse` function.
 
 ## The Parse Function
 
-Naively, we could implement a pure `Binary -> Value` function. However, this would not support module access or generation of unique labels for opaque types. Also, it would not preserve metadata for effective debugging.
+Naively, a parser could implement a pure `Binary -> Value` function. However, this would not support module references, generation of unique labels, or effective debugging.
 
-My proposal that a parser is defined by a function that operates on an opaque compile time environment object. This opaque object will provide methods for reading input, abstract value constructors, module access, unique label generation, annotations for optimization or debugging, and alternative choice with backtracking. 
+A Glas parse function instead is parameterized by an opaque 'compile-time environment' object, with methods for construction of the abstract value and parsing the input. 
 
-This design allows us to maintain metadata about where values come from. We can also try multiple alternatives to detect ambiguity, guarantee ensure the full input is consumed, report which types or tokens are expected at a given step, and even recommend changes to code.
+This design allows us to maintain metadata about where values come from. We can also try multiple alternatives to detect ambiguity, verify the full input is consumed, continue in presence of errors, and report which grammar types and tokens are expected at a given step. This design is also extensible: we can add new methods to the object. Type safety analysis and partial evaluation can be deferred until after parsing.
 
-A disadvantage of this approach is lackluster performance. This can be mitigated by developing an intermediate language can be optimized and compiled into a state-machine-like parser function, avoiding deep recursion and backtracking.
+A disadvantage of this approach is lackluster performance. This can be ameliorated by developing a BNF-like intermediate language that can be optimized to minimize backtracking and deep recursion.
 
 ## Compile Time Methods 
 
@@ -38,18 +42,25 @@ A disadvantage of this approach is lackluster performance. This can be mitigated
 
         !inject(value)
 
-A parser may inject arbitrary values into the abstract runtime. This is one-way path - we cannot extract abstract values because that would hinder parsing in the presence of errors for debugging.
+A parser may inject values into the abstract runtime. Support for this may require a special compilation mode for the language package. We cannot move the other direction and extract abstract values because that would hinder parsing in the presence of errors for debugging.
 
 ### Scope Control
 
-The compile-time environment shall provide a method to limit scope of one parse action relative to another, e.g. `!scoped(scope:P1, parser:P2)` extracts a range of input based on `P1` then returns the result of `P2` exposing only this input range.
+The compile-time environment shall provide a method to limit scope of one parse action relative to another, e.g. `!scoped(scope:P1, parser:P2)` extracts a range of input based on `P1` then runs `P2` within that scope, and returns the result from each parse.
 
 The main motive for this is error isolation, especially with DSLs or distrusted parser functions.
+
+### Warnings and Errors
+
+
 
 ### Module and Package Access
 
 The compilet-ime en
 
+### Compiler Type Constructors?
+
+Arrays, fixed-width integers?
 
 ### Region Annotation
 

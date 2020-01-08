@@ -55,16 +55,18 @@ Desiderata for distributions:
 * easy structure sharing
 * easy to sign and secure
 
-To achieve these properties, we could represent distributions via content-addressed, log-structured merge trie, similar to what I had developed for Awelon. But we can also use content-addressed (secure hash) references for file content, instead of inlining file content.
+To achieve these properties, we could represent distributions via content-addressed, log-structured merge trie, similar to what I had developed for Awelon. But also using content-addressed (secure hash) references for file content, instead of inlining file content.
 
-It seems to worthwhile to develop distribution metadata for robust sharing independent of current ad-hoc services and systems.
+It seems to worthwhile to develop this form of distribution metadata for robust sharing independent of existing ad-hoc services, systems, and networks. 
 
 ## Module and Package References
 
-The syntax for module and package reference may vary based on language extensions. However, the Glas language syntax introduces `module` and `package` as keywords, binding a single symbol such that `module foo.bar(y)` is equivalent to `(module foo).bar(y)`. Modules and packages are separate namespaces.
+The syntax for module and package reference may vary based on language extensions. However, the Glas language syntax introduces `module` and `package` as keywords, binding a single symbol such that `module foo.bar` is equivalent to `(module foo).bar`. Modules and packages are separate namespaces.
 
 ## Namespace Management
 
-Conventional language support importing symbols from a module into the lexical scope. For Glas, the equivalent is `let (a:, b:, c:, _) = module foo`, leveraging patterns (here `a:`  is short for `a:a`).
+Programmers should use statements of form `let f = module foo` to provide a shorthand name and a single point of change. If loading a common set of packages becomes boilerplate, it may be useful to create an aggregation module.
 
-*Note:* Glas does not support direct import of symbols from a record value because it's too complicated to reason about the state of lexical scope without static evaluation or in the presence of optional record fields.
+An intriguing alternative is to shift widely useful symbol definitions to the [language module](GlasLangExt.md). Developers can use a language module to extend Glas with a much larger set of commonly used functions and keywords, and thereby improve aesthetics and reduce need for loading modules.
+
+*Note:* Glas does not support direct import of symbols from record values because it becomes very difficult to reason about the lexical scope.
