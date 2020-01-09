@@ -307,9 +307,15 @@ Glas has many second-class features, e.g. `if` and `while` and `try` statements 
 
 ## Function Definition
 
-
-
 ## Postfix Function Calls
+
+## Partial Function Calls (Idea)
+
+We can define functions that accept multiple parameters, but they're awkward in context of `f(a:1, b:2)` keyword parameter conventions. 
+
+Instead, it might be useful to have a lightweight for application to a partial record, e.g. such that `f(a:1,~)` represents that the remainder of the record will be supplied in a subsequent parameter.
+
+I need to explore this idea further, e.g. how should this interact with pass-by-reference parameters? It might not become a feature for Glas.
 
 
 ## Object Definition

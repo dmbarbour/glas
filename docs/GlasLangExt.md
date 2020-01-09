@@ -36,17 +36,27 @@ This design allows us to maintain metadata about where values come from. We can 
 
 A disadvantage of this approach is lackluster performance. This can be ameliorated by developing a BNF-like intermediate language that can be optimized to minimize backtracking and deep recursion.
 
-## Compile Time Methods 
+## Abstract Value Constructor Methods
+
+Abstract values are hidden from the parser, and have an arbitrary representation decided by the compiler. Generally, we'll record the inputs and metadata about origin.
 
 ### Value Injection
 
-        !inject(value)
+        !inject(any)
 
-A parser may inject values into the abstract runtime. Support for this may require a special compilation mode for the language package. We cannot move the other direction and extract abstract values because that would hinder parsing in the presence of errors for debugging.
+It is feasible to inject values into the abstract runtime. Support for injection of first-class functions will require reflection, so language modules and packages must be compiled adequate reflection support.
+
+We cannot extract values at parse time. Abstract values will remain abstract.
+
+## Parser Combinator Methods
 
 ### Scope Control
 
-The compile-time environment shall provide a method to limit scope of one parse action relative to another, e.g. `!scoped(scope:P1, parser:P2)` extracts a range of input based on `P1` then runs `P2` within that scope, and returns the result from each parse.
+        !scoped(scope:P1, parser:P2)
+
+Parser combinator. We can use one parser to define the scope of another. Both parsers 
+
+ parse action relative to another, e.g. `!scoped(scope:P1, parser:P2)` extracts a range of input based on `P1` then runs `P2` within that scope, and returns the result from each parse.
 
 The main motive for this is error isolation, especially with DSLs or distrusted parser functions.
 

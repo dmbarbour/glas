@@ -1,72 +1,91 @@
 # Glas Module System
 
-A Glas 'module' is a value defined externally, usually in another file. Glas modules do not export symbols or definitions in the general case, e.g. the value defined could be a function, a record of values, or binary.
+A Glas module or package is a value defined externally.
 
-*Note:* Futures or open records in a module's value cannot be assigned by the client of the module. They simply remain opaque and undefined.
+## Terminology: Modules, Packages, Distributions, Projects
+
+Glas distinguishes 'module' as a value defined within the same folder, while a 'package' is generally a value defined non-locally, e.g. from the network. 
+
+Glas organizes packages into distributions. A distribution has only one version of each package, enabling packages to be typed, tested, and verified to work cohesively. A distribution will often be maintained by a community or company, using DVCS patterns such as forks and pull requests.
+
+A project is a set of packages under development by a programmer or small team. A project is usually much smaller than a distribution, but will often be targeted at multiple distributions, and thus require concurrent testing.
+
+## Module and Package References
+
+Glas defines keywords `module` and `package` to access modules or packages by name. Thes keywords bind tightly, such that `module foo.bar` is equivalent to `(module foo).bar`. 
 
 ## Files as Modules
 
 Glas will flexibly interpret most files as modules.
 
-The interpretation of a file into a value will depend on the file extension. The `.g` file extension is used for Glas language modules. The default behavior for all other file extensions is to return file content as a binary array. 
+The interpretation of a file into a value depends on the file extension. The `.g` file extension is used for Glas language modules. The default behavior for other file extensions is to return the file's content as a binary array. This behavior is configurable via the [Glas Language Extension](GlasLangExt.md) features. 
 
-This behavior is configurable as part of the [Glas Language Extension](GlasLangExt.md) features. By defining a language module, developers may report errors, return structured data, or implement domain-specific languages. Because file-extensions are non-invasive, it's relatively easy to work with ad-hoc files written using other tools.
+Because file-extensions are non-invasive, Glas can often be extended to compile files produced by other tools into structured data or similar. Of course, not all file types are suitable.
 
 ## Folders as Modules
 
-Glas will also interpret most folders (aka directories) as modules.
+Glas will interpret most folders (aka directories) as modules.
 
-The default interpretation of a folder is simply the closed record of contained modules. However, if the folder contains a 'public' module (e.g. a `public.g` file), the value from this module becomes the value of the folder. This enables folders to hide implementation details like any other module.
+The default interpretation of a folder is simply the closed record of contained modules. However, if the folder defines a `public` module, the value from this module becomes the value of the folder. This enables folders to hide implementation details like any other module.
 
-## Filesystem Names
+*Note:* Files and folders whose names start with `.` or contain `~` are explicitly excluded as Glas modules. A compiler may warn or reject other names being awkward or ambiguous.
 
-Glas compilers should reject files and folders that are awkwardly or ambiguously named, with a suitable warning or error. This is heuristic. Developers are encouraged to favor short, simple names that would be good as symbols in a record value.
+## Closed Modules
 
-Files and folders whose names start with `.` are explicitly excluded as Glas modules. These can be leveraged for extraneous features - DVCS, caching, project management, ad-hoc compiler options, etc..
+As another special case, a Glas folder may define a `packages` module. The compiler will recognize this, and use the module as the implicit distribution within the folder. That is, `package foo` refers to the local `module packages.foo` instead of an external distribution. 
 
-## Filesystem Dependencies
+This feature supports true stand-alone modules, having no external dependencies.
 
-Glas does not support filesystem search paths, and forbids upwards references into parent directories. Thus, a file may only depend on modules defined the same folder, or upon distribution packages (see below).
+## Distributions
 
-One consequence of this design is that folders are effectively stand-alone projects. This is even true for subdirectories within a project, which may easily be copied into another project as a form of sharing and reuse outside of the package distribution model.
+A Glas distribution is concretely represented by a closed module where the packages module is represented by a subfolder.
 
-## Distribution Packages
+        dist/packages/packagename
 
-Glas packages are essentially modules from the network instead of the filesystem. A package should be represented by a folder, and should contain documentation, tests, and other metadata - not just a public value.
+The `dist/` directory serves as a convenient dumping ground for distribution metadata - authorship, licensing, readmes, discussion, digital signatures, index, cache, etc.. Distributions are also closed modules, and thus may define a `public` value in their role as a module.
 
-Glas groups packages into distributions. A distribution has only one version of each package. Packages in a distribution should generally be typed, tested, and verified to work cohesively. After breaking changes, problems can be made visible and a developer could repair or remove broken packages.
+The main challenge is: distributions are HUGE.
 
-This design simplifies configuration management and avoids many problems of conventional package managers.
+Envision the mature distribution: Communities and companies have been pushing and pulling packages for a couple decades now. There are somewhere over ten thousand packages. Old versions of many packages are stuck in closed modules. There are wikis and websites, music and memes, with the Glas repository being used by some projects as a 'smart' filesystem.
 
-Distributions will generally be maintained by a community or company, and favor DVCS-style tactics - fork, merge, pull request, etc. - for sharing and distribution. A Glas project might edit multiple packages and target multiple distributions, enabling verification of compatibility with multiple configurations.
+## Distribution Filesystem (GlaDFS)
 
-*Note:* Glas assumes naming conflicts will be solved socially, e.g. by staking claim to a name or prefix within a popular community distribution.
+Glas distributions eventually require a suitable filesystem. This is a relatively low priority while Glas is young, but it might be a useful project by its own merits.
 
-## Distribution Journal
+Some Desiderata:
 
-Desiderata for distributions:
-
+* decentralized storage
 * incremental downloads
 * provider independence
-* verifiable downloads
-* immutable versioning
-* efficient, atomic updates
-* efficient fork and diff
-* easy structure sharing
-* easy to sign and secure
+* aggressive structure sharing
+* efficient diffs and edits
+* atomic updates and snapshots
+* deep history and metadata
 
-To achieve these properties, we could represent distributions via content-addressed, log-structured merge trie, similar to what I had developed for Awelon. But also using content-addressed (secure hash) references for file content, instead of inlining file content.
+Common filesystems are missing all of these features. And they often have other features that aren't particularly useful for Glas distributions and DVCS development patterns, such as access-control security.
 
-It seems to worthwhile to develop this form of distribution metadata for robust sharing independent of existing ad-hoc services, systems, and networks. 
+I believe that a suitable filesystem can be developed based on content-addressed log-structured merge trie, with a rope data structure for file content.
 
-## Module and Package References
+Proposed representation:
 
-The syntax for module and package reference may vary based on language extensions. However, the Glas language syntax introduces `module` and `package` as keywords, binding a single symbol such that `module foo.bar` is equivalent to `(module foo).bar`. Modules and packages are separate namespaces.
+        HEADERS - choice of the following
+        /prefix     - define prefix, followed by BODY
+        :symbol1    - define symbol1, followed by BODY
+        ~symbol2    - delete symbol2
 
-## Namespace Management
+        BODY - sequence of following lines
+        %secureHash - include fragment as binary
+        @secureHash - include fragment as BODY
+        .text       - include text including LF
+        !text       - include text excluding LF
 
-Programmers should use statements of form `let f = module foo` to provide a shorthand name and a single point of change. If loading a common set of packages becomes boilerplate, it may be useful to create an aggregation module.
+This representation is human readable for accessibility and debugging. Secure hashes would be represented in base64url. For binary files, we'll need to use `%secureHash` fragments. 
 
-An intriguing alternative is to shift widely useful symbol definitions to the [language module](GlasLangExt.md). Developers can use a language module to extend Glas with a much larger set of commonly used functions and keywords, and thereby improve aesthetics and reduce need for loading modules.
+This representation is managed by machine. If there are too many definitions in the fragment, we use `/prefix` to move them. If definitions are oversized, we use `@secureHash` to build a rope or finger-tree. We assume prefixes won't be too long.
 
-*Note:* Glas does not support direct import of symbols from record values because it becomes very difficult to reason about the lexical scope.
+This representation would be leveraged with a FUSE or WinFSP service to recover the conventional filesystem interface and support the network layer.
+
+## Managing Namespace
+
+Programmers are generally encouraged to declare a local name, e.g. `let f = module foo`, both for shorthand and to avoid repeating themselves. If there are many repetitive module and package imports, developing an aggregation module or language extension could reduce boilerplate.
+
