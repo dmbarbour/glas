@@ -44,46 +44,9 @@ A Glas distribution is concretely represented by a closed module where the packa
 
 The `dist/` directory serves as a convenient dumping ground for distribution metadata - authorship, licensing, readmes, discussion, digital signatures, index, cache, etc.. Distributions are also closed modules, and thus may define a `public` value in their role as a module.
 
-The main challenge is: distributions are HUGE.
+However, mature distributions will grow very large and require support for decentralized storage, incremental downloads, atomic updates, versioning, history, and metadata. 
 
-Envision the mature distribution: Communities and companies have been pushing and pulling packages for a couple decades now. There are somewhere over ten thousand packages. Old versions of many packages are stuck in closed modules. There are wikis and websites, music and memes, with the Glas repository being used by some projects as a 'smart' filesystem.
-
-## Distribution Filesystem (GlaDFS)
-
-Glas distributions eventually require a suitable filesystem. This is a relatively low priority while Glas is young, but it might be a useful project by its own merits.
-
-Some Desiderata:
-
-* decentralized storage
-* incremental downloads
-* provider independence
-* aggressive structure sharing
-* efficient diffs and edits
-* atomic updates and snapshots
-* deep history and metadata
-
-Common filesystems are missing all of these features. And they often have other features that aren't particularly useful for Glas distributions and DVCS development patterns, such as access-control security.
-
-I believe that a suitable filesystem can be developed based on content-addressed log-structured merge trie, with a rope data structure for file content.
-
-Proposed representation:
-
-        HEADERS - choice of the following
-        /prefix     - define prefix, followed by BODY
-        :symbol1    - define symbol1, followed by BODY
-        ~symbol2    - delete symbol2
-
-        BODY - sequence of following lines
-        %secureHash - include fragment as binary
-        @secureHash - include fragment as BODY
-        .text       - include text including LF
-        !text       - include text excluding LF
-
-This representation is human readable for accessibility and debugging. Secure hashes would be represented in base64url. For binary files, we'll need to use `%secureHash` fragments. 
-
-This representation is managed by machine. If there are too many definitions in the fragment, we use `/prefix` to move them. If definitions are oversized, we use `@secureHash` to build a rope or finger-tree. We assume prefixes won't be too long.
-
-This representation would be leveraged with a FUSE or WinFSP service to recover the conventional filesystem interface and support the network layer.
+Most filesystems are not suitable for this role, but a few seem close. I am contemplating the development of a [new filesystem](GlaDFS.md) that would fit the goals exactly. However, it is low priority.
 
 ## Managing Namespace
 
