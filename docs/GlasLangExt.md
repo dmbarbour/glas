@@ -38,15 +38,31 @@ A disadvantage of this approach is lackluster performance. This can be ameliorat
 
 ## Abstract Value Constructor Methods
 
-Abstract values are hidden from the parser, and have an arbitrary representation decided by the compiler. Generally, we'll record the inputs and metadata about origin.
+Abstract values are hidden from the parser, and have arbitrary representation. This supports deferred type checking and evaluation, and maintenance of metadata about origin. Compiler built-in types and functions will be available via abstract value constructors.
 
 ### Value Injection
 
         !inject(any)
 
-It is feasible to inject values into the abstract runtime. Support for injection of first-class functions will require reflection, so language modules and packages must be compiled adequate reflection support.
+Inject values from language parser into the abstract runtime. Language modules must be compiled reflection support to implement injection. There is no operation to extract values.
 
-We cannot extract values at parse time. Abstract values will remain abstract.
+### Module or Package Reference
+
+        !package("foo")
+        !module("bar")
+
+Return an abstract value representing the value from a named module or distribution package. See [Glas module system](GlasModules.md). Modules in Glas represent normal values.
+
+### Function Construction
+
+### Record Construction
+
+### Function Application
+
+
+
+
+
 
 ## Parser Combinator Methods
 
@@ -61,16 +77,6 @@ Parser combinator. We can use one parser to define the scope of another. Both pa
 The main motive for this is error isolation, especially with DSLs or distrusted parser functions.
 
 ### Warnings and Errors
-
-
-
-### Module and Package Access
-
-The compilet-ime en
-
-### Compiler Type Constructors?
-
-Arrays, fixed-width integers?
 
 ### Region Annotation
 

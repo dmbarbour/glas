@@ -315,8 +315,7 @@ We can define functions that accept multiple parameters, but they're awkward in 
 
 Instead, it might be useful to have a lightweight for application to a partial record, e.g. such that `f(a:1,~)` represents that the remainder of the record will be supplied in a subsequent parameter.
 
-I need to explore this idea further, e.g. how should this interact with pass-by-reference parameters? It might not become a feature for Glas.
-
+I need to explore this idea further, e.g. how should this interact with pass-by-reference parameters? The result must be linear, but is this intuitive?
 
 ## Object Definition
 
