@@ -60,7 +60,11 @@ A sequence of fragments will simply have a fragment count followed by that many 
 
 ### References
 
-A reference shall be encoded as a *pair* of small binaries. The first binary encodes the protocol, while the second encodes the description. The protocol will usually be under ten bytes, the description under a hundred bytes.
+A reference shall be encoded as a *pair* of small binaries. The first binary encodes the protocol, while the second encodes the description. The protocol will usually be under ten bytes, the description under a hundred bytes. 
+
+In some usage contexts, it might be favorable to abandon provider-independent storage in favor of small references. For example, references could represent block storage addresses, with blocks of 512 bytes or 4kB. 
+
+With smaller references, we can effectively use smaller node sizes, ropes with smaller chunks. We would still benefit from structure sharing.
 
 ### The Map of Children 
 
@@ -77,11 +81,11 @@ We can leverage the bitfield to improve performance.
 
 More dubious:
 
-* empty prefixes - saves one byte when we have two branches in a row, which might be common for intmaps and other 'compact' key representations, but savings would be reduced due to maps of children in same context.
-* empty definitions - unless we start loving the 'files as flags' pattern, this is rather unlikely to save even 1 bit per node on average.
-* small/large definitions - save two bytes per inline definition, but it isn't in the search path so it doesn't really matter
+* empty prefixes - saves one byte for branching of compact keys (e.g. numeric 00000-99999). This is rather specialized, and the limited savings would be overshadowed by the branching overheads.
+* empty definitions - unless we start favoring files as flags, this is unlikely to see much use in practice. The savings would be negligible, too.
+* small vs. large definitions - we could save a couple bytes for single-fragment small-binary definitions. But the saved bytes wouldn't be within the critical search path, so the benefits are limited to space savings for small files. Might be worthwhile.
 
-These could be added if empirical evidence shows they'd be worthwhile.
+These could be added if empirical evidence shows they'd be worthwhile. The lowest 7 bits for our bitfield are the most precious, so I won't sell them without clear benefits.
 
 ### Varnat Encoding
 

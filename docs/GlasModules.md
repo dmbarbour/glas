@@ -44,9 +44,13 @@ A Glas distribution is concretely represented by a closed module where the packa
 
 The `dist/` directory serves as a convenient dumping ground for distribution metadata - authorship, licensing, readmes, discussion, digital signatures, index, cache, etc.. Distributions are also closed modules, and thus may define a `public` value in their role as a module.
 
-However, mature distributions will grow very large and require support for decentralized storage, incremental downloads, atomic updates, versioning, and history. Most filesystems are not suitable for this role.
+## Distribution Package Managers
 
- *Aside:* I am contemplating development of a [new filesystem](GlaDFS.md) that would fit the requirements closely. However, it is low priority.
+Mature distributions will grow very large, over ten thousand packages. However, for the normal user or programmer, downloading the entire distribution is unnecessary, a waste of network and storage.
+
+So we can implement a package manager. This software will fetch user-selected packages and their transitive dependencies, alert users to updates, and automatically download updates in the background. The difference from a normal package manager is that packages would be managed in configured distributions, which simplifies configuration concerns.
+
+*Note:* Filesystem support for deduplication would further improve support for distributions, especially in context of closed modules.
 
 ## Managing Namespace
 

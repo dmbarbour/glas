@@ -6,7 +6,7 @@ To extend the Glas language involves creating a new language that's mostly the s
 
 A new language doesn't need to look anything like Glas. Developers may even develop parsers for ad-hoc binaries produced by other tools.
 
-Glas may be defined as a Glas language extension after bootstrapping. 
+The `.g` extension is used by the Glas language, which should eventually be bootstrapped within the distribution.
 
 ## Mapping File Extensions
 
