@@ -46,11 +46,11 @@ The `dist/` directory serves as a convenient dumping ground for distribution met
 
 ## Distribution Package Managers
 
-Mature distributions will grow very large, over ten thousand packages. However, for the normal user or programmer, downloading the entire distribution is unnecessary, a waste of network and storage.
+Mature distributions will grow very large, over ten thousand packages. For the normal user, downloading the entire distribution is wasteful. 
 
-So we can implement a package manager. This software will fetch user-selected packages and their transitive dependencies, alert users to updates, and automatically download updates in the background. The difference from a normal package manager is that packages would be managed in configured distributions, which simplifies configuration concerns.
+Glas systems will use a package manager to fetch user-selected packages and transitive dependencies from configured community distributions, and support automatic updates in the background. The distribution concept simplifies configuration management. An end user might download only a compiled executable.
 
-*Note:* Filesystem support for deduplication would further improve support for distributions, especially in context of closed modules.
+*Note:* Deduplication in the filesystem would be useful, too.
 
 ## Managing Namespace
 
