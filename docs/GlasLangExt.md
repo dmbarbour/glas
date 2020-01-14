@@ -38,7 +38,7 @@ A disadvantage of this approach is lackluster performance. This can be ameliorat
 
 ## Abstract Value Constructor Methods
 
-Abstract values are hidden from the parser, and have arbitrary representation. This supports deferred type checking and evaluation, and maintenance of metadata about origin. Compiler built-in types and functions will be available via abstract value constructors.
+Abstract values are hidden from the parser and their representation is controled by the compiler. This supports deferred type checking and evaluation, and maintenance of metadata about origin. Compiler built-in types and functions will be available via abstract value constructors.
 
 ### Value Injection
 
@@ -48,12 +48,16 @@ Inject values from language parser into the abstract runtime. Language modules m
 
 ### Module or Package Reference
 
+External dependencies are named abstract values. Currently, only packages and modules are supported. 
+
         !package("foo")
         !module("bar")
 
 Return an abstract value representing the value from a named module or distribution package. See [Glas module system](GlasModules.md). Modules in Glas represent normal values.
 
 ### Function Construction
+
+
 
 ### Record Construction
 

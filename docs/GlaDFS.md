@@ -1,27 +1,18 @@
-# Glas Distribution Filesystem (GlaDFS)
+# Glas Distribution Filesystem
 
-Glas distributions eventually require a suitable filesystem. This is a relatively low priority while Glas is young. But it seems a useful project by its own merits, so I'll write my ideas here.
+Glas distributions would benefit from a filesystem with good support for structure sharing and deduplication, snapshots for history, efficient merges and diffs.
 
-## Desiderata
+However, although developing a cool new filesystem is a fun project, the benefits are lower than developing a good distribution-oriented package manager or effective integration with Nix. Also, there are existing filesystems that already get close to the goals and can deliver most of the benefits. Such as Btrfs or Tahoe-LAFS.
 
-* decentralized storage
-* incremental download
-* storage provider independence
-* efficient merges and diffs
-* safe atomic updates
-* snapshots and history
-* structure sharing
-* security by default
-
-Glas doesn't require conventional access-control security. But it does need to be secure against a distrusted storage provide or outside attacker.
+Still, I've spent some time thinking about this and decided to write my ideas down. Maybe I'll get back to it later.
 
 ## Proposal
 
-Leverage ideas of log-structured merge trees, merkle trees, and radix trees to construct an immutable, persistent structure with cheap snapshots that be shared within a network. Remote nodes may be securely accessed by hash of the encryption key.
+Leverage ideas of log-structured merge trees, merkle trees, and radix trees to construct an immutable, persistent structure with cheap snapshots that be shared within a network. Remote nodes can be encrypted, and securely accessed by hash of the encryption key.
 
-I can implement a simple memory-mapped database above this model, similar to LMDB. This should be a superior option to implementing using files within another filesystem. We can later add support for network sharing at this database layer.
+Implement a simple memory-mapped database above this model, similar to LMDB. This should be a superior option to implementing using files within another filesystem. We can add support for network sharing at the database layer.
 
-Then, develop a FUSE/WinFSP filesystem above this database layer.
+Then, develop a FUSE/WinFSP filesystem above the database.
 
 ## Representation
 
@@ -122,7 +113,7 @@ Children will be encoded favoring depth-first and lexicographic order. All defin
 
 When a symbol define/delete/update is not found within the current node, we'll search the nearest remote node, with the appropriate relative prefix. Relevantly, we do not search the entire chain of remote nodes, just the closest one. 
 
-When writing a remote node, it must extract and merge the relevant subtree of the existing remote node.
+To support this, the node associated with a subtree must always contain all keys associated with that subtree. Before creating a remote node, we must extract and merge the relevant subtree from an existing remote node.
 
 ## Diff
 

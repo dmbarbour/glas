@@ -1,16 +1,6 @@
 # Glas Module System
 
-A Glas module or package is a value defined externally.
-
-## Terminology: Modules, Packages, Distributions, Projects
-
-Glas distinguishes 'module' as a value defined within the same folder, while a 'package' is generally a value defined non-locally, e.g. from the network. 
-
-Glas organizes packages into distributions. A distribution has only one version of each package, enabling packages to be typed, tested, and verified to work cohesively. A distribution will often be maintained by a community or company, using DVCS patterns such as forks and pull requests.
-
-A project is a set of packages under development by a programmer or small team. A project is usually much smaller than a distribution, but will often be targeted at multiple distributions, and thus require concurrent testing.
-
-## Module and Package References
+A Glas module or package is a value defined outside the current file. Glas distinguishes 'module' as a value defined within the same folder, while a 'package' is a value defined non-locally, e.g. from the network.
 
 Glas defines keywords `module` and `package` to access modules or packages by name. Thes keywords bind tightly, such that `module foo.bar` is equivalent to `(module foo).bar`. 
 
@@ -30,27 +20,17 @@ The default interpretation of a folder is simply the closed record of contained 
 
 *Note:* Files and folders whose names start with `.` or contain `~` are explicitly excluded as Glas modules. A compiler may warn or reject other names being awkward or ambiguous.
 
-## Closed Modules
+## Package Managers
 
-As another special case, a Glas folder may define a `packages` module. The compiler will recognize this, and use the module as the implicit distribution within the folder. That is, `package foo` refers to the local `module packages.foo` instead of an external distribution. 
+A mature Glas system is likely to involve thousands of packages, with many versions per package. Thus, we must share dependencies where feasible, avoid unnecessary downloads, and ensure all the packages work together - compatible types and successful integration tests.
 
-This feature supports true stand-alone modules, having no external dependencies.
+The Nix package manager seems a good fit for Glas. Like Glas, Nix views packages as values. I would like to support use of Nix with Glas. This may benefit from some compiler support regarding how packages are located within the filesystem.
 
 ## Distributions
 
-A Glas distribution is concretely represented by a closed module where the packages module is represented by a subfolder.
+A distribution is a collection of packages, containing one version of each package. A benefit of distibutions is that they greatly simplify health metrics: all packages within the distribution can be typed and tested to work cohesively, and developers can test proposed updates against multiple target distributions.
 
-        dist/packages/packagename
-
-The `dist/` directory serves as a convenient dumping ground for distribution metadata - authorship, licensing, readmes, discussion, digital signatures, index, cache, etc.. Distributions are also closed modules, and thus may define a `public` value in their role as a module.
-
-## Distribution Package Managers
-
-Mature distributions will grow very large, over ten thousand packages. For the normal user, downloading the entire distribution is wasteful. 
-
-Glas systems will use a package manager to fetch user-selected packages and transitive dependencies from configured community distributions, and support automatic updates in the background. The distribution concept simplifies configuration management. An end user might download only a compiled executable.
-
-*Note:* Deduplication in the filesystem would be useful, too.
+The primary challenge of distributions is their massive scale. A mature distribution with ten thousand packages is too large for a normal user to download. It may be feasible to model distributions as metadata over versioned packages.
 
 ## Managing Namespace
 
