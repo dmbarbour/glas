@@ -10,11 +10,15 @@ The `.g` extension is used by the Glas language, which should eventually be boot
 
 ## Mapping File Extensions
 
+Glas will map file extensions to language packages or modules, with a module overriding a package. 
+
 The Glas distribution should contain a 'language' package whose value is a record mapping file extensions to language definitions. By default, to find definition for file extension `.gg`, the compiler will try `(package language).gg`. If the package or extension is not found, the compiler will value the file as its binary content.
 
 The language package may be overridden within a folder by defining a language module. This offers more control to the programmer, to personalize languages or support project-specific languages.
 
 See [Glas module system document](GlasModules.md) for more information.
+
+*Thought:* It might be more useful to have a separate language package per extension, especially if we assume distributions are optional.
 
 ## Language Definition
 

@@ -8,9 +8,9 @@ Glas defines keywords `module` and `package` to access modules or packages by na
 
 Glas will flexibly interpret most files as modules.
 
-The interpretation of a file into a value depends on the file extension. The `.g` file extension is used for Glas language modules. The default behavior for other file extensions is to return the file's content as a binary array. This behavior is configurable via the [Glas Language Extension](GlasLangExt.md) features. 
+The interpretation of a file into a value depends on the file extension. The `.g` file extension is used for Glas language modules. Behavior for other extensions is configurable via [Glas Language Extension](GlasLangExt.md) features. 
 
-Because file-extensions are non-invasive, Glas can often be extended to compile files produced by other tools into structured data or similar. Of course, not all file types are suitable.
+Because file-extensions are non-invasive, Glas can be extended to compile files produced by other tools into structured data or similar. Of course, not all file types are suitable for Glas semantics. But returning the binary is also a valid option.
 
 ## Folders as Modules
 
@@ -22,15 +22,19 @@ The default interpretation of a folder is simply the closed record of contained 
 
 ## Package Managers
 
-A mature Glas system is likely to involve thousands of packages, with many versions per package. Thus, we must share dependencies where feasible, avoid unnecessary downloads, and ensure all the packages work together - compatible types and successful integration tests.
+A mature Glas system is likely to involve thousands of packages, with many versions per package. This environment presents a significant challenge for configuration management, reproducible computation, and effective sharing between users.
 
-The Nix package manager seems a good fit for Glas. Like Glas, Nix views packages as values. I would like to support use of Nix with Glas. This may benefit from some compiler support regarding how packages are located within the filesystem.
+The Nix package manager is a good fit for Glas. Like Glas, Nix views packages as values with purely functional computation. I propose to use Nix as the initial package manager for Glas. This may benefit from some compiler support regarding how packages are located in the filesystem.
 
 ## Distributions
 
-A distribution is a collection of packages, containing one version of each package. A benefit of distibutions is that they greatly simplify health metrics: all packages within the distribution can be typed and tested to work cohesively, and developers can test proposed updates against multiple target distributions.
+A distribution contains one version of each package. 
 
-The primary challenge of distributions is their massive scale. A mature distribution with ten thousand packages is too large for a normal user to download. It may be feasible to model distributions as metadata over versioned packages.
+A benefit of distibutions is that they greatly simplify health metrics: all packages within the distribution can be typed and tested to work cohesively, and developers can test proposed updates against multiple target distributions.
+
+The challenge of distributions is their massive scale. A mature distribution with ten thousand packages is too large for a developer or user to download. At most, we can easily download metadata about distribution versions, or generate versioned packages from a distribution.
+
+I would like for Glas systems to support distributions as the basis for sharing and updating packages and applications within a community or company. I'm still considering convenient and effective ways to achieve this goal.
 
 ## Managing Namespace
 
