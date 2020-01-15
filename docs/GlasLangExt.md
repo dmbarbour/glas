@@ -10,15 +10,9 @@ The `.g` extension is used by the Glas language, which should eventually be boot
 
 ## Mapping File Extensions
 
-Glas will map file extensions to language packages or modules, with a module overriding a package. 
-
-The Glas distribution should contain a 'language' package whose value is a record mapping file extensions to language definitions. By default, to find definition for file extension `.gg`, the compiler will try `(package language).gg`. If the package or extension is not found, the compiler will value the file as its binary content.
-
-The language package may be overridden within a folder by defining a language module. This offers more control to the programmer, to personalize languages or support project-specific languages.
+Glas will map file extensions to language packages or modules. To find definition for file extension `.gg`, Glas will simply use `module lang_gg` if defined, or `package lang_gg` otherwise. With an exception for bootstrapping, there is no default interpretation: if there is no language package or module, a file is considered undefined.
 
 See [Glas module system document](GlasModules.md) for more information.
-
-*Thought:* It might be more useful to have a separate language package per extension, especially if we assume distributions are optional.
 
 ## Language Definition
 
@@ -44,11 +38,11 @@ A disadvantage of this approach is lackluster performance. This can be ameliorat
 
 Abstract values are hidden from the parser and their representation is controled by the compiler. This supports deferred type checking and evaluation, and maintenance of metadata about origin. Compiler built-in types and functions will be available via abstract value constructors.
 
-### Value Injection
+### Literal Values
 
-        !inject(any)
+We'll require methods to construct numbers and strings, and other values we can reasonably represent as literals or construct directly.
 
-Inject values from language parser into the abstract runtime. Language modules must be compiled reflection support to implement injection. There is no operation to extract values.
+*Aside:* I've contemplated a general `!inject(val)` method, which would require reflection. However, I've decided to table this until we determine how difficult it will be to support the reflection. Meanwhile, literal values would align with writing an AST. 
 
 ### Module or Package Reference
 

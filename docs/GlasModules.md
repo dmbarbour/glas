@@ -22,19 +22,19 @@ The default interpretation of a folder is simply the closed record of contained 
 
 ## Package Managers
 
-A mature Glas system is likely to involve thousands of packages, with many versions per package. This environment presents a significant challenge for configuration management, reproducible computation, and effective sharing between users.
+A mature Glas system will have thousands of packages, with multiple versions of each package. This environment presents a significant challenge for configuration management, reproducible computation, and effective sharing between users. 
 
-The Nix package manager is a good fit for Glas. Like Glas, Nix views packages as values with purely functional computation. I propose to use Nix as the initial package manager for Glas. This may benefit from some compiler support regarding how packages are located in the filesystem.
+The Nix package manager seems a good fit for Glas. Like Glas, Nix views packages as values with purely functional computation. I propose to adapt Nix as the initial package manager for Glas. If necessary, we can develop tooling to make this more convenient for the user.
+
+An advantage of the Nix package manager is that we can version not just a Glas package but also the entire ecosystem for bootstrapping and compiling it.
 
 ## Distributions
 
-A distribution contains one version of each package. 
+A distribution contains one version of each package. Distibutions simplify deployment, maintenance, and provide a basis for community. Users can subscribe to a distribution for updates, and developers can verify by types and tests that all packages within a distribution work cohesively.
 
-A benefit of distibutions is that they greatly simplify health metrics: all packages within the distribution can be typed and tested to work cohesively, and developers can test proposed updates against multiple target distributions.
+The challenge of distributions is their massive scale. There are too many packages for a user or developer to download. At most, it is feasible to download metadata about the available packages.
 
-The challenge of distributions is their massive scale. A mature distribution with ten thousand packages is too large for a developer or user to download. At most, we can easily download metadata about distribution versions, or generate versioned packages from a distribution.
-
-I would like for Glas systems to support distributions as the basis for sharing and updating packages and applications within a community or company. I'm still considering convenient and effective ways to achieve this goal.
+In context of Nix, distributions correspond roughly to Nix channels, git repositories of package metadata and associated with cached binaries. It may be feasible to build on Nix channels directly. 
 
 ## Managing Namespace
 
