@@ -1,42 +1,57 @@
 # Glas Module System
 
-A Glas module or package is a value defined outside the current file. Glas distinguishes 'module' as a value defined within the same folder, while a 'package' is a value defined non-locally, e.g. from the network.
+The Glas module system has two layers - modules and packages. A 'module' is a value defined outside the current file, yet locally within the same filesystem folder. A 'package' is a value defined non-locally, and will be located by package manager.
 
-Glas defines keywords `module` and `package` to access modules or packages by name. Thes keywords bind tightly, such that `module foo.bar` is equivalent to `(module foo).bar`. 
+In both cases, modules and packages define arbitrary Glas values. A module could represent a binary, or a data structure. However, common case is for a module to define a record of symbols, simulating a conventional module system. 
+
+Glas defines keywords `module` and `package` to reference modules or packages by name. 
 
 ## Files as Modules
 
-Glas will flexibly interpret most files as modules.
+Glas will flexibly interpret files as modules via the [Glas Language Extension](GlasLangExt.md) feature. The `.g` extension is used for the standard Glas language. Because file-extensions are non-invasive, Glas can be extended to process files produced by external tools, assuming they are not a bad fit for Glas semantics.
 
-The interpretation of a file into a value depends on the file extension. The `.g` file extension is used for Glas language modules. Behavior for other extensions is configurable via [Glas Language Extension](GlasLangExt.md) features. 
+File extension is NOT part of the module name. That is, a `foo.x` file will be referenced as `module foo`. This ensures that the language used by a module is not visible to the client of that module.
 
-Because file-extensions are non-invasive, Glas can be extended to compile files produced by other tools into structured data or similar. Of course, not all file types are suitable for Glas semantics. But returning the binary is also a valid option.
+## Folders as Modules or Packages
 
-## Folders as Modules
+Any subfolder `foo/` is interpreted as a module. If a folder contains a `public` module, the value from that module becomes the value for the folder. Otherwise, the folder is interpreted as a closed record of contained modules, essentially reflecting the filesystem structure.
 
-Glas will interpret most folders (aka directories) as modules.
+By design, folders cannot have external module dependencies. Folders depend only on internal structure and packages, thus are easy to share or review independently. Folders will also serve as the concrete representation for Glas packages.
 
-The default interpretation of a folder is simply the closed record of contained modules. However, if the folder defines a `public` module, the value from this module becomes the value of the folder. This enables folders to hide implementation details like any other module.
+## Filesystem Restrictions
 
-*Note:* Files and folders whose names start with `.` or contain `~` are explicitly excluded as Glas modules. A compiler may warn or reject other names being awkward or ambiguous.
+Glas does not support arbitrary folder and file names. Names starting with `.` or containing `~` are explicitly elided to support common filesystem conventions. Otherwise, names should be suitable for use in Glas records - e.g. avoid use of spaces, upper-case characters, etc.. A Glas compiler may report a warning or error for problematic names, then leave the associated module or package undefined.
 
-## Package Managers
+## GLAS_PATH
 
-A mature Glas system will have thousands of packages, with multiple versions of each package. This environment presents a significant challenge for configuration management, reproducible computation, and effective sharing between users. 
+The simplest and most conventional approach to package management is the filesystem search path, defined by environment variable such as `GLAS_PATH`. This path will specify a sequence of locations to search for a package. To find a package, sequentially search each location. This also supports override and precedence.
 
-The Nix package manager seems a good fit for Glas. Like Glas, Nix views packages as values with purely functional computation. I propose to adapt Nix as the initial package manager for Glas. If necessary, we can develop tooling to make this more convenient for the user.
+Normally, locations are filesystem folders, and we'll simply search each for an appropriate subfolder. However, it is feasible to extend the concept of search paths with network locations and package distributions.
 
-An advantage of the Nix package manager is that we can version not just a Glas package but also the entire ecosystem for bootstrapping and compiling it.
+The weakness with this feature is that it becomes too difficult to control and manage as it scales.
+
+## Nix Package Manager
+
+A mature Glas system could easily have over ten thousand packages. Any given package may have several versions or variants. Some packages may update frequently, e.g. due to continuous deployment. Altogether, package systems present several challenges related to scale, caching, sharing, configuration management, and reproducible computation.
+
+To solve these problems, we'll eventually want a package manager.
+
+However, designing a good package manager is a lot of work and a significant project in its own right. Thus, until it proves inadequate, I propose to shove this effort to an existing system: the Nix package manager.
 
 ## Distributions
 
-A distribution contains one version of each package. Distibutions simplify deployment, maintenance, and provide a basis for community. Users can subscribe to a distribution for updates, and developers can verify by types and tests that all packages within a distribution work cohesively.
+Another useful idea for managing packages is 'distributions'. A distribution contains one version of each package. This enables all packages in the distribution to be tested to work cohesively, and also provides a simple model for deployment: publishing to the distribution.
 
-The challenge of distributions is their massive scale. There are too many packages for a user or developer to download. At most, it is feasible to download metadata about the available packages.
-
-In context of Nix, distributions correspond roughly to Nix channels, git repositories of package metadata and associated with cached binaries. It may be feasible to build on Nix channels directly. 
+A distribution can be curated by a company or community. It's also a similar idea to Nix channels. A Nix channel might prove adequate for representing Glas distributions.
 
 ## Managing Namespace
 
-Programmers are generally encouraged to declare a local name, e.g. `let f = module foo`, both for shorthand and to avoid repeating themselves. If there are many repetitive module and package imports, developing an aggregation module or language extension could reduce boilerplate.
+Glas modules define values, often records. Glas can easily simulate 'qualified' imports via `let f = package foo`, with subsequent access to `f.xyzzy` having obvious source. Feasibly we can also 'import' module or package-defined symbols into lexical scope, relying on static evaluation and safety analysis. However, I'm a little uncertain how to best model this.
 
+        let f = package foo
+        let b = package bar
+        let bz = package baz
+        ... 
+        f.xyzzy args
+
+Repeating reference patterns easily become boilerplate and violations of DRY. This can be mitigated by defining intermediate aggregation modules, or perhaps a language modules

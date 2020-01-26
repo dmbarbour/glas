@@ -1,18 +1,20 @@
 # Glas Language Extension
 
-The primary Glas language extension model is based on file extensions specifying the language for a module. Compared to macros, this design reduces boilerplate, improves performance, and simplifies tooling.
+The Glas language extension model is based on file extension specifying language for a module. Compared to macros, this design reduces boilerplate, improves performance, and simplifies tooling.
 
-To extend the Glas language involves creating a new language that's mostly the same as Glas except with a few extra features. To create this language, we would first develop a package that implements Glas in an openly extensible way. The new language would then be mapped to a file extension, such as `.gg`, so we can write code in this language.
+To 'extend' Glas involves creating a new language that's similar to Glas except with a few extra features. This is achievable by defining Glas in an extensible manner, using a library. 
 
-A new language doesn't need to look anything like Glas. Developers may even develop parsers for ad-hoc binaries produced by other tools.
+Glas is not limited to defining languages with Glas-like syntax. DSLs can be defined, JSON can be parsed, etc.. For all languages, Glas supports a consistent approach to detecting and reporting errors. However, there are practical limits. Glas languages must be defined in terms of the underlying model for Glas. It is awkward to define behaviors that rely on shared memory, typeful reflection, or non-determinism.
 
-The `.g` extension is used by the Glas language, which should eventually be bootstrapped within the distribution.
+The `.g` file extension represents the standard Glas language, which should be bootstrapped.
 
 ## Mapping File Extensions
 
-Glas will map file extensions to language packages or modules. To find definition for file extension `.gg`, Glas will simply use `module lang_gg` if defined, or `package lang_gg` otherwise. With an exception for bootstrapping, there is no default interpretation: if there is no language package or module, a file is considered undefined.
+Glas maps file extensions to language packages. To find definition for file extension `.x`, Glas will search for a language definition in `package language_x`. There is no default interpretation for a file. If there is no associated language package, the file's value is undefined.
 
-See [Glas module system document](GlasModules.md) for more information.
+File extensions should have consistent interpretation within the Glas system. However, local language package overrides could be useful for eliminating boilerplate.
+
+See [Glas module system](GlasModules.md) documentation for more information.
 
 ## Language Definition
 
