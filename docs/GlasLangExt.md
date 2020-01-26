@@ -18,33 +18,43 @@ See [Glas module system](GlasModules.md) documentation for more information.
 
 ## Language Definition
 
-Minimally, the language definition must parse a file and produce a value.
+Minimally, the language definition must parse a file and produce a value. 
 
-To support debugging, the parser and produced value should preserve location metadata for source mapping, isolate errors, and robustly continue to report many likely errors rather than stopping on the first error.
+However, for tooling, it would be useful to support syntax highlighting, auto-formatting, simplification, projectional editing, code completion, documentation, tutorials, and so on. To support these features, language definitions should be extensible.
 
-Beyond compiler support, a complete language definition should support external tooling: syntax highlighting, auto-formatting, projectional editing, code completion, code reduction. Because there is no limit to potential tooling, language definitions must also be extensible. Further, a language definition could feasibly include documentation, examples, tutorials.
-
-Glas will define languages as records that minimally define the `parse` function.
+To ensure extensibility, Glas will define a language as a record that minimally include the `parse` function. Other features may be added as-needed.
 
 ## The Parse Function
 
-Naively, a parser could implement a pure `Binary -> Value` function. However, this would not support module references, generation of unique labels, or effective debugging.
+An object is passed to the `parse` function providing methods for abstract constructors and parser combinators on the input stream.
 
-A Glas parse function instead is parameterized by an opaque 'compile-time environment' object, with methods for construction of the abstract value and parsing the input. 
+The parser combinators will include several methods to simplify debugging, such as recording intentions, expectations, suspicions, proposed corrections. Thus, parsing can produce an annotated input. It's also easier to detect whether the full input was parsed, or detect ambiguity when composing choices.
 
-This design allows us to maintain metadata about where values come from. We can also try multiple alternatives to detect ambiguity, verify the full input is consumed, continue in presence of errors, and report which grammar types and tokens are expected at a given step. This design is also extensible: we can add new methods to the object. Type safety analysis and partial evaluation can be deferred until after parsing.
+The abstract constructors may implicitly record parser locations, preserving location metadata for purpose of reporting type errors, stack traces, profiling, breakpoints, etc.. Abstract constructors also support 'unique' labels and defer type checking or static evaluation.
 
-A disadvantage of this approach is lackluster performance. This can be ameliorated by developing a BNF-like intermediate language that can be optimized to minimize backtracking and deep recursion.
+The weakness of this approach is performance. It's difficult to optimize the parser, or combine similar search paths. This can be mitigated by developing a declarative grammar language that can be compiled into a parser combinator with minimal backtracking.
 
-## Abstract Value Constructor Methods
+The remainder of this document is mostly a discussion of the methods required for the `parse` function.
 
-Abstract values are hidden from the parser and their representation is controled by the compiler. This supports deferred type checking and evaluation, and maintenance of metadata about origin. Compiler built-in types and functions will be available via abstract value constructors.
+## Abstract Constructors
 
-### Literal Values
+### Labels
 
-We'll require methods to construct numbers and strings, and other values we can reasonably represent as literals or construct directly.
+We can model a first-class 'label' as an abstract record of row-polymorphic functions to access or update the label's value within a record.
 
-*Aside:* I've contemplated a general `!inject(val)` method, which would require reflection. However, I've decided to table this until we determine how difficult it will be to support the reflection. Meanwhile, literal values would align with writing an AST. 
+Glas will support two label constructors: one for regular labels like `foo`, and another for allocation of unique labels.
+
+        !label("foo")
+        !gensym()
+
+Use of unique labels can enable Glas to model nominative types. Labels and gensym are both instances of 'paths', representing edges in the graph. In general, labels should compose into dotted paths like `foo.(m.class).bar`.
+
+        let a = !label("foo")
+        let b = ... eval m.class
+        let c = !label("bar")
+        !path_compose[a,b,c]
+
+In general, specific methods will also exist to use labels, e.g. to manipulate a closed record.
 
 ### Module or Package Reference
 
@@ -53,7 +63,31 @@ External dependencies are named abstract values. Currently, only packages and mo
         !package("foo")
         !module("bar")
 
-Return an abstract value representing the value from a named module or distribution package. See [Glas module system](GlasModules.md). Modules in Glas represent normal values.
+These return an abstract value representing the value from a named module or package. See [Glas module system](GlasModules.md). The type or concrete value is not visible to the parser. Thus, parsing does not require that external dependencies are implemented yet (excepting the language module).
+
+### Literal Values
+
+Basic constructors will exist of numbers and binaries. Glas does not currently support injection of arbitrary values. But a few specific types can be injected.
+
+
+## Parser Combinators
+
+### Scope
+
+We can use one parser to impose scope upon another.
+
+        !scoped(scope:P1, parser:P2)
+
+This would first parse with `P1`, then parse `P2` within the same range consumed by `P1`. We could augment this by passing the result of parsing `P1` as a parameter to `P2`. The main motive for this is error isolation, especially with DSLs or distrusted parser functions.
+
+### Code Correction or Completion
+
+If we simply read characters without describing expectations, it can be difficult to propose corrections to code. Hence, all byte-level reads should indicate expectations in some useful way, such as regular expressions. Then, if no expectations are met, we can propose some byte-level corrections that would enable parsing to continue.
+
+## Abstract Value Constructor Methods
+
+Abstract values are hidden from the parser and their representation is controled by the compiler. This supports deferred type checking and evaluation, and maintenance of metadata about origin. Compiler built-in types and functions will be available via abstract value constructors.
+
 
 ### Function Construction
 
@@ -72,13 +106,6 @@ Return an abstract value representing the value from a named module or distribut
 
 ### Scope Control
 
-        !scoped(scope:P1, parser:P2)
-
-Parser combinator. We can use one parser to define the scope of another. Both parsers 
-
- parse action relative to another, e.g. `!scoped(scope:P1, parser:P2)` extracts a range of input based on `P1` then runs `P2` within that scope, and returns the result from each parse.
-
-The main motive for this is error isolation, especially with DSLs or distrusted parser functions.
 
 ### Warnings and Errors
 

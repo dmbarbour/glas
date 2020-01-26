@@ -10,7 +10,7 @@ A Glas program is modeled by a directed graph with labeled edges. Evaluation rew
 
 Functions are bounded subgraphs with a designated public node. When applied, the subgraph is copied inline, and the copy's public node is unified with the applicand. This logically results in monotonic, deterministic expansion of the graph, but subgraphs may be garbage collected when they become irrelevant.
 
-Edges are labeled from a finite alphabet. However, arbitrary labels can be modeled via composition. For example, the label `result` may involve seven nodes in a sequence - one for each character, followed by a sentinel. This implies a trie-like structure.
+Edges are labeled from a finite alphabet. However, arbitrary labels may be constructed via composition. For example, the label `result` may involve seven nodes in a sequence - one for each character, followed by a sentinel. This implies a trie-like structure.
 
 ## Glas Module System
 
