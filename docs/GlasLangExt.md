@@ -10,11 +10,9 @@ The `.g` file extension represents the standard Glas language, which should be b
 
 ## Mapping File Extensions
 
-Glas maps file extensions to language packages. To find definition for file extension `.x`, Glas will search for a language definition in `package language_x`. There is no default interpretation for a file. If there is no associated language package, the file's value is undefined.
+Glas associates file extensions to [modules or packages](GlasModules.md). To find definition for file extension `.x`, Glas will first search for the `language_x` module in the same folder. If this module not defined, Glas will search for the `language_x` package. If there is no such package, the file's value is opaque.
 
-File extensions should have consistent interpretation within the Glas system. However, local language package overrides could be useful for eliminating boilerplate.
-
-See [Glas module system](GlasModules.md) documentation for more information.
+Language modules are mostly intended for experimental and didactic purposes. Language packages are preferred, with pragmas or flags to adjust a language as needed.
 
 ## Language Definition
 
@@ -22,11 +20,17 @@ Minimally, the language definition must parse a file and produce a value.
 
 However, for tooling, it would be useful to support syntax highlighting, auto-formatting, simplification, projectional editing, code completion, documentation, tutorials, and so on. To support these features, language definitions should be extensible.
 
-To ensure extensibility, Glas will define a language as a record that minimally include the `parse` function. Other features may be added as-needed.
+To ensure extensibility, Glas will define a language as a record that minimally contains the `parse` function. This record may be freely extended with other features as-needed.
 
-## The Parse Function
+The parse function is parameterized by an abstract linear object, which provides methods to read input and construct abstract values.
 
-An object is passed to the `parse` function providing methods for abstract constructors and parser combinators on the input stream.
+
+
+An object is passed to the `parse` function parameterized by compile-time environment,
+
+ combinators and 
+
+providing methods for abstract constructors and parser combinators on the input stream. 
 
 The parser combinators will include several methods to simplify debugging, such as recording intentions, expectations, suspicions, proposed corrections. Thus, parsing can produce an annotated input. It's also easier to detect whether the full input was parsed, or detect ambiguity when composing choices.
 
@@ -36,11 +40,38 @@ The weakness of this approach is performance. It's difficult to optimize the par
 
 The remainder of this document is mostly a discussion of the methods required for the `parse` function.
 
+## Parser Combinators
+
+This section describes available parser combinators over the input stream, with interface and purpose. 
+
+Errors: it's considered a parse error if the parser returns before the end of input, or if a parse error is explicitly emitted. There is no distinct 'error' return value.
+
+### Read Remaining
+
+Read all remaining input as a binary value.
+
+
+
+
+
+### Input Annotation
+
+The first pattern is to 
+
+
+
+
+
+
+
+
 ## Abstract Constructors
 
 ### Labels
 
-We can model a first-class 'label' as an abstract record of row-polymorphic functions to access or update the label's value within a record.
+A label can be used to access or update a record value, or in pattern matching. However, 
+
+
 
 Glas will support two label constructors: one for regular labels like `foo`, and another for allocation of unique labels.
 
@@ -55,6 +86,10 @@ Use of unique labels can enable Glas to model nominative types. Labels and gensy
         !path_compose[a,b,c]
 
 In general, specific methods will also exist to use labels, e.g. to manipulate a closed record.
+
+### Unique Labels (Rejected)
+
+A potentially useful idea is to support construction of unique labels, e.g. some form of `gensym` effect at compile-time. However, use of gensym is awkward in context of serialization, caching. I favor an ML approach: use of ascription and annotations to hide data, using only normal labels.
 
 ### Module or Package Reference
 

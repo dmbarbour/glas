@@ -1,4 +1,4 @@
-# Glas Distribution Filesystem
+# Glas Distribution Filesystem (Not Likely to Happen)
 
 Glas distributions would benefit from a filesystem with good support for structure sharing and deduplication, snapshots for history, efficient merges and diffs.
 

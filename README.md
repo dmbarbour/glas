@@ -1,10 +1,8 @@
 # Glas Language
 
-Glas is a purely functional language with transparent futures and rich metaprogramming, generally programmed in an imperative and object-oriented style. Glas leverages futures to model pass-by-reference parameters and interactive computations. Objects build upon pass-by-reference with a dash of syntactic sugar.
+Glas is a purely functional language with transparent futures and rich metaprogramming. In the default syntax, Glas is programmed in a procedural-functional style, with signatures and structures similar to ML. However, Glas supports package-defined syntax which can support other styles.
 
-Glas is designed to support [direct manipulation interfaces](https://en.wikipedia.org/wiki/Direct_manipulation_interface). Transparent futures are an essential aspect of this, enabling interactions to be modeled as simple data structures. Glas is ultimately intended for end-user programming and lightweight sharing of software artifacts. These features would build upon the direct manipulation interfaces and functional purity.
-
-Glas is intended to be a full-spectrum language, with good performance and access to hardware acceleration via FPGA, GPGPU, and cloud computing. To support this without violating purity, Glas will support rich static analysis and flexible annotations. 
+Glas is designed to support [direct manipulation interfaces](https://en.wikipedia.org/wiki/Direct_manipulation_interface). Transparent futures are an essential aspect of this, enabling interactive sessions and protocols to be modeled as data structures, which can be rendered and manipulated directly.
 
 See [design](docs/GlasDesign.md) document for details.
 

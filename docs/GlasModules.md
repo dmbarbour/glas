@@ -1,14 +1,10 @@
-# Glas Module System
+# Glas Module and Package System
 
-The Glas module system has two layers - modules and packages. A 'module' is a value defined outside the current file, yet locally within the same filesystem folder. A 'package' is a value defined non-locally, and will be located by package manager.
-
-In both cases, modules and packages define arbitrary Glas values. A module could represent a binary, or a data structure. However, common case is for a module to define a record of symbols, simulating a conventional module system. 
-
-Glas defines keywords `module` and `package` to reference modules or packages by name. 
+The Glas module and package system divides a programs into multiple files. Each module or package represents a first-class Glas value of arbitrary type. Glas defines keywords `module` and `package` to reference modules or packages by name.
 
 ## Files as Modules
 
-Glas will flexibly interpret files as modules via the [Glas Language Extension](GlasLangExt.md) feature. The `.g` extension is used for the standard Glas language. Because file-extensions are non-invasive, Glas can be extended to process files produced by external tools, assuming they are not a bad fit for Glas semantics.
+Glas will flexibly interpret files as modules,  via the [Glas Language Extension](GlasLangExt.md) feature. The `.g` extension is used for the standard Glas language. Because file-extensions are non-invasive, Glas can be extended to process files produced by external tools, assuming they are not a bad fit for Glas semantics.
 
 File extension is NOT part of the module name. That is, a `foo.x` file will be referenced as `module foo`. This ensures that the language used by a module is not visible to the client of that module.
 
@@ -44,14 +40,8 @@ Another useful idea for managing packages is 'distributions'. A distribution con
 
 A distribution can be curated by a company or community. It's also a similar idea to Nix channels. A Nix channel might prove adequate for representing Glas distributions.
 
-## Managing Namespace
+## Namespaces and Implementation Hiding
 
-Glas modules define values, often records. Glas can easily simulate 'qualified' imports via `let f = package foo`, with subsequent access to `f.xyzzy` having obvious source. Feasibly we can also 'import' module or package-defined symbols into lexical scope, relying on static evaluation and safety analysis. However, I'm a little uncertain how to best model this.
+The Glas module system focuses on organization of a program into files, folders, and external packages. In contrast, conventional module systems cover additional responsibilities such as namespace management and implementation hiding.
 
-        let f = package foo
-        let b = package bar
-        let bz = package baz
-        ... 
-        f.xyzzy args
-
-Repeating reference patterns easily become boilerplate and violations of DRY. This can be mitigated by defining intermediate aggregation modules, or perhaps a language modules
+In Glas, those responsibilities are pushed to the value and type system layers. The default Glas syntax will support ML-style signatures and structures. Abstraction is achieved through annotation and ascription, asserting values are observed through limited interfaces.
