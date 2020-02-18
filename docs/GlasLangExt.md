@@ -1,18 +1,20 @@
 # Glas Language Extension
 
-The Glas language extension model is based on file extension specifying language for a module. Compared to macros, this design reduces boilerplate, improves performance, and simplifies tooling.
+The Glas language allows multiple syntaxes, driven by file extensions. In contrast to macro-like systems, use of file extension can reduce boilerplate, simplify tooling, and improve performance. 
 
-To 'extend' Glas involves creating a new language that's similar to Glas except with a few extra features. This is achievable by defining Glas in an extensible manner, using a library. 
+An alternative syntax can support various roles: syntax can be optimized for a specific domain (e.g. natural language processing), or for alternative development environments (e.g. projectional editors, augmented reality), or to integrate external resources (e.g. parse JSON and load databases as regular modules).
 
-Glas is not limited to defining languages with Glas-like syntax. DSLs can be defined, JSON can be parsed, etc.. For all languages, Glas supports a consistent approach to detecting and reporting errors. However, there are practical limits. Glas languages must be defined in terms of the underlying model for Glas. It is awkward to define behaviors that rely on shared memory, typeful reflection, or non-determinism.
+The Glas syntax model is carefully designed to support robust tooling, e.g. enabling external tools to reuse the same parser for syntax highlighting or code completion. Even without FFI, this can be leveraged with some special compiler flags.
 
-The `.g` file extension represents the standard Glas language, which should be bootstrapped.
+However, regardless of syntax, the underlying model is the same: Glas syntax extensions cannot represent anything new. Glas defines a standard syntax, which is normally assigned to the `.g` file extension and bootstrapped.
 
 ## Mapping File Extensions
 
-Glas associates file extensions to [modules or packages](GlasModules.md). To find definition for file extension `.x`, Glas will first search for the `language_x` module in the same folder. If this module not defined, Glas will search for the `language_x` package. If there is no such package, the file's value is opaque.
+Glas associates file extensions to [modules or packages](GlasModules.md). To find definition for file extension `.x`, Glas will first search for the `language_x` module in the local folder. If this module not defined, Glas will search instead for the `language_x` package. If there is no such package, the file's value is opaque.
 
-Language modules are mostly intended for experimental and didactic purposes. Language packages are preferred, with pragmas or flags to adjust a language as needed.
+Language packages are preferred. For minor variations (like a versioned language) a simple system of pragmas and flags for extensions could be built-in to the language itself. But language modules are suitable for didactic purposes, experimental designs, or specialization by schema.
+
+*Note:* Multi-part languages such as `.x.y` currently aren't supported, because a suitable semantics is not clear. 
 
 ## Language Definition
 
@@ -61,7 +63,9 @@ The first pattern is to
 
 
 
+## Overloading Symbols?
 
+Glas does not support typeful overloading of symbols.
 
 
 

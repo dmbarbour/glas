@@ -2,7 +2,7 @@
 
 Glas distributions would benefit from a filesystem with good support for structure sharing and deduplication, snapshots for history, efficient merges and diffs.
 
-However, although developing a cool new filesystem is a fun project, the benefits are lower than developing a good distribution-oriented package manager or effective integration with Nix. Also, there are existing filesystems that already get close to the goals and can deliver most of the benefits. Such as Btrfs or Tahoe-LAFS.
+However, although developing a cool new filesystem is a fun project, the return on investment is lower than simply using a good package manager. Also, there are existing filesystems that already get close to the goals and can deliver a useful subset of the benefits. Such as Btrfs or Tahoe-LAFS.
 
 Still, I've spent some time thinking about this and decided to write my ideas down. Maybe I'll get back to it later.
 

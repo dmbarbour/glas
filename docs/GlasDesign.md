@@ -8,27 +8,23 @@ A Glas program is modeled by a directed graph with labeled edges. Evaluation rew
 
 *Unification* is the basis for dataflow and concurrency. Unification merges two nodes, and propagates over matching edge labels. For terminal values, further unification is considered a type-error. Effectively, unification supports transparent futures with single-assignment semantics.
 
-Functions are bounded subgraphs with a designated public node. Application will copy the subgraph, unifying the copy's public node with the applicand. This results in monotonic, deterministic expansion of the graph. In practice, subgraphs must be garbage collected after they become irrelevant.
+Functions are bounded subgraphs with a designated public node. Application will copy the subgraph then unify the copy's public node with the applicand. This results in monotonic, deterministic expansion of the graph. Subgraphs may be garbage collected when they become irrelevant to recover memory resources.
 
 Edges are labeled from a finite alphabet. However, arbitrary labels may be constructed via composition. For example, the label `result` may involve seven nodes in a sequence - one for each character, followed by a sentinel. This implies a trie-like structure.
 
-## Glas Package System
+## Glas Module and Package System
 
-The module system is an important part of a language's user experience. 
+The Glas module system is based on the files and folders (at small scales) and a package manager (at larger scales). Glas modules or packages represent arbitrary values, but will often define ML-style signatures or structures.
 
-Glas modules represent arbitrary values, not symbol definitions. The Glas module system is based on the files and folders (at small scales) and community maintained package distributions (at larger scales). A distribution has only one version of each package, which simplifies configuration management, integration testing, and deployment.
-
-See the [Glas Module System](GlasModules.md) document for details. 
+See the [Glas Module and Package System](GlasModules.md) document for details. 
 
 ## Glas Language Extension
 
-In general, Glas systems support one language per file, based on file extension. This can be leveraged for domain-specific languages, parsing structured data, or adding a convenient set of macro-like extensions to the Glas language within a project.
+In general, Glas systems use one language per file, based on file extension. This can be leveraged for domain-specific languages, parsing structured data, or adding a convenient set of macro-like extensions to the Glas language within a project.
 
 See the [Glas Language Extension](GlasLangExt.md) document for details.
 
-## Data Models
-
-This section describes data types in Glas, building from simple to sophisticated. The Glas underlying model does not support mutable state, so all Glas data is immutable.
+## Data Basics
 
 ### Records
 
@@ -36,13 +32,13 @@ In the underlying model, a record such as `(x:6, y:7)` can be encoded as a node 
 
 A record can be updated by producing a copy of the record that is different for specified labels. Glas supports [row-polymorphic updates](https://en.wikipedia.org/wiki/Row_polymorphism), allowing fields to be added or removed and changes in type.
 
-Glas records may be 'open' or 'closed' to unification. An open record might be represented as `(x:6, y:7, ...)` and permit new labels to be added by unification. In contrast, the Glas parser adds an implicit field for closed records, supporting limited introspection over which fields are defined.
+Glas records may be 'open' or 'closed' to unification. An open record might be represented as `(x:6, y:7, ...)` and permits new labels to be added by unification. In contrast, the Glas parser adds an implicit field for closed records to support limited introspection over which fields are defined.
 
 The empty, closed record `()` serves as the Glas unit value and type. The empty, open record `(...)` serves as an anonymous future open to unification (not necessarily a record type). Use of parentheses around an unlabeled expression, such as `(expr)`, will simply evaluate the expression.
 
 ### Variants
 
-Glas variants can be modeled as closed, singleton records, such as `circle:(radius:3, color:red)` or `square:(side:3, color:blue)`. Glas will leverage the implicit reflection field of closed records to for pattern matching and conditional behavior based on which label is defined.
+Glas variants are modeled as closed, singleton records, such as `circle:(radius:3, color:red)` or `square:(side:3, color:blue)`. Glas will leverage the implicit reflection field of closed records to for pattern matching and conditional behavior based on which label is defined.
 
 A unit variant `foo:()` is convenient for modeling enumerations or optional flags in a list of naed parameters. Glas will provide a convenient shorthand: `'foo` is equivalent to `foo:()`.
 
@@ -52,13 +48,11 @@ List data can be modeled as a recursive structure of variants and records:
 
         type List a = cons:(head: a, tail: List a) | 'null
 
-Glas will provide a convenient syntactic sugar, such that: `[1,2,3]` essentially expands to `cons:(head:1, tail:[2,3])`, and `[]` expands to `'null`.
+Standard Glas will provide a convenient syntax such that: `[1,2,3]` essentially expands to `cons:(head:1, tail:[2,3])`, and `[]` expands to `'null`.
 
 ### Tuples
 
-Glas can be modeled as invariant-length, heterogeneous lists, e.g. `[1, "hello", (x:6, y:7)]`. Most operations on lists - such as length, zip, concatenation, indexed access - should work for tuples. Glas type system and compiler will give special support for invariant-length lists and static indexing.
-
-Use of tuples is not encouraged in Glas. Records are preferred.
+Use of tuples are currently not supported in Glas. Records are preferred, being much easier to extend or reorder. However, if the type system proves advanced enough, we could use invariant-length heterogeneous lists as tuples.
 
 ### Arrays
 
@@ -76,7 +70,15 @@ Glas should support in-place update optimizations. However, I haven't settled on
 
 ## Modeling Objects (Deferred)
 
-It is feasible to model objects as a record with fields and methods, plus a little syntactic sugar for method calls (so we don't repeat the object reference). However, it is difficult to optimize objects due to potential variability of the methods.
+It is feasible to model objects as a record with fields and methods, plus a little syntactic sugar for method calls. 
+
+However, for performance reasons, I intend to discourage use of first-class functions at runtime for *most* Glas code. Thus, a syntactic sugar for objects is contradictory to my goals.
+
+So far, I have not found a suitable alternative model. 
+
+
+
+
 
 It can help to separate the methods from the instance, but then we still have variability in a list of objects all having the same 'class'. If we fully separate methods from instances, we instead end up very close to ML-style signatures and structures.
 
