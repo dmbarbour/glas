@@ -1,71 +1,62 @@
 # Glas Language Design
 
-Glas is a language system designed for large-scale reflective metaprogramming.
+This document aims to be relatively concrete in providing design details.
 
 ## Module System
 
-A Glas module computes a value. A parse-time reference to a module will return that module's value, to support further computation by other modules. Glas values are simple, structured data formed of lists, dictionaries, and natural numbers, so modules have no hidden data or behavior. However, modules do hide their representation and dependencies.
+Glas modules are concretely represented by files and folders in a filesystem. 
 
-Within a filesystem, modules are concretely represented by local files and subfolders, or external packages discovered by searching a `GLAS_PATH` environment variable. Glas does not specify a package manager at this time. The current intention is to leverage the Nix or Guix package managers, at least until they prove deficient.
+To find a module `foo`, a compiler will search for a file `foo.*` or folder `foo/` in the same directory as the file it's currently compiling. To find a module `pkg:foo`, also called a package, the compiler will search for a folder `foo/` based on the `GLAS_PATH` environment variable. 
 
-Files support user-defined syntax or binary representations. To parse a file with the `.xyz` extension, the Glas tool utility will search for a local module or external package named `language_xyz` whose value describes how to process this file and ultimately produce a value. Exceptions exist for bootstrapping.
+Every module computes a Glas value. The value should be heuristically cached to support incremental computation, favoring the [Glas Object](GlasObject.md) representation for sharing.
 
-Language modules are designed to standardize syntax error handling, simplify optimizations, and support other common language features; this is detailed in a later section. To hide choice of language representation, the file extension is excluded from the module name.
+To compute a value for a file `foo.xyz`, the Glas compiler will implicitly search for a module or package `language-xyz`, favoring a local module. The language module will specify a process that receives the file binary as input, loads module dependencies, and computes a value, among other things. (See *Language Modules*.)
 
-The value of a folder is the value of its contained 'public' module, if defined, otherwise a simple dictionary of values for contained modules. Use of a public module enables folders to hide their representation or compute non-dictionary values. Glas packages are always represented by folders.
+To compute a value for a folder `foo/`, the Glas compiler will use the value of the contained `public` module, if it exists. Otherwise, the value is a record reflecting the module structure. Use of public modules gives more control over what a folder module exposes. Folders cannot reference their parent directory, so are self-contained.
 
-Glas forbids direct references across folder boundaries. Files may only reference other modules within the same folder, or external packages. This constraint simplifies reasoning, refactoring, and organization of large Glas programs. Further, Glas also forbids cyclic dependencies: module references must form a directed acyclic graph. A module reference is equivalent to a module's value.
-
-Glas does not specify a package manager. The current intention is to leverage the Nix or Guix package managers.
+Ambiguous file names or directed dependency cycles will raise errors.
 
 ## Data Model
 
-Glas values are trees composed of immutable dictionaries, variants, lists, and natural numbers such as `(arbid:42, data:[1,2,3], extid:true)`. Keys within a dictionary are short, symbolic strings. The empty dictionary `()` can serve as a unit value.
+Glas values are simple structured data, composed of immutable records, lists, and natural numbers, such as `(arbid:42, data:[1,2,3], extid:true)`. Strings and binaries would be represented as lists of small numbers (0-255). Keys within a record are also strings.
 
-Variant data is encoded by singleton dictionaries. For example, a value of `type color = rgb:(...) | hsv:(...)` would be represented by a dictionary exclusively containing either `rgb` or `hsv`. Symbolic values such as booleans and enumerations are encoded as variants with a unit value.
+Variant data is typically encoded by singleton dictionaries. For example, a value of `type color = rgb:(...) | hsv:(...)` would be represented by a dictionary exclusively containing either `rgb` or `hsv`. Symbolic values such as booleans and enumerations are encoded as variants with a unit value.
 
-Glas lists and natural numbers are logically encoded by recursive tree structures similar to `type Nat = succ:Nat | zero` and `type List a = cons:(head:a, tail:List a) | nil`. However, for performance reasons, the concrete representation is abstracted.
+The empty dictionary `()` can serve as a unit value.
 
-Glas lists are used for stacks, queues, arrays, matrices, binaries, and stream processing. To efficiently support a broad variety of use cases in context of copy-on-write updates, lists are usually represented by some variation of finger-tree ropes. Stream processing is a special case: to support pipeline parallel computation over arbitrarily long lists, intermediate lists will often be implicitly represented using futures or bounded-buffer channels.
+Glas systems are expected to represent large lists using [finger trees](https://en.wikipedia.org/wiki/Finger_tree), i.e. supporting amortized O(1) deque operations (push and pop from either end) and logarithmic time for almost everything else. For binaries, the list structure should also leverage [rope-style](https://en.wikipedia.org/wiki/Rope_%28data_structure%29) chunking.
 
-Glas natural numbers have no hard upper limit, but performance may suffer at the threshold for bignum arithmetic. Negative, rational, and other useful number types must be modeled explicitly within Glas.
+Glas natural numbers do not have a hard upper limit, and bignum arithmetic is supported. Programmers can model rational numbers and other types. However, high-performance numeric computing with Glas will require use of *Acceleration*.
 
-Glas specifies a [Glas Object](GlasObject.md) (aka 'glob') representation for storage, distribution, manipulations, and caching of Glas values. Glas Object features use of content-addressed references and log-structured updates to work efficiently with very large values.
-
-## Computation Model
-
+To support working with large values, Glas specifies a [Glas Object](GlasObject.md) encoding and use of content-addressed references to component values.
 
 ## Compilation via Binary Extraction
 
-A binary is simply a list of natural numbers between 0 and 255. 
+A subset of Glas modules will compute binaries that are externally meaningful, perhaps representing an executable file or docker container. The Glas compiler must provide methods to extract these binary values for external use. 
 
-A subset of Glas modules will compute binary values that are externally meaningful or useful, perhaps representing an executable file, a tarball, or a docker container. A Glas command line tool should provide methods to extract binary values for external use.
+The type-checker, optimizer, and code generator would be represented as normal Glas functions. Glas does not specify a runtime behavior model, but de-facto standards will certainly emerge based on which models are well supported.
 
-The envisioned pattern: an application behavior package should sufficiently describe application behavior. A separate package will take the value from the application behavior package and provide it as input to the compiler package to compute a binary executable. This binary can be extracted to a file then installed on the user's path.
+Glas applications should specify application behavior in a separate package from compilation to binary. For example, we might have `pkg:appname` and `pkg:appname-exe`. This separation enables embedding the application behavior into other applications, simulation or model testing, and alternative compilation modes.
 
-Compilers in Glas become normal, user-defined functions.
+*Note:* Glas modules cannot look outside the filesystem. Glas systems can easily support host-package compilation by installing a host-specific `pkg:system-info`. However, cross compilation is also very useful.
 
-Separating the application behavior from the compiler function ensures the application behavior is accessible for analysis, extension, or integration with other applications. It also simplifies potential for cross-compilation or tweaking configurable parameters.
+## Computation Model
 
-In the end, Glas does not specify a runtime behavior model. However, de-facto standard behavior models should emerge when the community develops compilers and common intermediate representations of runtime behavior.
+### Modeling Effects
+
+
 
 ## Accelerated Computation (Accelerator Pattern)
 
 Glas does not directly support floating-point arithmetic, SSE, GPGPU, FPGA, and similar hardware-accelerated computation features. However, performance is always a useful feature whether at compile-time or runtime, and it's upsetting to waste capacity. So, Glas provides an indirect mechanism to fully utilize hardware resources.
 
-The idea is that a compiler or interpreter can recognize a subprogram by label or code, and replace it by a high-performance built-in implementation that leverages available hardware resources. Making this pattern explicit has significant benefits: the recognition task becomes much simpler and more efficient, and the Glas system can alert developers when acceleration fails or is deprecated to resist silent performance degradation. The reference implementation remains valuable for fallback, fuzz-testing, and debugging.
+The idea is that a compiler or interpreter can recognize a subprogram by label or code, and replace it by a high-performance built-in implementation that leverages available hardware resources. Making this pattern explicit has significant benefits: the recognition task becomes simpler and more efficient, and the Glas system can alert developers when acceleration fails or is deprecated to resist silent performance degradation. The reference implementation remains valuable for fallback, fuzz-testing, and debugging.
 
-Accelerators cannot introduce new value types or behaviors, only performance extensions. But a compiler or interpreter can use optimized internal representations for values produced and consumed by accelerators. For example, if we accelerate computations over floating-point matrices, a specialized matrix representation could reduce data conversion overheads.
+Because Glas supports processes, one of the simpler approaches to acceleration is to model a processor that can be programmed with some initial inputs then interactively queried and updated with further requests. It can also be useful to provide the 'program' statically, allowing accelerator code to be specialized at compile time. This is feasible, though it requires some flexibility in how accelerators are recognized or optimized, perhaps tweaking the annotations.
 
-Glas supports staged accelerators with static parameters. Instead of independently accelerating a dozen matrix manipulation functions, we could develop a unified matrix accelerator that takes as input a static input representing a matrix processing pipeline. This design simplifies organization of accelerators, and also reduces complications for compiling a matrix pipeline to a GPGPU.
+It can be awkward to maintain both the compiler built-in and the reference implementation during experimental phases, but we could work around that by using a dummy reference implementation. It can be difficult to achieve deterministic behavior across general hardware resources, e.g. floating-point with or without extended precision. So, it might be useful to late-bind platform-specific accelerators.
 
-This accelerator pattern does have a few weaknesses.
-
-First, development of new accelerators often involves rapid changes in vision, behavior, and scope. In this context, maintaining both a reference implementation and the built-in is intolerable. This can be mitigated by temporarily eliding the reference implementation, matching only on accelerator label. The accelerator pattern becomes is compiler's pseudo-operator in this case.
-
-Second, it can be difficult to achieve deterministic behavior across general hardware resources. For example, some but not all CPUs might invisibly use extended precision for floating-point arithmetic. To handle this, either the built-in must ensure deterministic results (e.g. disable or simulate extended precision) or we should favor target-specific accelerators with program switches and late-binding. Analogous to OpenGL vs. Direct3D philosophy of acceleration.
-
-Despite a few weaknesses, the accelerator pattern can significantly improve the utility and extensibility of Glas software systems for high-performance computing, both for compile-time and runtime computation.
+Despite a few weaknesses, the accelerator pattern can significantly improve the utility and extensibility of Glas for high-performance computing.
 
 ## Parallelism, Distribution, Concurrency
 
@@ -94,18 +85,26 @@ Incremental computing is complicated somewhat because large values generally hav
 
 ## Types and Parametricity 
 
-Glas does not enable a module to hide behavior from its client. However, Glas does allow for error during static computation. It is possible for a module to raise an error if it notices problems. It is feasible to enforce type safety within Glas, or to require that certain functions do not directly observe certain inputs. 
+Glas does not enable a module to hide behavior from its client. However, Glas does allow for error during static computation, so it is possible for a module to analyze the values it constructs or imports and to raise an error if there is a problem. It is feasible to enforce type safety and parametricity within Glas.
+
+To simplify this, Glas supports annotation of subprograms, which can include type annotations. It is also feasible to accelerate type safety analysis.
+
+## Language Modules
+
+Language modules are designed to standardize syntax error handling, simplify optimizations, and support other common language features; this is detailed in a later section. To hide choice of language representation, the file extension is excluded from the module name.
+
+
+Language modules must define a parser that can process a binary input into a value, reference external modules based on the input, and handle errors robustly and in a standard way. 
+
+Imports needs special attention. They don't need to be a true 'effect' because imports are commutative, idempotent, read-only. However, we must to be cautious about cyclic dependencies, ad-hoc reflection. We could model parsers as taking a dictionary representing available resources, then using types to forbid this value from being captured or used in ad-hoc reflection.
+
+Another major feature that language modules require is the ability to turn binaries into dictionary paths. This isn't a problem for pure functions, but it's a form of reflection and thus difficult to typecheck. 
 
 ## Provenance Metadata
 
 In Glas, modularity hides the dependencies and representation of each module. However, for debugging purposes, we might still wish to track values to their origin. It is feasible for a Glas utility to compute not just a binary, but also an associative structure that traces every byte to its contributors. 
 
 Glas also includes some specific operators to help 'name' regions of code to simplify and stabilize provenance metadata across changes in code, or allow further source mapping in case a module is auto-generated by other tools.
-
-
-## Language Modules
-
-
 
 
 
