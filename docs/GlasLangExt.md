@@ -1,6 +1,10 @@
 # Glas Language Extension
 
-The Glas language allows multiple syntaxes, driven by file extensions. In contrast to macro-like systems, use of file extension can reduce boilerplate, simplify tooling, and improve performance. 
+The Glas language supports multiple syntaxes. Syntax is per-file, selected based on file extension. Syntaxes may thus be defined for external resources or DSLs, or to support projectional editors, in addition to user-defined language tweaks. 
+
+However, Glas languages must still map to the same underlying model, and share the Glas language restrictions on links between modules and packages. This is achieved by defining a parser combinator for each syntax, with a limited API. 
+
+
 
 An alternative syntax can support various roles: syntax can be optimized for a specific domain (e.g. natural language processing), or for alternative development environments (e.g. projectional editors, augmented reality), or to integrate external resources (e.g. parse JSON and load databases as regular modules).
 
@@ -14,33 +18,55 @@ Glas associates file extensions to [modules or packages](GlasModules.md). To fin
 
 Language packages are preferred. For minor variations (like a versioned language) a simple system of pragmas and flags for extensions could be built-in to the language itself. But language modules are suitable for didactic purposes, experimental designs, or specialization by schema.
 
-*Note:* Multi-part languages such as `.x.y` currently aren't supported, because a suitable semantics is not clear. 
+*Note:* Multi-part languages such as `.x.y` currently aren't supported, because a suitable semantics is not clear.
 
 ## Language Definition
 
-Minimally, the language definition must parse a file and produce a value. 
+Minimally, a language definition must parse a file and produce a value. 
 
-However, for tooling, it would be useful to support syntax highlighting, auto-formatting, simplification, projectional editing, code completion, documentation, tutorials, and so on. To support these features, language definitions should be extensible.
+However, language definition should be extensible to support ad-hoc tooling. For example, we could support auto-formatting, projectional editing, command-line editing tools, templates, documentation, etc..
 
-To ensure extensibility, Glas will define a language as a record that minimally contains the `parse` function. This record may be freely extended with other features as-needed.
+To keep it simple, we'll require a language package to return a record with a `parse` function. This is the main function defined here. But a Glas compiler could also support other utilities via command line parameters.
 
-The parse function is parameterized by an abstract linear object, which provides methods to read input and construct abstract values.
+## The Parse Functor
+
+The parser must be robust, able to continue despite errors. It also must support debugging, preserve a source mapping. Ideally, the same parser function can be reused for syntax highlighting, proposed corrections, and code completion, to ensure consistency with any changes to the language.
+
+The proposed design is based on parser combinators and abstract constructors.
+
+Parser combinators enable developers to expose internal behavior - especially byte-level expectations and choice - in order to simplify external tooling such as code completion or correction, and enables external decisions about search strategy.
+
+Abstract value constructors defer typechecking, preserve useful metadata for source mapping, and may generally represent abandoned parse efforts. Abstract constructors may include loading packages, applying a function, selecting a field from a record. In general, the Glas underlying model is the target for abstract value constructors, but with features for optimization.
+
+### Performance
+
+The main cost of this design is performance. Parser combinators involve a large number of first-class functions. This can be mitigated by separate compilation of the parse function, specialized to the compiler. We can also develop intermediate languages that compile to an 'optimized' combinator with minimal backtracking.
+
+### Parse Failure
+
+Parse failure is not visible within a parse function. The decision to continue or abort is externalized. The parser API may heuristically attempt to correct code and continue parsing based on expectations. To abort a bad parse, it's sufficient to short-circuit further invocations to parser combinators.
+
+## Abstract Parser Combinators
+
+### Token Reads
 
 
 
-An object is passed to the `parse` function parameterized by compile-time environment,
 
- combinators and 
+### Abstract Binary Reads
 
-providing methods for abstract constructors and parser combinators on the input stream. 
+We can read a specific number of bytes, or read all remaining bytes in a program. However, this will not return an observable binary value for branching. It returns an abstract label or binary, opaque to the parse function.
 
-The parser combinators will include several methods to simplify debugging, such as recording intentions, expectations, suspicions, proposed corrections. Thus, parsing can produce an annotated input. It's also easier to detect whether the full input was parsed, or detect ambiguity when composing choices.
+### Significant Whitespace
 
-The abstract constructors may implicitly record parser locations, preserving location metadata for purpose of reporting type errors, stack traces, profiling, breakpoints, etc.. Abstract constructors also support 'unique' labels and defer type checking or static evaluation.
 
-The weakness of this approach is performance. It's difficult to optimize the parser, or combine similar search paths. This can be mitigated by developing a declarative grammar language that can be compiled into a parser combinator with minimal backtracking.
 
-The remainder of this document is mostly a discussion of the methods required for the `parse` function.
+
+
+## Abstract Value Constructors
+
+## OLD
+
 
 ## Parser Combinators
 
@@ -48,24 +74,12 @@ This section describes available parser combinators over the input stream, with 
 
 Errors: it's considered a parse error if the parser returns before the end of input, or if a parse error is explicitly emitted. There is no distinct 'error' return value.
 
-### Read Remaining
-
-Read all remaining input as a binary value.
-
-
 
 
 
 ### Input Annotation
 
 The first pattern is to 
-
-
-
-
-## Overloading Symbols?
-
-Glas does not support typeful overloading of symbols.
 
 
 
