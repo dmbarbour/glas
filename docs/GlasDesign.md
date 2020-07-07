@@ -2,65 +2,61 @@
 
 ## Module System
 
-Glas modules are represented by files and folders. 
+Large Glas programs are represented by multiple files and folders. Each file or folder deterministically computes a value.
 
-A request for `module:foo` refers to a local file or folder such as `foo.g` or `foo.xyz` or `foo/`, within the same folder as the file processed. Ambiguous references raise errors. Request for `package:foo` searches along `GLAS_PATH` environment variable for folder `foo/`.
+To compute the value for a file `foo.ext`, the compiler searches for a language module or package `language-ext`, which specifies a program to process the file's binary. To compute a value for a folder `foo/`, the compiler tries the value of the contained `public` module if one exists, otherwise a simple dictionary reflecting the folder's structure.
 
-Glas does not specify a package manager. The current intention is to leverage Nix or Guix, which are designed for reproducible builds, concurrent build environments, and caching. 
+Language modules have access to limited compile-time effects, including to explicitly load values from external modules or packages. File extensions are elided. For example, loading `module:foo` could refer to a local file `foo.g` or `foo.xyz`, or a local subfolder `foo/`. Loading `package:foo` would instead search along the `GLAS_PATH` environment variable for a folder `foo/`. 
 
-A Glas module deterministically computes a value.
+Ambiguous references, directed dependency cycles, invalid language module, or errors during processing are raised as compile-time errors.
 
-To compute a value for file `foo.ext`, a compiler loads module or package `language-ext`. The *Language Module* should represent a program to process the binary and compute a value. This program has access to limited compile-time effects, including requests for other modules.
+Glas does not provide its own package manager. Current intention is to leverage Nix or Guix, which support reproducible builds, caching, and multiple similar build environments. 
 
-To compute a value for a folder `foo/`, a compiler uses the value of the contained `public` module if it exists, otherwise a dictionary whose value reflects the folder structure. Public modules provide more control over what a folder exposes, and allows non-dictionary values.
-
-A request for a module returns its value. Computed module values can be heuristically cached to support incremental compilation. Module dependencies must form a directed acyclic graph.
-
-*Note:* Glas also exhibits modularity within the *Program Model*. Large programs can be organized into reusable components and concurrent processes. However, to the module system, Glas programs are just another structured value.
+*Note:* Glas specifies a *Component System* for fine-grained, modular construction of programs. Components are values that represent abstract modules.
 
 ## Compilation Model
 
-A subset of Glas modules should compute externally useful binaries, perhaps representing music, images, documents, tarballs, or an executable. The Glas command-line tool will provide methods to extract binary values from a module.
+A subset of Glas modules compute externally useful binaries, perhaps representing music, images, documents, tarballs, or an executable. The Glas command-line tool provides methods to extract binary values from a module from a list or a program generating a stream of bytes.
 
-To usefully produce an executable binary requires all the normal functions of a compiler: type checking, optimization, register allocation, code generation, etc.. In Glas, these will be normal user-defined functions, distributed by normal packages.
+To produce an executable binary, the type checking, optimization, and code generation will be modeled as Glas programs, ultimately driven by a language module. To produce binaries specific to a system, a system-info package can describe the default compilation target.
 
-The Glas command-line tool may privately JIT-compile and cache programs for performance reasons. However, the client's binary should be independent of this compiler, computed deterministically from module definitions.
+The application behavior can be represented by a value from another package. As a convention, appname-model and appname-exe packages should be separated to simplify extension or composition of applications, model testing, experimentation with compiler parameters, etc..
 
-We could specify a default compilation target by defining a system-info package.
-
-*Note:* The command-line tool should support binary extraction from either a list of bytes or a program that produces a stream of bytes.
+*Note:* The Glas command-line tool may privately compile and cache programs for performance, e.g. compile language modules into plugins specific to the command-line tool. This should be mostly hidden from normal users of the tool.
 
 ## Acceleration
 
-Hardware acceleration can support high performance computing. 
+Acceleration is a pattern to support high performance computing. 
 
-For example, we could develop a subprogram that simulates a programmable processor. This abstract processor has a static set of registers, binary memory, and support for bit banging and floating point operations.
+For example, we can develop a subprogram that simulates a programmable processor. This abstract processor may have a static set of registers, binary memory, and support for bit banging and floating point operations. We annotate this subprogram for acceleration. 
 
-If we annotate this subprogram for acceleration, a compiler (or interpreter) should recognize and substitute for actual processors. If acceleration fails for any reason (unrecognized, deprecated, no support on target, resource limits, etc.), the compiler should alert programmers to resist invisible performance degradation.
+A compiler (or interpreter) should recognize the annotated subprogram and substitute an actual processor, performing a little translation as needed. If acceleration fails for any reason (unrecognized, deprecated, no support on target, resource constraints, etc.), the compiler should alert programmers to resist invisible performance degradation.
 
-Acceleration of a processor would support compression, cryptography, signal processing, and other domains. Acceleration of a GPGPU could support machine learning and rendering. Without acceleration, Glas is effectively locked out of some problem domains for performance reasons.
+Acceleration of abstract CPUs would open a variety of problem domains where performance is a deciding factor: compression, cryptography, signal processing, etc.. Abstract GPGPUs or FPGAs are also valuable targets.
 
-*Note:* Accelerators are huge investments involving design and development, maintenance costs, portability challenges, and security hazards. For best return on investment, accelerate programmable hardware.
+*Note:* Accelerators are major investments involving design and development, maintenance costs, portability challenges, and security hazards. Fixed functions have poor return on investment compared to abstract programmable hardware.
 
 ## Automatic Testing
 
-A simple convention to support automatic testing: in a Glas folder, any module with name `test_*` should be processed even if its value is not required.
+A simple convention to support automatic testing: in a Glas folder, any module with name `test_*` should be processed even if its value is not required. Automatic testing within files is left to language definitions and *Language Modules*.
 
-*Note:* Testing of compiled executable binaries is theoretically feasible using accelerated simulation of a machine. However, in the short term, we'll need to test executables by more conventional means.
+Deterministic testing of computed executable binaries is theoretically feasible via accelerated simulation of a machine, fuzzing the race conditions. However, in the short term, we canto test executables by more conventional means.
 
 ## Data Model
 
-Glas values are simple structured data, composed of immutable dictionaries, lists, and natural numbers, such as `(arbid:42, data:[1,2,3], extid:true)`.
+Glas data is immutable. Basic data is composed of dictionaries, lists, and natural numbers, such as `(arbid:42, data:[1,2,3], extid:true)`.
 
-Variant data is typically encoded by singleton dictionaries. For example, a value of `type color = rgb:(...) | hsl:(...)` could be represented by a dictionary exclusively containing `rgb` or `hsl`. The empty dictionary `()` can serve as a unit value. Symbols are generally encoded as variants with unit value.
+Variant data can be encoded by singleton dictionaries. For example, a value of `type color = rgb:(...) | hsl:(...)` could be represented by a dictionary exclusively containing `rgb` or `hsl`. The empty dictionary `()` can serve as a unit value. Symbols are generally encoded as variants with unit value.
 
-Glas systems will represent large lists using [finger trees](https://en.wikipedia.org/wiki/Finger_tree). This usefully supports efficient access and updates, especially at both ends. Binary lists are further optimized by [rope-style](https://en.wikipedia.org/wiki/Rope_%28data_structure%29) chunking. 
+Glas uses lists for every sequential structure: arrays, binaries, deques, stacks, tables, tuples, queues. To efficiently support a gamut of applications while enforcing immutable structure, Glas systems represent large lists as [finger trees](https://en.wikipedia.org/wiki/Finger_tree). Binary fragments are further optimized via [rope-style chunking](https://en.wikipedia.org/wiki/Rope_%28data_structure%29).
 
-Glas natural numbers do not have a hard upper limit, and bignum arithmetic is supported. However, high performance computing with Glas will certainly rely on *Acceleration*.
+Glas natural numbers do not have a hard upper limit, and Glas supports bignum arithmetic. Glas does not have primitive support for floating point or other number types, but is is feasible to model most number types with ad-hoc polymorphism over variants. High-performance numeric computing will depend on *Acceleration*.
 
-## Content Addressed Storage
+Glas programs need to deal with a few additional types, such as channels or errors. 
 
-Glas supports larger-than-memory values using content-addressed storage: a subtree can be serialized for external storage on a larger but higher-latency medium such as disk or network. 
+## Content-Addressed Storage
+
+Glas will support larger-than-memory values using content-addressed storage: a subtree can be serialized for external storage on a larger but higher-latency medium such as disk or network. 
 
 The binary representation will be referenced by secure hash. Use of secure hashes simplifies incremental and distributed computing:
 
@@ -72,169 +68,180 @@ The binary representation will be referenced by secure hash. Use of secure hashe
 
 A Glas runtime may heuristically store values to mitigate memory pressure, similar to virtual memory paging. However, programmers may have a more holistic view of which values should be stored or speculatively loaded. So, Glas programs will support a few operators to guide use of storage. 
 
-The [Glas Object](GlasObject.md) representation is designed to support content-addressed storage.
+[Glas Object](GlasObject.md) is designed to serve as a standard representation for large Glas values with content-addressed storage.
 
-*Note:* For [security reasons](https://tahoe-lafs.readthedocs.io/en/tahoe-lafs-1.12.1/convergence-secret.html), content-addressed binaries may include a cryptographic salt (among other metadata). To support incremental computing, this salt should be computed based on a convergence secret. However, it prevents global deduplication.
+*Note:* For [security reasons](https://tahoe-lafs.readthedocs.io/en/tahoe-lafs-1.12.1/convergence-secret.html), content-addressed binaries will include a cryptographic salt (among other metadata). To support incremental computing, this salt must be computed based on a convergence secret. However, it prevents global deduplication.
 
 ## Computation Model
 
-The Glas computation model is based on [Kahn Process Networks](https://en.wikipedia.org/wiki/Kahn_process_networks) (KPNs): Concurrent processes communicate by reading and writing channels. Use of channels is restricted to ensure a deterministic outcome. Deadlock is a potential outcome.
+The Glas computation model is based on [Kahn Process Networks](https://en.wikipedia.org/wiki/Kahn_process_networks) (KPNs) to support scalable computation and expressive composition under constraint of determinism.
 
-Glas process networks are constructed procedurally. A procedure may read and write channels, allocate channels, close channels, and fork subroutines as processes. Plus the normal loops, arithmetic, etc.. Channels may be transferred over other channels. This supports large or dynamic process networks.
+KPNs consist of concurrent processes that communicate by reading and writing channels. Channels may be externally wired between processes, supporting open composition of cyclic dependencies. Use of channels are restricted to ensure a deterministic outcome. 
 
-Glas channels have affine type: they may be moved or transferred, but not shared or copied (modulo effects). This may be enforced dynamically, but should be enforced via static analysis where feasible.
+Glas does not directly model the writer's end of a channel. Instead, channel output is intrinsic to certain processes. For example, an unfold process might repeatedly apply a function to generate a channel.
 
-Glas channels have bounded-buffers. Bounded-buffers can be modeled from a `(ready, data)` pair of unbuffered channels: a writer reads `ready` then sends `data`, reader sends a token to `ready` then reads `data`. Static buffer size is the initial number of ready tokens. A zero-buffer channel supports a rendezvous pattern, where the writer always waits on the reader.
+Glas uses bounded-buffer channels, such that a fast writer will wait on a slow reader. Conceptually, buffered channels are a coupled `(ready, data)` pair of unbuffered channels with dataflow in opposite directions. Writer reads ready token then writes data. Reader writes ready token then reads data. Buffer size is the maximum number of ready tokens. Zero-buffer supports rendezvous pattern.
 
-Glas channels may be closed, representing the end of a list or stream. If the reader endpoint is closed, further reads may drain the buffer but will not send new ready tokens. 
-
-## Effect Models
-
-Glas programs can be extended with effects via channels or static dependency injection.
-
-Channels offer a natural route to effects. A runtime could provide a duplex request-response channel, then handle filesystem and network requests. But it's awkward and unscalable to route requests from multiple processes through one channel.
-
-With static dependency injection, we model an effectful program as depending on an abstract collection of effectful procedures. These procedures cannot be directly implemented within Glas, but may be provided by the compiler then integrated directly into the generated machine code. This also supports concurrent requests.
-
-For performance and convenience, we should favor static dependency injection by default. Channels should be used where the affine, sequential nature is a natural fit.
-
-Static injection and channels share a useful property: they are explicitly routed through a program. A parent program can restrict or intercept effects used by a subprogram. This simplifies testing, monitoring, and abstraction of effects.
-
-*Note:* Under to the Glas compilation model, programmers may experiment with alternative program models not based on process networks. However, process networks are a good basis for general purpose programming.
+Glas channels may be 'closed' from either end, modeling end of list for data or ready tokens. This enables Glas to easily represent sequential composition of channels, or to effectively model termination behaviors.
 
 ## Program Model
 
-Glas programs are represented by structured values, which are interpreted as programs in specific contexts, such as language modules. 
+The Glas program model is based on [arrowized](https://en.wikipedia.org/wiki/Arrow_%28computer_science%29) [Kahn process networks](https://en.wikipedia.org/wiki/Kahn_process_networks) via [concatenative](https://en.wikipedia.org/wiki/Concatenative_programming_language) [combinatory logic](https://en.wikipedia.org/wiki/Combinatory_logic).
 
+Concretely, a Glas program is represented by a list of operators. Each operator is represented by variant data. The list models sequential composition. Each operator represents an abstract function, often a combinator whose argument is a static subprogram.
 
-given a standard interpretation. The design goals for a program mod
+Glas programs operate on data structures extended with bounded-buffer channels and transparent futures. Functions on partial data are implemented by long-lived processes. These processes compute output incrementally and monotonically based on readiness of buffers and availability of inputs.
 
+The fixpoint loop combinator is essential for process networks, modeling cyclic dataflows, piping channels from the right-hand side of a subprogram back to its left-hand side. In Glas, this is supported via transparent futures, and implementation relies on concurrent, opportunistic computation of operators. 
 
-The Glas program model has built-in support for static injection of procedures into subprograms. There are motives for this unrelated to effects: improved code reuse, smaller programs, generic programming, recursive dependencies. However, this also simplifies effects: 
+Most Glas primitive operators assume input and output is structured as a heterogeneous list, modeling a Forth-like data stack. This simplifies the operators because data source and destination are implicit. The box and unbox operators can support dictionary structured environments via intermediate singleton data stack.
 
+To efficiently represent large or abstract programs, Glas includes combinators for static linking from a dictionary of user-defined operators. See *Component System*.
 
-Glas programs are represented by structured values. 
+## Notable Exclusions
 
- to simplify code reuse and mutually recursive dependencies. However, a related benefit is that we can easily model subprograms that depend on an `effects` component. 
+To keep it simple, the Glas program model *does not* include primitive operators for first-class functions (`program -> data`) or evaluation (`data -> program`).
 
+Absence of first-class functions is mitigated by other features:
 
+* Channels serve many roles of continuations: await input, emit output, cyclic interactions.
+* Components support higher-order programming under constraints of static linking, templates.
 
+Consequently, Glas can abstract loops over lists or implement stream generators, but existential types are not supported.
 
+Evaluation can be explicitly implemented within Glas, perhaps via compilation to accelerated machine. Alternatively, evaluation can be provided as an effect, which is how *Language Modules* support it.
 
+## Effects Models
 
+Glas programs can be extended with effectful operators via component system combinators. Effectful primitive operators would be provided by the compiler or runtime, and cannot be user-defined.
 
+The resulting system is very similar to procedural effects or FFI. However, there are at least two significant differences from conventional imperative languages:
 
+First, concurrent effects are the default, e.g. simultaneous network requests. Effects in Glas programs are limited by dataflow. To enforce sequential may require explicit dataflows for synchronization.
 
+Second, Glas programs can restrict or attenuate a subprogram's access to user-defined operators. For example, it is feasible to restrict a subprogram to access specific folders and files, or to wrap filesystem reads and writes with effectful logging.
 
+Effects usually introduce non-determinism, whether observing the time or non-deterministic channel merge. Deterministic, effectful computation is feasible but requires careful design (e.g. monotonic shared state). 
 
+*Note:* The Glas compilation model can support alternative program models for applications and effects. However, the Glas program model should be adequate for most use cases.
 
- be 'injected' into the subprogram. 
+## Component System
 
-on some external values or procedures that it cannot locally define, hence they are provided at another layer.
+The Glas component system is essentially a fine-grained module system for the Glas program model. 
 
+The Glas program model includes operators to describe a dictionary of user-defined operators for reference within a subprogram. Glas programmers will find it convenient to program at the dictionary level - it's a lot more human-friendly! In context of a dictionary, a program might be trivialized to `[ref:main]` or similar.
 
+Unfortunately, use of a flat `(main:[code], ...)` dictionary value is awkward for dictionary-level programming. For example, it does not support scoped definitions, private definitions, or effective reuse of algorithms in multiple contexts. To solve this, Glas partitions the program dictionary into abstract software components, with inspiration from ML functors.
 
+Externally, a Glas component is an abstract object modeling a dictionary with internal scope and private definitions. A component may be parameterized by other components. Operators are also parameterized by an implicit component for the static arguments.
 
-Glas also supports static injection of values  subroutines into a program.
+Internally, a Glas component is a declarative structure that describes its dependencies, inheritance, override definitions, subcomponents. It might also specify type annotations or automated tests.
 
-Glas explicitly supports static dependency injection for many reasons: generic programming, compression, static analysis, performance. 
+Glas components are structurally limited to static linking.
 
+*Note:* Recursive definitions are not allowed. It should logically be logically feasible to erase the component system by transitively inlining all definitions (modulo effects).
 
+## Meta: Type Annotations
 
-Glas supports static dependency injection primarily for generic programming and reusable code. A subprogram may have partial dependencies, which must be st bound by a parent program. 
+## Operators
 
+### Stack Manipulation
 
+        data
+        void
+        copy
+        drop
+        swap
+        sip
+        dip
+        box
+        unbox
 
+### Arithmetic
 
+### Dictionary Values
 
-*Note:* The Glas computation and program models are adequately effective or extensible for most use cases. However, the Glas compilation model can support exploration of alternatives.
+### List Processing
 
 
-A runtime could also support a request to `fork` the effects handler, responding with a new request-response channel pair. This would support concurrent requests. 
 
-At that pExplicit routing of the channel would still provide some benefits with respect to controlling, monitoring, or sandboxing use of effects. However, 
+### Channel Processing
 
+### Fixpoint Loop
 
+### Conditional Behavior
 
-However,1 if we can fork channels, then we're effectively routing a first-class function through the program.
+### Component System
 
-At this point, the main benefit from using a 'channel' 
+### Synchronization
 
-The channel concept is only offering 
+        synch:[X->Y]   - wait for an unrelated input before continuing
 
-However, at this point, we've effectively reinvented procedural effects. The only advantage is that explicit routing provides an opportunity to sandbox, beit with explicit routing.
+### Content-Addressed Storage
 
+### Memoization
 
+### Distribution
 
 
-is bullshit. We're just routing some procedures dynamically throuth
 
-we just have an extra hassle of explicitly routing a channel through the program. 
+# Old Junk
 
+## Meta: Type Annotations
 
+Most Glas operators assume the environment models a Forth-like 
 
-But let's consider a special request: to `fork` the request-response channel, returnin
+ the environment is structured as a right-associative tuple `X * Y * S = (X * (Y * S))` modeled as a heterogeneous list such as `(cons X (cons Y S))` or `(X Y . S)` (in Lisps).
 
 
-It's also feasible to request for an effects channel to self-replicate, to support multiple concurrent requests.
+, modeled by heterogeneous list, as the data stack. Head of list is top of stack. Exceptions are operators `box` and `unbox`. Consequently, Glas benefits from a few ad-hoc stack type annotations.
 
-A disadvantage of using channels is that they can be awkward to explicitly thread through a program and optimize. Further, if we wish to self moment we start self-replicating channels, 
+* `X -> Y` is a normal function type. 
+* `X * Y * S` is type for tuples, right associative `X * Y * Z = X * (Y * Z)`. The  
+* `X * S` is type for list/tuple constructors, right associative.
+* `X * Y * S` is shorthand for list prefixed with elements `[X,Y]`, followed by abstract list `S`. 
+* `X Y -- Y X` is shorthand for `forall S. X*Y*S -> Y*X*S`.
 
 
 
 
 
+Glas operators often represent some combinators with static parameters. These are represented together with the operator. For example: `sip:[X -> Y]` represents that operator `sip` takes one static parameter, a program (list of operators) w type `X -> Y`.
 
+* `[X -> Y]` represents a program (a list of operators) interpreted as function of type `X -> Y`.
 
 
 
 
 
+## Operators
 
- The runtime could support req
+Most operators assume the environment is structured as a heterogeneous list, modeling a Forth-like data stack. However, the box/unbox operators will support non-stack types.
 
-he ru
+Within Glas, new channels are mostly generated by unfold operations, which might otherwise generate unbounded lists. 
 
-Glas supports interactive via channels. A safe, simple mechanism to support effects 
 
- so the most obvious mechanism to introduce effects is to introduce a r
+* Loops are modeled as a fixpoint behavior: abstract channels and values produced by a subprogram are routed as inputs to the same subprogram, e.g. `loop:[list of ops]`.
+* Conditions are modeled as processes that mux or demux based on a selector input. Conditions will activate or disable regions of a network, perhaps even statically (via closed channels), but do not affect its construction.
 
- runtime or the outside world - filesystem, network, console.
+Glas channels may be copied like normal values and broadcast to synchronous readers. Bounded-buffer pushback is based on the slowest active reader. The implicit ready channel will close only if there are no more readers.
 
 
-Glas programs are readily extended with *effects* either at the channels 
 
+A missing channel input to a process will default to a closed channel, unless some default is explicitly provided.
 
-with *effects* at two different layers. 
+Higher order programming deserves special attention. A Glas process may capture a subprogram as a first-class function, and route it as a parameter to other processes. 
 
 
-The most obvious and safest mechanism
+cannot directly loop or branch based on input values. Loops are fixpoint constructs, routing an output from a subprogram to its input. Conditional behavior could be modeled by a primitive process that selects between inputs based on a third input, but cannot select between subprograms.
 
+### Graph Rewriting vs Abstract Evaluation
 
+A predictable graph-rewrite semantics might simplify presentation of evaluation. The simplest model of rewriting is erasure: when a process is finished making decisions, it might 'become' a simple rename operation.
 
-However, process networks are very suitable for general purpose programming. They support a smooth transition between purely functional and effectful programs. To model effects, it is sufficient to provide some channels to access the runtime or outside world. 
+Glas does not have a strong use-case for a graph rewrite semantics. However, it is useful and not difficult to ensure a rewrite semantics can be expressed: it is sufficient that primitive processes can be  expressed by local rewriting. 
 
-For example, we could provide a request-response pair of channels to a top-level procedure, then implement ad-hoc requests for filesystem, network, and console access, or perhaps operate at a lower level such as system calls or FFI. Non-determinism could be introduced via requests to copy channels, or to `select` the a channel with data from a list of channels. 
-
-To support concurrent requests, it's useful if the runtime also supports a request to fork a new request-response pair. This would enable process networks to model conventional threads.
-
-## No Eval
-
-Glas does not provide any built-in operator to evaluate a program. Glas procedures are essentially second-class. Glas does mitigate this limitation:
-
-* staged programming via language modules
-* linear objects modeled via KPN channels
-
-That is, Glas supports higher-order programming without eval under a constraint that integration is static or linear.
-
-There are indirect paths to support evaluation: 
-
-* compile for abstract machine; accelerate
-* evaluation effect via channel to runtime
-
-Evaluation via compilation to an accelerated abstract machine is an optimal solution. It can provide ad-hoc support for reflection, quotas, deadlock detection, etc. 
-
-Evaluation as an effect is a brute force solution. This solution is used by language modules, and could be provided by any runtime that includes a JIT compiler.
+A graph rewrite semantics will essentially allow Glas programs to represent 'interaction networks'. 
 
 ## Language Modules
 
@@ -242,9 +249,11 @@ Language modules are effectful programs, but the effects are limited to ensure d
 
 * load module or package values
 * report progress, warnings, etc.
-* dynamic evaluation
+* proposal of corrections to input
+* evaluation of values as programs
+* reflection? procedures as values
 
-The language module may include several procedures beyond the primary one to compile a file to a value. Some might support external tooling, such as projectional editing or auto-formatting.
+Language modules should at least have one function to 'compile' an input file to produce a plain Glas value. There may be additional functions to support projectional editing, auto-formatting, decompilation, etc..
 
 ## Provenance Metadata
 
@@ -260,5 +269,4 @@ However, process networks are a challenge to type check due to use of channels. 
 
 [Session types](https://groups.inf.ed.ac.uk/abcd/) can help in many cases by describing common patterns for use of channels. However, there will inevitably be limits of what any type description language can conveniently express.
 
-It is feasible to take a path of global analysis, e.g. with inspiration from the [SHErrLoc project](https://research.cs.cornell.edu/SHErrLoc/).
-
+It is feasible to take a path of global analysis, e.g. with inspiration from the [SHErrLoc project](https://research.cs.cornell.edu/SHErrLoc/). Short term, we could output constraints for an external solver.
