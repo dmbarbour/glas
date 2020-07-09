@@ -4,15 +4,15 @@
 
 Large Glas programs are represented by multiple files and folders. Each file or folder deterministically computes a value.
 
-To compute the value for a file `foo.ext`, the compiler searches for a language module or package `language-ext`, which specifies a program to process the file's binary. To compute a value for a folder `foo/`, the compiler tries the value of the contained `public` module if one exists, otherwise a simple dictionary reflecting the folder's structure.
+To compute the value for a file `foo.ext`, search for a language module or package `language-ext`, which should include a program to process the file's binary. To compute a value for a folder `foo/`, use the value of the contained `public` module if one exists, otherwise a simple dictionary reflecting the folder's structure.
 
-Language modules have access to limited compile-time effects, including to explicitly load values from external modules or packages. File extensions are elided. For example, loading `module:foo` could refer to a local file `foo.g` or `foo.xyz`, or a local subfolder `foo/`. Loading `package:foo` would instead search along the `GLAS_PATH` environment variable for a folder `foo/`. 
+Language modules have access to limited compile-time effects, including to load values from external modules or packages. File extensions are elided. For example, loading `module:foo` could refer to a local file `foo.g` or `foo.xyz`, or a local subfolder `foo/`. Loading `package:foo` would instead search along the `GLAS_PATH` environment variable for a folder `foo/`.
 
-Ambiguous references, directed dependency cycles, invalid language module, or errors during processing are raised as compile-time errors.
+Ambiguous references, directed dependency cycles, invalid language modules, or errors during processing would be raised as compile-time errors.
 
-Glas does not provide its own package manager. Current intention is to leverage Nix or Guix, which support reproducible builds, caching, and multiple similar build environments. 
+Glas does not provide its own package manager. Current intention is to leverage Nix or Guix. 
 
-*Note:* Glas specifies a *Component System* for fine-grained, modular construction of programs. Components are values that represent abstract modules.
+*Note:* Glas specifies a *Namespace Model* for definition-level programming. Programmers will likely find it familiar and convenient if most modules compute values that represent namespaces.
 
 ## Compilation Model
 
@@ -36,35 +36,26 @@ Acceleration of abstract CPUs would open a variety of problem domains where perf
 
 *Note:* Accelerators are major investments involving design and development, maintenance costs, portability challenges, and security hazards. Fixed functions have poor return on investment compared to abstract programmable hardware.
 
-## Automatic Testing
-
-A simple convention to support automatic testing: in a Glas folder, any module with name `test_*` should be processed even if its value is not required. Automatic testing within files is left to language definitions and *Language Modules*.
-
-Deterministic testing of computed executable binaries is theoretically feasible via accelerated simulation of a machine, fuzzing the race conditions. However, in the short term, we canto test executables by more conventional means.
-
 ## Data Model
 
-Glas data is immutable. Basic data is composed of dictionaries, lists, and natural numbers, such as `(arbid:42, data:[1,2,3], extid:true)`.
+Glas data is immutable. Basic data is composed of dictionaries, lists, and natural numbers, such as `(arbid:42, data:[1,2,3], xid:true)`.
 
-Variant data can be encoded by singleton dictionaries. For example, a value of `type color = rgb:(...) | hsl:(...)` could be represented by a dictionary exclusively containing `rgb` or `hsl`. The empty dictionary `()` can serve as a unit value. Symbols are generally encoded as variants with unit value.
+Variant data is encoded by singleton dictionaries. For example, a value of `type color = rgb:(...) | hsl:(...)` could be represented by a dictionary exclusively containing `rgb` or `hsl`. The empty dictionary `()` can serve as a unit value. Symbols or enumerations are encoded as variants with unit type. 
 
-Glas uses lists for every sequential structure: arrays, binaries, deques, stacks, tables, tuples, queues. To efficiently support a gamut of applications while enforcing immutable structure, Glas systems represent large lists as [finger trees](https://en.wikipedia.org/wiki/Finger_tree). Binary fragments are further optimized via [rope-style chunking](https://en.wikipedia.org/wiki/Rope_%28data_structure%29).
+Glas uses lists for all sequential structure: arrays, binaries, deques, stacks, tables, tuples, queues. To efficiently support this gamut of applications with immutable data, Glas systems will represent large lists as [finger trees](https://en.wikipedia.org/wiki/Finger_tree). Binaries also use [rope-style chunking](https://en.wikipedia.org/wiki/Rope_%28data_structure%29) to minimize overhead.
 
-Glas natural numbers do not have a hard upper limit, and Glas supports bignum arithmetic. Glas does not have primitive support for floating point or other number types, but is is feasible to model most number types with ad-hoc polymorphism over variants. High-performance numeric computing will depend on *Acceleration*.
-
-Glas programs need to deal with a few additional types, such as channels or errors. 
+Glas natural numbers do not have a hard upper limit, and do support bignum arithmetic. Glas does not have built-in support for negative integers or rationals or floating point or other numeric types, but they could be modeled. Note that Glas is not suitable for high-performance numeric computing without *Acceleration*.
 
 ## Content-Addressed Storage
 
-Glas will support larger-than-memory values using content-addressed storage: a subtree can be serialized for external storage on a larger but higher-latency medium such as disk or network. 
+Glas will support larger-than-memory data structures using content-addressed storage: a subtree may be serialized for external storage on a large, higher-latency medium such as disk or network. 
 
 The binary representation will be referenced by secure hash. Use of secure hashes simplifies incremental and distributed computing:
 
-* provider-independent distribution, validation
-* can encrypt data, use part of hash as AES key 
+* efficient memoization, matches on tree hashes
 * persistent data structures, structure sharing
 * incremental upload and download by hash cache
-* efficient memoization, matches on tree hashes
+* provider-independent distribution, validation
 
 A Glas runtime may heuristically store values to mitigate memory pressure, similar to virtual memory paging. However, programmers may have a more holistic view of which values should be stored or speculatively loaded. So, Glas programs will support a few operators to guide use of storage. 
 
@@ -94,52 +85,70 @@ Glas programs operate on data structures extended with bounded-buffer channels a
 
 The fixpoint loop combinator is essential for process networks, modeling cyclic dataflows, piping channels from the right-hand side of a subprogram back to its left-hand side. In Glas, this is supported via transparent futures, and implementation relies on concurrent, opportunistic computation of operators. 
 
-Most Glas primitive operators assume input and output is structured as a heterogeneous list, modeling a Forth-like data stack. This simplifies the operators because data source and destination are implicit. The box and unbox operators can support dictionary structured environments via intermediate singleton data stack.
+Most Glas primitive operators assume input and output is structured as a heterogeneous list, modeling a Forth-like data stack. This simplifies the operators because data source and destination are implicit.
 
-To efficiently represent large or abstract programs, Glas includes combinators for static linking from a dictionary of user-defined operators. See *Component System*.
+Operator definitions are in a later section.
+
+## Namespace Model
+
+Definition-level programming is concise, accessible, extensible, composable in more dimensions, and human-friendly. At least in contrasted to lists of primitive operators.
+
+Glas supports definition-level programming with operators to extend a namespace in scope of a subprogram, and to apply defined symbols. Names within a Glas program are statically resolvable, up to an initial namespace provided by runtime or compiler.
+
+To support higher-order and generic programming, Glas supports virtual symbols with overrides. Overrides can model parameters, while the initial definitions model defaults.
+
+Glas forbids recursive definitions. Loops must be expressed using primitive loop combinators. It should be possible to erase namespace operators by transitively inlining definitions. Namespaces contribute to expression, not meaning.
+
+Namespaces are concretely represented as dictionary values with standard fields:
+
+* **program** - A program, the main behavior of a namespace, used by the namespace operators.
+* **define** - A dictionary of `symbol:Namespace` pairs, each defining a symbol. For the common case of defining subprograms, `symbol:program:[code]` is sufficient.
+* **extend** - A symbol, or unit. This identifies the namespace we search for definitions that are not locally defined. Default is same as *import* field. Unit is empty namespace.
+* **parent** - A symbol. A namespace is implicitly parameterized by its parent namespace, but we might want a different name in some cases. Default `parent`.
+* **virtual** - A set of symbols, represented as a dictionary. Definition of virtual symbols may be deferred or overridden upon extension. Non-virtual symbols would be shadowed instead.
+
+This should be sufficient for operation, though we might introduce some ad-hoc fields to represent exports, override intentions, types, etc. to a linter or type checker.
+
+The Glas namespace model has much in common with OOP classes or prototypes. However, the second-class, static nature of namespaces will align usage patterns more closely with ML functors. 
+
+## Effects Model
+
+Glas programs can be extended with effects. This doesn't require any changes: effects can be modeled as abstract, user-defined operators in the top-level namespace, provided by compiler or runtime. 
+
+This design is similar to conventional procedural effects. However, there are two noteworthy differences:
+
+The namespace model is expressive enough that a program can restrict or attenuate a subprogram's access to effects. This can simplify testing in restricted environments.
+
+Effects in Glas are aggressively concurrent, running opportunistically based on available data. This can be mitigated via primitive synchronization operators or careful design of the effects model.
+
+*Note:* The Glas compilation model can support alternative program models for applications and effects. However, the Glas program model should be adequate for most use cases.
 
 ## Notable Exclusions
 
-To keep it simple, the Glas program model *does not* include primitive operators for first-class functions (`program -> data`) or evaluation (`data -> program`).
+To keep it simple, the Glas program model *does not* have primitive operators for first-class functions (`program -> data`) or evaluation (`data -> program`). 
 
 Absence of first-class functions is mitigated by other features:
 
 * Channels serve many roles of continuations: await input, emit output, cyclic interactions.
-* Components support higher-order programming under constraints of static linking, templates.
+* Namespace overrides support higher-order programming under constraint of static linking.
 
-Consequently, Glas can abstract loops over lists or implement stream generators, but existential types are not supported.
+Consequently, Glas can abstract loops over lists or implement stream generators, but existential types or conventional OOP objects are not supported.
 
-Evaluation can be explicitly implemented within Glas, perhaps via compilation to accelerated machine. Alternatively, evaluation can be provided as an effect, which is how *Language Modules* support it.
+Evaluation is provided as an effect to language modules. This requires the runtime to include an interpreter or JIT compiler. 
 
-## Effects Models
+Evaluation can feasibly be implemented by interpreter or compiler to an abstract machine that is interpreted. This would make evaluation available without an effect, but would require acceleration for performance.
 
-Glas programs can be extended with effectful operators via component system combinators. Effectful primitive operators would be provided by the compiler or runtime, and cannot be user-defined.
+## Automatic Testing
 
-The resulting system is very similar to procedural effects or FFI. However, there are at least two significant differences from conventional imperative languages:
+Simple conventions to support automatic testing: 
 
-First, concurrent effects are the default, e.g. simultaneous network requests. Effects in Glas programs are limited by dataflow. To enforce sequential may require explicit dataflows for synchronization.
+In a Glas folder, any module with name `test-*` should be processed even if its value is not required. Language modules could support ad-hoc tests internally. 
 
-Second, Glas programs can restrict or attenuate a subprogram's access to user-defined operators. For example, it is feasible to restrict a subprogram to access specific folders and files, or to wrap filesystem reads and writes with effectful logging.
+In a Glas namespace, any symbol `test-*` could be processed as a sanity check, perhaps waiting for final overrides.
 
-Effects usually introduce non-determinism, whether observing the time or non-deterministic channel merge. Deterministic, effectful computation is feasible but requires careful design (e.g. monotonic shared state). 
+Automatic testing within files is left to language definitions and *Language Modules*.
 
-*Note:* The Glas compilation model can support alternative program models for applications and effects. However, the Glas program model should be adequate for most use cases.
-
-## Component System
-
-The Glas component system is essentially a fine-grained module system for the Glas program model. 
-
-The Glas program model includes operators to describe a dictionary of user-defined operators for reference within a subprogram. Glas programmers will find it convenient to program at the dictionary level - it's a lot more human-friendly! In context of a dictionary, a program might be trivialized to `[ref:main]` or similar.
-
-Unfortunately, use of a flat `(main:[code], ...)` dictionary value is awkward for dictionary-level programming. For example, it does not support scoped definitions, private definitions, or effective reuse of algorithms in multiple contexts. To solve this, Glas partitions the program dictionary into abstract software components, with inspiration from ML functors.
-
-Externally, a Glas component is an abstract object modeling a dictionary with internal scope and private definitions. A component may be parameterized by other components. Operators are also parameterized by an implicit component for the static arguments.
-
-Internally, a Glas component is a declarative structure that describes its dependencies, inheritance, override definitions, subcomponents. It might also specify type annotations or automated tests.
-
-Glas components are structurally limited to static linking.
-
-*Note:* Recursive definitions are not allowed. It should logically be logically feasible to erase the component system by transitively inlining all definitions (modulo effects).
+Deterministic testing of computed executable binaries is theoretically feasible via accelerated simulation of a machine, fuzzing the race conditions. However, in the short term, we canto test executables by more conventional means.
 
 ## Meta: Type Annotations
 
@@ -154,8 +163,8 @@ Glas components are structurally limited to static linking.
         swap
         sip
         dip
-        box
-        unbox
+        wrapl
+        unwrapl
 
 ### Arithmetic
 
@@ -171,9 +180,20 @@ Glas components are structurally limited to static linking.
 
 ### Conditional Behavior
 
+
+        fail
+
 ### Component System
 
 ### Synchronization
+
+Ways we can synch:
+
+* wait for a value before starting subprogram
+* wait for channel to finish before producing value
+* wait for multiple values before producing value
+* 
+
 
         synch:[X->Y]   - wait for an unrelated input before continuing
 
