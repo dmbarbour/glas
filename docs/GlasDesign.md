@@ -79,49 +79,46 @@ Glas channels may be 'closed' from either end, modeling end of list for data or 
 
 The Glas program model is based on [arrowized](https://en.wikipedia.org/wiki/Arrow_%28computer_science%29) [Kahn process networks](https://en.wikipedia.org/wiki/Kahn_process_networks) via [concatenative](https://en.wikipedia.org/wiki/Concatenative_programming_language) [combinatory logic](https://en.wikipedia.org/wiki/Combinatory_logic).
 
-Concretely, a Glas program is represented by a list of operators. Each operator is represented by variant data. The list models sequential composition. Each operator represents an abstract function, often a combinator whose argument is a static subprogram.
+Concretely, a Glas program is represented by a list of operators. Operators are represented by variant data. The list models sequential composition. Each operator represents an abstract function, often a combinator whose argument is a static subprogram.
 
 Glas programs operate on data structures extended with bounded-buffer channels and transparent futures. Functions on partial data are implemented by long-lived processes. These processes compute output incrementally and monotonically based on readiness of buffers and availability of inputs.
 
 The fixpoint loop combinator is essential for process networks, modeling cyclic dataflows, piping channels from the right-hand side of a subprogram back to its left-hand side. In Glas, this is supported via transparent futures, and implementation relies on concurrent, opportunistic computation of operators. 
 
-Most Glas primitive operators assume input and output is structured as a heterogeneous list, modeling a Forth-like data stack. This simplifies the operators because data source and destination are implicit.
+Most Glas primitive operators assume runtime data is structured as a heterogeneous list, modeling a Forth-like data stack. This simplifies individual operators, but interpretation will waste many CPU cycles on pointless stack shuffling. Glas programs *must* be compiled for efficient processing.
 
-Operator definitions are in a later section.
+Program operators are detailed in a later section.
 
 ## Namespace Model
 
-Definition-level programming is concise, accessible, extensible, composable in more dimensions, and human-friendly. At least in contrasted to lists of primitive operators.
+Definition-level programming is concise, accessible, extensible, scalable, and human-friendly, at least relative to a list of primitive operators.
 
-Glas supports definition-level programming with operators to extend a namespace in scope of a subprogram, and to apply defined symbols. Names within a Glas program are statically resolvable, up to an initial namespace provided by runtime or compiler.
+Glas supports definition-level programming with two operators:
 
-To support higher-order and generic programming, Glas supports virtual symbols with overrides. Overrides can model parameters, while the initial definitions model defaults.
+* **ns** - adjust namespace in context of subprogram
+* **op** - apply symbol defined in current namespace
 
-Glas forbids recursive definitions. Loops must be expressed using primitive loop combinators. It should be possible to erase namespace operators by transitively inlining definitions. Namespaces contribute to expression, not meaning.
+Namespaces in Glas contribute primarily to expression of programs, not runtime semantics. For example, it is possible to erase namespace operators by transitive inlining. The exception is that a compiler can inject effectful operators (see *Effects Model*).
 
-Namespaces are concretely represented as dictionary values with standard fields:
+Lke Glas programs, a Glas namespace is represented by a list of operators that represent abstract functions over their inputs. Unlike Glas programs, namespace operators are specialized and constrained: namespaces are opaque, recursive definitions are structurally prevented, and namespaces should support tracing symbols back to their definitions.
 
-* **program** - A program, the main behavior of a namespace, used by the namespace operators.
-* **define** - A dictionary of `symbol:Namespace` pairs, each defining a symbol. For the common case of defining subprograms, `symbol:program:[code]` is sufficient.
-* **extend** - A symbol, or unit. This identifies the namespace we search for definitions that are not locally defined. Default is same as *import* field. Unit is empty namespace.
-* **parent** - A symbol. A namespace is implicitly parameterized by its parent namespace, but we might want a different name in some cases. Default `parent`.
-* **virtual** - A set of symbols, represented as a dictionary. Definition of virtual symbols may be deferred or overridden upon extension. Non-virtual symbols would be shadowed instead.
+Glas will leverage namespaces for higher-order programming. It is possible to model partially parameterized namespaces that require a few more definitions as input.
 
-This should be sufficient for operation, though we might introduce some ad-hoc fields to represent exports, override intentions, types, etc. to a linter or type checker.
-
-The Glas namespace model has much in common with OOP classes or prototypes. However, the second-class, static nature of namespaces will align usage patterns more closely with ML functors. 
+Namespace operators are detailed in a later section.
 
 ## Effects Model
 
 Glas programs can be extended with effects. This doesn't require any changes: effects can be modeled as abstract, user-defined operators in the top-level namespace, provided by compiler or runtime. 
 
-This design is similar to conventional procedural effects. However, there are two noteworthy differences:
+This design is similar to conventional procedural effects. Two noteworthy distinctions:
 
-The namespace model is expressive enough that a program can restrict or attenuate a subprogram's access to effects. This can simplify testing in restricted environments.
+Effects in Glas are aggressively concurrent, opportunistic based on available data. Blocking calls require too many OS threads. Glas effects should build on asynchronous operations, e.g. using `epoll` in Linux. It is also useful to model abstract affine or linear types for safe use of effects, e.g. to ensure file handles are sequenced, properly closed, and never directly observed.
 
-Effects in Glas are aggressively concurrent, running opportunistically based on available data. This can be mitigated via primitive synchronization operators or careful design of the effects model.
+Effects are implicit parameters via the namespace model. The namespace model is expressive enough to restrict or attenuate a subprogram's access to effects. For example, we can wrap filesystem access with logging, or reject subprogram access to certain folders. It is possible to secure, sandbox, or simulate effects from a subprogram.
 
-*Note:* The Glas compilation model can support alternative program models for applications and effects. However, the Glas program model should be adequate for most use cases.
+Glas can use effects to extend the program model, e.g. introducing a non-deterministic merge operator to observe race conditions between channels.
+
+*Note:* The Glas compilation model doesn't limit expression of application behavior to Glas programs. However, the Glas program model is adequate for most use cases.
 
 ## Notable Exclusions
 
@@ -142,17 +139,15 @@ Evaluation can feasibly be implemented by interpreter or compiler to an abstract
 
 Simple conventions to support automatic testing: 
 
-In a Glas folder, any module with name `test-*` should be processed even if its value is not required. Language modules could support ad-hoc tests internally. 
-
-In a Glas namespace, any symbol `test-*` could be processed as a sanity check, perhaps waiting for final overrides.
-
-Automatic testing within files is left to language definitions and *Language Modules*.
+In a Glas folder, any module with name `test-*` should be processed even if its value is not required. Language modules could support ad-hoc tests internally. Automatic testing within files is left to language definitions and *Language Modules*.
 
 Deterministic testing of computed executable binaries is theoretically feasible via accelerated simulation of a machine, fuzzing the race conditions. However, in the short term, we canto test executables by more conventional means.
 
-## Meta: Type Annotations
+## Meta: Stack Type Annotations
 
 ## Operators
+
+*Note:* For consistency with user-defined operators, Glas operators should only accept programs - or dictionaries of programs - as parameters.
 
 ### Stack Manipulation
 
