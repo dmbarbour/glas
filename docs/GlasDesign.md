@@ -10,11 +10,9 @@ Language modules have access to limited compile-time effects, including to load 
 
 Glas specifies a *Namespace Model* for definition-level programming. To support the conventional programming style where modules 'import' and 'export' definitions and manage scopes of symbols, most Glas modules should compute values that represent namespaces.
 
-Glas can support *Program Search* for high-level goal-based programming. In this context, Glas systems will use packages to catalog and curate other packages, and search for functions based on subject, signatures, and samples.
+Ambiguous references, directed dependency cycles, invalid language modules, and processing errors may cause the build to fail.
 
-Ambiguous references, directed dependency cycles, invalid language modules, and errors during processing will be reported as compile-time errors.
-
-*Note:* Regarding package manager, current intention is to leverage Nix or Guix. But see also *Program Search*. 
+*Note:* Files and folders whose names start with `.` are hidden from the module system. A `.glas/` folder might be used for extra input to the Glas command-line utility, such as quotas.
 
 ## Data Model
 
@@ -171,60 +169,62 @@ A language module's value must represent a Glas namespace that defines a 'read' 
 
 The read operation is abstract over a few effectful operators to load modules and log messages:
 
-* **op:load** - `Name -- Value`. Load module's value, e.g. `package:foo`. If undefined or erroneous, returns unit `()`.
+* **op:load** - `Name -- Value`. Access external dependency such as `package:foo`. Returns unit `()` on any error.
 * **op:log** - `Message -- `. Emit a message. Message may have any data type, usually variant such as `error:(...)`. 
 
-The runtime input is a binary, a list of small numbers representing file content. Final output becomes the module's value, albeit with output channels expanded to lists. The read operation is considered a failure if output deadlocks or an `error:(...)` message is logged.
+The runtime input is a binary, a list of small numbers representing file content. Final output becomes the module's value, albeit with output channels expanded to lists. The read operation is considered a failure if output deadlocks, an `error:(...)` message is logged, or a dependency cycle is detected.
 
-The read operation will compute a deterministic value based on language definition, file content, and loaded modules. The set of logged messages is also deterministic but may be emitted in non-deterministic order.
+Builds can be expensive. Logging should be leveraged to report progress, e.g. by emitting `progress:(task:regalloc, step:37, max:100)` or similar, which could be displayed as progress bars.
 
-*Note:* Builds can be expensive. Logging can be leveraged to report progress, e.g. emit messages such as `progress:(task:codegen, step:37, max:100)` then map to on-screen progress bars.
+The read operation will compute a deterministic value based on language definition, file content, and referenced modules. The set of logged messages is also deterministic but may be emitted in non-deterministic order.
 
-## Automatic Testing
+*Note:* Load actions are logged to a dedicated space to support cyclic dependency checks. Load errors are also reported.
 
-Within a Glas folder, any module with name `test-*` should be processed even if its value is not loaded by the `public` module. Language modules can support ad-hoc testing within files, logging `error:(...)` if there are any issues. Due to the Glas module system, static analysis can be performed as a normal test, and potentially memoized for reuse.
+## Glas System Patterns
 
-Deterministic testing of computed executable binaries is theoretically feasible via accelerated simulation, with fuzz-testing in case of race conditions. However, accelerators won't be immediately accessible, so conventional methods are also required.
+This section describes some high-level visions for how Glas systems are managed or used. These ideas indirectly influence Glas design.
 
-## Catalogs
+### Automated Testing
 
-Glas can explicitly represent packages that curate and catalog other packages. 
+Within a Glas folder, any module with name `test-*` should be processed even if its value is not loaded by the `public` module. Language modules support ad-hoc expression of tests via files, logging `error:(...)` to report issues. Static analysis can be performed as normal tests.
 
-The value of a catalog package will include *names* and *summaries* of other packages. Summaries may include type descriptions, natural language documentation, weighted tag clouds. To simplify incremental compilation, package summaries should be relatively stable compared to package definitions. Actual loading of a module can be deferred. A reverse-lookup index can also be computed. Higher-order catalogs may compose, curate, and extend other catalogs.
+Testing of computed executable binaries is theoretically feasible via accelerated simulation and fuzz-testing. However, accelerators won't be immediately accessible, so more conventional methods are required short-term.
 
-With indexed catalogs and reverse-lookup, staged programs can integrate functions based on ad-hoc criteria such as type, tags, and documentation. Compared to binding functions entirely by name, this can support software systems more adaptive to context and available resources, and more robust to API changes.
+### Graphical Programming
 
-Catalogs can feasibly be leveraged to model traits or multi-methods.
+Language modules enable Glas to bridge textual and graphical programming. Graphical programming can be supported by developing a specialized syntax, nodes annotated with graphical markup for layout and presentation.
 
-## Program Search
+Presentation might involve calendar widgets for date values, color pickers for color values, sliders for numbers, etc.. In the more general case, an entire file might be rendered as a big widget. Projections feasibly integrate multiple files, via embedding, portals, or links. At an extreme, it is theoretically feasible to project programs as video games.
 
-A long-term vision for Glas: Programmers describe a search-space for composition of programs with hard requirements and heuristic preferences. Catalog packages extend this search to the Glas ecosystem or a curated subset. A staged search generates samples and reports expended effort. The programmer uses feedback to refine the search or implement candidates components until satisfied with result and expended effort.
+Language modules could make the presentation more explicit by defining utility functions suitable for presentation of languages in various media, such as a web-app.
 
-Machine learning can be leveraged to improve the search algorithms, e.g. to focus search efforts on programs that are more likely to be accepted. It also is feasible for machine learning to translate natural language to preferences and requirements, or to develop a language module that interprets a pseudo-natural language.
+### Live Coding Applications
 
-This could make software more accessible for non-programmers. Or it might prove to be a pipe dream that stumbles upon unforseen issues. However, it seems worth exploring.
+In a living Glas system, programs should represent active intentions of users. Changes to the program should immediately be deployed, providing real-world feedback.
 
-## Live Coding
+A viable application model is based on repeatedly applying deterministic, hierarchical `State -> State` transactions. Access to external resources might be modeled as stateful requests added to a queue or bulletin board. Potential API:
 
-Glas can support incremental builds via caching and memoization. It should be feasible to continuously deploy updated programs. With some design, we might reduce latency to an acceptable degree for soft real-time control. 
+* **op:try** - hierarchical transaction, higher order:
+ * **task** - task to transact, with backtracking
+ * **then** - runs with output from task on success
+ * **else** - runs with input to task on failure
+* **op:fail** - abort task, implicit for errors
 
-Of course, this requires some careful attention to the effects model. For live coding, it's preferable that the program does not hold onto state between events. State should be externalized into a database.
+A compiler can use static analysis or profiling to determine which elements of input state are observed or updated by a transaction. Transactions can run in parallel when there is no conflict. If a transaction fails, its next repetition can wait for a relevant state change. This implicitly gives us concurrency control (locks, etc.).
 
-Additionally, live coding benefits from a syntactic structure that is tolerant of errors and partial edits, or integrated with a projectional editor. This is feasible based on design of the language module.
+A single transaction is deterministic, but multiple concurrent cyclic transactions may be non-deterministic.
 
-Updates to Glas packages could be deployed to live clients. In some sense, packages can be viewed as a publish-subscribe resource. Glas packages could carry relatively stable data, e.g. street maps or LDAP databases, not just programs.
+A language syntax built around this model can represent hierarchical transactions with logical lines and indentation. A syntax error then only affects the subprogram's transaction instead of the full program.
 
-## Projectional Editing
+This model is significantly more accessible, extensible, composable, comprehensible, and controllable than OS processes. It should make a good default for modeling most long-running application behaviors, including console or network. Application GUIs could be modeled as graphical projections over the state.
 
-Glas language modules can support development of syntax specialized for projectional editing. This syntax would involve annotations for stable layout and suitable presentation that are awkward for text-based programming. Presentation might involve calendar widgets for date values, sliders for numbers, etc..
+### Program Search
 
-The language module can further support the projectional editor tool, e.g. defining a function to generate a web-app for rendering and editing the file. References to other modules might become hyperlinks or embedded frames.
+As the Glas system matures, it might be useful to shove more decision making to expert systems encoded into the module system.
 
-## Static Safety Analysis
+At a lower level, automate some data-plumbing. At a high level, describe programs with hard requirements, heuristic preferences, and a search space for potential solutions. A staged program can search for programs that achieve these goal, leveraging the limited intelligence we can integrate via rules or machine learning.
 
-Process networks are a challenge to type check due to use of channels and futures. Session types might help represent the required order of computation to avoid deadlock. Annotations can express intended types.
-
-It is feasible to take a path of global analysis, e.g. with inspiration from the [SHErrLoc project](https://research.cs.cornell.edu/SHErrLoc/). 
+To support search, Glas programmers can define packages that catalog and curate other packages. Catalogs should include names and summaries of other package, and perhaps a reverse-lookup index. Summaries might include tags and types.
 
 ## ACTIVE OPERATOR DESIGN
 
