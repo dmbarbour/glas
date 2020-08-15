@@ -124,7 +124,7 @@ Logically, a variable `var:varname` represents an identity process that buffers 
 * scratch space for calculations
 * conditional behavior (empty or full)
 
-Default use of the buffer is inconvenient for many use-cases, so Glas supports two patterns via extended references:
+Default use of the buffer is inconvenient for many use-cases, so Glas supports a few patterns via extended references:
 
 A reader may use `var:varname:copy` to read a copy of the value. One copy remains in the buffer. As a special case, multiple operators may read-copy concurrently.
 
@@ -154,11 +154,13 @@ Content of annotations is left to ad-hoc extension and de-facto standardization.
 
 ## Effects Model
 
-A request-response channel can model single-threaded procedural code. A program would write `io:request` then read `io:response`. Background computation may continue while waiting on a response.
+A simple approach to effects is a request-response channel. A program writes `io:request` and reads `io:response` based on an API of supported requests. This models single-threaded procedural behavior, except that background computations continue while awaiting a response.
 
-For larger systems, we could model a deployment layer that specifies how to bind component processes and ports to different locations and resources.
+The request-response channel becomes a bottleneck that limits the scale of applications. This issue can be mitigated by modeling asynchronous IO requests, and by leveraging acceleration and content-addressed storage to avoid use of effects for performance or memory control. Most applications won't reach the bottleneck.
 
-It is feasible for a compiler to inject effectful operators via the higher-order namespace. However, I'd prefer to avoid this solution because it hinders visibility, simulation, determinism, and distribution.
+To achieve greater scale, a compiler could inject effectful operations via the higher-order namespace. This design has some advantages, e.g. it is easy for a compiler to inline effects code. However, it is difficult to control without sophisticated static analysis such as abstract, linear, and modal types.
+
+In my vision, Glas systems favor a request-response channel because they are easy to comprehend, control, and compose. Also, they're an excellent fit for live coding applications (see [Glas Applications](GlasApps.md)).
 
 ## Language Modules
 
@@ -178,6 +180,10 @@ Compilation fails if a program halts before producing a result, if a request is 
 
 Miscellaneous high-level visions for Glas systems.
 
+### Glas Applications
+
+This section grew into its own page, which explores application models for Glas systems. See [Glas Applications](GlasApps.md).
+
 ### Automated Testing
 
 Within a Glas folder, any module with name `test-*` should be processed even if its value is not loaded by the `public` module. Language modules support ad-hoc expression of tests via files, logging `error:(...)` to report issues. Static analysis can be performed as normal tests.
@@ -186,82 +192,47 @@ Testing of computed executable binaries is theoretically feasible via accelerate
 
 ### Automatic Buffering
 
-Buffers reduce sensitivity to latency, which supports distributed computation. However, manual buffering is too awkard and easy to get wrong. For example, extending one buffer can be useless without also extending other buffers.
+Buffers reduce sensitivity to latency, which supports distributed computation. However, manual buffering is awkard and easy to get wrong. For example, extending one buffer is often useless without extending several other buffers.
 
-Glas programs should normally specify minimal buffering for correct and convenient operation. Buffers can be introduced by variables, wires, and wires between variables. An optimizer or compiler can later grow buffers as needed to support distributed computation. 
-
-### Live Coding Applications
-
-In a live programming system, programs represent active intentions. Changes to a program should affect the real-world. However, this requires careful attention to how state and effects are modeled, to avoid losing information or breaking interactions.
-
-A good model for live coding:
-
-* Program is a deterministic transaction, repeating.
-* Deterministic abort pauses program, awaits change.
-* Request-response to support abstract state, queries.
-* Program can be aborted and updated at any time.
-
-Abstraction of external state is convenient for precise conflict analysis, incremental computing, and scalability. 
-
-For example, multiple transactions could write concurrently to an abstract queue or mailbox without conflict. Removing messages from a mailbox can be transparently non-deterministic, and run in parallel if there is no read-write conflict.
-
-Large transactions have high risk of conflict. However, it is feasible to 'fork' a transaction, duplicating the transaction then running multiple paths. This also would indirectly support non-deterministic choice.
-
-This model is simple, observable, extensible, composable, and scalable. It could be supported by dedicated syntax built around observation-action rules. Compilers might optimize for checkpointing. 
-
-I hope to make live coding applications the default for Glas systems, trading a little performance for a lot of convenience. 
-
-### Wikis and Web Applications
-
-I have a vision for modeling a wiki in Glas where every page is a module and defines a live coding web-app (and perhaps other symbols in a namespace).
-
-The live-coding web-app is represented as a Glas program that uses request-response effects to operate on an idealized document object model (DOM), client-side storage, and asynchronous access to server resources. 
-
-This program is compiled to JavaScript, and perhaps some static resources based on partial evaluation from empty DOM. It might also be compiled to native applications.
-
-This could be used for presentation of data, little applications, full games, etc.. If nothing else, it should be a good sandbox for experimenting with Glas.
-
-### Notebook Applications
-
-The conventional notion of fire-and-forget REPL is a poor fit for Glas. However, Jupyter-style notebook applications - where every line remains active - could be a relatively good fit. 
-
-This might be achieved by annotating each logical line, and modifying the compiler to report the affected variables. Further, we might implicitly bind a document object model frame to each line to support explicit user-interaction.
-
-Notebooks are a good fit in context of live coding applications, continuously replaying the notebook. Changes in live data or code should immediately affect the outputs.
+Glas programs should specify minimal buffering for correct and convenient operation. An optimizer or compiler can later grow buffers as needed to support distributed computation. This could be supported by annotations.
 
 ### Graphical Programming
 
-Language modules enable Glas to bridge textual and graphical programming. Graphical programming can be supported by developing a specialized syntax, with annotations for graphical markup, layout and presentation.
+Language modules enable Glas to bridge textual and graphical programming styles. Users can develop a syntax that supports layout and presentation. 
 
-Presentation might involve calendar widgets for date values, color pickers for color values, sliders for numbers, etc.. In the more general case, an entire file might be rendered as a big widget. Projections feasibly integrate multiple files, via embedding, portals, or links. At an extreme, it is theoretically feasible to project programs as video games.
+Presentation might involve calendar widgets for date values, color pickers for color values. An input for structured data could look like a form, based on deriving the data type. Large tables could support scrolling. A DSL for a graphics pipeline might show initial and final samples. A DSL for music might look like sheet music and include a 'play' button. A mathematical equation might be rendered together with a graph.
 
-If coupled with the notion of live notebook applications, then we have a GUI which can reserve space to compute another GUI based on data. 
-
-### Stack Programming
-
-I'm fond of stack programming, though I do understand why most people aren't. 
-
-In Glas, this could be supported by a user-defined syntax that allocates variables for stack positions. To avoid accidental interference with concurrency, we might use a fresh variable for everything added to the stack, then let the compiler optimize.
+This is a form of projectional editing. Ultimately, our program is still a file, or perhaps a folder with several files.
 
 ### Program Search
 
-As the Glas system matures, it might be useful to shove more decision making to expert systems encoded in the module system. 
-
 We can develop higher-order program models that represent constraint systems and search spaces for programs. We can define packages that represent catalogs of other packages, with tags and summaries and indexes. Modules could experimentally compose program values, evaluate their fitness for a purpose. 
 
-This would enable programs to be much more adaptive to changes in requirements or preferences.
+This would enable programs to be much more adaptive to changes in requirements, preferences, or the ecosystem.
+
+Program search is expensive. This could be mitigated by caching and memoization, and careful design to support incremental computing.
 
 ### Abstract and Linear Types
 
-Abstraction and linearity are not intrinsic properties of data. Instead, they are constraints on how a subprogram interacts with certain data.
+Abstraction and linearity modality are not intrinsic properties of data. Instead, they are constraints on how a subprogram interacts with certain data.
 
-A higher-order program can treat data as abstract by manipulating the data only through the provided functions. Abstraction extends to linearity if we consider duplication or dropping of data to be manipulations. Glas programmers can use annotations to assert that a subprogram should respect abstraction or linearity.
+A program can treat data as abstract by never manipulating it directly, through provided functions or channels. Abstraction extends to linearity when we consider duplication and dropping data to be protected manipulations.
+
+Glas programmers can use annotations to assert that a subprogram should respect abstraction or linearity. This could be validated by static analysis.
 
 Abstract and linear data types are useful for performance, especially in context of *Acceleration*. Abstraction can preserve optimized under-the-hood representations between operations. Linear data can potentially be modified in-place, optimizing away some allocation, copy, and garbage-collection steps.
 
-Abstract and linear types are also useful for designing a robust, scalable effects API.
-
 *Note:* Linear types have a bad reputation due to awkward feature interactions with pattern matching, closures, exceptions. However, a suitable syntax can help a lot, and there should be much less friction with process networks compared to lambda calculus.
+
+### Modal and Phantom Types
+
+It is feasible for a type system to track metadata such as the logical location or latency, units of measure, purpose and provenance. The type system may then control composition based on this metadata in relatively flexible and ad-hoc ways. 
+
+For example, a type system might complain if we try to add apples to oranges. Adding matrices that are 'on' different GPGPUs is expensive, so we might want an error if attempt to do so without explicitly moving the matrices together. Tracking logical latency in the type system could make it feasible to constrain programs based on big-O complexity notations.
+
+In Glas, modal type operators could be expressed as type annotations, e.g. if we want to add a unit to a number. Which operations are considered valid would depend on the type system, e.g. we can delay data to move it forward in time but not backwards.
+
+This pattern can be usefully combined with abstract and linear types, and it's feasible for modal types themselves to be fully or partially abstracted in that context.
 
 ## OPERATOR DESIGN
 
@@ -278,9 +249,11 @@ Glas can support structural equality comparisons over arbitrary values.
 
 ### Hashing? No.
 
-I don't want to choose any particular hash function.
+Choosing any particular hash function is very awkward.
 
 ### Pattern Matching? No.
+
+Structured pattern matching is very awkward to represent at this layer.
 
 It does not seem convenient to support pattern matching at the level of primitive operators.
 
@@ -318,12 +291,33 @@ Glas programs will have full ability to inspect and construct dictionaries, e.g.
 
 ### Arithmetic
 
-Glas supports natural numbers and bignum arithmetic. 
+Glas will support natural numbers and bignum arithmetic.
+
+Design option: i
+
+To support arithmetic, I could introduce several independent operators, or perhaps introduce a `math:[...]` DSL. Which of these is the better option?
+
+
+
+
+
+However, rather than have a large number of 
 
         add:(args:[list of ports], result:port)
         mul:(args:[list of ports], result:port)
-        sub:(left:port, right:port, left-right:port, right-left:port)
+        sub:(a:port, b:port, a-b:port, b-a:port)
         div:(dividend:port, divisor:port, quotient:port, remainder:port)
+
+A tempting alternative is to create a generic 'math' operator wi
+
+        math:(a:port, b:port, c:port, "a b c + +":port)
+
+
+
+
+
+
+
 
 Subtraction and division may have one or two outputs. Subtraction can output both left-right and right-left, returning a minimum value of 0. Division outputs quotient and remainder. Arithmetic with non-numeric input or divide-by-zero will not have output.
 
