@@ -160,7 +160,7 @@ The request-response channel becomes a bottleneck that limits the scale of appli
 
 To achieve greater scale, a compiler could inject effectful operations via the higher-order namespace. This design has some advantages, e.g. it is easy for a compiler to inline effects code. However, it is difficult to control without sophisticated static analysis such as abstract, linear, and modal types.
 
-In my vision, Glas systems favor a request-response channel because they are easy to comprehend, control, and compose. Also, they're an excellent fit for live coding applications (see [Glas Applications](GlasApps.md)).
+In my vision, Glas systems favor a request-response channel because they are easy to comprehend, control, and compose. Also, they're an excellent fit for live coding applications (see *Glas Application Model*).
 
 ## Language Modules
 
@@ -171,18 +171,20 @@ A language module must compute a value that represents a namespace that defines 
 The compile process will receive a binary on the port `source`, perform limited compile-time effects via request-response channel (see *Effects Model*), and produce the module's value on `result`.
 
 Supported requests: 
-* `log:Message` - emit an arbitrary message for logging purposes. Response is always `ok`, never fails.
+* `note:Message` - emit an arbitrary message for logging purposes. Response is always `ok`, never fails.
 * `load:Module` - load value of module such as `module:foo` or `package:foo`. Response is `ok:Value | error`. 
 
-Compilation fails if a program halts before producing a result, if a request is not unsupported, or if any `error:(...)` message is logged. Load errors won't necessarily break a compile. 
+Compilation fails if a program halts before producing a result, if a request is not unsupported, or if any `error:(...)` message is logged. Load errors don't automatically break a compile.
+
+Language modules cannot modify their environment, modulo by implicit caching of modules.
 
 ## Glas System Patterns
 
 Miscellaneous high-level visions for Glas systems.
 
-### Glas Applications
+### Glas Application Model
 
-This section grew into its own page, which explores application models for Glas systems. See [Glas Applications](GlasApps.md).
+This section grew into its own page, which explores application models for Glas systems. See [Glas Application Model](GlasApps.md).
 
 ### Automated Testing
 
@@ -198,11 +200,13 @@ Glas programs should specify minimal buffering for correct and convenient operat
 
 ### Graphical Programming
 
-Language modules enable Glas to bridge textual and graphical programming styles. Users can develop a syntax that supports layout and presentation. 
+Language modules enable Glas to bridge textual and graphical programming styles. We can develop a syntax optimized for layout and presentation.
 
-Presentation might involve calendar widgets for date values, color pickers for color values. An input for structured data could look like a form, based on deriving the data type. Large tables could support scrolling. A DSL for a graphics pipeline might show initial and final samples. A DSL for music might look like sheet music and include a 'play' button. A mathematical equation might be rendered together with a graph.
+Presentation of a program might involve calendar widgets for date values, color pickers for color values. An input for structured data could look like a form, based on deriving the data type. Large tables could support scrolling. A DSL for a graphics pipeline might show initial and final samples. A DSL for music might look like sheet music and include a 'play' button. A mathematical equation might be rendered together with a graph.
 
-This is a form of projectional editing. Ultimately, our program is still a file, or perhaps a folder with several files.
+Graphical programming can feasibly be mixed with live program output, e.g. in the style of a notebook or spreadsheet. This idea is discussed further in *Glas Application Model*.
+
+*Note:* Scalability is not a problem. We could develop a syntax based on a database file such as SQLite or LMDB, or develop our graphical projections over structured folders instead of individual files.
 
 ### Program Search
 
@@ -253,9 +257,7 @@ Choosing any particular hash function is very awkward.
 
 ### Pattern Matching? No.
 
-Structured pattern matching is very awkward to represent at this layer.
-
-It does not seem convenient to support pattern matching at the level of primitive operators.
+Structured pattern matching is very awkward to represent at semantics layer. Maybe try to introduce in syntax layers.
 
 ### Recursive Definitions? No.
 
@@ -263,7 +265,7 @@ It is feasible to locally rewrite let-rec groups to loops. However, it's too dif
 
 ### Backtracking Operators? No.
 
-Very awkward fit for Glas.
+Very awkward fit for Glas semantics. We can still do backtracking at the higher layers, e.g. hierarchical transactions, pattern matching.
 
 ### Arithmetic? Minimal.
 
@@ -271,11 +273,11 @@ There is no end to the number of arithmetic functions we could introduce. But st
 
 ### Break/Continue Loops? No.
 
-Awkward fit for concurrent operators.
+An awkward fit for concurrent operators. I'm thinking we might end a loop by writing a certain loop variable.
 
 ### Logical List Reversal? Yes.
 
-Easy to understand, widely useful. Awful performance predictivity - O(1) time or O(N) time - but the O(N) is only paid lazily when accessing the list, and doesn't apply to repeated reversals.
+Easy to understand, widely useful. Awful performance predictivity - could be O(1) time or O(N) time.
 
 ### List Collections Processing? Probably.
 
