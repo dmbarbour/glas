@@ -1,8 +1,101 @@
 # Glas Application Model (Glam?)
 
-This document discusses my vision for modeling applications in Glas systems. By 'application' I broadly include console applications, GUI applications, web apps, web servers, etc..
+An application is a program that can automate behavior on behalf of the user. However, conventional application models are problematic - difficult for users (and programmers) to comprehend, control, compose, modify, integrate, or extend.
 
-The foundation model for everything else is *Live Coding Applications*. I envision some larger systems above this.
+I envision an alternative application model for Glas systems with much nicer properties. The core concept of this model is a *Transaction Machine*. 
+
+This document discusses the model, its benefits and tradeoffs, and how it might be integrated with existing systems.
+
+## Transaction Machine
+
+An application is an deterministic transaction which is implicitly repeated by an external loop. Forking and hierarchical and forking transactions are supported. Access to external state is abstracted through request-response.
+
+Process control is based on the fact that a deterministic transaction that changes nothing will also be unproductive when repeated, at least until there is a change in requested input. The system can recognize unproductive transactions then wait for change.
+
+Hierarchical transactions support composition. In practice, this will mostly be used for backtracking conditional behavior, e.g. some variation of `try/then/else`. But it's also useful for testing, modeling what-if scenarios, etc.. 
+
+Forking controls risk of conflict. Logically, a `fork:[foo, bar, baz]` request has a non-deterministic response with one value from list. In context of repeating transactions, we can replicate transaction, run all forks concurrently. Each fork can handle a different task.
+
+Abstraction of external state via request-response makes it easier for the system to track what is observed, detect potential conflicts, and protect invariants of system objects.
+
+This application model is observable, extensible, composable, scalable, and has many other nice properties. 
+
+### Required Optimizations
+
+For transaction machines to be viable, two optimizations are required: replication and rollback.
+
+Without replication, we can only rotate through forks. This would introduce unacceptable latency overheads. This optimization is valid because repetition and replication of a transaction are logically indistinguishable.
+
+Rollback enables an application to efficiently continue a task. A compiler could instrument the generated program for rollback, then the system should determine the first request whose value changes and restart computation from there. This can avoid redundant setup or configuration costs such as forking.
+
+With both replication and rollback, we can effectively fork tasks to handle tight loops, e.g. for processing elements from a queue.
+
+### Basic Effects API
+
+In context of Glas programs, transactions can be expressed via request-response channel, with several requests:
+
+* **commit:Status | abort:Reason** - Finalize transaction and early exit. Commit accepts state, abort rejects it. Response is `ok` then closes request-response channel (if top-level transaction).
+* **try** - Start hierarchical transaction. Response is `ok`. Transaction terminates with matching commit or abort. 
+* **fork:\[List,Of,Values\]** - Replicate current transaction. Response to each replica is different value from list. 
+* **note:Annotation** - Effects-layer annotations. This might be used for debug logging or GUIs, prefetch of resources, etc.. Response is `ok`.
+* **apply:(method:Val, query?, ignore?)** - Update object in transactional environment. Response is normally provided by environment. Optional flags:
+ * **query** - Just get response, don't change anything. Use implicit hierarchical transaction if method is not normally read-only.
+ * **ignore** - Just do the effects, drop the response. Respond with `ok`. System can have optimized versions for no response, but effect should be the same.
+
+
+## Doubts about Object References
+
+Ensuring safe migration of object references across multiple contexts is awkward. It's too easy to use the reference in the wrong context.
+
+For example, if we 'sandbox' an application by intercepting requests on certain variables, we'll be okay up until we call a method outside the sandbox parameterized by some of the variables we're intercepting.
+
+Glas program model manages to avoid channel references by instead binding local ports. I wonder if we can achieve similar to avoid use of references in a request-response API.
+
+One option is to develop a state model that avoids references internally.
+
+
+
+
+
+
+Modeling object references as values is very awkward. It is difficult to ensure a reference is used in the intended context, especially if we introduce a few sandbox layers. Should I be rejecting references from use in `apply`?
+
+I could explicitly correct a top-level reference. But I cannot reliably discover all references captured by `method`.
+
+
+
+
+
+
+
+
+
+Object references are values, but are interpreted by the environment. The method is also a value, and is further interpreted. Conce
+
+
+A compiler can feasibly support more fine-grained incremental computing, e.g. given a changed response we could ask the compiler if the change is *relevant* in the sense of pot
+
+
+
+
+
+
+
+We could support g
+
+
+A repeating transaction doesn't need to be recomputed from the start every time. 
+
+ Ideally this would include checking whether values computed from input have actually changed.
+
+With this in mind, an application might start by performing several reads on relatively stable input - e.g. configurations - then 
+
+
+
+
+A compiler for this model can instrument the program for lightweight rollback. 
+
+
 
 ## Live Coding Applications
 
@@ -24,41 +117,18 @@ Transactions can run concurrently unless they conflict. Conflict leads to wasted
 
 After a transaction commits or aborts, it isn't always restarted from the very beginning. A compiler could instrument the program for partial rollback and replay based on internal dataflows and a list of external changes. Programs can be designed to minimize rework by reading stable data and preparing before their main behavior.
 
-Process control is based on detecting change. If a deterministic transaction doesn't modify anything, it will do the same when repeated until there is a change in the requested input. Thus, a scheduler could implicitly wait for a relevant change. Aborted transactions obviously won't modify anything when repeated, which makes it easy to wait on a queue or mailbox.
 
 Abstracting external objects behind requests simplifies precise conflict and change detection. It also simplifies modeling of unordered structures to reduce risk of read-write conflict. For example, concurrent reads from a queue will conflict (both remove same head element), but concurrent reads from an unordered tuple space often won't conflict (remove different tuples).
 
-Hierarchical transactions can be supported start with a `try` request and terminate with `commit` or `abort`. This feature is very convenient for backtracking on failure, and can hugely simplify program logic. Hierarchical transactions can also support unit and integration testing with live data prior to deployment.
 
 The top-level transaction also terminates with a final commit or abort. No response, except to close the request-response channel. This ensures termination is deliberate, supports early exit, and simplifies composition of applications.
 
 Applications in this model are idempotent in a useful sense: replicating a repeating transaction does not affect the observable outcomes of the system. If a transaction does not conflict with itself, it can be replicated for performance, scheduling multiple instances concurrently. This is feasible when reads mostly take from unordered structures, such as a tuple space.
 
-Large transactions have high risk of conflict. To solve this, I introduce a `fork:[foo,bar,baz]` request that non-deterministically responds with one of the values in the list. Together with idempotent replication, this can take all paths.
-
 Real-world effects are never performed by transactions directly. Instead, after a transaction commits, writes to specific objects will implicitly be handled by the runtime. For example, if we write binary data to an object that represents a TCP connection, we might try to send that value after we commit.
 
-This application model is simple, observable, extensible, composable, updateable, and scalable. It can support a familiar, procedural syntax and excellent failure handling. Compilers can optimize by introducing hooks for checkpointing, rollback, efficient replication.
 
 Live coding applications are the core concept in my vision for a Glas application model.
-
-### Requests API
-
-This is a general summary of the top-level requests visible to a live-coding application.
-
-* **commit:Status | abort:Reason** - Finalize transaction and early exit. Commit accepts state, abort rejects it. Response is `ok` then closes request-response channel if top-level transaction.
-* **try:Name** - Start hierarchical transaction. Response is `ok`. Transaction terminates with matching commit/abort. Name is for debugging, should be unit `()` or symbol.
-* **fork:\[List,Of,Values\]** - Replicate current transaction. Response to each replica is different value from list. 
-* **note:Message** - Emit a message to an implicit transaction log. Supports administration and debugging. Response is `ok`.
-* **apply:(obj:Ref, msg:Value)** - Update object. Response is provided b the object, or `error` if invalid ref. 
-* **query:(obj:Ref, msg:Value)** - As apply, but for read-only operations. Simplifies reasoning about behavior and caching.
-* **check:(obj:Ref)** - Check whether a reference is valid. Response is `ok` or `invalid`. 
-
-An unrecognized or invalid request responds with `error`.
-
-In addition to the `io:request` and `io:response` ports, the top-level program should receive an ad-hoc configuration of values and references through `io:env`.
-
-Applications will inevitably have quotas, e.g. a limited number of concurrent forks, bounded CPU consumption. If a fork quota is reached, the system can implicitly switch to heuristically rotating through forks, preserving logic at cost of latency.
 
 ### Handling of Write-Write Conflicts
 
@@ -69,6 +139,18 @@ However, with repeating transactions, it isn't clear which is running "later". R
 A viable solution: choose a winner based on priority. This would be useful for extending a system with overrides. Priority could be configured, with a stable default priority in case of ties.
 
 We should ensure the conflict is visible to administrative interfaces, especially if resolving by default priority, so programmers can easily identify and debug the issue.
+
+
+### Graphical Programming
+
+Language modules enable Glas to bridge textual and graphical programming styles. We can develop a syntax optimized for layout and presentation.
+
+Presentation of a program might involve calendar widgets for date values, color pickers for color values. An input for structured data could look like a form, based on deriving the data type. Large tables could support scrolling. A DSL for a graphics pipeline might show initial and final samples. A DSL for music might look like sheet music and include a 'play' button. A mathematical equation might be rendered together with a graph.
+
+Graphical programming can feasibly be mixed with live program output, e.g. in the style of a notebook or spreadsheet. This idea is discussed further in *Glas Application Model*.
+
+*Note:* Scalability is not a problem. We could develop a syntax based on a database file such as SQLite or LMDB, or develop our graphical projections over structured folders instead of individual files.
+
 
 ## Storage Object Model
 

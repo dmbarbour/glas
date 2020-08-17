@@ -176,15 +176,23 @@ Supported requests:
 
 Compilation fails if a program halts before producing a result, if a request is not unsupported, or if any `error:(...)` message is logged. Load errors don't automatically break a compile.
 
-Language modules cannot modify their environment, modulo by implicit caching of modules.
-
 ## Glas System Patterns
 
 Miscellaneous high-level visions for Glas systems.
 
 ### Glas Application Model
 
-This section grew into its own page, which explores application models for Glas systems. See [Glas Application Model](GlasApps.md).
+This grew into its own page, which envisions a non-conventional application model for Glas systems and their integration with existing systems. See [Glas Application Model](GlasApps.md).
+
+### Graphical Projection
+
+After we have GUIs working, programs can be edited via graphical projections over files and folders. Glas language modules can optimize syntax for this purpose. The natural progression is to define a compile process for database files, then program by editing graphical projections of databases.
+
+There are many potential benefits of programming in this medium: multiple views of code to support understanding and manipulation, lower barriers for tooling, extensibility with new projections and properties, and widgets specialized for different DSLs.
+
+Of course, actualizing these benefits depends on design. Graphical programming can be awful if we aren't careful.
+
+*Aside:* Graphical projection feasibly can be combined with live coding to support staged programming with GUIs. See *Glas Application Model*.
 
 ### Automated Testing
 
@@ -197,16 +205,6 @@ Testing of computed executable binaries is theoretically feasible via accelerate
 Buffers reduce sensitivity to latency, which supports distributed computation. However, manual buffering is awkard and easy to get wrong. For example, extending one buffer is often useless without extending several other buffers.
 
 Glas programs should specify minimal buffering for correct and convenient operation. An optimizer or compiler can later grow buffers as needed to support distributed computation. This could be supported by annotations.
-
-### Graphical Programming
-
-Language modules enable Glas to bridge textual and graphical programming styles. We can develop a syntax optimized for layout and presentation.
-
-Presentation of a program might involve calendar widgets for date values, color pickers for color values. An input for structured data could look like a form, based on deriving the data type. Large tables could support scrolling. A DSL for a graphics pipeline might show initial and final samples. A DSL for music might look like sheet music and include a 'play' button. A mathematical equation might be rendered together with a graph.
-
-Graphical programming can feasibly be mixed with live program output, e.g. in the style of a notebook or spreadsheet. This idea is discussed further in *Glas Application Model*.
-
-*Note:* Scalability is not a problem. We could develop a syntax based on a database file such as SQLite or LMDB, or develop our graphical projections over structured folders instead of individual files.
 
 ### Program Search
 
