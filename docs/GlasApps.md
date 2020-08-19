@@ -1,120 +1,94 @@
-# Glas Application Model (Glam?)
+# Glas Applications
 
-An application is a program that can automate behavior on behalf of the user. However, conventional application models are problematic - difficult for users (and programmers) to comprehend, control, compose, modify, integrate, or extend.
+An application is a program that automates behavior of programmable systems on behalf of its users. Ideally, applications are easy for those users to comprehend, control, compose, extend, modify, and share. Especially at runtime.
 
-I envision an alternative application model for Glas systems with much nicer properties. The core concept of this model is a *Transaction Machine*. 
-
-This document discusses the model, its benefits and tradeoffs, and how it might be integrated with existing systems.
+This document proposes an application model for Glas systems that contributes to these goals. The core concept of this model is the *Transaction Machine*.
 
 ## Transaction Machine
 
-An application is an deterministic transaction which is implicitly repeated by an external loop. Forking and hierarchical and forking transactions are supported. Access to external state is abstracted through request-response.
+A transaction machine is a deterministic, hierarchical, forkable, repeating transaction over an abstract environment. The transaction is implicitly scheduled and repeated by the system.
 
-Process control is based on the fact that a deterministic transaction that changes nothing will also be unproductive when repeated, at least until there is a change in requested input. The system can recognize unproductive transactions then wait for change.
+Process control is implicit. A deterministic transaction that changes nothing will be unproductive when repeated, unless input has changed. The system can implicitly wait for relevant changes. 
 
-Hierarchical transactions support composition. In practice, this will mostly be used for backtracking conditional behavior, e.g. some variation of `try/then/else`. But it's also useful for testing, modeling what-if scenarios, etc.. 
+Hierarchical transactions simplify composition and testing of transaction machines. However, the primary use case is for conditional backtracking behavior and error handling.
 
-Forking controls risk of conflict. Logically, a `fork:[foo, bar, baz]` request has a non-deterministic response with one value from list. In context of repeating transactions, we can replicate transaction, run all forks concurrently. Each fork can handle a different task.
+Forking supports division of large transactions into smaller subtasks. A fork request replicates a transaction then responds to each replica with a different value. Together with incremental computing via partial rollback, every fork becomes a concurrent transaction machine.
 
-Abstraction of external state via request-response makes it easier for the system to track what is observed, detect potential conflicts, and protect invariants of system objects.
-
-This application model is observable, extensible, composable, scalable, and has many other nice properties. 
+Abstraction of the environment simplifies extension and makes it easier for the system to track which values are observed and modified and compute conflicts.
 
 ### Required Optimizations
 
-For transaction machines to be viable, two optimizations are required: replication and rollback.
+For transaction machines to be viable, two optimizations are necessary: rollback and replication.
 
-Without replication, we can only rotate through forks. This would introduce unacceptable latency overheads. This optimization is valid because repetition and replication of a transaction are logically indistinguishable.
+Rollback will reuse prior computation of a transaction up to the first change in input. Without rollback, transactions must be recomputed from the start. Efficient rollback requires compiler support.
 
-Rollback enables an application to efficiently continue a task. A compiler could instrument the generated program for rollback, then the system should determine the first request whose value changes and restart computation from there. This can avoid redundant setup or configuration costs such as forking.
+Replication will concurrently compute forks. Logically, a fork actually returns a non-deterministic value, but replication and repetition are equivalent for transactions. Without replication, we could rotate through forks, but this increases latency.
 
-With both replication and rollback, we can effectively fork tasks to handle tight loops, e.g. for processing elements from a queue.
+*Note:* There are many potential optimizations beyond the required two, e.g. fast roll-forward for irrelevant change, fusion of cooperative transaction loops, and constant propagation.
 
-### Transaction API
+## Transaction API
 
-In context of Glas programs, transactions can be expressed via request-response channel, with several requests:
+Glas programs can model transactions via request-response channel. A viable API:
 
-* **commit:Status | abort:Reason** - Finalize transaction and early exit. Commit accepts state, abort rejects it. Response is `ok` then closes request-response channel (if top-level transaction).
-* **try** - Start hierarchical transaction. Response is `ok`. Transaction terminates with matching commit or abort. 
+* **commit:Status | abort:Reason** - Accept or reject state. Response is `ok`. No further requests accepted by transaction.
+* **try** - Begin hierarchical transaction. Response is `ok`. Transaction terminates with matching commit or abort. 
 * **fork:\[List,Of,Values\]** - Replicate current transaction. Response to each replica is different value from list. 
-* **note:Annotation** - Effects-layer annotations. This might be used for debug logging or GUIs, prefetch of resources, etc.. Response is `ok`.
-* **apply:(obj:Ref, method:Val, query?, ignore?)** - Update object in transactional environment. Response is normally provided by environment. Optional flags:
- * **query** - Obtain response, don't change anything. Use implicit hierarchical transaction if necessary. 
- * **ignore** - Do the effects, ignore the response. Respond with `ok` instead.
+* **apply:(obj:Ref, method:Val)** - Query or update the environment. Response is provided by environment.
 
-Unrecognized requests, invalid method, etc. will implicitly abort the transaction without responding.
+Ideally, the transaction API, references, and methods will be statically analyzed for errors. Runtime type errors should cause a transaction to abort without response.
 
-### Object Model
+## Environment Model
 
-References are local to the application and have a typeful prefix such as `var:varname` or `queue:queuename`. The typeful prefix determines available methods and default value. Names must be symbols. Hierarchical namespaces are supported with prefix `ns:nsname`, e.g. `ns:foo:var:x`.
+The environment model for Glas applications is a Glas value. The initial value should be paired with the transaction machine's behavior.
 
-By convention, namespace `ns:io` represents the application's intended public surface. For example, `var:x` should be considered private while `ns:io:var:x` is considered public. 
+By convention, the top-level environment value is a dictionary. The public interface is `io`. Everything else is private to the application. Occasionally, between application transactions, the external system should read and write `io` according to a standard API (see *External Effects*).
 
-The external system should occasionally read and modify objects in `ns:io` between transactions. This requires designing an API for what IO variables mean, whether they're for use as input or output or both, etc..
+An object reference is a path into a structured value. A path is a list of symbols and numbers, such as `[foo, 42, baz]`. Each symbol indexes a dictionary. Each number indexes a list. The empty path `[]` references the root value. 
 
-For example, a simple GUI application could write a virtual document object model under `ns:io:ns:gui:var:document`. The document could describe a form with some text fields and buttons bound to other IO variables. The system knows to look for this variable to render the application.
+Methods represent pure functions to query or update the referenced value. The get/set methods are logically sufficient. Other methods are designed to improve precision for change and conflict detection. 
 
-We similarly need APIs for network, filesystem, console, clock, etc.. Potential APIs are discussed in later sections.
+*Aside:* It is feasible to infer a valid initial environment value, but this is best done at edit-time. Polishing initial state is useful application development.
 
-### Object API
+### Generic Methods
 
-Variables, queues, and namespaces are supported. This might be extended in the future if there's a strong argument.
+* **get** - Query. Response is copy of referenced value.
+* **set:Value** - Update. Assign referened value. Response is `ok`.
+* **type** - Query. Response is `dict | list | number | error`. The `error` response is returned for invalid references.
 
-Variables can do everything we need. However, they do not support fine-grained conflict or change detection. 
+Currently, 'type' is the only method that supports invalid references. Everything else would abort without response.
 
-Queues support one of the most common coordination patterns between transactions. Usefully, concurrent transactions can write to a queue without conflict.
+### Dictionary Methods
 
-Namespaces support bulk manipulations, e.g. clearing all the variables in a given volume, or taking a snapshot/checkpoint.
+* **d:keys:(in?Keys)** - Query. Response is Keys (a dictionary with unit values). This set is optionally restricted by intersection with the 'in' parameter. 
+* **d:select:Keys** - Query. Response is values from dictionary restricted by intersection with given keys.
+* **d:insert:Dict** - Update. Add new keys or override prior values for existing keys, but don't modify keys not in parameter. Response is `ok`.
+* **d:remove:Keys** - Update. Remove keys and their values from the dictionary. Response is `ok`.
 
-* **Variables.** Prefix `var`. Default value is unit `()`. 
- * **get** - Response is current value. Will read default value if undefined.
- * **set:Value** - Set value of the variable. Setting the default value implicitly removes variable.
+### List Methods
 
-* **Queues.** Inherit Variables, except default is empty list `[]`. Always contains list value.
- * **read** - Response is `ok:Value | empty`. Removes value from head of queue.
- * **empty** - Query whether queue is empty. Response is boolean.
- * **write:Value** - Adds a value to end of queue. Response is `ok`.
- * **write-many:\[List,Of,Values\]** - For efficiency. Write a list of values to end of queue. Response is `ok`. 
+Lists should support methods for use as queues, and methods to detect change for a sequential range of values. It could also be useful support size comparisons.
 
-* **Namespaces.** Prefix `ns`. Root namespace can be referenced as symbol `ns` without a name.
- * **clone:Source** - Copy source namespace to object of apply. 
- * **clear** - Clear specified volume.
+### Number Methods
 
-### Partial Evaluation
-
-We can run an application for several cycles, starting from an initial state, such as cleared root, before binding external IO. Ideally, the application reaches a steady state before IO.
-
-A useful consequence is that we should be able to render and interactively manipulate the application UI before we attach to network or filesystem.
-
-## Live Coding
-
-Applications based on transaction machines can easily be updated between transactions. The current application can be aborted, then replaced, with the new code taking over the application objects.
-
-A related consequence is that we can safely replace code with an instrumented version, e.g. for debugging or profiling, without breaking the system.
+Numbers could usefully support increment, decrement, value comparisons (eq, lt, ge).
 
 ## Notebook Applications
 
-Transaction machines are well suited for notebook applications. Partial evaluation can produce an interactive GUI even before binding to network or filesystem effects. 
+A notebook application mixes code and UI, essentially a REPL that prints usable GUIs.
 
-Every logical line could fork its own subtask, which has full access to IO. Just before the line, we could update a variable such that we know which GUI frame to update. 
-
-If our syntax is also designed for graphical projections, then our program input might have a GUI of its own.
-
-*Aside:* It seems feasible to extend this concept to spreadsheets, or at least to a flexible 2D layout.
+Glas is very suitable for this. We could arrange for each logical line to fork a subtask and maintain its own GUI frame. The tasks may freely interact. The logical lines themselves could be graphical projections of a program. 
 
 ## Web Apps and Wikis
 
-We could represent a web application as a transaction machine represented by a Glas program. We only need to restrict the IO effects to the UI, client-side storage, and limited network (XmlHttpRequest, WebSockets).
+Transaction machines should be a very good basis for web applications. We can tweak the external effects to focus on UI, client-side storage, and limited network access (XmlHttpRequest, WebSockets). With partial evaluation, we can compute the initial 'static' page.
 
-We could partially evaluate the machine to generate an initial static UI, then compile to JavaScript to maintain it.
+I have this vision where every page of a Wiki is essentially a web app - usually a notebook application. A subset of pages might also represent server-side behavior. These applications could support exploration of data, little games, and other things. Updates to the web-app could be deployed immediately.
 
-I have this vision where every page of a Wiki is essentially a web app - usually a notebook application. A subset of pages might also represent server-side behavior.
-
-I'm not certain this vision is practical, but it would at least make an interesting sandbox for exploring Glas. And it could potentially scale via access to cloud computing.
+I'm not certain this vision is practical. But it would at least make an interesting sandbox for exploring Glas.
 
 ## External Effects
 
-This section discusses integration with existing systems.
+To support a more resilient system, the transaction machine should never receive volatile host references, such as file descriptors. Ideally, we can gracefully continue computation after a disruption in effects. These constraints influence my designs.
 
 ### Filesystem
 
@@ -124,7 +98,33 @@ This section discusses integration with existing systems.
 
 ### GUI
 
+
+For example, a simple GUI application could write a virtual document object model under `io:gui`. The GUI model might support binding buttons, labels, text fields, etc.. The system and application must share a standard model for rendering of GUIs.
+
+
 ### Console
 
 ### Sound
 
+## Dynamic Scheduling
+
+A system can track conflicts between repeating transactions. If two transactions frequently conflict, they can be heuristically scheduled to run at different times. Even when transactions do conflict, fairness can be guaranteed based on tracking conflict history.
+
+Hard real-time systems can feasibly be supported by introducing a schedule of high-priority transactions that will 'win' any conflict resolution if it commits within its quota.
+
+## Static GUI
+
+We can evaluate an application from its initial state without attaching IO. This can be useful to improve startup speeds, perhaps to compile some static views.
+
+Intriguingly, is also feasible to attach just the GUI without any other effect runtime behavior. This could simplify refinement and development of the initial state. 
+
+## Deployment Models
+
+Consider a heterogeneous system with unique, distributed resources: sensors and actuators, partitioned networks and storage.
+
+
+
+
+ However, this doesn't do us much good unless the effects model also represents multiple machines, and  are 
+
+ can feasibly be computed in a distributed application can feasibly be distribu
