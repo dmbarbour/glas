@@ -18,7 +18,7 @@ Glas data is immutable. Basic data is composed of dictionaries, lists, and natur
 
 Dictionaries are a set of `symbol:Value` pairs with unique symbols. Symbols are short binary strings. The empty dictionary `()` frequently serves as a unit value. Glas programs may iterate over symbols and test for presence of a symbol, thus flags and optional fields are supported.
 
-Variant data is encoded by singleton dictionaries. For example, a value of `type color = rgb:(...) | hsl:(...)` could be represented by a dictionary exclusively containing `rgb` or `hsl`. Symbol `foo` is often shorthand for `foo:()`.
+Variant data is encoded by singleton dictionaries. For example, a value of `type color = rgb:(...) | hsl:(...)` could be represented by a dictionary exclusively containing `rgb` or `hsl`. Symbol `foo` is shorthand for `foo:()`. A Boolean value is simply `type Boolean = true | false`. 
 
 Glas uses lists for all sequential structure: arrays, binaries, deques, stacks, tables, tuples, queues. To efficiently support a gamut of applications with immutable data, Glas systems will represent large lists as [finger trees](https://en.wikipedia.org/wiki/Finger_tree). Logical reversal can be supported. Glas further uses [rope-style chunking](https://en.wikipedia.org/wiki/Rope_%28data_structure%29) for large binaries to minimize overhead.
 
@@ -99,7 +99,7 @@ Glas favors bounded-buffer channels, such that fast producers always wait on slo
 
 Glas channels may be 'closed' from either end. A writer may indicate there is no more data. A reader may also say that it's done. This feature supports expressive composition and short-circuiting computations.
 
-Glas channels are second-class. Instead of channel objects, a process has labeled data ports. Ports can be wired between subprocesses.
+Glas channels are second-class. A process has labeled data ports, which can be composed and wired externally.
 
 ## Program Model
 
@@ -171,10 +171,12 @@ A language module must compute a value that represents a namespace that defines 
 The compile process will receive a binary on the port `source`, perform limited compile-time effects via request-response channel (see *Effects Model*), and produce the module's value on `result`.
 
 Supported requests: 
-* `note:Message` - emit an arbitrary message for logging purposes. Response is always `ok`, never fails.
 * `load:Module` - load value of module such as `module:foo` or `package:foo`. Response is `ok:Value | error`. 
+* `log:Message` - emit a message to a log. Intention is to support debugging, progress tracking, etc. Response is `ok`.
 
-Compilation fails if a program halts before producing a result, if a request is not unsupported, or if any `error:(...)` message is logged. Load errors don't automatically break a compile.
+Compilation fails if a program halts before producing a result, if a request is not unsupported, or if any `error:(...)` message is logged. Computation continues after logging errors.
+
+Load error doesn't automatically break a compile. Loads and load errors are implicitly logged, and the log may include details about cause of error that aren't visible to the language module.
 
 ## Glas System Patterns
 
@@ -192,7 +194,7 @@ There are many potential benefits of programming in this medium: multiple views 
 
 Of course, actualizing these benefits depends on design. Graphical programming can be awful if we aren't careful.
 
-*Aside:* Graphical projection feasibly can be combined with live coding to support staged programming with GUIs. See *Glas Application Model*.
+*Aside:* For best effect, graphical projection of programs should be combined with live coding and notebook-style apps. See *Glas Application Model*.
 
 ### Automated Testing
 
@@ -267,7 +269,7 @@ Very awkward fit for Glas semantics. We can still do backtracking at the higher 
 
 ### Arithmetic? Minimal.
 
-There is no end to the number of arithmetic functions we could introduce. But sticking to add/sub/mul/div should be sufficient.
+There is no end to the number of arithmetic functions we could introduce. But sticking to add/sub/mul/div should be sufficient. 
 
 ### Break/Continue Loops? No.
 
@@ -292,14 +294,6 @@ Glas programs will have full ability to inspect and construct dictionaries, e.g.
 ### Arithmetic
 
 Glas will support natural numbers and bignum arithmetic.
-
-Design option: i
-
-To support arithmetic, I could introduce several independent operators, or perhaps introduce a `math:[...]` DSL. Which of these is the better option?
-
-
-
-
 
 However, rather than have a large number of 
 

@@ -1,6 +1,12 @@
 # Glas Object Encoding
 
-To support distributed incremental computing and sharing of very large values, Glas specifies this Glas Object (`.glob`) representation. This representation uses content-addressed (secure hash) references for modularity, structure sharing, and incremental distribution.
+To support distributed incremental computing and sharing of very large values, Glas specifies this Glas Object (`.glob`) representation. 
+
+# MISC
+
+Currently, this is a relatively low priority.
+
+
 
 ## Note on Unstable Hashes
 

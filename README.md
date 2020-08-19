@@ -6,25 +6,25 @@ Glas is a programming language system designed for scalable, reproducible, and e
 
 Glas has several non-conventional features:
 
-Glas supports **user-defined syntax**, guided by file extensions. To compute the module value for a file named `foo.xyz`, the compiler will use a program defined by the module named `language-xyz`.
+Glas supports **user-defined syntax**, guided by file extensions. To compute the module value for a file named `foo.xyz`, the compiler will use a program defined by the module named `language-xyz`. It is possible to develop alternative syntax, DSLs, integrate `.json` files as modules, or support projectional editing via specialized syntax.
 
-Glas modules and programs have a **homoiconic representation** as structured data. A module can inspect or manipulate programs imported from other modules as data.
+Programs have a **homoiconic representation** as structured data. Modules compute arbitrary values, including programs. Loading a module's value is distinct from composition of namespaces.
 
-Glas focuses on **compile-time computation**. The Glas command-line tools know how to compute module values and extract binaries. Actual runtime behavior requires computing a binary executable. Type checkers, optimizers, and code generators become normal Glas functions.
+Glas supports **user-defined compilers**. Modules compute arbitrary values. Computed binaries can be extracted to file. To compile a program, compute an executable binary based on the program's homoiconic representation, then extract. It is also possible to compile documents, images, docker containers, etc..
 
-Glas computation is based on [**Kahn Process Networks**](https://en.wikipedia.org/wiki/Kahn_process_networks) to support scalable, interactive computation without compromising determinism. Glas programs have a procedural style, but externally may be viewed as pure functions.
+Glas is designed for **large, incremental builds**. The Glas computation model is based on [Kahn Process Networks](https://en.wikipedia.org/wiki/Kahn_process_networks) to support deterministic, concurrent, scalable computation. Larger-than-memory data is supported by content-addressed storage. Incremental computing is supported by module caching and explicit memoization. 
 
-Glas has built-in support for [**content-addressed storage**](https://en.wikipedia.org/wiki/Content-addressable_storage) and explicit [**memoization**](https://en.wikipedia.org/wiki/Memoization) to support larger than memory values and incremental computing. Databases can be modeled as first-class values, and incrementally indexed.
+Glas excludes first-class functions. Higher-order programming and effects are supported using **static dependency injection**. This supports abstraction, attenuation, and defaults. Avoiding first-class functions simplifies generation of efficient code.
 
-Glas proposes explicit [**hardware acceleration**](https://en.wikipedia.org/wiki/Hardware_acceleration) for high-performance computing. A subprogram that simulates an abstract GPGPU can be annotated for substitution by an actual GPGPU. This requires careful design and compiler support, but can open new problem domains such as machine learning, physics simulation, or video rendering.
+Glas will use explicit [**hardware acceleration**](https://en.wikipedia.org/wiki/Hardware_acceleration) for high-performance computing. For example, we could simulate an abstract register machine then annotate for acceleration. The compiler could replace by actual CPU. This would support efficient representation of algorithms in domains such as compression or cryptography.
 
 See the [design doc](docs/GlasDesign.md) for more detail.
 
 ## Project Goals
 
-The concrete goal is to bootstrap a small (under 1MB) but feature rich command-line utility named `glas` with support for methods to evaluate modules incrementally and extract binary data. 
+The concrete goal is to bootstrap a small, feature-rich command-line utility named `glas` with support for methods to evaluate modules incrementally and extract binary data. 
 
-The bootstrap compiler should use a lightweight application model, perhaps with access to filesystem, console, and network effects (at least) that can easily be reused for other user-defined applications. It should be feasible to experiment with web servers and web apps, but native GUI is not my priority.
+The bootstrap compiler should support the live coding application model with access to filesystem, console, and network, perhaps an idealized document object model for GUI.
 
 Finally, I'd like to figure out a good approach to leverage Nix or Guix packages within the Glas systems.
 
