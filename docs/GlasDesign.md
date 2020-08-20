@@ -172,7 +172,7 @@ The compile process will receive a binary on the port `source`, perform limited 
 
 Supported requests: 
 * `load:Module` - load value of module such as `module:foo` or `package:foo`. Response is `ok:Value | error`. 
-* `log:Message` - emit a message to a log. Intention is to support debugging, progress tracking, etc. Response is `ok`.
+* `log:Message` - emit a message to build log. Intention is to support debugging, progress tracking, etc. Response is `ok`.
 
 Compilation fails if a program halts before producing a result, if a request is not unsupported, or if any `error:(...)` message is logged. Computation continues after logging errors.
 
@@ -214,29 +214,25 @@ We can develop higher-order program models that represent constraint systems and
 
 This would enable programs to be much more adaptive to changes in requirements, preferences, or the ecosystem.
 
-Program search is expensive. This could be mitigated by caching and memoization, and careful design to support incremental computing.
+*Note:* Type-driven programs, such as selecting functions based on inferred types, is essentially a limited form of program search. Type safety is another constraint guiding a choice from an implicit search space. 
 
 ### Abstract and Linear Types
 
-Abstraction and linearity modality are not intrinsic properties of data. Instead, they are constraints on how a subprogram interacts with certain data.
+Abstraction and linearity are not intrinsic properties of data. Instead, they are constraints on a subprogram that interacts with data.
 
-A program can treat data as abstract by never manipulating it directly, through provided functions or channels. Abstraction extends to linearity when we consider duplication and dropping data to be protected manipulations.
+A subprogram can treat data as abstract by never manipulating it directly. Instead, the data is processed through provided functions or channels. Abstraction extends to linearity when duplication and dropping of data are treated as protected manipulations.
 
-Glas programmers can use annotations to assert that a subprogram should respect abstraction or linearity. This could be validated by static analysis.
+Glas programmers can use annotations to assert that a subprogram should respect abstraction or linearity. This should be verified by static analysis.
 
-Abstract and linear data types are useful for performance, especially in context of *Acceleration*. Abstraction can preserve optimized under-the-hood representations between operations. Linear data can potentially be modified in-place, optimizing away some allocation, copy, and garbage-collection steps.
-
-*Note:* Linear types have a bad reputation due to awkward feature interactions with pattern matching, closures, exceptions. However, a suitable syntax can help a lot, and there should be much less friction with process networks compared to lambda calculus.
+Abstract and linear data types are useful for performance, especially in context of *acceleration*. Abstraction can protect optimized representations. Linear data can often be modified in-place, optimizing allocation and garbage-collection.
 
 ### Modal and Phantom Types
 
-It is feasible for a type system to track metadata such as the logical location or latency, units of measure, purpose and provenance. The type system may then control composition based on this metadata in relatively flexible and ad-hoc ways. 
+It is feasible for a type system to track metadata such as location, latency, units of measure, purpose and provenance. Programmers can then control composition based on this metadata in ad-hoc ways. 
 
-For example, a type system might complain if we try to add apples to oranges. Adding matrices that are 'on' different GPGPUs is expensive, so we might want an error if attempt to do so without explicitly moving the matrices together. Tracking logical latency in the type system could make it feasible to constrain programs based on big-O complexity notations.
+For example, a type system might complain if we try to add apples to oranges, or if we attempt to multiply matrices logically located on separate GPGPUs. Tracking latency can make it feasible to constrain programs based on big-O complexity notations.
 
-In Glas, modal type operators could be expressed as type annotations, e.g. if we want to add a unit to a number. Which operations are considered valid would depend on the type system, e.g. we can delay data to move it forward in time but not backwards.
-
-This pattern can be usefully combined with abstract and linear types, and it's feasible for modal types themselves to be fully or partially abstracted in that context.
+Modal types can be expressed and manipulated by annotations. Which manipulations are valid might be constrained by the type system (e.g. latency is monotonic). This pattern can be combined with abstract and linear types.
 
 ## OPERATOR DESIGN
 
