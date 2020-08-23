@@ -1,8 +1,12 @@
 # Glas Applications
 
-An application is a program that automates behavior of programmable systems on behalf of its users. Ideally, applications are easy for those users to comprehend, control, compose, extend, modify, and share. Especially at runtime.
+In my vision of software systems, applications are easy for those users to comprehend, control, compose, extend, modify, and share - especially at runtime. Further, applications should be robust and resilient, degrade gracefully and recover swiftly from disruption.
 
-This document proposes an application model for Glas systems that contributes to these goals. The core concept of this model is the *Transaction Machine*.
+Kahn Process Networks (KPNs) are not an optimal foundation for applications. KPNs capture state, which hinders runtime update. KPNs do not gracefully handle unbounded disruption such as network partitioning. KPNs are best for modeling deterministic, interactive computations at very large scales. Glas program model is based on KPNs to support very large, reproducible builds.
+
+The *Transaction Machine* (TXM), described below, is much closer to my ideal application model. The TXM separates state and behavior which simplifies observation and modification of both. TXMs support partitioning and non-determinism (via fork), and are naturally resilient to disruption. A TXM does require a deterministic, interactive computation to represent the transaction, and KPNs are a good fit for this role.
+
+This document describes Transaction Machine, how it might be implemented in Glas systems, and how applications might be developed with it.
 
 ## Transaction Machine
 
@@ -24,47 +28,45 @@ Rollback will reuse prior computation of a transaction up to the first change in
 
 Replication will concurrently compute forks. Logically, a fork actually returns a non-deterministic value, but replication and repetition are equivalent for transactions. Without replication, we could rotate through forks, but this increases latency.
 
-*Note:* There are many potential optimizations beyond the required two, e.g. fast roll-forward for irrelevant change, fusion of cooperative transaction loops, and constant propagation.
+*Note:* There are many potential optimizations beyond the required two, e.g. fast roll-forward for irrelevant change, fusion of cooperative transaction loops, compile-time forks, and constant propagation.
 
-## Transaction API
+## Application Behavior
 
 Glas programs can model transactions via request-response channel. Requests:
 
 * **commit:Status | abort:Reason** - Accept or reject state. Response is `ok`. No further requests accepted by transaction.
-* **try:(scope?Scope)** - Begin hierarchical transaction. Optionally scoped. Response is `ok`. Transaction terminates with matching commit or abort.
-* **fork:\[List,Of,Values\]** - Replicate current transaction. Response to each replica is different value from list. 
-* **note:Note** - Runtime-layer annotations. Intended for performance hints, debug logs, etc.. Response is `ok`.
-* **apply:(obj:Reference, method:Method)** - Query or update environment. Response is provided by environment.
+* **try** - Begin hierarchical transaction. Response is `ok`. Transaction terminates with matching commit or abort.
+* **fork:Keys** - Replicate current transaction. Response to each replica is different key from dictionary. The fork-path, a list of keys, provides a stable name for debugging.
+* **note:Annotation** - Response is `ok`. Intended for optimization and scheduling hints, debug traces, breakpoints, assertions, etc. - requests a host may ignore without breaking behavior.
+* **apply:(obj:Reference, method:Method)** - Query or update environment. References and methods are values meaningful to the environment. Response is provided by environment.
 
-Scopes, references, and methods are values meaningful to the environment model. Notes should be meaningful to the runtime system (but may be ignored). The top-level commit/abort status will likely be visible in a task manager.
+Runtime type errors will normally cause a transaction to abort without response. Ideally, static analysis of an application should validate use of the API and determine environment type.
 
-Runtime type errors should cause a transaction to abort without response. Ideally, static analysis of an application should validate use of this API and determine environment type.
+In addition to the request-response channel for transactions, the programs receive a parameter via input port `env`. For a top-level OS application, this parameter will have form `(cmd:[List, Of, Command, Line, Args], var:(PATH:String, ...))`.  
 
-## Environment Model
+## Application State
 
-The environment model for Glas applications is a Glas value, modeling a hierarchically structured memory. An application consists of an initial or current environment and a program that implements the transaction API.
+All Glas applications have state, modeled by a Glas value. An application definition has two main parts: a program that computes a transaction, and the initial or current state. Application state is private except where explicitly shared (see *External Effects*).
 
-By convention, the top-level environment value is a dictionary. The public interface is `io`. Everything else is private to the application. Occasionally, between application transactions, the external system should read and write `io` according to a standard API (see *External Effects*).
+State is referenced as `st:Path`. The path is a list of symbols and numbers such as `[foo, 42, baz]`. A symbol indexes a dictionary, while a number indexes a list. The empty path `[]` references the root value. A program is free to compute paths. 
 
-An object reference or scope is a path. The path is a list of symbols and numbers such as `[foo, 42, baz]`. A symbol indexes a dictionary, while a number indexes a list. The empty path `[]` references the root value. A program is free to compute paths.
+State methods are pure functions that query or updates the referenced value. The get and set methods are logically sufficient. Other methods are provided to improve precise detection of conflict and change.
 
-A scoped hierarchical transaction logically prepends every `apply` with given path. Programmers could do this manually, but moving to the environment layer supports potential optimizations.
+### Generic State Methods
 
-Methods are pure functions that query or modify the referenced value. Use of get/set is logically sufficient. Other methods improve precision of conflict and change detection.
-
-### Generic Methods
-
-These methods apply for all data types. 
+These methods apply for all application state references.
 
 * **get** - Query. Response is whole value.
 * **set:Value** - Update. Assigns value. Response is `ok`. 
+* **eq:Value** - Query. Compare values for equality. Response is Boolean.
 * **type** - Query. Response is `dict | list | number | invalid`. The `invalid` response is for invalid references.
+* **valid** - Query. Response is Boolean.
 
 ### Dictionary Methods
 
-Dictionaries are mostly used as namespaces, but that's covered by pathing. Dictionaries support a few methods that would make them a passable basis for publish-subscribe or tuple space patterns.
+Dictionaries are mostly used as namespaces, via pathing. Dictionaries support a few methods that would make them a passable basis for publish-subscribe or tuple space patterns.
 
-* **d:keys:(in?Keys, ex?Keys)** - Query. Repond with Keys. Optional parameters for precision:
+* **d:keys:(in?Keys, ex?Keys)** - Query. Repond with Keys. Optional parameters:
  * *in* - restrict response by intersection (whitelist)
  * *ex* - restrict response by difference (blacklist)
 * **d:insert:Dict** - Update. Insert or update keys in dictionary. Response is `ok`
@@ -74,49 +76,146 @@ A keys value is a dictionary with unit values.
 
 ### List Methods
 
-Lists are most useful for modeling queues. Multiple writers and a single reader can commit concurrently under some reasonable constraints. 
+In context of transactional updates, lists are useful for modeling queues. Multiple writers and a single reader can commit concurrently under reasonable constraints.
 
-* **l:addend:(items:\[List, Of, Values\], head?)** - Update. Add items to tail of list. Response is `ok`. Optional flags:
- * *head* - write to head of list instead, e.g. putback
-* **l:remove:(count?Count, exact?, tail?)** - Default Count is 1. Remove Count items from head of list, or maximum available. Response is items removed. Optional flags:
- * *exact* - Remove Count items if available, else zero.
- * *tail* - Remove from tail of list instead, preserves order.
+* **l:insert:(items:\[List, Of, Values\], head?, skip?Number)** - Update. Adds items to tail of list. Response is `ok`. Optional flags:
+ * *head* - Add items to head of list instead.
+ * *skip* - Default zero. Skip over items before writing. If skip is larger than list length, response is `error` and nothing is modified. (Zero skip cannot cause error.)
+* **l:remove:(count?Number, atomic?, tail?, skip?Number)** - Default count is 1. Remove count items from head of list, or maximum available. Response is the slice of items removed . Optional flags:
+ * *atomic* - Remove count items if available, else zero, nothing between.
+ * *tail* - Take slice from tail of list instead. List order is still preserved.
+ * *skip* - Default zero. Skip offset items before reading. Attempting to read beyond end of list responds with empty list.
 * **l:length** - Query. Response is number of items in list.
-* **l:lencmp:Threshold** - Query. Compares list length to threshold. Response is `lt | eq | gt`. (See also `n:compare`.)
+* **l:lencmp:Threshold** - Query. Same as `n:compare` on length.
 
-*Note:* Lists can be used for dynamic allocations, but creating a fresh dictionary symbol is easier to remove when done. Glas systems should favor dictionaries over lists for most use cases.
+To use lists as arrays of objects, construct paths that contain numeric indices.
 
 ### Number Methods
 
 For most numbers, get/set is sufficient. However, *counters* can be high-contention, and we can also try to stabilize observation of numbers with thresholds.
 
-* **n:increment:(count?Count)** - Update. Default Count is 1. Increase number by Count. Response is `ok`.
-* **n:decrement:(count?Count)** - Default Count is 1. Reduce number by Count. If number is reduced by zero, response is difference `(Count - number)`, otherwise response is zero.
-* **n:compare:Threshold** - Compares number to threshold. Response is `lt | eq | gt` corresponding to number being less-than, equal, or greater-than the threshold.
+* **n:increment:(count?Count)** - Update. Default count is 1. Increase referenced number by Count. Response is `ok`.
+* **n:decrement:(count?Count)** - Update with failure. Default count is 1. If count is larger than number, response is `error` and the number is unmodified. Otherwise, reduces number by count and response is `ok`.
+* **n:compare:Threshold** - Query. Compares number to threshold. Response is `lt | eq | gt` corresponding to number being less than, equal to, or greater than the threshold.
 
-## Live Coding
+### Live Coding, State Versioning, and Abstraction
 
-We can safely update an application's behavior between transactions. 
+Application behavior can be updated between transactions. However, application state may also need to be updated to handle changes in environment or data models. 
 
-Ideally, the new application can pick up where the old one left without huge rewrites, i.e. the state model doesn't change. If necessary, it is feasible for application state to keep some version information, and for the applications to include update behavior between versions. Alternatively, a compiler could provide the update behavior.
+Support for state update can be integrated: Application state could contain version identifiers, and application behavior can check the version and rewrite representations as needed. For large applications, lazy state updates are also feasible, via dividing application state into abstract objects that can be updated independently.
 
-## Notebook Applications
+Programming with abstract, versioned objects can be supported via the higher-order programming mechanisms in Glas, and further by careful design of syntax.
 
-A notebook application mixes code and UI, essentially a REPL that prints usable GUIs.
+### Dynamic Allocation and Memory Management
 
-Glas is very suitable for this. We could arrange for each logical line to fork a subtask and maintain its own GUI frame. The tasks may freely interact. The logical lines themselves could be graphical projections of a program. 
+Dictionaries can model regions for dynamic allocation. The region can include counters to compute numeric symbols. Each symbol can be inserted into the region with an initial value. Paths through this symbol can be computed.
 
-## Web Apps and Wikis
+The advantage of using a dictionary is that there is no need to maintain a free-list or defragment memory. It's sufficient to remove the reference when done. We never need to reuse a reference, thus use of the `type` method could tell us when we have dangling references.
 
-Transaction machines should be a very good basis for web applications. We can tweak the external effects to focus on UI, client-side storage, and limited network access (XmlHttpRequest, WebSockets). With partial evaluation, we can compute the initial 'static' page.
+Applications must manage their own state. Manual management is a likely starting point, explicit deletion of objects no longer needed. However, it is feasible for Glas applications to model concurrent garbage collection via forked transaction, and even incremental garbage collection based on snapshots.
 
-I have this vision where every page of a Wiki is essentially a web app - usually a notebook application. A subset of pages might also represent server-side behavior. These applications could support exploration of data, little games, and other things. Updates to the web-app could be deployed immediately.
+*Note:* Managing state is a separate layer from managing 'memory'. The memory for values is managed by the Glas compiler or runtime.
 
-I'm not certain this vision is practical. But it would at least make an interesting sandbox for exploring Glas.
+### Orthogonal Persistence
+
+Because state is separated from behavior, orthogonal persistence doesn't require special compiler support. The host system can continuously save application state to durable storage. 
+
+In conjunction with [content-addressed storage](https://en.wikipedia.org/wiki/Content-addressable_storage) and [log-structured merge-trees](https://en.wikipedia.org/wiki/Log-structured_merge-tree), it is quite feasible to incrementally store updates and support very large applications. The [Glas Object](GlasObject.md) representation is designed for this purpose.
+
+Programmers should develop "in-memory" indexed, relational databases above application state. Together with orthogonal persistence, many applications can readily be designed on such databases. Integration and performance could be much smoother compared to networked databases.
 
 ## External Effects
 
-I'd like to design these adapters for some balance of simplicity, resilience (graceful degradation and recovery after disruption), and performance. Disruption itself may need to be modeled.
+Applications are hosted. The host will provide objects and methods to support interaction with user, network, and other applications. Top-level references such as `gui` or `net` are standardized. 
+
+A transaction must commit before external interaction begins. Asynchronous IO is required. 
+
+In the common case, the host will allocate a new object representing the activity, then respond with a reference to this object. Methods can query available input, specify further output, further branch, or terminate the activity. To keep it simple, the reference is specific to the current host-app session. This concept is essentially [file descriptors](https://en.wikipedia.org/wiki/File_descriptor).
+
+From perspective of a persistent application, the host is ephemeral and exchangeable. Between transactions, the host may be restarted or application migrated. Thus, the application must verify a host reference is still valid before using it. The next host must efficiently and reliably invalidate references to prior host. This can be achieved by including a session identifier in allocated references. 
+
+This section explores a potential foundation for Glas applications. Of course, the details may be adjusted simplify implementation.
+
+### Reference Validation
+
+An application may ask the host whether a reference is still valid. This would be specific to the application, i.e. if a reference is 
+
+* **valid** - Query. Response is Boolean.
+
+Programmers should wrap host references with metadata for internal use.
+
+### Application Object
+
+Reference `app`.
+
+* **reset** - Fire-and-forget. Response is `ok`. After commit, performs soft-reset of the application: invalidates allocated host references and resets temporary storage.
+
+A reset is implicit when a host loads an application.
+
+### Temporary Storage
+
+Reference `tmp:Path`.
+
+Behaves same as application state, with a few exceptions:
+
+* prefix `tmp:` instead of `st:`
+* lost on reset or migration
+* initial value is unit `()`.
+
+Temporary storage is convenient for storing allocated host references, and makes clear which data should be persisted. 
+
+### Data Bus
+
+A message written on the bus is broadcast to all attached readers. Readers may snoop the bus, which is convenient for diagnostics, or filter messages for what is relevant to them. The bus does not store data. 
+
+Reference `bus:busname`.
+
+* **write:Message** - Fire and forget. Adds message to data bus upon commit. Response is `ok`.
+* **attach** - Response is a new reader attached to the data bus. Messages will implicitly be queued. 
+
+Attached reader:
+
+* **read** - Response is list of available messages. Removes from subscriber's queue.
+
+No filtering for now, but it's a feasible feature to add later. 
+
+Data buses are a good basis for most inter-app communication, and have nice observability properties. Scalability is a concern, but can be mitigated by partitioning a system into smaller buses. 
+
+*Note:* I'm currently rejecting shared state (too fragile) and publish-subscribe (too complicated). 
+
+### Secure Random Numbers
+
+Random numbers should be stable and cryptographically secure. By stability, I mean that a transaction that produces random numbers then *aborts* should produce the same random numbers on next attempt. This can be achieved by having the host maintain some hidden state associated with the application and every fork. 
+
+Reference `random`
+
+* **bytes:Count** - Response is a list with Count random bytes. Updates implicit CPRNG.
+
+If programmers want a regular PRNG, they can model it themselves. The primary motive for effectful random source is integrating external entropy.
+
+###  .... topics
+
+
+
+SERVICES
+
+* Service Discovery
+* Help and Documentation
+* Network
+* Filesystem
+* Tuple Spaces
+* Publish-Subscribe
+* Mailboxes? (how to secure? PKI? challenge?) 
+* Quota Control
+* Graphical User Interface
+
+### Signal Handling
+
+
+### System Services
+
+A system can 
+
 
 ### Filesystem
 
@@ -136,25 +235,47 @@ Rather than continuously update a clock variable, we could arrange for some meth
 
 ### GUI
 
-Ideally, any parameter a GUI can manipulate is also part of the application's public API, i.e. in IO. A lightweight GUI could define a virtual DOM and bind to IO elements to model the buttons, labels, text fields, frames, etc..
-
-Also ideally, most of the 'views' for a GUI are relatively stable and can be rendered ahead of time. We could model this as GUI frames or cards of some form.
-
 ### Console
-
-I don't need much here. It could be useful to support full terminal manipulations. But I'm pretty sure that can be done with a normal stream of bytes.
 
 ### Sound
 
-I wonder how much sound should bound to UI? But we could also do sound via network or other layer.
 
-### Shared Memory?
+## Scopes? A Feature Deferred. 
 
-Shared memory IPC is a relatively bad fit for transaction machines, because the memory is not transactional. So let's just avoid this for now.
+Use of try/commit/abort is implicitly a scope. It is feasible to augment scopes with a rule to restrict or redirect behavior of subprograms. For example, we could introduce a scope rule that adds a common prefix to every state reference.
 
-## Orthogonal Persistence
+        try:(scope:(..., st:[add-prefix:Path]))
 
-Because application state is very accessible, we could easily support external persistence. This can be combined with content-addressed storage to support very large application states.
+This rule would apply until the corresponding commit/abort action. The same rule can be implemented manually by intercepting a subprogram's request-response channel, but there are potential performance benefits for making this visible to the environment.
+
+However, whether this feature is actually useful will depend on the design patterns in our applications, whether references stored in state tend to be relative or absolute, etc.. I do not believe that I can anticipate the useful patterns without more experience. For now, I will avoid scope parameter and require manual implementation of scopes.
+
+
+
+
+
+## Notebook Applications
+
+A notebook application mixes code and UI, essentially a REPL that prints usable GUIs.
+
+Glas is very suitable for this. We could arrange for each logical line to fork a subtask and maintain its own GUI frame. The tasks may freely interact. The logical lines themselves could be graphical projections of a program. 
+
+## Web Apps and Wikis
+
+Transaction machines should be a very good basis for web applications. We can tweak the external effects to focus on UI, client-side storage, and limited network access (XmlHttpRequest, WebSockets). With partial evaluation, we can compute the initial 'static' page.
+
+I have this vision where every page of a Wiki is essentially a web app - usually a notebook application. A subset of pages might also represent server-side behavior. These applications could support exploration of data, little games, and other things. Updates to the web-app could be deployed immediately.
+
+I'm not certain this vision is practical. But it would at least make an interesting sandbox for exploring Glas.
+
+
+## Interprocess Communications
+
+Take a step back: instead of one application, assume we have tens of applications. 
+
+
+
+
 
 ## Dynamic Scheduling
 
@@ -173,3 +294,16 @@ Intriguingly, is also feasible to attach just the GUI without any other effect r
 The state for a large application could feasibly be distributed across many machines. But it might be easier to model deployment of several smaller transaction machines, and bind certain states between them. Perhaps the IO between components can be based on bounded-buffer queues or CRDTs. 
 
 This seems an area worth exploring. But it might well become another 'layer' of models.
+
+
+
+## Security
+
+### Sandboxing Subprograms
+
+A subprogram can easily be scoped to a region of the environment via scoped `try` or explicit rewriting of paths. The latter option, explicit rewriting, has worse performance but greater flexibility: the program can redirect paths to logically 'mount' different parts of the environment. 
+
+### Protecting Invariants
+
+A transaction can easily check invariants before running, and check again before committing. This benefits from hierarchical transactions.
+

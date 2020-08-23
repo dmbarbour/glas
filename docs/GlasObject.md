@@ -2,6 +2,10 @@
 
 To support distributed incremental computing and sharing of very large values, Glas specifies this Glas Object (`.glob`) representation. 
 
+Some thoughts:
+* Glas Object should be designed for [Glas Application](GlasApps.md) access and update patterns, because applications, because apps can easily produce very large structures over time.
+* Binaries are useful for interaction. Whether a list is fully binary should perhaps be recorded in the secure hash references.
+
 # MISC
 
 Currently, this is a relatively low priority.

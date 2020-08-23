@@ -49,7 +49,7 @@ A subset of Glas modules compute externally useful binaries, perhaps representin
 
 To produce an executable binary, the static analysis, optimization, and code generation will be modeled as Glas programs, ultimately driven by a language module. To produce binaries specific to a system, a system-info package can describe the default compilation target.
 
-As a convention, appname-model and appname-exe packages should be separated to simplify extension or composition of applications, model testing, experimentation with compiler parameters, etc..
+As a convention, appname-code and appname-exe packages should be separated to simplify extension or composition of applications, model testing, experimentation with compiler parameters, etc..
 
 *Note:* The Glas command-line tool may privately compile language modules for internal use, e.g. as plugins. However, this should be mostly hidden from the user.
 
@@ -103,7 +103,7 @@ Glas channels are second-class. A process has labeled data ports, which can be c
 
 ## Program Model
 
-Concretely, a Glas program is represented by a list of operators. Operators are represented by variant data.
+Concretely, a Glas program is represented by dictionary containing `code:[List, Of, Operators]`. This dictionary might also include a namespace and annotations. 
 
 Each operator is parameterized by static references to data ports. Operations on independent ports concurrently based on available input and readiness of readers. Operators that share ports are implicitly sequenced according to the list.
 
@@ -140,43 +140,35 @@ The envisioned use case is that Glas modules should compute namespace values. Th
 
 The higher-order namespace features can support dependencies, defaults, generic programming, and separate compilation. Favoring namespace-layer dependency injection instead of directly loading modules can reduce duplication and improve flexibility.
 
-Concretely, a namespace will be represented as a list of operators. However, namespace operators are much simpler than program operators, being oriented around definitions, defaults, visibility. Glas does not support useful computation in the namespace.
+Concretely, a namespace will be represented as `ns:[List, Of, Namespace, Operators]`. Namespace operators are much simpler than program operators - oriented around definitions, defaults, visibility. Glas does not support useful computation in the namespace. 
 
 ## Annotations
 
-Annotations are concretely represented by a `note:Content` operator within a program or namespace.
+Annotations are concretely represented by `note:Content` in Glas programs or namespaces. Glas systems support annotations in most places, 
 
-Logically, annotations are *semantically neutral*. Ignoring or removing them should not affect the observable behavior of a program, as measured at the data ports. 
+, e.g. as a special program or namespace operator, a request in the request-response channel for effects, the program dictionary also containing `code:` and `ns:`.
 
-Annotations serve a valuable role in context of external tooling: documentation and comments, automatic testing, debug output or breakpoints, profiling, acceleration and optimization hints, type annotations, theorem prover hints, anchors for reflection, preferred widgets for projectional editing or direct manipulation, etc..
+Logically, annotations must be *semantically neutral*. That is, ignoring or removing annotations must not affect the observable behavior of the system. Content of annotations is left to ad-hoc extension and de-facto standardization. If a system does not recognize an annotation, it should emit a warning if possible (to avoid silent failure), then ignore.
 
-Content of annotations is left to ad-hoc extension and de-facto standardization. By default, if a compiler does not recognize an annotation, it should emit a warning to avoid silent failure, then ignore.
+Annotations serve a valuable role in context of external tooling: documentation and comments, automatic testing, debug logging or breakpoints, profiling, acceleration and optimization hints, type annotations, theorem prover hints, anchors for reflection, recommended widgets for projectional editing or direct manipulation, etc..
 
 ## Effects Model
 
-A simple approach to effects is a request-response channel. A program writes `io:request` and reads `io:response` based on an API of supported requests. This models single-threaded procedural behavior, except that background computations continue while awaiting a response.
+Most Glas programs will represent effects via request-response channel. The program writes `io:request` then reads `io:response` based on an API of supported requests. This models a single thread for procedural behavior, but with background computations while awaiting response.
 
-The request-response channel becomes a bottleneck that limits the scale of applications. This issue can be mitigated by modeling asynchronous IO requests, and by leveraging acceleration and content-addressed storage to avoid use of effects for performance or memory control. Most applications won't reach the bottleneck.
+A request-response channel becomes a bottleneck for effects. [Glas applications](GlasApps.md) mitigate this with API design - small transactions, asynchronous IO, fork requests. Acceleration, memoization, and content-addressed storage can displace effects for some use-cases. 
 
-To achieve greater scale, a compiler could inject effectful operations via the higher-order namespace. This design has some advantages, e.g. it is easy for a compiler to inline effects code. However, it is difficult to control without sophisticated static analysis such as abstract, linear, and modal types.
+My vision for very large scales involves development of higher-order *deployment models* that represent how a set of applications bind to configurable distributions of sensors, actuators, displays, storage, networks, swarms, clients, and other resources. A deployment model would be continuously compiled and deployed.
 
-In my vision, Glas systems favor a request-response channel because they are easy to comprehend, control, and compose. Also, they're an excellent fit for live coding applications (see *Glas Application Model*).
+*Aside:* Glas compilers could inject effectful operations via higher-order namespace. However. effects embedded within black-box processes are awkward to observe, control, or safely update at runtime. Explicit deployment models are a better fit for my larger vision of software systems.
 
 ## Language Modules
 
-To process a file with extension `.xyz`, a Glas system will search for module or package `language-xyz`, favoring a local module. The exceptional case is bootstrapping, which requires built-in syntax.
+To process a file with extension `.xyz`, a Glas command-line utility will search for module or package `language-xyz`, favoring a local module. The exceptional case is bootstrapping, which requires built-in syntax. 
 
-A language module must compute a value that represents a namespace that defines a 'compile' process. 
+The language module should compute a namespace that defines a compile process. A minimal compile process must take source input, load modules, and compute a value. This could be implemented directly as a Glas program, with request-response for loading modules (and logging).
 
-The compile process will receive a binary on the port `source`, perform limited compile-time effects via request-response channel (see *Effects Model*), and produce the module's value on `result`.
-
-Supported requests: 
-* `load:Module` - load value of module such as `module:foo` or `package:foo`. Response is `ok:Value | error`. 
-* `log:Message` - emit a message to build log. Intention is to support debugging, progress tracking, etc. Response is `ok`.
-
-Compilation fails if a program halts before producing a result, if a request is not unsupported, or if any `error:(...)` message is logged. Computation continues after logging errors.
-
-Load error doesn't automatically break a compile. Loads and load errors are implicitly logged, and the log may include details about cause of error that aren't visible to the language module.
+However, a direct implementation is opaque to external tooling. This can hinder provenance tracking, incremental computing, ambiguity detection, programming assistance, proposal of corrections, etc.. Thus, I'm exploring alternatives in the [Glas Syntax](GlasSyntax.md) document.
 
 ## Glas System Patterns
 

@@ -20,6 +20,20 @@ Language packages are preferred. For minor variations (like a versioned language
 
 *Note:* Multi-part languages such as `.x.y` currently aren't supported, because a suitable semantics is not clear.
 
+## Why Not Minimal Language Definition
+
+ This might be implemented as a program that takes input on `source`, produces `result`, and uses the `request` and `response` ports for effects:
+
+* `load:Module` - load value of module such as `module:foo` or `package:foo`. Response is `ok:Value | error`. 
+* `log:Message` - emit a message to build log. Intention is to support debugging, progress tracking, etc. Response is `ok`.
+
+However, thi
+
+Compilation fails if a program halts before producing a result, if a request is not unsupported, or if any `error:(...)` message is logged. Computation continues after logging errors.
+
+Load error doesn't automatically break a compile. Loads and load errors are implicitly logged, and the log may include details about cause of error that aren't visible to the language module.
+
+
 ## Language Definition
 
 Minimally, a language definition must parse a file and produce a value. 
