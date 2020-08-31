@@ -1,220 +1,296 @@
 # Glas Applications
 
-In my vision of software systems, applications are easy for those users to comprehend, control, compose, extend, modify, and share - especially at runtime. Further, applications should be robust and resilient, degrade gracefully and recover swiftly from disruption.
+In my vision of software systems, applications are easy for those users to comprehend, control, compose, extend, modify, and share - especially at runtime. Further, applications should be robust and resilient, degrade gracefully, recover swiftly from disruption.
 
-Kahn Process Networks (KPNs) are not an optimal foundation for applications. KPNs capture state, which hinders runtime update. KPNs do not gracefully handle unbounded disruption such as network partitioning. KPNs are best for modeling deterministic, interactive computations at very large scales. Glas program model is based on KPNs to support very large, reproducible builds.
+Glas programs are based on Kahn Process Networks (KPNs), which are excellent for modeling deterministic, interactive computations at very large scales. However, runtime composition, extension, modification, and disruption tends to be non-deterministic. Further, it can be difficult to observe or extend state captured within a process network, or for modifications to robustly transfer state to a new process network.
 
-The *Transaction Machine* (TXM), described below, is much closer to my ideal application model. The TXM separates state and behavior which simplifies observation and modification of both. TXMs support partitioning and non-determinism (via fork), and are naturally resilient to disruption. A TXM does require a deterministic, interactive computation to represent the transaction, and KPNs are a good fit for this role.
+The *Transaction Machine*, described below, is a better fit for my vision of an application model. Behavior and state are cleanly separated, which simplifies extension and modification. Non-determinism and tolerance and resilience to disruption are built-in. Transaction machines are a good fit for open systems. And Glas programs are a convenient fit for expression of the behavior.
 
-This document describes Transaction Machine, how it might be implemented in Glas systems, and how applications might be developed with it.
+This document describes the transaction machine, an application model, integration, and a potential vision for the system.
 
 ## Transaction Machine
 
-A transaction machine is a deterministic, hierarchical, forkable, repeating transaction over an abstract environment. The transaction is implicitly scheduled and repeated by the system.
+A transaction machine forever repeats a deterministic transaction over a non-deterministic environment. The environment of the transaction machine will generally be partitioned between input/output regions and a private scratch space. IO may involve shared variables or abstract queues.
 
-Process control is implicit. A deterministic transaction that changes nothing will be unproductive when repeated, unless input has changed. The system can implicitly wait for relevant changes. 
+Process control is implicit. A deterministic transaction that changes nothing will always be unproductive when repeated on the same input. Computation can implicitly wait for updates to input. If input is done, the computation is effectively terminated.
 
-Hierarchical transactions simplify composition and testing of transaction machines. However, the primary use case is for conditional backtracking behavior and error handling.
-
-Forking supports division of large transactions into smaller subtasks. A fork request replicates a transaction then responds to each replica with a different value. Together with incremental computing via partial rollback, every fork becomes a concurrent transaction machine.
-
-Abstraction of the environment simplifies extension and makes it easier for the system to track which values are observed and modified and compute conflicts.
+Large transactions can be partitioned into small ones by a 'fork' request with an array of options. Logically, the environment responds with an option non-deterministically. However, in context of rollback and replication optimizations, we effectively fork concurrent machines.
 
 ### Required Optimizations
 
 For transaction machines to be viable, two optimizations are necessary: rollback and replication.
 
-Rollback will reuse prior computation of a transaction up to the first change in input. Without rollback, transactions must be recomputed from the start. Efficient rollback requires compiler support.
+Rollback enables reuse of a computation for a relatively stable input prefix. Without rollback, transactions must be recomputed from the start. Efficient rollback requires compiler support.
 
-Replication will concurrently compute forks. Logically, a fork actually returns a non-deterministic value, but replication and repetition are equivalent for transactions. Without replication, we could rotate through forks, but this increases latency.
+Replication supports concurrent computation of forks. For isolated transactions, repetition and replication are logically equivalent. However, replication reduces latency for reacting to changes.
 
-*Note:* There are many potential optimizations beyond the required two, e.g. fast roll-forward for irrelevant change, fusion of cooperative transaction loops, compile-time forks, and constant propagation.
+## Behavior
 
-## Application Behavior
+The application will be represented by a Glas program.
 
-Glas programs can model transactions via request-response channel. Requests:
+### Transactions
 
-* **commit:Status | abort:Reason** - Accept or reject state. Response is `ok`. No further requests accepted by transaction.
-* **try** - Begin hierarchical transaction. Response is `ok`. Transaction terminates with matching commit or abort.
-* **fork:Keys** - Replicate current transaction. Response to each replica is different key from dictionary. The fork-path, a list of keys, provides a stable name for debugging.
-* **note:Annotation** - Response is `ok`. Intended for optimization and scheduling hints, debug traces, breakpoints, assertions, etc. - requests a host may ignore without breaking behavior.
-* **apply:(obj:Reference, method:Method)** - Query or update environment. References and methods are values meaningful to the environment. Response is provided by environment.
+Transactions will be supported via request-response channel. A viable request API:
 
-Runtime type errors will normally cause a transaction to abort without response. Ideally, static analysis of an application should validate use of the API and determine environment type.
+* **commit:Status | abort:Reason** - Accept or reject state. Response is unit. No further requests accepted by transaction.
+* **try** - Begin hierarchical transaction. Response is unit. Transaction terminates with matching commit or abort. 
+* **fork:Keys** - Replicate current transaction. Response to each replica is different key from dictionary. The fork path, a list of keys, provides a stable name for debugging.
+* **note:Annotation** - Response is unit. Intended for optimization and scheduling hints, checkpoints, debugger support, etc.. The host may ignore these requests without breaking behavior.
+* **apply:(object:Reference, method:Method, checked?)** - Query or update. References are provided by host. Methods are computed by the program, but must be meaningful to the host. Response type depends on arguments. Variation:
+ * *checked* - Flag. If set, recover from runtime errors: response is wrapped with `ok:SuccessResponse | error`. 
+ 
+Runtime errors normally abort entire transaction without response, but checked apply can catch a useful subset of runtime errors, e.g. unrecognized methods, and runtime type errors. Success or is atomic.
 
-In addition to the request-response channel for transactions, the programs receive a parameter via input port `env`. For a top-level OS application, this parameter will have form `(cmd:[List, Of, Command, Line, Args], var:(PATH:String, ...))`.  
+The 'try' request can support conditional backtracking and pseudo-exceptions within the program, and can usefully be composed with 'checked' apply. I intend to leverage this for a `try/then/else` syntactic construct.
 
-## Application State
+### Environment
 
-All Glas applications have state, modeled by a Glas value. An application definition has two main parts: a program that computes a transaction, and the initial or current state. Application state is private except where explicitly shared (see *External Effects*).
+The application program receives a top-level environment as parameter via data port `env`. The environment is represented by a dictionary of references. Keys might include `(scratch, state, chan, app, cli, time, network, filesys, random, gui, ...)`. 
 
-State is referenced as `st:Path`. The path is a list of symbols and numbers such as `[foo, 42, baz]`. A symbol indexes a dictionary, while a number indexes a list. The empty path `[]` references the root value. A program is free to compute paths. 
+Behavior associated with each symbol should be standardized. An application can examine the environment value and adjust behavior based on available features. Use of 'checked' apply can also be leveraged for feature discovery, but is not primarily intended for that purpose. 
 
-State methods are pure functions that query or updates the referenced value. The get and set methods are logically sufficient. Other methods are provided to improve precise detection of conflict and change.
+### References
 
-### Generic State Methods
+To simplify debugging and some extensions, Glas applications will represent references as `(ref:HostValue, ...)`. The host ignores every field except for `ref`, but the other fields would be useful for debug names and ad-hoc metadata.
 
-These methods apply for all application state references.
+References are specific to the current host-app session. The host should provide lightweight  protections, e.g. randomized numbers, indirect lookup via session hashtable. Applications should also protect references, e.g. using abstract types.
+
+*Note:* References must be allocated. To reduce avoid contention on the allocator, the host could create pre-allocated pools for each fork, or recycle allocations from aborted transactions.
+
+### Asynchronous IO
+
+In the general case, a transaction must commit before external interactions begin. Synchronous IO with external systems is impossible. Of course, there are exceptions for manipulating local state or a few fire-and-forget operations.
+
+To support asynchronous IO, the host will respond to many requests with a reference to a new object representing the future interaction. Through this reference, the application can add outputs, check for inputs, or explicitly terminate the interaction.
+
+## State
+
+Environment `(scratch:StateRef, state:StateRef, ...)`.
+
+A StateRef will carry one Glas value. Scratch is ephemeral, reset to unit on host-app session start. State is durable, initially set to a value supplied with the application (or unit) then preserved across resets. 
+
+State is private by default. Relevantly, an application is free to update its data model, or to erase data it doesn't need without concern for the needs of other applications.
+
+### Generic Methods
+
+Useful methods for any StateRef:
 
 * **get** - Query. Response is whole value.
-* **set:Value** - Update. Assigns value. Response is `ok`. 
+* **set:Value** - Update. Assigns value. Response is unit
 * **eq:Value** - Query. Compare values for equality. Response is Boolean.
-* **type** - Query. Response is `dict | list | number | invalid`. The `invalid` response is for invalid references.
-* **valid** - Query. Response is Boolean.
+* **path:Path** - Query. Response is path-specific StateRef.
+* **type** - Query. Response is `dict | list | number`.
+
+A path is a simple list of symbols and numbers as a path, e.g. `[foo, 42, baz]`. A symbol indexes a dictionary, while a number indexes a list. It is possible to create a path reference that is currently invalid due to state; use of an invalid path is treated as a runtime error (can be caught with 'checked' apply).
 
 ### Dictionary Methods
 
-Dictionaries are mostly used as namespaces, via pathing. Dictionaries support a few methods that would make them a passable basis for publish-subscribe or tuple space patterns.
+Dictionaries are mostly used as namespaces, via pathing. However, it is feasible to reflect on dictionary structure or to add and remove just parts of a dictionary. 
 
 * **d:keys:(in?Keys, ex?Keys)** - Query. Repond with Keys. Optional parameters:
  * *in* - restrict response by intersection (whitelist)
- * *ex* - restrict response by difference (blacklist)
-* **d:insert:Dict** - Update. Insert or update keys in dictionary. Response is `ok`
-* **d:remove:Keys** - Update. Remove selected keys from dictionary. Response is `ok`.
+ * *ex* - restrict response by difference (blacklist). 
+* **d:insert:Dict** - Update. Insert or update keys in dictionary. Response is dictionary containing replaced elements. 
+* **d:select:(in?Keys, ex?Keys)** - Query. Response is subset of dictionary for given keys. The *in* and *ex* parameters are same as for `d:keys`.
+* **d:remove:(Selection)** - Update. Remove elements that would be selected by same parameters to `d:select`.
+* **d:extract:(Selection)** - Query-Update. Same as select, but also remove selection.
 
-A keys value is a dictionary with unit values.
+Keys is represented by a dictionary with unit values. Specifying both *in* and *ex* is a runtime error. Use of paths through dictionaries can support more precise conflict detection compared to 'select'. Use of dictionary methods on a non-dictionary value is a runtime error.
 
 ### List Methods
 
-In context of transactional updates, lists are useful for modeling queues. Multiple writers and a single reader can commit concurrently under reasonable constraints.
+Lists are useful for modeling shared queues. Multiple writers and a single reader can commit concurrently under reasonable constraints. But do consider *Channels*!
 
-* **l:insert:(items:\[List, Of, Values\], head?, skip?Number)** - Update. Adds items to tail of list. Response is `ok`. Optional flags:
- * *head* - Add items to head of list instead.
- * *skip* - Default zero. Skip over items before writing. If skip is larger than list length, response is `error` and nothing is modified. (Zero skip cannot cause error.)
-* **l:remove:(count?Number, atomic?, tail?, skip?Number)** - Default count is 1. Remove count items from head of list, or maximum available. Response is the slice of items removed . Optional flags:
- * *atomic* - Remove count items if available, else zero, nothing between.
- * *tail* - Take slice from tail of list instead. List order is still preserved.
- * *skip* - Default zero. Skip offset items before reading. Attempting to read beyond end of list responds with empty list.
 * **l:length** - Query. Response is number of items in list.
 * **l:lencmp:Threshold** - Query. Same as `n:compare` on length.
+* **l:insert:(items:\[List, Of, Values\], tail?, skip?Number)** - Update. Addends items to head of list. Response is unit. Optional flags:
+ * *tail* - Add items to tail of list instead.
+ * *skip* - Default zero. Skip over items before writing. A skip larger than list size is a runtime error.
+* **l:select:(count?Number, atomic?, tail?, skip?Number)** - Query. Response is a sublist, usually the head element. Optional flags:
+ * *count* - Default one. Return this many items if available, fewer if insufficient.
+ * *atomic* - Copy exactly count items, or it's a runtime error (see 'checked' apply).
+ * *tail* - Select Count items backwards from tail of list instead. List order is preserved.
+ * *skip* - Default zero. Exclude skipped items before selection. A skip larger than list size results in empty list.
+* **l:remove:(Selection)** - Update. Removes elements that would be selected by same parameters to `l:select`. Response is unit.
+* **l:extract:(Selection)** - Query-Update. Same as select, but also removes selection.
 
-To use lists as arrays of objects, construct paths that contain numeric indices.
+Use of paths through lists can support more precise conflict detection compared to 'select'. Use of list methods on a non-list value is a runtime error.
 
 ### Number Methods
 
 For most numbers, get/set is sufficient. However, *counters* can be high-contention, and we can also try to stabilize observation of numbers with thresholds.
 
-* **n:increment:(count?Count)** - Update. Default count is 1. Increase referenced number by Count. Response is `ok`.
-* **n:decrement:(count?Count)** - Update with failure. Default count is 1. If count is larger than number, response is `error` and the number is unmodified. Otherwise, reduces number by count and response is `ok`.
+* **n:increment:(count?Number)** - Update. Default count is 1. Increase referenced number by count. Response is unit.
+* **n:decrement:(count?Number)** - Update. Default count is 1. Decrease referenced number by count. Response is unit. Cannot decrement below zero - if count is larger than number, this is a runtime error (but see 'checked' apply).
 * **n:compare:Threshold** - Query. Compares number to threshold. Response is `lt | eq | gt` corresponding to number being less than, equal to, or greater than the threshold.
 
-### Live Coding, State Versioning, and Abstraction
+Use of number methods on a non-number value is a runtime error.
 
-Application behavior can be updated between transactions. However, application state may also need to be updated to handle changes in environment or data models. 
+### Data Model Versioning
 
-Support for state update can be integrated: Application state could contain version identifiers, and application behavior can check the version and rewrite representations as needed. For large applications, lazy state updates are also feasible, via dividing application state into abstract objects that can be updated independently.
+In context of orthogonal persistence or live coding, application state may need to be reorganized to handle changes in the program. To achieve this, the state may include version identifiers. The application can check the version and apply a version-transformation function if needed.
 
-Programming with abstract, versioned objects can be supported via the higher-order programming mechanisms in Glas, and further by careful design of syntax.
+For very large state, it is often preferable to perform this update lazily. This is possible if version identifiers are distributed through the state, e.g. by modeling a versioned data model as a composition of other versioned data models.
 
-### Dynamic Allocation and Memory Management
+## Channels
 
-Dictionaries can model regions for dynamic allocation. The region can include counters to compute numeric symbols. Each symbol can be inserted into the region with an initial value. Paths through this symbol can be computed.
+Channels are a general purpose solution to asynchronous dataflow patterns, able to flexibly model broadcasts, mailboxes, data buses, queues, variables, and futures. As follows:
 
-The advantage of using a dictionary is that there is no need to maintain a free-list or defragment memory. It's sufficient to remove the reference when done. We never need to reuse a reference, thus use of the `type` method could tell us when we have dangling references.
+* *broadcast* - one writer, copy reader
+* *mailbox* - one reader, dup writer
+* *data bus* - copy reader, dup writer
+* *queue* - dup reader/writer, large capacity
+* *variable* - dup reader/writer, capacity one
+* *future* - copy reader, capacity one, single use
 
-Applications must manage their own state. Manual management is a likely starting point, explicit deletion of objects no longer needed. However, it is feasible for Glas applications to model concurrent garbage collection via forked transaction, and even incremental garbage collection based on snapshots.
+Channels in Glas are divided into reader and writer endpoints. The reader endpoint can be copied to replicate data. Reader and writer endpoints are closed independently. Readers can detect when all writers have closed, and vice versa.
 
-*Note:* Managing state is a separate layer from managing 'memory'. The memory for values is managed by the Glas compiler or runtime.
+Channels have a buffer limit to ensure fast writers will eventually wait on slow readers and control memory consumption. This limit could be very large For copied readers, the slowest reader sets the pace.
 
-### Orthogonal Persistence
+### Application Channels
 
-Because state is separated from behavior, orthogonal persistence doesn't require special compiler support. The host system can continuously save application state to durable storage. 
+Environment `(chan:ChannelFactory, ...)`.
 
-In conjunction with [content-addressed storage](https://en.wikipedia.org/wiki/Content-addressable_storage) and [log-structured merge-trees](https://en.wikipedia.org/wiki/Log-structured_merge-tree), it is quite feasible to incrementally store updates and support very large applications. The [Glas Object](GlasObject.md) representation is designed for this purpose.
+* **create:(cap?Number, lossy?, binary?)** - Response is a fresh `(reader:Reader, writer:Writer)` pair of references. Optional parameters:
+ * *cap* - Default one. Limit on number of values in channel. Zero capacity channels are possible, usable to signal 'closed' status.
+ * *lossy* - Flag. If set, instead of blocking the writer, a slow reader will lose the oldest unread data. Loss can be detected by reader. Effective use requires specialized protocols.
+ * *binary* - Flag. If set, restricts channel to binary data (natural numbers, 0 to 255). Useful for performance and simulating external IO. 
 
-Programmers should develop "in-memory" indexed, relational databases above application state. Together with orthogonal persistence, many applications can readily be designed on such databases. Integration and performance could be much smoother compared to networked databases.
+*Aside:* In addition to creating channels, it might be useful to provide some composition methods, similar to 'epoll' in Linux. However, the current intention is to use lightweight forks in a more direct style. I'll consider host-supported event polling based on level of success with forks.
+
+### Channel Methods
+
+These methods are shared by reader and writer.
+
+* **dup** - Response is channel. The dup and original are interchangeable except that they must be closed independently. 
+* **length** - Query. Response is current number of items in channel. This value is between 0 and cap, inclusive.
+* **lencmp:Threshold** - Query. Response is `lt | eq | gt`. Same as `n:compare` on length.
+* **cap** - Query. Response is configured capacity of channel. 
+* **close** - Destructor. Response is unit. Further use of reference is error. 
+* **active** - Query. Response is Boolean, `false` iff all writers for channel are closed.
+* **relevant** - Query. Response is Boolean, `false` iff all readers for channel are closed.
+
+### Reader Methods
+
+* **read:(count?Number, atomic?)** - Response is a list of values, removed from channel. Options:
+ * *count* - Default one. Read the maximum of count and length items.
+ * *atomic* - Reading fewer than count items is treated as runtime error.
+* **lossy** - Query. Response is Boolean, `true` iff values were lost since last read.
+* **copy** - Response is a new reader that gets its own copy of all present and future data written to the channel. Buffering is controlled by the slowest reader.
+
+A reader channel essentially has a 'lossy' flag, removed by read and set by writes that would overflow capacity of a lossy channel.
+
+### Writer Methods
+
+* **write:\[List, Of, Values\]** - Update. Add values to end of channel. Response is unit. Runtime error if there is insufficient available capacity, unless the channel is also 'lossy'.
 
 ## External Effects
 
-Applications are hosted. The host will provide objects and methods to support interaction with user, network, and other applications. Top-level references such as `gui` or `net` are standardized. 
+### Application Control
 
-A transaction must commit before external interaction begins. Asynchronous IO is required. 
+Environment `(app:Ref, ...)`.
 
-In the common case, the host will allocate a new object representing the activity, then respond with a reference to this object. Methods can query available input, specify further output, further branch, or terminate the activity. To keep it simple, the reference is specific to the current host-app session. This concept is essentially [file descriptors](https://en.wikipedia.org/wiki/File_descriptor).
+* **reset** - Fire and forget. Response is unit. After commit, halt the current host-app session then start a new one. This will close channels, invalidate host references, reset scratch to unit, etc.. 
+* **halt** - Same as reset, except does not start a new host-app session. The application can be activated again through the host.
 
-From perspective of a persistent application, the host is ephemeral and exchangeable. Between transactions, the host may be restarted or application migrated. Thus, the application must verify a host reference is still valid before using it. The next host must efficiently and reliably invalidate references to prior host. This can be achieved by including a session identifier in allocated references. 
+### Command Line Interface
 
-This section explores a potential foundation for Glas applications. Of course, the details may be adjusted simplify implementation.
+Environment `(cli:Ref, ...)`.
 
-### Reference Validation
+Glas applications can accept concurrent command-line connections. Each connection has its own stdin, stdout, stderr, command line arguments, OS environment variables, etc.. This design simplifies interaction with persistent state - application instances as objects, commands as methods. 
 
-An application may ask the host whether a reference is still valid. This would be specific to the application, i.e. if a reference is 
+* **accept:(limit?Number, req?Keys, opt?Keys)** - Response is list of available commands, usually one or zero. Options:
+ * *limit* - Default one. If defined, is upper limit for number of commands. 
+ * *req* - Required interfaces. Default is `(env, cmd, stdin, stdout, stderr)`. 
+ * *opt* - Optional interfaces. Default is empty set, unit `()`.
 
-* **valid** - Query. Response is Boolean.
+Each command is represented by a dictionary of values and references, such as `(env:(PATH:"/usr/local/bin:...", ...), cmd:["./appname", "help"], stdin:Ref, stdout:Ref, stderr:Ref)`. 
 
-Programmers should wrap host references with metadata for internal use.
+The stdin, stdout, and stderr elements are references to endpoints of binary channels, with stdin as a reader endpoint and stdout/stderr as writer endpoints. These bind a command shell in the conventional manner. 
 
-### Application Object
+References that are neither required nor optional will implicitly be closed, or never created. For example, `accept:(req:(cmd, stdout))` would implicitly close stdin and stderr, and may skip conversion of env to a Glas dict. This simplifies safe use of potential extensions to the command model.
 
-Reference `app`.
-
-* **reset** - Fire-and-forget. Response is `ok`. After commit, performs soft-reset of the application: invalidates allocated host references and resets temporary storage.
-
-A reset is implicit when a host loads an application.
-
-### Temporary Storage
-
-Reference `tmp:Path`.
-
-Behaves same as application state, with a few exceptions:
-
-* prefix `tmp:` instead of `st:`
-* lost on reset or migration
-* initial value is unit `()`.
-
-Temporary storage is convenient for storing allocated host references, and makes clear which data should be persisted. 
-
-### Data Bus
-
-A message written on the bus is broadcast to all attached readers. Readers may snoop the bus, which is convenient for diagnostics, or filter messages for what is relevant to them. The bus does not store data. 
-
-Reference `bus:busname`.
-
-* **write:Message** - Fire and forget. Adds message to data bus upon commit. Response is `ok`.
-* **attach** - Response is a new reader attached to the data bus. Messages will implicitly be queued. 
-
-Attached reader:
-
-* **read** - Response is list of available messages. Removes from subscriber's queue.
-
-No filtering for now, but it's a feasible feature to add later. 
-
-Data buses are a good basis for most inter-app communication, and have nice observability properties. Scalability is a concern, but can be mitigated by partitioning a system into smaller buses. 
-
-*Note:* I'm currently rejecting shared state (too fragile) and publish-subscribe (too complicated). 
+*Note:* We can still compile an application to accept only one command per halt/reset.
 
 ### Secure Random Numbers
 
-Random numbers should be stable and cryptographically secure. By stability, I mean that a transaction that produces random numbers then *aborts* should produce the same random numbers on next attempt. This can be achieved by having the host maintain some hidden state associated with the application and every fork. 
+Environment `(random:Ref, ...)`.
 
-Reference `random`
+* **acquire:Count** - Response is a future (a single-use channel), which will receive a cryptographically random binary of size Count after commit.
 
-* **bytes:Count** - Response is a list with Count random bytes. Updates implicit CPRNG.
+This design supports effectful implementations for obtaining initial entropy. The expected use case is that applications acquire random numbers to seed a CPRNG on a per-task basis. This would avoid contention on CPRNG state.
 
-If programmers want a regular PRNG, they can model it themselves. The primary motive for effectful random source is integrating external entropy.
+### Time
+
+Environment `(time:Ref, ...)`.
+
+* **acquire** - Response is future (a single-use channel) that will receive commit time.
+* **after:Time** - Response is unit. Constraint. Runtime error before specified time.
+* **before:Time** - Response is unit. Constraint. Runtime error after specified time.
+* **model** - Query. Response is the model for Time values used by the host. 
+
+Transactions are logically instantaneous, but can't usually be pinned down to a specific instant before commit. Thus, acquiring the transaction's time is supported by a future. Transactions may voluntarily fail if they would commit before or after a specified time. Use of 'after' can support timeout behavior, while use of 'before' can express real-time behavior.
+
+The standard model for Time values will be `nt`, referring to Microsoft Windows NT time epoch: the number of 0.1 microsecond intervals since midnight, January 1, 1601, UTC. This should be sufficient for most systems until we develop time travel or space travel.
+
+### Globs and Blobs
+
+
+
+### Filesystem
+
+### Network Interface
+
+Environment `(network:Ref, ...)`.
+
+Support for TCP/IP enables Glas applications to behave as a webserver and interact with many external devices and systems. 
+
+## GUI? Defer.
+
+I'm still uncertain what concept I want for GUI. 
+
+Ideally, a GUI should directly reflect the external surface of the application, or at least one such surface, such that users can easily 'compose' GUI elements, and also peek under the hood to observe how they are maintained.
+
+Direct manipulation of application state and channels is possible.
+
+
+
+Direct manipulation and rendering of the application object is a viable option. But 
+
+ But in that case, should we bind to state, to channels, or to an explicit 'surface' model with its own variables and channels?
+
+
+
+
+
+
+I envision an application as providing a 'surface' for interactions. The command line interface, filesystem, and network are part of this surface, intercepted by the host. Other parts might be rendered for a user. Of course, we could also supply multiple GUIs for multiple users or multiple views.
+
+
+
+
+
+An application object could provide a GUI 'surface'. Network and command-line
+
+
+For now, focus on webservers and web-applications. Web applications might need a GUI based on a document object model.
+
+### System Discovery
+
+Applications could feasibly publish some mailboxes for use by other applications. However, this probably won't be very relevant until we start looking into deployment models.
+
+
 
 ###  .... topics
 
-
-
-SERVICES
-
-* Service Discovery
-* Help and Documentation
+* System Discovery - other apps?
 * Network
 * Filesystem
-* Tuple Spaces
-* Publish-Subscribe
-* Mailboxes? (how to secure? PKI? challenge?) 
-* Quota Control
 * Graphical User Interface
+* Signal Handling
+* Quota Control
 
 ### Signal Handling
-
-
-### System Services
-
-A system can 
 
 
 ### Filesystem
@@ -229,26 +305,30 @@ Files used as channels might need separate attention.
 
 Desired features: listen on TCP/UDP, connect to remote hosts, read/write connections. Listening should be resilient, and connections should gracefully die.
 
-### Clock
-
-Rather than continuously update a clock variable, we could arrange for some methods to trigger on the clock, update the clock only when a trigger occurs. The system should be able to see the trigger times in order to make good scheduling decisions.
-
 ### GUI
 
 ### Console
 
 ### Sound
 
+## Data Bus and Publish-Subscribe? Defer.
 
-## Scopes? A Feature Deferred. 
+I have an intuition that data bus and publish-subscribe are useful developing resilient and extensible applications, as a composition and communications model.
 
-Use of try/commit/abort is implicitly a scope. It is feasible to augment scopes with a rule to restrict or redirect behavior of subprograms. For example, we could introduce a scope rule that adds a common prefix to every state reference.
+Data bus is a simple communications architecture: A bus may have a dynamic number of attached readers and writers. A message written to the bus is observed by all currently attached readers. With software, we can support fine-grained buses that model broadcast channels (one writer, many readers) or mailboxes (many writers, one reader). 
 
-        try:(scope:(..., st:[add-prefix:Path]))
+Publish-subscribe is a useful communications pattern: Publishers maintain up-to-date views of state via shared channels. Subscribers can filter for data and observe changes. Usefully, subscribers can publish their interests, allowing publishers to maintain relevant data.
 
-This rule would apply until the corresponding commit/abort action. The same rule can be implemented manually by intercepting a subprogram's request-response channel, but there are potential performance benefits for making this visible to the environment.
+One idea is to extend data bus readers and writers with some publish-subscribe features, i.e. to logically simulate publish-subscribe over data bus.
 
-However, whether this feature is actually useful will depend on the design patterns in our applications, whether references stored in state tend to be relative or absolute, etc.. I do not believe that I can anticipate the useful patterns without more experience. For now, I will avoid scope parameter and require manual implementation of scopes.
+Data bus and publish-subscribe channels have no memory. This simplifies design of resilient systems, reducing need for explicit cleanup. The models are also both accessible, extensible with new observers and behaviors.
+
+It seems worth further developing these models for resilient Glas systems.  However, it's also low priority in the short term.
+
+
+## Live Coding
+
+It is feasible to update application behavior while it is running, or between restarts, depending on how well it has been designed for the data model update.
 
 
 
@@ -268,15 +348,6 @@ I have this vision where every page of a Wiki is essentially a web app - usually
 
 I'm not certain this vision is practical. But it would at least make an interesting sandbox for exploring Glas.
 
-
-## Interprocess Communications
-
-Take a step back: instead of one application, assume we have tens of applications. 
-
-
-
-
-
 ## Dynamic Scheduling
 
 A system can track conflicts between repeating transactions. If two transactions frequently conflict, they can be heuristically scheduled to run at different times. Even when transactions do conflict, fairness can be guaranteed based on tracking conflict history.
@@ -294,16 +365,3 @@ Intriguingly, is also feasible to attach just the GUI without any other effect r
 The state for a large application could feasibly be distributed across many machines. But it might be easier to model deployment of several smaller transaction machines, and bind certain states between them. Perhaps the IO between components can be based on bounded-buffer queues or CRDTs. 
 
 This seems an area worth exploring. But it might well become another 'layer' of models.
-
-
-
-## Security
-
-### Sandboxing Subprograms
-
-A subprogram can easily be scoped to a region of the environment via scoped `try` or explicit rewriting of paths. The latter option, explicit rewriting, has worse performance but greater flexibility: the program can redirect paths to logically 'mount' different parts of the environment. 
-
-### Protecting Invariants
-
-A transaction can easily check invariants before running, and check again before committing. This benefits from hierarchical transactions.
-

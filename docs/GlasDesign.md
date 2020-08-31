@@ -18,7 +18,7 @@ Glas data is immutable. Basic data is composed of dictionaries, lists, and natur
 
 Dictionaries are a set of `symbol:Value` pairs with unique symbols. Symbols are short binary strings. The empty dictionary `()` frequently serves as a unit value. Glas programs may iterate over symbols and test for presence of a symbol, thus flags and optional fields are supported.
 
-Variant data is encoded by singleton dictionaries. For example, a value of `type color = rgb:(...) | hsl:(...)` could be represented by a dictionary exclusively containing `rgb` or `hsl`. Symbol `foo` is shorthand for `foo:()`. A Boolean value is simply `type Boolean = true | false`. 
+Variant data is encoded by singleton dictionaries. For example, a value of `type color = rgb:(...) | hsl:(...)` could be represented by a dictionary exclusively containing `rgb` or `hsl`. Symbol `foo` is shorthand for `foo:()`. A Boolean value is `type Boolean = true | false`. 
 
 Glas uses lists for all sequential structure: arrays, binaries, deques, stacks, tables, tuples, queues. To efficiently support a gamut of applications with immutable data, Glas systems will represent large lists as [finger trees](https://en.wikipedia.org/wiki/Finger_tree). Logical reversal can be supported. Glas further uses [rope-style chunking](https://en.wikipedia.org/wiki/Rope_%28data_structure%29) for large binaries to minimize overhead.
 
@@ -105,30 +105,19 @@ Glas channels are second-class. A process has labeled data ports, which can be c
 
 Concretely, a Glas program is represented by dictionary containing `code:[List, Of, Operators]`. This dictionary might also include a namespace and annotations. 
 
-Each operator is parameterized by static references to data ports. Operations on independent ports concurrently based on available input and readiness of readers. Operators that share ports are implicitly sequenced according to the list.
+Each operator is parameterized by static references to variables and ports. 
 
-Data ports for external IO are referenced by `io:portname`. Variables are referenced by `var:varname`. A program may instantiate an abstract child process with a fresh prefix `foo` then reference its external ports via `foo:portname`. External data ports are not buffered.
+Variables are referenced by `var:varname` and buffer one value. Data ports for external IO are referenced by `io:portname`. A program may instantiate an abstract child process with a fresh prefix `foo` then reference its external ports via `foo:portname`. Ports may also buffer one value, but input and output ports with the same name are considered separate.
 
-Wires are an operator that repeatedly reads from one port and writes to another, with optional buffering. Compilers can compose and optimize wires to minimize abstraction overhead for dataflow across process boundaries. Wires serve the role of conventional channels.
+Operators can tweak exactly how and whether they use the buffer: read (remove from buffer), copy (copy from buffer), write (store to buffer), send (wait for reader). This is represented by `read|copy|write|send` prefix for a parameter, e.g. `send:var:x` in operator output would treat `var:x` as a rendezvous rather than a buffered variable. There may also be a few shorthand encodings to avoid intermediate variables, such as `const:Value` for reads, and `dup:[list, of, ports]` for writes.
+
+Operators run concurrently. Unless there are conflicts, such as using the same variables. Then they run sequentially according to the list of operators. Copying a variable doesn't conflict with other copies.
+
+Wires are an operator that repeatedly reads from one port and writes to another, with optional extended buffer. Compilers can compose and optimize wires to minimize abstraction overhead for dataflow across process boundaries. Wires serve the role of conventional channels.
 
 By default, Glas programs implicitly 'close' unused ports. This signals termination, that a subsequent read or write will wait indefinitely. Optional inputs and lazy outputs can be modeled based on observing implicitly closed ports.
 
 Operators are detailed in a later section.
-
-### Variables
-
-Logically, a variable `var:varname` represents an identity process that buffers one value. The buffer starts empty. Writing the variable fills its buffer. Reading the variable empties its buffer. Variables serve several roles in Glas programs: 
-
-* state across loops
-* communication between loops
-* scratch space for calculations
-* conditional behavior (empty or full)
-
-Default use of the buffer is inconvenient for many use-cases, so Glas supports a few patterns via extended references:
-
-A reader may use `var:varname:copy` to read a copy of the value. One copy remains in the buffer. As a special case, multiple operators may read-copy concurrently.
-
-A writer may use `var:varname:send` to wait for a reader. This models a concurrent rendezvous, and simulates writing unbuffered data ports between processes.
 
 ## Namespace Model
 
@@ -196,9 +185,9 @@ Testing of computed executable binaries is theoretically feasible via accelerate
 
 ### Automatic Buffering
 
-Buffers reduce sensitivity to latency, which supports distributed computation. However, manual buffering is awkard and easy to get wrong. For example, extending one buffer is often useless without extending several other buffers.
+Glas programs should specify minimal buffering for correct and convenient operation. This might involve using `send` instead of `write` in many cases, or occasional use of wires for extended buffers.
 
-Glas programs should specify minimal buffering for correct and convenient operation. An optimizer or compiler can later grow buffers as needed to support distributed computation. This could be supported by annotations.
+Manual buffering is awkard and easy to get wrong. For example, extending one buffer is often useless without extending several other buffers. So, a Glas compiler should grow buffers based on analysis of opportunity and deployment. 
 
 ### Program Search
 
@@ -220,11 +209,7 @@ Abstract and linear data types are useful for performance, especially in context
 
 ### Modal and Phantom Types
 
-It is feasible for a type system to track metadata such as location, latency, units of measure, purpose and provenance. Programmers can then control composition based on this metadata in ad-hoc ways. 
-
-For example, a type system might complain if we try to add apples to oranges, or if we attempt to multiply matrices logically located on separate GPGPUs. Tracking latency can make it feasible to constrain programs based on big-O complexity notations.
-
-Modal types can be expressed and manipulated by annotations. Which manipulations are valid might be constrained by the type system (e.g. latency is monotonic). This pattern can be combined with abstract and linear types.
+It is feasible for a type system to track metadata such as units of measure, location, and lifespan. Programmers can then control composition based on this metadata in ad-hoc ways. For example, the type system might complain if we try to add apples to oranges, or if we attempt to multiply matrices logically located on separate GPGPUs, or if we attempt to write an abstract ephemeral reference into persistent storage.
 
 ## OPERATOR DESIGN
 
@@ -273,6 +258,10 @@ I'm inclined to support a variety of list-processing operators such as zip/unzip
 
 It's less clear to me whether these operations should also apply to channels, or whether a different set of similar operations should apply.
 
+### Cheap Singleton Lists?
+
+We could feasibly track 'singleton lists' as a special case in the type analysis, or via  a pointer tag bits. Under this assumption, we don't need as many list operations.
+
 ### Dictionaries and Symbols? Full.
 
 Glas programs will have full ability to inspect and construct dictionaries, e.g. iteration over symbols, composition of dictionaries. A compiler should use static analysis and annotations to determine when certain dictionaries should be represented as C-like structs. 
@@ -306,6 +295,9 @@ Subtraction and division may have one or two outputs. Subtraction can output bot
 Glas is not designed for high performance numeric computing. Glas systems should *accelerate* an abstract CPU or GPGPU with access to fixed-width integers, floating point, vectors and SSE, etc. then use that for low-level computations. 
 
 ### Dictionary Operations
+
+*Aside:* In Glas systems, a 'bitfield' should normally be represented by keys in a dictionary instead of interpreting a number. It's more expensive, much more extensible and comprehensible.
+
 
 ### List Processing
 
