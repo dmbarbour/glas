@@ -4,19 +4,21 @@
 
 Large Glas programs are represented by multiple files and folders. Each file or folder deterministically computes a value.
 
-To compute the value for a file `foo.ext`, search for a language module or package `language-ext`, which should include a program to process the file's binary. To compute a value for a folder `foo/`, use the value of the contained `public` module if one exists, otherwise a simple dictionary reflecting the folder's structure.
+To compute the value for a file `foo.ext`, search for a language module or package `language-ext`, which defines a program to compile a binary. To compute a value for a folder `foo/`, use the value of the contained `public` module if one exists, otherwise a simple dictionary reflecting the folder's structure.
 
-Language modules have access to limited compile-time effects, including to load values from external modules or packages. File extensions are elided. For example, loading `module:foo` could refer to a local file `foo.g` or `foo.xyz`, or a local subfolder `foo/`. Loading `package:foo` instead searches for folder `foo/` based on a `GLAS_PATH` environment variable.
+It is permitted to compose file extensions, e.g. `foo.xyz.json` will first pass a binary to `language-json` then pass the resulting structured value as source input to `language-xyz`. Similarly, for folder `foo.xyz/` we'd apply `language-xyz` to whatever value is normally computed for the folder. Conversely, a file `foo` without an extension is just valued as a binary.
 
-Ambiguous references, directed dependency cycles, invalid language modules, and processing errors may cause a build to fail.
+The language module can load other modules while compiling. Loading `module:foo` can find a local file or subfolder whose name is `foo` after excluding extensions. Loading `package:foo` would search for a folder (packages are always folders) based on the `GLAS_PATH` environment variable or other external configuration.
 
-*Note:* Files and folders whose names start with `.` are hidden from the module system. A `.glas/` folder might support tooling, e.g. quotas, profiling, proxy cache. But, like annotations, should be semantically neutral.
+A build may fail due to ambiguous names, dependency cycles, bad language modules, etc..
+
+*Note:* Files and folders whose names start with `.` are hidden from the Glas module system, but can be useful for quotas, caching, profiling, etc..
 
 ## Data Model
 
-Glas data is immutable. Basic data is composed of dictionaries, lists, and natural numbers, such as `(arbid:42, data:[1,2,3], xid:true)`.
+Glas data is composed of immutable dictionaries, lists, and natural numbers, such as `(arbid:42, data:[1,2,3], xid:true)`.
 
-Dictionaries are a set of `symbol:Value` pairs with unique symbols. Symbols are short binary strings. The empty dictionary `()` frequently serves as a unit value. Glas programs may iterate over symbols and test for presence of a symbol, thus flags and optional fields are supported.
+Dictionaries are a set of `symbol:Value` pairs with unique symbols. Symbols are short binary strings. The empty dictionary `()` serves as a unit value. Glas programs have full reflective access to dictionaries, e.g. to iterate over symbols or check for presence of a symbol. Flags and optional fields can be supported.
 
 Variant data is encoded by singleton dictionaries. For example, a value of `type color = rgb:(...) | hsl:(...)` could be represented by a dictionary exclusively containing `rgb` or `hsl`. Symbol `foo` is shorthand for `foo:()`. A Boolean value is `type Boolean = true | false`. 
 
@@ -89,41 +91,29 @@ Memoization and incremental computing are deep subjects with many potential opti
 
 ## Computation Model
 
-The primary Glas computation model is based on [Kahn Process Networks](https://en.wikipedia.org/wiki/Kahn_process_networks) (KPNs) to support scalable computation and expressive composition under a constraint of determinism.
+The primary Glas computation model is based on [Kahn Process Networks](https://en.wikipedia.org/wiki/Kahn_process_networks) (KPNs). KPNs consist of concurrent loops and processes that communicate by reading and writing channels. Reading a channel waits indefinitely to ensure a deterministic outcome. Channels buffer writes, which is suitable for high-latency communications. 
 
-KPNs consist of concurrent processes that communicate by reading and writing channels. Channels may be externally wired between processes, supporting open composition of cyclic dependencies. Use of channels is restricted to ensure a deterministic outcome. Deadlock is a potential outcome.
+Glas processes and channels are second-class. A program reads and writes statically labeled ports, and may externally wire ports between statically declared subprograms. Glas deliberately trades potential expressiveness for simplicity, stability, locality, and performance.
 
-Variations from original KPNs:
-
-Glas favors bounded-buffer channels, such that fast producers always wait on slow consumers. KPNs can model bounded-buffer channels using coupled `(ready, data)` pairs of unbuffered channels flowing in opposite directions. Writer reads ready token then writes data. Default is zero-buffer, which models a concurrent rendezvous pattern.
-
-Glas channels may be 'closed' from either end. A writer may indicate there is no more data. A reader may also say that it's done. This feature supports expressive composition and short-circuiting computations.
-
-Glas channels are second-class. A process has labeled data ports, which can be composed and wired externally.
+Glas will generally rely on static analysis for type safety, dead code elimination, bounded buffers, and deadlock prevention. Metaprogramming can potentially support laziness, temporal semantics, and other features, using patterns above KPNs. Acceleration is necessary for dynamic programs.
 
 ## Program Model
 
-Concretely, a Glas program is represented by dictionary containing `code:[List, Of, Operators]`. This dictionary might also include a namespace and annotations. 
+Concretely, a Glas program is represented by dictionary with `code:[List, Of, Operations]`. Each operator is parameterized by statically labeled ports, representing input sources and output destinations. 
 
-Each operator is parameterized by static references to variables and ports. 
+External IO ports are accessed via `io:portname`. Local variables, scoped to the program, use `var:varname`. Programs compose hierarchically and statically: for subprogram foo, the external port `foo:portname` maps to `io:portname` within foo. Input and output ports may share the same name (for variables, this is always the case) but are implicitly distinguished by usage context.
 
-Variables are referenced by `var:varname` and buffer one value. Data ports for external IO are referenced by `io:portname`. A program may instantiate an abstract child process with a fresh prefix `foo` then reference its external ports via `foo:portname`. Ports may also buffer one value, but input and output ports with the same name are considered separate.
+Operations on separate ports compute concurrently, but operations modifying the same port are sequenced according to the list. Variables are really two separate ports for writing and reading. A program will typically have concurrent loops that interact via variables and declared subprograms. 
 
-Operators can tweak exactly how and whether they use the buffer: read (remove from buffer), copy (copy from buffer), write (store to buffer), send (wait for reader). This is represented by `read|copy|write|send` prefix for a parameter, e.g. `send:var:x` in operator output would treat `var:x` as a rendezvous rather than a buffered variable. There may also be a few shorthand encodings to avoid intermediate variables, such as `const:Value` for reads, and `dup:[list, of, ports]` for writes.
+Reading a port is non-modifying. There is a separate operator to advance a read port to its next value, affecting subsequent reads. It is possible possible to push data onto a read port to affect the next read. It is possible to detect end of input. Attempting to read a port after end of input will wait indefinitely.
 
-Operators run concurrently. Unless there are conflicts, such as using the same variables. Then they run sequentially according to the list of operators. Copying a variable doesn't conflict with other copies.
+Writing a port is buffered until read. Although there are no hard limits on buffer size, Glas systems will normally ensure bounded buffers via static analysis.
 
-Wires are an operator that repeatedly reads from one port and writes to another, with optional extended buffer. Compilers can compose and optimize wires to minimize abstraction overhead for dataflow across process boundaries. Wires serve the role of conventional channels.
-
-By default, Glas programs implicitly 'close' unused ports. This signals termination, that a subsequent read or write will wait indefinitely. Optional inputs and lazy outputs can be modeled based on observing implicitly closed ports.
-
-Operators are detailed in a later section.
+Wires are primitive loops that read from one port and write to other ports. Wires should be composed and compiled for direct communications across subprogram boundaries instead of routing data indirectly through a parent program.
 
 ## Namespace Model
 
-Definition-level programing is compact, comprehensible, and composable compared to expanding a program to primitive operators. Glas supports definition-level programming with a higher-order namespace model.
-
-A Glas program can instantiate abstract child processes by name. Namespaces are separate from runtime semantics: names are resolvable at compile-time, recursive definitions are rejected, no support for closures.
+Glas will support definition-level programming with a static, higher-order namespace model. Definitions are resolvable at compile time and acyclic. This ensures namespaces do not influence runtime semantics: we can transitively expand names to primitives, thus namespaces are essentially a compression model.
 
 The envisioned use case is that Glas modules should compute namespace values. This supports a conventional programming style where programs are decomposed into reusable definitions with flexible scoping and export control, then composed as needed. 
 
@@ -133,31 +123,33 @@ Concretely, a namespace will be represented as `ns:[List, Of, Namespace, Operato
 
 ## Annotations
 
-Annotations are concretely represented by `note:Content` in Glas programs or namespaces. Glas systems support annotations in most places, 
+Annotations are concretely represented by `note:Content` in Glas programs or namespaces. Glas systems support annotations in most places, e.g. as a special program or namespace operator, a request in the request-response channel for effects.
 
-, e.g. as a special program or namespace operator, a request in the request-response channel for effects, the program dictionary also containing `code:` and `ns:`.
-
-Logically, annotations must be *semantically neutral*. That is, ignoring or removing annotations must not affect the observable behavior of the system. Content of annotations is left to ad-hoc extension and de-facto standardization. If a system does not recognize an annotation, it should emit a warning if possible (to avoid silent failure), then ignore.
+Logically, annotations must be *semantically neutral*. That is, ignoring or removing annotations must not affect the observable behavior of the system. Instead, annotations support optimization, static analysis, model testing, debugging.
 
 Annotations serve a valuable role in context of external tooling: documentation and comments, automatic testing, debug logging or breakpoints, profiling, acceleration and optimization hints, type annotations, theorem prover hints, anchors for reflection, recommended widgets for projectional editing or direct manipulation, etc..
 
 ## Effects Model
 
-Most Glas programs will represent effects via request-response channel. The program writes `io:request` then reads `io:response` based on an API of supported requests. This models a single thread for procedural behavior, but with background computations while awaiting response.
+Glas programs will represent procedural effects via request-response channel. The program writes `io:request` then reads `io:response` based on an API of supported requests. This models a single thread for procedural behavior, albeit with background computations while awaiting response.
 
-A request-response channel becomes a bottleneck for effects. [Glas applications](GlasApps.md) mitigate this with API design - small transactions, asynchronous IO, fork requests. Acceleration, memoization, and content-addressed storage can displace effects for some use-cases. 
+A request-response channel becomes a bottleneck for effects. This can be mitigated with compiler support and API design for asynchronous effects, fusion with effect handler loops, etc.. Acceleration, memoization, and content-addressed storage can displace effects for some use-cases. At larger scales, it is feasible to introduce fork effects or deployment models.
 
-My vision for very large scales involves development of higher-order *deployment models* that represent how a set of applications bind to configurable distributions of sensors, actuators, displays, storage, networks, swarms, clients, and other resources. A deployment model would be continuously compiled and deployed.
-
-*Aside:* Glas compilers could inject effectful operations via higher-order namespace. However. effects embedded within black-box processes are awkward to observe, control, or safely update at runtime. Explicit deployment models are a better fit for my larger vision of software systems.
+*Aside:* Injecting effectful operators at compile-time via the namespace is feasible, but hinders external extension and control of code. I think it's wiser to model effects explicitly at every layer.
 
 ## Language Modules
 
 To process a file with extension `.xyz`, a Glas command-line utility will search for module or package `language-xyz`, favoring a local module. The exceptional case is bootstrapping, which requires built-in syntax. 
 
-The language module should compute a namespace that defines a compile process. A minimal compile process must take source input, load modules, and compute a value. This could be implemented directly as a Glas program, with request-response for loading modules (and logging).
+The language module should compute a namespace that defines a compile process. This will use a request-response channel for loading and logging, and also have an `io:source` input and `io:result` output. A viable request API:
 
-However, a direct implementation is opaque to external tooling. This can hinder provenance tracking, incremental computing, ambiguity detection, programming assistance, proposal of corrections, etc.. Thus, I'm exploring alternatives in the [Glas Syntax](GlasSyntax.md) document.
+* **note:Message** - response is unit; outputs a message for debug logs, progress reports, proposed code changes, etc.. Message have any type, subject to de-facto standardization.
+* **load:ModuleID** - A module ID is typically `module:symbol` or `package:symbol`. Response is the result of compiling that module, or a lazy placeholder (requires runtime support).
+* **exists:ModuleID** - response is boolean, `true` iff the specified module can be compiled. This can be useful for modeling defaults or flags at the module system layer.
+
+A load error can occur if a module is ambiguous, not found, fails to produce a result, or forms a dependency cycle. Lazy placeholders can defer load errors, and also simplify incremental computing and dynamic linking.
+
+Compile succeeds if `io:result` is output, though logged errors (`note:error:Message`) should be reported. Partial success is possible in presence of lazy placeholders. Because effects are severely restricted, we can guarantee that compilation is deterministic based on the input source and state of the module system.
 
 ## Glas System Patterns
 
@@ -199,11 +191,9 @@ This would enable programs to be much more adaptive to changes in requirements, 
 
 ### Abstract and Linear Types
 
-Abstraction and linearity are not intrinsic properties of data. Instead, they are constraints on a subprogram that interacts with data.
+A subprogram can treat data as abstract by never manipulating it directly. Instead, data is processed through provided functions. Abstraction extends to linearity when duplication and dropping of data are treated as protected manipulations. Abstraction and linearity are not intrinsic properties of data, but are instead constraints on a subprogram that manipulates data.
 
-A subprogram can treat data as abstract by never manipulating it directly. Instead, the data is processed through provided functions or channels. Abstraction extends to linearity when duplication and dropping of data are treated as protected manipulations.
-
-Glas programmers can use annotations to assert that a subprogram should respect abstraction or linearity. This should be verified by static analysis.
+Glas programmers can use annotations to assert that a subprogram should respect abstraction or linearity. Ideally, this should be verified by static analysis. However, it is also feasible to check these properties dynamically, with sufficient compiler or runtime support.
 
 Abstract and linear data types are useful for performance, especially in context of *acceleration*. Abstraction can protect optimized representations. Linear data can often be modified in-place, optimizing allocation and garbage-collection.
 
