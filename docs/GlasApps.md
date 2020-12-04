@@ -2,248 +2,288 @@
 
 In my vision of software systems, applications are easy for users to comprehend, control, compose, extend, modify, and share - especially at runtime. Further, applications should be robust and resilient, degrade gracefully, recover swiftly from disruption.
 
-Glas programs are based on Kahn Process Networks (KPNs), which are excellent for modeling deterministic, concurrent computations at large scales. However, at runtime, composition, extension, modification, and disruption are essentially non-deterministic. Further, it is awkward to extend or extract data models that are captured deep within a hierarchical process.
+Conventional models of applications usually lack these properties. They embed too much state within the program, which hinders replacing the program. Conventional use of references also makes it difficult to track relationships. 
 
-The *Transaction Machine* (TXM) - a repeating deterministic transactions in a non-deterministic environment - is a closer fit for my vision of an application model. Behavior and data are cleanly separated, which simplifies extension and modification. Tolerance to disruption is implicit.
+This document will explore options, especially *Transaction Machines*.
 
-This document explores an application model based on transaction machines, implementation and implications.
+## Conventional Procedural Apps
+
+Glas programs can model procedural applications by writing `io:request` and reading `io:response` with values representing effects and results. The program would have internal state and parallelism. External concurrency is feasible with asynchronous results. 
+
+A request-response API can be tuned for context. For example, web-applications would make requests related to the Document Object Model and XML Http Request. Usefully, we can easily interpret a request-response stream within a larger application, simplifying adapters and testing.
+
+A challenge with request-response bindings is ensuring performance. Optimal performance requires static loop fusion and partial evaluation, i.e. such that the effects can be directly integrated with code. We could also benefit from supporting first-class code within our effects, e.g. installing new operations.
+
+## Reference Model
+
+For Glas, I propose references have form `(ref:AbstractValue, ...)`. 
+
+The reference header is a row-polymorphic dict containing a 'ref' field, enhancing extensibility relative to purely abstract values. The reference body is an abstract value to support precise garbage collection and prevent construction of references. Abstraction can be enforced statically or dynamically.
+
+An initial environment of references can be provided to a Glas program via `io:env` parameter. The program can control effects by controlling which references are provided to subprograms. Depending on syntax, the environment parameter can be propagated implicitly. It is feasible to control a subprogram's effects by controlling which references are provided.
+
+*Aside:* An alternative to references is second-class cursors, e.g. like turtle graphics. However, references are more conventional and immediately useful.
 
 ## Transaction Machines
 
-A transaction machine forever repeats a deterministic transaction over a non-deterministic environment. The environment of the transaction machine will generally be partitioned between input/output regions and a private scratch space. IO may involve shared variables or abstract queues.
+A transaction machine is a software architecture consisting of repeatedly applying transactions to an external environment. Transactions are scheduled non-deterministically. 
 
-Process control is implicit: A deterministic transaction that changes nothing will always be unproductive when repeated on the same input. A scheduler can recognize unproductive transactions then wait for relevant changes. A transaction machine can effectively terminate by reaching a stable state that is not waiting on further input.
+Process control is implicit: When a deterministic transaction is unproductive, the system can implicitly wait for a change in inputs before repeating the computation. Programmers can explicitly abort transactions to wait for ad-hoc conditions.
 
-Large transactions can be partitioned into small ones via 'fork' request. Logically, the environment responds with an option non-deterministically. However, repetition and replication of isolated transactions are logically equivalent. With replication and rollback optimizations, we effectively partition one machine into many.
+Non-determinism and hierarchical partitioning are expressed via a fork operation. Fork selects a value non-deterministically from a set. In context of isolated transactions, repetition and replication are logically equivalent. Thus, stable forks can be optimized via replication, dividing one transaction into many.
 
-### Required Optimizations
+Incremental computing is the basis for performance. The compiler and system can coordinate to reuse stable subcomputations across repetitions of a transaction. This improves latency and efficiency, especially in context of stable forks.
 
-For transaction machines to be viable, two optimizations are necessary: rollback and replication.
+External effects can be continuous or asynchronous: a transaction must commit a task before the external system can process it, so any result is deferred until a future transaction.
 
-Rollback enables reuse of a computation for a relatively stable input prefix. Without rollback, transactions must be recomputed from the start. With rollback, the transaction could have a stable prefix followed by a tight loop. Efficient rollback requires compiler support.
+### Transaction Model
 
-Replication supports concurrent computation of forks. For isolated transactions, repetition and replication are logically equivalent. However, replication reduces latency for reacting to changes.
+Procedural programming is suitable for representing deterministic transactions. With Glas programs, we can represent procedures via request-response channel, with requests implicitly applying to a transaction. A viable request API:
 
-## Transaction Model
+* **commit:Result | abort:Cause** - Accept or reject state. Response is unit. No further requests are read from current transaction. The commit result or abort cause can serve as a return value for the transaction.
+* **try** - Begin hierarchical transaction. Response is unit. Hierarchical transactions must be terminated with matching commit or abort request. This is also useful to model safe exception handling.
+* **fork:\[Set, Of, Values\]** - Response is non-deterministic value from set. System should replicate stable forks to run as concurrent threads. For unstable forks, we might try different values until one commits.
+* **note:Annotation** - Response is unit. Annotations should not have any semantic effect, but can support performance or debugging, e.g. scheduling hints, rollback checkpoint hints, call stacks, debug logs, breakpoints. Annotations use open variant type with de-facto standardization.
+* **apply:(object:Reference, method:Value)** - External effects. Response is a dictionary or variant (for extensibility) whose type depends on object and method.
 
-Glas programs can model deterministic transactions via request-response channel. This can be expressed with a procedural syntax. A viable request API: 
+If a request would cause a type error, the transaction implicitly aborts for debugging. Thus, it's necessary to know in advance which methods a given object reference will support. Static type analysis can help with this.
 
-* **commit:Status | abort:Reason** - Accept or reject state. Response is `ok`. No further requests are read from current transaction.
-* **try** - Begin hierarchical transaction. Response is `ok`. Hierarchical transaction must be terminated with matching commit or abort request.
-* **fork:Keys** - Replicate current transaction. Response to each replica is `ok:Key` with a different key from the set. The fork path, a list of keys, provides a stable task name for debugging.
-* **note:Annotation** - Provide performance and scheduling hints, program visualization and debug support, etc.. Response is `ok`. Host may log or ignore unrecognized requests.
-* **apply:(object:Reference, method:Method)** - Effectful request. Object references are provided by host, methods are computed by program. Response has form `ok:Result | error:Reason`.
- * *unrecognized object* - response is `error:invalid:object`.
- * *unrecognized method for object* -  response is `error:invalid:method`.
- * other errors are specific to object or method
-* *unrecognized request* - response is `error:invalid:request`.
+## Environment Model
 
-For consistent processing, every successful request responds with `ok`, and every failing request responds with `error`. Failure is atomic, in the sense that there is no observable effect (modulo debuggers/profilers/etc.). Feature extension is feasible, e.g. introducing new requests or new methods.
+Desiderata for environment model: 
 
-If a program halts (closes the request-response channel) without explicitly committing or aborting the top-level transaction, it implicitly commits. This allows programs to be written without explicit knowledge about whether they are transactional. However, hierarchical transactions must still be explicitly committed or aborted.
+* apps can hierarchically host other apps
+* modular boundaries between subprograms
+* extensible, can add features or properties
+* performance is efficient and predictable
+* simple, easy to understand and render
+* asynchronous effects are easy to express
+* avoid first-class functions, dynamic code
 
-Hierarchical transactions are convenient for program expression. The program can focus on the happy path, then conditionally backtrack and try a different path upon error. I intend to leverage this for a `try/then/else` syntactic construct.
+Under these constraints, we could use channels for asynchronous communication between modular components. Variables are convenient for private state across transactions. Variables could be understood as a special case of channels, but it's simple to support them explicitly.
 
-### Environment Parameter
+Other than channels and variables, I think we don't need much else.
 
-In addition to a request-response channel, the root program receives an 'env' parameter, which provides a *dictionary* of initial references and values. This parameter will be stable for the current host-app session. 
+## Timing Control
 
-Keys within the dictionary might include `(state, app, time, random, chan, ...)`. The type and meaning of each top-level symbol is subject to standardization. This design supports lightweight restriction or extension of the environment and program adaptation to available resources.
+The time associated with an isolated transaction is instant of commit. Thus, it does not make sense for a transaction to 'sleep' for a duration like an imperative thread. However, it is feasible to control or constrain time of commit.
 
-### Reference Model
+In context of transaction machines, this might be expressed by comparing time to a threshold, without directly observing the time. Then, in case the transaction aborts, the scheduler would know which time values to try next. Intriguingly, transactions can be computed ahead of time, and it is feasible to compute multiple transactions in advance insofar as we're willing to accept risk of rollback.
 
-Reference values are specific to the host-app session. Under normal circumstances, they should not be sent to other applications or persistent storage. The host can and should cryptographically secure reference values via randomization or HMAC. Application programs might use abstract or modal data types to resist misuse of references.
+Time could be accessed via cursor to a clock. This allows for modeling multiple clocks, logically delaying subprograms, and controlling time dependency. It is also feasible to construct cursors to access the same time with different models, e.g. seconds since 1970 vs. 0.1 microsecond intervals since 1601.
 
-In context of transaction machines, allocation of references should be stable, such that any aborted transaction will reallocate the same references when replayed. This might be achieved by recycling references on rollback after abort.
 
-*Aside:* Glas will not implicitly support garbage collection of observable host references. However, a program layer could model this feature explicitly, assuming it has sufficient typeful control over references.
 
-## Live Coding
+## Graph-based Environment Model
 
-A repeating transaction can be atomically replaced or updated between transactions. There is no need to explicitly 'save' or 'load' state. However, this is only half a solution. 
 
-Relevantly, the application may need transition state resources, e.g. `User1.0 -> User2.0`. It is convenient if this transition can be performed lazily. This would benefit from explicit syntactic support, such that versioned data types and version transition functions are normal.
 
-## Design Constraints for Object Model
+An application will manipulate an environment through cursors. Desired features:
 
-In context of transaction machines, external effects are asynchronous. The current transaction must commit before activity begins. Results only become visible to a future transaction. Ongoing interaction may be required. Internal effects, such updating private state, can be synchronous. But most requests must respond with objects representing new asynchronous activity.
+* **modular** - the environment has natural barriers for implementation-hiding; programs can leverage barriers between subprograms.
+* **fractal** - a program can easily sandbox a subprogram at the environment layer, i.e. instead of intercepting the request-response stream.
+* **sharing** - it is not difficult to partition work or share results between subprograms.
+* **renderable** - the environment can easily be displayed for debugging or administration.
 
-Ideally, applications easily simulate the host environment. This simplifies composition, extension, and testing. Although it is feasible to simulate a host by intercepting a subprogram's request-response stream, it is much more convenient if the application can allocate new objects with a suitable interface.
+A relatively uniform cyclic graph structure seems useful, covering the latter three features. For modularity, we can design special edges that cannot be navigated by cursor, e.g. to model read-only or write-only access to variables and channels.
 
-Glas does not support first-class functions. Thus, the ability to simulate arbitrary interfaces is limited. To resolve this, we can design the host environment around channels, variables, or similar elements with standardized interfaces that are easily allocated for internal use by the application.
+Potential Components:
 
-## Application Effects Model
+* **values** - a node could carry a Glas value for arbitrary purposes. The reason to model values within the graph is generalization of code to work with things other than values.
+* **channels** - we could model channels as providing a reader and writer endpoints, which could feasibly be duplicated. Bounded-buffer channels are possible, with pushback or lossy behavior. Variables could also be modeled as channels. 
+* **request-future-response** - a special channel mode could provide an immediate 'future' response for each request. Indeed, all channels could use this pattern, 
 
-In context of transaction machines, external effects are asynchronous. Transaction commits, action begins, results later become available to a future transaction. In some cases, results may be partial, or require incremental consumption and further interaction.
 
-In this context, effectful requests will often respond with a new object that represents the asynchronous activity. It's convenient if these objects share a consistent interface, perhaps a future or channel.
 
-The exception to asynchronous effects is update of application private state, which can be performed immediately. However, to support lightweight extensions, we might wish to constrain use of certain state elements even within the application.
+## Application Private State
 
+In general, applications should have part of the environment dedicated for their own personal use, no risk of interference from the system or other applications (modulo debuggers). In case of forking transactions, the program should be easily able to also fork the private space.
 
+## Random Numbers or Entropy
 
+Random numbers should be modeled as asynchronous, i.e. request random numbers now then receive them later. Otherwise, when the transaction aborts, it is unclear whether it should be recomputed with a new random number. However, programmers should also be encouraged to model their own PRNGs.
 
-Asynchronous results could be modeled via future values or channels. Returning a fresh channel is more robust, leaving control of features such as bounded-buffer pushback to the environment. Importantly, the host should be able to cancel a future result in case of error or interruption.
+## Cache-Query Pattern? Defer.
 
-The future value must also be stored to survive the transaction. This could be modeled as a stateful reference, private to the application, easily partitioned. Alter
+There is a subset of effects where consequences are insignificant and results are cacheable. Use of HTTP GET is a very good example. In these cases, it could be convenient to model the query as synchronous: the transaction is implicitly delayed while the cache is updated.
 
-Transactions can store data to mutable state. This makes it easy to implement, understand, and control memory resources. To reduce transaction conflict, we can isolate change based on 'paths' into structured state. However, the problem with mutable state is that we cannot easily extend state with new behaviors. A shared-state interaction can start and finish before another transaction intervenes.
+However, HTTP GET is modeled above sockets. It is not locally obvious that use of a socket API has insignificant consequences. It's unclear how we should go about modeling cache-query such that another transaction could implement the sockets without vi. It is feasible to treat this as a specialized form of system reflection.
 
-To support extension, we could read and write to channels, instead. But where do we store the channels, if not to mutable state? Do we use a single-element channel to model a variable?
+For now, I'll abandon this feature. It's worth reconsidering later.
 
+## Graph-based Environment Model
 
+Contemplating my options. Transaction machines can work with almost any asynchronous environment, but not all environment models are a good fit for my vision of software systems.
 
-Perhaps we can extend mutable state with something like lightweight observer pattern.
+### Reference-based API? No
 
+A reference is a value that identifies a separate object. Reference-based APIs are convenient and conventional, cf. file-descriptors. 
 
+Unfortunately, references are an awkward fit for my vision of software systems. References hinder local reasoning, stability, observability. References entangle application and system state in fragile ways, which complicates persistence, distribution, sharing. Also, manual management of referenced resources is fragile and prone to error, while automatic management requires too much API knowledge and runtime support.
 
+### Environment of Objects? Needs work.
 
+Most problems with references are due to mixing references with values. Instead, a program could separate values and objects into distinct operational stacks, of sort. A request could implicitly receive and return a record of references via the environment, instead of mixing objects into the normal request or response value.
 
-The notion of a data bus or channel is an interesting option. We could 
+Because objects are separated, we can easily track how the object is used, shared, or dropped. There is no opportunity to accidentally send a reference over a network interface or store it into a database. Automatic garbage collection is quite feasible.
 
+I think that ad-hoc objects and methods might be a little too arbitrary. There isn't a convenient way to compose, integrate, or substitute arbitrary objects. 
 
+### Graph-based API?
 
- that we cannot easily have multiple writers to one location.
+Instead of an environment with arbitrary objects, a transaction could operate on a uniform abstract graph with directed, labeled edges and unlabeled vertices. Logically, we can represent values using graph structure, and also optimize representation of numbers and lists.
 
+The program will start with a cursor into the graph. For transaction machines, this starting location is stable for each repetition of the transaction, but a program can navigate and establish multiple cursors. Navigating a graph can use non-deterministic models when we have multiple edges with identical labels, i.e. a cursor is generally a set of vertices.
 
-However, a problem with mutable state is that we cannot easily 
+We can connect vertices by edges, but it's also feasible to merge vertices. 
 
-rence must then be stored somewhere accessible to future transactions.
+To avoid mixing cursors with values, cursors can only be manipulated indirectly through an intermedate environment. This would be awkward in different ways from working with references.
 
+To model an effect, we can represent a request within the graph, and the request would include an edge for outputting the result, which could be unified with a designated target location. Then, we link this request into the system's graph. 
 
+The main issue here is that we cannot represent any form of commitment to the request, e.g. if we modify the request after handing it to the system then it's unclear whether the system is still trying to handle the original version. Also, it's difficult to enforce system invariants or interface boundaries.
 
+### Session-based API?
 
+Perhaps a graph itself isn't the right model, but something closer to bundles of wires, replacing unification with bulk 'attach', could work nicely and better represent interactions at system boundaries. This would also be more consistent with KPNs, I think.
 
 
 
 
+ Part of the graph would be designated for use by the host, and could be protected via types or by special edges that cannot be 
 
-Mutable state has several desirable properties: easy to implement and understand, and easy to control memory resources. However, it is awkward to express asynchronous effects with shared state 
+In this case, external effects would be achieved by designating a certain regions of the graph to the host system, to interpret requests and write results. Or more accurately, the application would have a private space, with access to a public space.
 
-Although mutable state is easy to implement and understand, it hinders extension. To build extensible architectures above mutable state requires careful, explicit design. Without type abstraction for subprograms, the result is also very fragile. Beyond extensibility, the environment should also support asynchronous effects, abstraction of external state, and effective control over memory and bandwidth resources.
+The benefit of graph structure is effective structure sharing, work sharing, and efficient communication.
 
 
+We could model the environment as an abstract graph that the program can navigate and manipulate. For navigation, the program will also have cursors into the graph. To avoid use of references, these cursors are never represented as values, but can be manipulated via special stack.
 
+A transaction would manipulate the graph then commit. External effects could be expressed by operating in certain locations of the graph.
 
 
 
 
 
 
-We could build on an idea of data bus., which can represent broadcast or data bus, and perhaps also some publish-subscribe. However, it's a littl
+ with directed, labeled edges and unlabeled vertices. The graph can store normal values, logically as  as a specialized 
 
+The program can navigate this graph to perform ad-hoc manipulations. (No rewrite 'rules' per s)
 
-One idea is to build on *monotonic* state, such as single-assignment futures or CRDTs. However, a major problem with monotonic state is that we cannot easily determine when old state can be safely garbage collected.
 
+I can model the environment as an abstract graph with directed, labeled edges and unlabeled vertices. The program can navigate the graph and perform various manipulations, including unification of vertices. Unification will propagate along edges with identical labels.
 
+I
 
 
 
+The program has a cursor into the graph, or perhaps a stack of cursors.
 
+ program has cursors into the graph, but cannot directly manipulate them
 
-One idea is to build on *monotonic* state, such as single-assignment futures. 
+The program can manipulate this graph in flexible ways, including unification of vertices. 
 
 
 
 
-One idea is to build on *monotonic* state. 
 
+We could model transactions as rewriting an abstract graph. To distinguish from reference-based models, we can  with anonymous vertices and labeled edges. This would avoid references to vertices. Instead, we can locate vertices by navigating a graph from an implicit start.
 
 
 
+ e.g. unifying v
 
+ adding edges between points, 
 
+The application would have an implicit starting locat
 
+Tree-structured data has nice properties for caching, but it's a little awkward for modeling interactive systems, work sharing, and structure sharing. 
 
+Tree-structured data can be useful, but 
+
+*Aside:* Before I selected Kahn Process Networks as the basis for Glas programs, I was considering a monotonic graph unification model, which is similar to the above.
+
+### Hierarchical Sessions?
+
+Sessions reify long-running interactions between systems. Each participant in a session (usually just two) will have some associated private state.
+
+ session will have some associated private state for each participant, some public variables.
+have some state 
+
+Sessions might feature
+
+
+
+
+### Session-based API?
+
+A session reifies an abstract interaction between application and environment. The session could include assigned variables, channels, active tasks, and other elements. Similar to reference-based models, we might identify elements within a session, but these references would be explicitly session-local and we can always observe the entire session.
+
+ active tasks, and other features. Unlike reference-based 
+
+A session consists of: private state variables, input and output variables, input and output channels. It can be organized into hierarchical sub-sessions.
+
+However, sessions are 
+
+
+We could model transaction machines as operating on a dynamic session between the application and environment. This makes explicit that we aren't manipulating an environment directly, but rather managing a public interface between application and environment.
+
+
+
+
+
+A session models a bi-directional interaction between two or more participants. The session could have some associated private state and a public interface. Sessions can be hierarchical, with subsessions to model specialized interactions.
+
+A session models an interaction with two or more participants. Each participant could associate some private state with the session,
+
+
+ or initiate subsessions with other participants.
+
+
+
+
+
+
+## Variables
+
+A variable is an object that stores a value. This value can be accessed and modified via 'get' and 'set' methods. A transaction will usually read and write several variables. An application's private state can be represented with a root variable, `(state:Ref, ...)`, initially unit.
+
+* **get** - Response is `ok:Value`. Reads the value of a variable.  
+* **set:Value** - Response is `ok`. Writes the value of a variable. This value is in the response to future 'get' requests.
+
+To avoid read-write conflicts, we'll partition state into variables such that the root is relatively stable, and concurrent transactions operate on subsets of variables that are shared in controlled ways. An allocator could be provided as `(var:Ref, ...)`, with one method:
+
+* **new:Value** - Response is `ok:Ref`, with a reference to a new variable object. The variable will initially contain the provided value.
+
+For performance reasons, we might want specialized variables to work with binaries, key-value trees, and other compact or indexed representations. However, in context of extension or update, specializing variables based on predicted data type is awkward. 
+
+## Channels
+
+
+
+## Futures
+
+A future can be modeled effectively as the read-end of a write-once channel. 
+
+## Time
+
+## Tables
+
+It is feasible to model relational database queries as normal requests within a transaction. However, I'm currently inclined to model this explicitly (within Glas) rather than as an implicit feature of the host system.
+
+By leveraging stowage and memoizing indices, it should be feasible to achieve a high degree of performance. 
 
 ## Time
 
 Environment `(time:Ref, ...)`.
 
-* **acquire** - Response is future (a single-use channel) that will receive commit time.
-* **after:Time** - Response is unit. Constraint. Runtime error before specified time.
-* **before:Time** - Response is unit. Constraint. Runtime error after specified time.
+* **now** - Response is future whose value will receive commit time. 
+* **cmp:Time** - Compare to a specified time. Response is `ok:(lt | ge)`, unless the time model is not recognized, in which case an error response is provided.
 * **model** - Query. Response is a value, usually `nt`, representing host model of time.
 
 Transactions are logically instantaneous, applying at instant of commit. Acquiring transaction time is supported by a future. Specifying an 'after' constraint can serve a similar role as synchronous 'sleep'. A 'before' method can represent real-time scheduling constraints.
 
 The standard model for Time values is `nt`, referring to Microsoft Windows NT time epoch: a number of 0.1 microsecond intervals since 0h 1-Jan, 1601 (UTC). This will be sufficient for most systems. This provides space for extensions.
-
-## Soft Concurrent Constraints
-
-An interesting coordination model is a *soft concurrent constraint* system. Agents use hard or soft constraints to express requirements and desiderata, intentions and interpretations. The system implicitly coordinates machines to search for relatively stable, satisfactory solutions. Agents with a reflective view of the search might serve as proof assistants. However, unless carefully restricted, this model would hinder reasoning about performance and progress.
-
-
-
-A constraint on a transaction machine might be expressed as a transaction that *should be able* to commit, without actually committing to it. This would be similar to an assertion
-
-A transaction can easily represent constraints for itself, but an interesting possibility is to represent constraints for other forked transactions. This could be modeled as asserting that a transaction should be able to commit.
-
-
-## State
-
-Environment `(scratch:StateRef, state:StateRef, ...)`.
-
-A StateRef will carry one Glas value. Scratch is ephemeral, reset to unit on host-app session start. State should be durable, initially set to a value supplied with the application (or unit) then preserved across resets. 
-
-State is private by default. Relevantly, an application is free to update its data model, or to erase data it doesn't need without concern for the needs of other applications.
-
-### Generic Methods
-
-Useful methods for any StateRef:
-
-* **get** - Query. Response is whole value.
-* **set:Value** - Update. Assigns value. Response is unit
-* **eq:Value** - Query. Compare values for equality. Response is Boolean.
-* **path:Path** - Query. Response is path-specific StateRef.
-* **type** - Query. Response is `dict | list | number`.
-
-A path is a simple list of symbols and numbers as a path, e.g. `[foo, 42, baz]`. A symbol indexes a dictionary, while a number indexes a list. It is possible to create a path reference that is currently invalid due to state; use of an invalid path is treated as a runtime error (can be caught with 'checked' apply).
-
-*Thought:* It might also be useful to 'observe' a StateRef, obtaining a sequence of values from prior transactions, perhaps with timestamps.
-
-### Dictionary Methods
-
-Dictionaries are mostly used as namespaces, via pathing. However, it is feasible to reflect on dictionary structure or to add and remove just parts of a dictionary. 
-
-* **d:keys:(in?Keys, ex?Keys)** - Query. Repond with Keys. Optional parameters:
- * *in* - restrict response by intersection (whitelist)
- * *ex* - restrict response by difference (blacklist). 
-* **d:insert:Dict** - Update. Insert or update keys in dictionary. Response is dictionary containing replaced elements. 
-* **d:select:(in?Keys, ex?Keys)** - Query. Response is subset of dictionary for given keys. The *in* and *ex* parameters are same as for `d:keys`.
-* **d:remove:(Selection)** - Update. Remove elements that would be selected by same parameters to `d:select`.
-* **d:extract:(Selection)** - Query-Update. Same as select, but also remove selection.
-
-Keys is represented by a dictionary with unit values. Specifying both *in* and *ex* is a runtime error. Use of paths through dictionaries can support more precise conflict detection compared to 'select'. Use of dictionary methods on a non-dictionary value is a runtime error.
-
-### List Methods
-
-Lists are useful for modeling shared queues. Multiple writers and a single reader can commit concurrently under reasonable constraints. But do consider *Channels*!
-
-* **l:length** - Query. Response is number of items in list.
-* **l:lencmp:Threshold** - Query. Same as `n:compare` on length.
-* **l:insert:(items:\[List, Of, Values\], tail?, skip?Number)** - Update. Addends items to head of list. Response is unit. Optional flags:
- * *tail* - Add items to tail of list instead.
- * *skip* - Default zero. Skip over items before writing. A skip larger than list size is a runtime error.
-* **l:select:(count?Number, atomic?, tail?, skip?Number)** - Query. Response is a sublist, usually the head element. Optional flags:
- * *count* - Default one. Return this many items if available, fewer if insufficient.
- * *atomic* - Copy exactly count items, or it's a runtime error (see 'checked' apply).
- * *tail* - Select Count items backwards from tail of list instead. List order is preserved.
- * *skip* - Default zero. Exclude skipped items before selection. A skip larger than list size results in empty list.
-* **l:remove:(Selection)** - Update. Removes elements that would be selected by same parameters to `l:select`. Response is unit.
-* **l:extract:(Selection)** - Query-Update. Same as select, but also removes selection.
-
-Use of paths through lists can support more precise conflict detection compared to 'select'. Use of list methods on a non-list value is a runtime error.
-
-### Number Methods
-
-For most numbers, get/set is sufficient. However, *counters* can be high-contention, and we can also try to stabilize observation of numbers with thresholds.
-
-* **n:increment:(count?Number)** - Update. Default count is 1. Increase referenced number by count. Response is unit.
-* **n:decrement:(count?Number)** - Update. Default count is 1. Decrease referenced number by count. Response is unit. Cannot decrement below zero - if count is larger than number, this is a runtime error (but see 'checked' apply).
-* **n:compare:Threshold** - Query. Compares number to threshold. Response is `lt | eq | gt` corresponding to number being less than, equal to, or greater than the threshold.
-
-Use of number methods on a non-number value is a runtime error.
 
 ### Data Model Versioning
 
@@ -251,9 +291,6 @@ In context of orthogonal persistence or live coding, application state may need 
 
 For very large state, it is often preferable to perform this update lazily. This is possible if version identifiers are distributed through the state, e.g. by modeling a versioned data model as a composition of other versioned data models.
 
-## Time
-
-Also, lightweight real-time behavior can be expressed by asserting a transaction commits before or after a timestamp.
 
 ## Channels
 
@@ -322,16 +359,6 @@ For Glas, I'm contemplating an alternative model based on editable projections a
 ## External Effects
 
 A transaction cannot perform synchronous IO with external systems. The transaction must commit before external interactions begin. Thus, most feedback must be provided through futures or channels. Exceptions for fire-and-forget.
-
-### Application Control
-
-Environment `(app:Ref, ...)`.
-
-* **reset** - Fire and forget. Response is unit. After commit, halt the current host-app session then start a new one. This will close channels, invalidate host references, reset scratch to unit, etc.. 
-* **halt** - Same as reset, except does not start a new host-app session. The application can be activated again through the host.
-
-Applications will implicitly terminate if they reach a stable state that isn't waiting on external input. But explicit termination will often be more convenient.
-
 
 ### Secure Random Numbers
 
