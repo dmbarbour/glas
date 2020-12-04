@@ -4,13 +4,11 @@
 
 Large Glas programs are represented by multiple files and folders. Each file or folder deterministically computes a value.
 
-To compute the value for a file `foo.ext`, search for a language module or package `language-ext`, which defines a program to compile a binary. To compute a value for a folder `foo/`, use the value of the contained `public` module if one exists, otherwise a simple dictionary reflecting the folder's structure.
+To compute the value for a file `foo.ext`, search for a language module or package `language-ext`, which defines a program to compile the file contents. To compute a value for a folder `foo/`, use the value of the contained `public` module if one exists, otherwise a dictionary reflecting the folder structure.
 
-It is permitted to compose file extensions, e.g. `foo.xyz.json` will first pass a binary to `language-json` then pass the resulting structured value as source input to `language-xyz`. Similarly, for folder `foo.xyz/` we'd apply `language-xyz` to whatever value is normally computed for the folder. Conversely, a file `foo` without an extension is just valued as a binary.
+It is permitted to compose file extensions, e.g. `foo.xyz.json` will first pass a binary to `language-json` then pass the result as source input to `language-xyz`. Relatedly, for folder `foo.xyz/` we apply `language-xyz` to the value normally computed for a folder, and a file `foo` without any extension is valued as a raw binary.
 
-The language module can load other modules while compiling. Loading `module:foo` can find a local file or subfolder whose name is `foo` after excluding extensions. Loading `package:foo` would search for a folder (packages are always folders) based on the `GLAS_PATH` environment variable or other external configuration.
-
-A build may fail due to ambiguous names, dependency cycles, bad language modules, etc..
+The language module can load and integrate other module values while compiling. Loading `module:foo` will search for a local file or subfolder whose name is `foo` (modulo extensions). Loading `package:foo` would search for a folder (not a file) based on a `GLAS_PATH` environment variable.
 
 *Note:* Files and folders whose names start with `.` are hidden from the Glas module system, but can be useful for quotas, caching, profiling, etc..
 
@@ -30,7 +28,7 @@ Glas natural numbers do not have a hard upper limit, and do support bignum arith
 
 Glas is intended to work at very large scales, with data that may be larger than a computer's working memory. 
 
-Glas will support big data structures using content-addressed storage: a subtree may be serialized for external storage on a large, high-latency medium such as disk or network. This binary representation should be referenced by secure hash. 
+Glas will support big data structures using content-addressed storage: a subtree may be serialized for external storage on a large, high-latency medium such as disk or network. This binary representation will be referenced by secure hash. 
 
 Use of secure hashes simplifies incremental and distributed computing:
 
@@ -41,9 +39,9 @@ Use of secure hashes simplifies incremental and distributed computing:
 
 A Glas runtime may heuristically store values to mitigate memory pressure, similar to virtual memory paging. However, programmers have a more holistic view of which values should be stored or speculatively loaded. Thus, Glas programs will support operators to guide use of storage. 
 
-[Glas Object](GlasObject.md) is designed to serve as a standard representation for large Glas values with content-addressed storage.
+[Glas Object](GlasObject.md) is designed to serve as a suitable representation for large Glas values with content-addressed storage.
 
-*Note:* For [security reasons](https://tahoe-lafs.readthedocs.io/en/tahoe-lafs-1.12.1/convergence-secret.html), content-addressed binaries will include a cryptographic salt (among other metadata). To support incremental computing, this salt must be computed based on a convergence secret. However, it prevents global deduplication.
+*Note:* For [security reasons](https://tahoe-lafs.readthedocs.io/en/tahoe-lafs-1.12.1/convergence-secret.html), content-addressed binaries may include a cryptographic salt (among other metadata). To support incremental computing, this salt must be computed based on a convergence secret. However, the salt prevents global deduplication.
 
 ## Compilation Model
 
@@ -135,7 +133,7 @@ Glas programs will represent procedural effects via request-response channel. Th
 
 A request-response channel becomes a bottleneck for effects. This can be mitigated with compiler support and API design for asynchronous effects, fusion with effect handler loops, etc.. Acceleration, memoization, and content-addressed storage can displace effects for some use-cases. At larger scales, it is feasible to introduce fork effects or deployment models.
 
-*Aside:* Injecting effectful operators at compile-time via the namespace is feasible, but hinders external extension and control of code. I think it's wiser to model effects explicitly at every layer.
+*Aside:* Injecting effectful operators via the namespace would simplify optimization, but hinders extension, determinism, and control of code. I prefer to model effects explicitly as an IO interface where feasible.
 
 ## Language Modules
 
@@ -143,13 +141,14 @@ To process a file with extension `.xyz`, a Glas command-line utility will search
 
 The language module should compute a namespace that defines a compile process. This will use a request-response channel for loading and logging, and also have an `io:source` input and `io:result` output. A viable request API:
 
-* **note:Message** - response is unit; outputs a message for debug logs, progress reports, proposed code changes, etc.. Message have any type, subject to de-facto standardization.
-* **load:ModuleID** - A module ID is typically `module:symbol` or `package:symbol`. Response is the result of compiling that module, or a lazy placeholder (requires runtime support).
-* **exists:ModuleID** - response is boolean, `true` iff the specified module can be compiled. This can be useful for modeling defaults or flags at the module system layer.
+* **note:Annotation** - Response is unit. Annotations have any type, subject to de-facto standardization. Uses include reporting parse errors, progress reports, caching hints, proposing code changes, etc..
+* **load:ModuleID** - A module ID is typically `module:symbol` or `package:symbol`. Response is the module's value, or `error` if there is any problem (missing module, dependency cycle, etc.). Cause of error is not reported in response but would be visible to build environment.
 
-A load error can occur if a module is ambiguous, not found, fails to produce a result, or forms a dependency cycle. Lazy placeholders can defer load errors, and also simplify incremental computing and dynamic linking.
+Compilation succeeds if a result is generated. However, as a convention, `error:Message` annotations might indicate that mission-critical or production builds should fail.
 
-Compile succeeds if `io:result` is output, though logged errors (`note:error:Message`) should be reported. Partial success is possible in presence of lazy placeholders. Because effects are severely restricted, we can guarantee that compilation is deterministic based on the input source and state of the module system.
+An optimal runtime for language modules will support lazy loads, responding immediately to load requests with a placeholder. This feature simplifies parallel builds, incremental computing, and dynamic loading.
+
+*Note:* With composition, source can have any type. For example, with file `foo.xyz.json`, source input to `language-xyz` would be the result output from `language-json`.
 
 ## Glas System Patterns
 
@@ -185,9 +184,7 @@ Manual buffering is awkard and easy to get wrong. For example, extending one buf
 
 We can develop higher-order program models that represent constraint systems and search spaces for programs. We can define packages that represent catalogs of other packages, with tags and summaries and indexes. Modules could experimentally compose program values, evaluate their fitness for a purpose. 
 
-This would enable programs to be much more adaptive to changes in requirements, preferences, or the ecosystem.
-
-*Note:* Type-driven programs, such as selecting functions based on inferred types, is essentially a limited form of program search. Type safety is another constraint guiding a choice from an implicit search space. 
+This would enable programs to be much more adaptive to changes in requirements, preferences, or the ecosystem. But performance of program search is a significant challenge. 
 
 ### Abstract and Linear Types
 
