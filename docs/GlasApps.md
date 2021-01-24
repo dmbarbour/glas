@@ -1,20 +1,100 @@
 # Glas Applications
 
-In my vision of software systems, applications are easy for users to comprehend, control, compose, extend, modify, and share - especially at runtime. Further, applications should be robust and resilient, degrade gracefully, recover swiftly from disruption.
+In my vision of software systems, software should:
 
-Conventional models of applications usually lack these properties. They embed too much state within the program, which hinders replacing the program. Conventional use of references also makes it difficult to track relationships. 
+* be safely runtime modifiable and deployable
+* robustly correct for changes in dependencies
+* provide useful views for admin and debugging
+* recover resiliently from erroneous conditions
+* integrate easily with other user software
 
-This document will explore options, especially *Transaction Machines*.
+The conventional application model, concurrent procedural loops, is a poor fit for this vision. The main cause is that loops-over-time implicitly internalize state. This state is inaccessible for extension, integration, software update. It is easy for observations on the environment to become stale or invalid. Unhandled errors tend to disrupt the loop and lack a simple recovery model. 
 
-## Conventional Procedural Apps
+A transaction machine based application model is a better fit for my vision and a convenient fit for the Glas program model, i.e. try/then/else implicitly becomes a hierarchical transaction. Additionally, the application environment must be designed for robust integration.
 
-Glas programs can model procedural applications by writing `io:request` and reading `io:response` with values representing effects and results. The program would have internal state and parallelism. External concurrency is feasible with asynchronous results. 
+## Transaction Machines
 
-A request-response API can be tuned for context. For example, web-applications would make requests related to the Document Object Model and XML Http Request. Usefully, we can easily interpret a request-response stream within a larger application, simplifying adapters and testing.
+Transaction machines model software systems as a set of repeating transactions on a shared environment. Individual transactions are deterministic, while the set is scheduled fairly but non-deterministically. 
 
-A challenge with request-response bindings is ensuring performance. Optimal performance requires static loop fusion and partial evaluation, i.e. such that the effects can be directly integrated with code. We could also benefit from supporting first-class code within our effects, e.g. installing new operations.
+Process control in this model is implicit, based on an observation that unproductive, deterministic transactions on a stable environment will also be unproductive when repeated. The system can implicitly wait for relevant changes rather than repeatedly computing an unproductive outcome. Aborted transactions are obviously unproductive. Effectively, abort means try again later.
 
-## Reference Model
+Programs become resilient by default. If there are unhandled conditions, the program might abort, but it will immediately continue running if system state is restored. This recovery could be performed by hand or by a separate transaction.
+
+Performance of transaction machines depends heavily on incremental computing. Instead of always recomputing a transaction from the start, the system can rollback and recompute based on changes in the environment. More precision is feasible by tracking dataflow dependencies within a program. Because incremental computing is pervasively assumed, programmers can avoid the complexities of explicit cache management. This optimization requires compiler support and some careful design of the effects API to simplify precise change detection. 
+
+Transaction machines can dynamically 'fork' a transaction into many smaller ones. This is based on an observation that repeating a non-deterministic transaction with fair choice is logically equivalent to repeating a set of transactions, one for each choice. Thus, we introduce a 'fork' effect that makes a fair, non-deterministic choice. In conjunction with incremental computing, this essentially expands a single transaction into a dynamic set.
+
+Transaction machines provide a partial solution for runtime software update, enabling atomic transition and simulation of transitions. However, we'll also need versioned state models and code to transition between data versions.
+
+### Transaction Model
+
+Transactions are readily modeled using Glas programs. Hierarchical transactions and 'abort' are implicit to backtracking and failure. Essentially, every try/then/else condition becomes a transaction. However, we do need an effect for forking. A viable effects API:
+
+* **fork:\[Set, Of, Values\]** - Response is a fairly chosen, non-deterministic value from a set. 
+* *environment effects* - additional requests to observe or manipulate environment.
+
+For 'fork', fair choice can be randomized. However, we can optimize stable forks as replicating the transaction. Fork becomes the foundation for task-based, concurrent division of labor.
+
+The greater challenge is to develop a nice environment model with the properties we want.
+
+## Synchronous Syntax
+
+Individual transactions must use asynchronous effects. For example, if we have a network socket, we cannot send a request then wait for a response within the same transaction. The request will only be sent when the transaction commits, and the response will only be available for a future transaction.
+
+However, it is feasible to develop a syntax that is evaluated across multiple transactions. The implementation could use a state machine to switch to the correct code for a given step. Each step would be implemented as a transaction.
+
+A procedural loop would essentially generate a cyclic state machine. However, this design would have some intriguing properties compared to conventional procedural loops: waits would still be implicit to a procedural step aborting, reduced requirements for explicit locks, external access to view or influence application state.
+
+## Context Specific Environments
+
+Glas programs can support several environment models via different effects APIs. For example, we could have a specific set of requests for web-apps oriented around document object model and XMLHttpRequest, another for console apps oriented around files and streams.
+
+This might be useful for getting started with Glas systems.
+
+It is feasible to implement adapters for effects, e.g. to support porting code between contexts.
+
+## Idealized Environment
+
+If not burdened by integration with existing systems, what would I pursue?
+
+Avoid direct mutation of variables. Direct mutation makes it difficult for an extension to contribute without destroying information required by the app or other extensions. Avoid direct use of channels. Abstract channels hinder extensions that require observing what is written to the channel.
+
+An intriguing alternative is a frame-based temporal model: a transaction generally reads a past frame and writes a future frame. Within each frame, we run all transactions in the set in parallel. In this case, we'd use quotas to abort transactions that take too long. 
+
+Variables would generally contain a sets of values, with transactions adding or removing values. Publish-subscribe is also straightforward. Channels would essentially be replaced by data-buses. 
+
+Avoid allocation of references at runtime or OS layers. Allocated references introduce awkward entanglements between application and host, which reduces resilience and mobility of a program.
+
+Good support for zoomable UI...
+
+
+
+...
+
+
+## Reference vs Navigation vs Session
+
+Conventional effects APIs rely on references such as opaque pointers, file descriptors, or URLs. This design has advantages for performance, but risks broken references, complicates garbage collection and local reasoning, hinders revocation and extension. 
+
+One alternative is to model an application program as navigating an environment, or perhaps manipulating cursors within the environment. The program takes action 'locally' to its location or to active cursors. This design enables the effects API to restrict relationships precisely. OTOH, it also requires an effects model more precisely tuned to the environment.
+
+A third option is that programs operate on an intermediate, stateful 'session' representation between 
+
+
+
+
+
+
+, but it also complicates garbage collection, allows for broken references, and 
+
+introduces challenges such as broken referenc
+
+to broken references
+
+ within the environment 
+
+ and many disadvantages.
+
 
 For Glas, I propose references have form `(ref:AbstractValue, ...)`. 
 
@@ -24,29 +104,6 @@ An initial environment of references can be provided to a Glas program via `io:e
 
 *Aside:* An alternative to references is second-class cursors, e.g. like turtle graphics. However, references are more conventional and immediately useful.
 
-## Transaction Machines
-
-A transaction machine is a software architecture consisting of repeatedly applying transactions to an external environment. Transactions are scheduled non-deterministically. 
-
-Process control is implicit: When a deterministic transaction is unproductive, the system can implicitly wait for a change in inputs before repeating the computation. Programmers can explicitly abort transactions to wait for ad-hoc conditions.
-
-Non-determinism and hierarchical partitioning are expressed via a fork operation. Fork selects a value non-deterministically from a set. In context of isolated transactions, repetition and replication are logically equivalent. Thus, stable forks can be optimized via replication, dividing one transaction into many.
-
-Incremental computing is the basis for performance. The compiler and system can coordinate to reuse stable subcomputations across repetitions of a transaction. This improves latency and efficiency, especially in context of stable forks.
-
-External effects can be continuous or asynchronous: a transaction must commit a task before the external system can process it, so any result is deferred until a future transaction.
-
-### Transaction Model
-
-Procedural programming is suitable for representing deterministic transactions. With Glas programs, we can represent procedures via request-response channel, with requests implicitly applying to a transaction. A viable request API:
-
-* **commit:Result | abort:Cause** - Accept or reject state. Response is unit. No further requests are read from current transaction. The commit result or abort cause can serve as a return value for the transaction.
-* **try** - Begin hierarchical transaction. Response is unit. Hierarchical transactions must be terminated with matching commit or abort request. This is also useful to model safe exception handling.
-* **fork:\[Set, Of, Values\]** - Response is non-deterministic value from set. System should replicate stable forks to run as concurrent threads. For unstable forks, we might try different values until one commits.
-* **note:Annotation** - Response is unit. Annotations should not have any semantic effect, but can support performance or debugging, e.g. scheduling hints, rollback checkpoint hints, call stacks, debug logs, breakpoints. Annotations use open variant type with de-facto standardization.
-* **apply:(object:Reference, method:Value)** - External effects. Response is a dictionary or variant (for extensibility) whose type depends on object and method.
-
-If a request would cause a type error, the transaction implicitly aborts for debugging. Thus, it's necessary to know in advance which methods a given object reference will support. Static type analysis can help with this.
 
 ## Environment Model
 
