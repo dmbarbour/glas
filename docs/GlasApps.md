@@ -8,9 +8,11 @@ In my vision of software systems, software should:
 * recover resiliently from erroneous conditions
 * integrate easily with other user software
 
-The conventional application model, concurrent procedural loops, is a poor fit for this vision. The main cause is that loops-over-time implicitly internalize state. This state is inaccessible for extension, integration, software update. It is easy for observations on the environment to become stale or invalid. Unhandled errors tend to disrupt the loop and lack a simple recovery model. 
+The conventional application model, concurrent procedural loops, is a poor fit for this vision. The main cause is that loops-over-time implicitly internalize state. This state is inaccessible for extension, integration, software update. It is easy for observations on the environment to become stale or invalid. Unhandled errors tend to disrupt the loop and lack a simple recovery model.
 
-A transaction machine based application model is a better fit for my vision and a convenient fit for the Glas program model, i.e. try/then/else implicitly becomes a hierarchical transaction. Additionally, the application environment must be designed for robust integration.
+A related challenge is that many elements of software environments are designed for exclusive use. Sharing a variable or channel between concurrent extensions is fragile and prone to error. Instead of coordinating safely by default, extensions compete for resources.
+
+To support my vision, I've been contemplating alternative application and environment models. Transaction machines are a good alternative for procedural loops. Tuple spaces, publish-subcribe, and data buses are suitable environments for coordination and integration.
 
 ## Transaction Machines
 
@@ -22,34 +24,38 @@ Programs become resilient by default. If there are unhandled conditions, the pro
 
 Performance of transaction machines depends heavily on incremental computing. Instead of always recomputing a transaction from the start, the system can rollback and recompute based on changes in the environment. More precision is feasible by tracking dataflow dependencies within a program. Because incremental computing is pervasively assumed, programmers can avoid the complexities of explicit cache management. This optimization requires compiler support and some careful design of the effects API to simplify precise change detection. 
 
-Transaction machines can dynamically 'fork' a transaction into many smaller ones. This is based on an observation that repeating a non-deterministic transaction with fair choice is logically equivalent to repeating a set of transactions, one for each choice. Thus, we introduce a 'fork' effect that makes a fair, non-deterministic choice. In conjunction with incremental computing, this essentially expands a single transaction into a dynamic set.
+Transactions can be forked to support task-based concurrency. This is based on an observation that repeating a non-deterministic transactions with fair choice is logically equivalent to repeating a deterministic transaction, one for each choice. By requesting a stable, non-deterministic choice from the environment, we can partition the transaction.
 
 Transaction machines provide a partial solution for runtime software update, enabling atomic transition and simulation of transitions. However, we'll also need versioned state models and code to transition between data versions.
 
 ### Transaction Model
 
-Transactions are readily modeled using Glas programs. Hierarchical transactions and 'abort' are implicit to backtracking and failure. Essentially, every try/then/else condition becomes a transaction. However, we do need an effect for forking. A viable effects API:
+Transactions are readily modeled using Glas programs. Hierarchical transactions and 'abort' are implicit with backtracking and failure. Essentially, every try/then/else condition becomes a transaction. A remaining question is how best to model forks.
 
-* **fork:\[Set, Of, Values\]** - Response is a fairly chosen, non-deterministic value from a set. 
+The simplest solution is to support effectful requests of the form `fork:N` that responds with a number between 0 and N-1, or choosing from a list or dict parameter. In this model, every fork request is independent. A viable effects API:
+
+* **fork:N** - Response is a fairly chosen, non-deterministic number smaller than N.
 * *environment effects* - additional requests to observe or manipulate environment.
 
-For 'fork', fair choice can be randomized. However, we can optimize stable forks as replicating the transaction. Fork becomes the foundation for task-based, concurrent division of labor.
+Fork can be implemented by randomization. However, the assumption is that the system will optimize stable forks by replicating a transaction for each fork. If you want random numbers, that should be a separate effect.
 
-The greater challenge is to develop a nice environment model with the properties we want.
+*Aside:* An intriguing alternative is to fork implicitly based on sampling of non-deterministic or probabilistic variables in the environment. When a variable is sampled multiple times within the transaction, subsequent reads would be consistent with the first read. However, implicit fork is troublesome because it's difficult to track dependency relationships between variables.
 
-## Synchronous Syntax
+### Multi-Transaction Programs
 
-Individual transactions will normally use asynchronous effects. For example, if we have a network socket, we cannot send a request then wait for a response within the same transaction. The request will only be sent when the transaction commits, and the response will only be available to a future transaction.
+Assume a program in a direct style sends a remote HTTP request then waits for the response. If we attempt to express this as a single transaction, we'll attempt to wait for a response even before the request is committed. Thus, to implement this program using transaction machines requires two separate transactions: one to send request, another to await response. 
 
-However, it is feasible to develop a syntax that is evaluated across multiple transactions. The implementation could use a state machine to switch to the correct code for a given step. Each could be implemented as a transaction.
+We could dispatch based on a state machine. I.e. after sending the request, set state to waiting. In waiting state, the transaction reads a response, aborting if the response is not available yet. This state machine would be generated by 'compiling' the direct style program.
 
-A procedural loop would essentially generate a cyclic state machine. However, this design would have some intriguing properties compared to conventional procedural loops: waits would still be implicit to a procedural step aborting, reduced requirements for explicit locks, external access to view or influence application state.
+There are several benefits to treating transaction machines as a compilation target. First, programs retain lightweight access to transactions, albeit with typefully restricted effects. Second, waiting for conditions based on abort is expressive and composable compared to conventional lock-based approaches. Third, program state remains externalized and accessible for extension, repair, or reset.
 
-## Context Specific Environments
+Of course, there are also some costs. For example, unless state machine is explicit in program, it may be unclear how state should transfer to an updated version of a program. 
+
+## Context Specific Effects
 
 Glas programs can support several environment models via different effects APIs. For example, we could have a specific set of requests for web-apps oriented around document object model and XMLHttpRequest, another for console apps oriented around files and streams.
 
-Developing a few context-specific environments for common cases would be an effective way to get started with Glas systems. We can always explicitly develop adapters between contexts using the 'with' context combinator.
+Developing a few context-specific effects models for common cases - notably, web-apps, web-servers, console-apps - would be an effective way to get started with Glas systems. We can always explicitly develop adapters between contexts using the 'with' context combinator.
 
 It is feasible to implement adapters for effects, e.g. to support porting code between contexts.
 

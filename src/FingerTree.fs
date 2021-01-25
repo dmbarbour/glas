@@ -5,17 +5,17 @@ module FingerTree =
     // with efficient operations at both ends, efficient split and append.
     // Even for bootstrap, this is useful.
     //
-    // This implementation currently lacks support for:
-    //   content-addressed storage of large subtrees
-    //   compact rope-style chunking of binary fragments
+    // Other relevant features: 
+    //   content-addressed storage for large subtrees 
+    //   compact, rope-style chunking of binary fragments
     //
-    // These features are less essential for bootstrapping.
+    // Including rope-style chunking within generically typed finger trees
+    // is relatively awkward. However, it might be feasible to express as a
+    // specialized stowage compaction option.
 
     open Monoid
     open Measured
     
-
-
 
     type Branch<'a> =
         | Branch2 of 'a * 'a
@@ -25,9 +25,6 @@ module FingerTree =
     type Node<'a, 'm> =
         val M : 'm
         val B : 
-
-        | Node2 of 'a * 'a
-        | Node3 of 'a * 'a * 'a
     
     type Affix<'a> =
         | One of 'a
@@ -35,7 +32,7 @@ module FingerTree =
         | Three of 'a * 'a * 'a
         | Four of 'a * 'a * 'a * 'a
 
-    type Tree<'a> =
+    type Tree<'a, 'm> =
         | Empty
         | Single of 'a
         | Many of Many<'a>

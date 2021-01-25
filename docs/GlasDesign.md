@@ -72,7 +72,9 @@ Conditionals and loops are based on failure and backtracking. Effects are also b
 
 ## Namespace? Defer.
 
-It is feasible to introduce a namespace layer in the program model, i.e. operators to define and call reusable subprograms by name. A potential benefit is program concision, avoiding replication of code. However, the cost is complication of the model, especially in context of metaprogramming. 
+It is feasible to introduce a namespace context within the program model, such that subprograms can easily reuse definitions. This could greatly improve concision, compressing the program.
+
+, i.e. operators to define and call reusable subprograms by name. A potential benefit is program concision, avoiding replication of code. However, the cost is complication of the model, especially in context of metaprogramming. 
 
 Without a program model namespace, we still have a namespace via the module system and we still have structure sharing at the data layer. A compiler can deduplicate common code. It is also feasible, albeit awkward, to simulate a namespace via effects handler and partial evaluation.
 
@@ -93,7 +95,7 @@ fail
 eq
 lt
 
-The 'lt' operator asserts that the second stack element is 'less than' the top stack element. is fairly arbitrary: numbers before dicts before lists, dicts compare keys befor vals, lists compare lexicographically.
+The 'lt' operator asserts that a second stack element is 'less than' the top stack element. is fairly arbitrary: numbers before dicts before lists, dicts compare keys before vals, and lists compare lexicographically.
 
 ### Annotations
 
@@ -104,14 +106,16 @@ Use of 'prog' represents a program or subprogram header that permits flexible an
 
 Use of 'stow' indicates content-addressed storage for the top stack element. Application of stowage is transparent and heuristic, and might be deferred lazily (e.g. performed by a GC pass to reduce memory pressure).
 
-### Context and Effects
+
+
+### Environment and Effects
 
 with:(eff:Program, do:Program)
 eff
 
-The 'with' operator will hide the top stack value as initial state from the 'do' program. The 'do' program may invoke the 'eff' handler via 'eff' operator. The 'eff' program should have a `Request State -- Response State` stack effect. Final state is returned to stack upon exit from the 'do' program.
+The 'with' operator will hide the top stack value as initial state from the 'do' program. The 'do' program may invoke the 'eff' handler via 'eff' operator. The 'eff' program must have a `Request State -- Response State` stack effect, and may use 'eff' to invoke effects within the parent environment. 
 
-*Note:* It is feasible to extend 'with' to serve as an ad-hoc namespace for defining multiple operators. However, at least for now, only 'eff' may be defined, and any namespace would be modeled within the effects handler.
+*Aside:* It is feasible to use 'eff' to model a namespace, though it would depend heavily on abstract interpretation and partial evaluation to optimize routing. 
 
 ### Arithmetic
 
@@ -131,7 +135,9 @@ This design makes dicts highly dynamic by default. Static structs and records wo
 
 ## Glas Application Model
 
-This grew into a separate document. See [Glas Application Model](GlasApps.md).
+Glas programs are a good fit for the *transaction machine* model, where applications are implicitly modeled as repeating transactions on an environment. See [Glas Apps](GlasApps.md) for details.
+
+Glas systems can specialize the effects API for use cases, e.g. web-app has effects for document object model and XMLHttpRequest, while console app has effects for binary streams (tty, file, or network socket). 
 
 ## Acceleration
 

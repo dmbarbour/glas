@@ -55,10 +55,15 @@ module Stowage =
     /// If the provider cannot load a resource, raise this exception.
     exception MissingRscException of IStowageProvider * StowageRef
 
+    /// Stowage value reference.
+
+    /// Stowage optional data.
+
+
     /// fake stowage provider is useful as a placeholder
     let fakeStowageProvider : IStowageProvider =
         { new IStowageProvider with
-            member __.Stow s = BS.sha256 s
+            member __.Stow s = BS.sha512 s
             member db.Load h = raise (MissingRscException (db,h))
             member __.Decref _ = ()
             member __.Incref _ = ()
@@ -79,5 +84,5 @@ module Stowage =
     let boxedCodec (cV : IStowageCodec<'V>) : IStowageCodec<System.Object> =
         irepCodec cV (box<'V>) (unbox<'V>)
 
-    
+
 
