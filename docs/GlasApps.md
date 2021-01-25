@@ -39,9 +39,9 @@ The greater challenge is to develop a nice environment model with the properties
 
 ## Synchronous Syntax
 
-Individual transactions must use asynchronous effects. For example, if we have a network socket, we cannot send a request then wait for a response within the same transaction. The request will only be sent when the transaction commits, and the response will only be available for a future transaction.
+Individual transactions will normally use asynchronous effects. For example, if we have a network socket, we cannot send a request then wait for a response within the same transaction. The request will only be sent when the transaction commits, and the response will only be available to a future transaction.
 
-However, it is feasible to develop a syntax that is evaluated across multiple transactions. The implementation could use a state machine to switch to the correct code for a given step. Each step would be implemented as a transaction.
+However, it is feasible to develop a syntax that is evaluated across multiple transactions. The implementation could use a state machine to switch to the correct code for a given step. Each could be implemented as a transaction.
 
 A procedural loop would essentially generate a cyclic state machine. However, this design would have some intriguing properties compared to conventional procedural loops: waits would still be implicit to a procedural step aborting, reduced requirements for explicit locks, external access to view or influence application state.
 
@@ -49,28 +49,9 @@ A procedural loop would essentially generate a cyclic state machine. However, th
 
 Glas programs can support several environment models via different effects APIs. For example, we could have a specific set of requests for web-apps oriented around document object model and XMLHttpRequest, another for console apps oriented around files and streams.
 
-This might be useful for getting started with Glas systems.
+Developing a few context-specific environments for common cases would be an effective way to get started with Glas systems. We can always explicitly develop adapters between contexts using the 'with' context combinator.
 
 It is feasible to implement adapters for effects, e.g. to support porting code between contexts.
-
-## Idealized Environment
-
-If not burdened by integration with existing systems, what would I pursue?
-
-Avoid direct mutation of variables. Direct mutation makes it difficult for an extension to contribute without destroying information required by the app or other extensions. Avoid direct use of channels. Abstract channels hinder extensions that require observing what is written to the channel.
-
-An intriguing alternative is a frame-based temporal model: a transaction generally reads a past frame and writes a future frame. Within each frame, we run all transactions in the set in parallel. In this case, we'd use quotas to abort transactions that take too long. 
-
-Variables would generally contain a sets of values, with transactions adding or removing values. Publish-subscribe is also straightforward. Channels would essentially be replaced by data-buses. 
-
-Avoid allocation of references at runtime or OS layers. Allocated references introduce awkward entanglements between application and host, which reduces resilience and mobility of a program.
-
-Good support for zoomable UI...
-
-
-
-...
-
 
 ## Reference vs Navigation vs Session
 

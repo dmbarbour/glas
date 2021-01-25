@@ -104,7 +104,7 @@ Use of 'prog' represents a program or subprogram header that permits flexible an
 
 Use of 'stow' indicates content-addressed storage for the top stack element. Application of stowage is transparent and heuristic, and might be deferred lazily (e.g. performed by a GC pass to reduce memory pressure).
 
-### Effects
+### Context and Effects
 
 with:(eff:Program, do:Program)
 eff
@@ -161,5 +161,4 @@ I'm very interested in a style of metaprogramming where programmers express hard
 
 ## Provenance Tracking
 
-I'm very interested in automatic provenance tracking, i.e. such that we can robustly trace a module's value to its contributing sources. However, I still don't have a good idea about how to make this easy.
-
+I'm very interested in potential for automatic provenance tracking, i.e. such that we can robustly trace a value to its contributing sources. However, I still don't have a good idea about how to best approach this.
