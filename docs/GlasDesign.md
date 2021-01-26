@@ -72,11 +72,13 @@ Conditionals and loops are based on failure and backtracking. Effects are also b
 
 ## Namespace? Defer.
 
-It is feasible to introduce a namespace context within the program model, such that subprograms can easily reuse definitions. This could greatly improve concision, compressing the program.
+It is feasible to introduce a namespace context within the program model, such that subprograms can easily reuse definitions. This could greatly improve concision, compressing the program. 
 
-, i.e. operators to define and call reusable subprograms by name. A potential benefit is program concision, avoiding replication of code. However, the cost is complication of the model, especially in context of metaprogramming. 
+However, there is a cost: programs depend more heavily on context, and assume more about context. To robustly share the program would require extracting and copying the relevant context. However, after similar contexts are copied many times for many subprograms, we lose most concision benefits. Worse, we now have many symbols whose meanings vary contextually.
 
-Without a program model namespace, we still have a namespace via the module system and we still have structure sharing at the data layer. A compiler can deduplicate common code. It is also feasible, albeit awkward, to simulate a namespace via effects handler and partial evaluation.
+The alternative to namespaces is to inline all subprograms. This results in huge programs, but can be mitigated by structure sharing at the data layer, and deduplication by compilers. The benefits of a compiler-provided deduplication pass is that it doesn't need to align with human meaningful symbols.
+
+Glas programs do support indirect namespace models via the effects model.
 
 ## Operators
 
