@@ -76,7 +76,7 @@ It is feasible to introduce a namespace context within the program model, such t
 
 However, there is a cost: programs depend more heavily on context, and assume more about context. To robustly share the program would require extracting and copying the relevant context. However, after similar contexts are copied many times for many subprograms, we lose most concision benefits. Worse, we now have many symbols whose meanings vary contextually.
 
-The alternative to namespaces is to inline all subprograms. This results in huge programs, but can be mitigated by structure sharing at the data layer, and deduplication by compilers. The benefits of a compiler-provided deduplication pass is that it doesn't need to align with human meaningful symbols.
+The alternative to namespaces is to inline all subprograms. This results in huge programs, but can be mitigated by structure sharing at the data layer, and deduplication by compilers. The benefits of a compiler-provided deduplication pass is that it doesn't need to align with human meaningful symbols, and may be applied after context-based optimizations are performed.
 
 Glas programs do support indirect namespace models via the effects model.
 
