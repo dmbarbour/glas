@@ -7,13 +7,9 @@
 
   <ItemGroup>
     <Compile Include="ByteString.fs" />
-    <Compile Include="Stowage.fs" />
-    <Compile Include="Monoid.fs" />
-    <Compile Include="Measured.fs" />
-    <Compile Include="FingerTree.fs" />
     <Compile Include="Value.fs" />
     <Compile Include="FileStowage.fs" />
-    <Compile Include="Program.fs" />
+    <Compile Include="Main.fs" />
   </ItemGroup>
 
 </Project>

@@ -26,7 +26,7 @@ In any case, binary extraction is the primary mechanism to get useful software a
 
 Glas data is composed of immutable dictionaries, lists, and natural numbers, such as `(arbid:42, data:[1,2,3], xid:true)`. A specific data element is called a value. Glas values are acyclic and finite. Large values will often share structure via logical copies.
 
-Dictionaries are a set of `Key:Val` pairs with unique keys. Keys are often short binary strings. An empty dictionary `()` serves as a convenient unit value. Variant data is typically encoded by singleton dictionaries. For example, `type color = rgb:(...) | hsl:(...)` could be represented by a dictionary exclusively containing key `rgb` or `hsl`. 
+Dictionaries are a set of `Key:Val` pairs with unique keys. Keys may be arbitrary Glas values; symbolic keys would be encoded as short binary strings. An empty dictionary `()` serves as a convenient unit value. Variant data is typically encoded by singleton dictionaries. For example, `type color = rgb:(...) | hsl:(...)` could be represented by a dictionary exclusively containing key `rgb` or `hsl`. 
 
 Glas uses lists for sequential structure: arrays, binaries, deques, stacks, tables, or queues. Although lists could be used for tuples, dicts are favored for extensibility. To efficiently support a variety of applications with immutable data, Glas systems will generally represent large lists as [finger trees](https://en.wikipedia.org/wiki/Finger_tree). Binaries are further optimized via [rope-style chunking](https://en.wikipedia.org/wiki/Rope_%28data_structure%29). 
 
@@ -49,7 +49,7 @@ Glas systems can use content-addressed storage to mitigate memory pressure simil
 
 Language modules have a module name of form `language-*`. The value of a language module should be a dict of form `(compile:Program, ...)`. This program should at least pass a simple static arity check. The language module can be extended with other fields for documentation and tutorials, interactive interpreter, language server component, etc..
 
-The compile program is a value that represents a function from source to compiled value with limited log and load effects. A viable effects handler API:
+The compile program is a value that represents a function from source to compiled value with limited log and load effects. A viable effects API:
 
 * **log:Message** - Response is unit. Messages may include warnings and issues, progress reports, code change proposals, etc.. 
 * **load:ModuleID** - Module ID is typically a symbol such as `foo`. Response value from compiling the identified module, or `error` if a value cannot be computed.
@@ -97,7 +97,15 @@ fail
 eq
 lt
 
-The 'lt' operator asserts that a second stack element is 'less than' the top stack element. is fairly arbitrary: numbers before dicts before lists, dicts compare keys before vals, and lists compare lexicographically.
+The 'lt' operator asserts that a second stack element is 'less than' the top stack element. Is fairly arbitrary across types: numbers before dicts before lists, dicts compare keys before vals, and lists compare lexicographically.
+
+### Assertions
+
+Assertions don't need special operators. They can be expressed thusly:
+
+        assert { P } = try { try { P } then { fail } else {} } then { fail } else {}
+
+I'm still contemplating whether it's worth adding an operator for assertions. If I use a lot of them, it might be worthwhile.
 
 ### Annotations
 
@@ -108,14 +116,12 @@ Use of 'prog' represents a program or subprogram header that permits flexible an
 
 Use of 'stow' indicates content-addressed storage for the top stack element. Application of stowage is transparent and heuristic, and might be deferred lazily (e.g. performed by a GC pass to reduce memory pressure).
 
-
-
 ### Environment and Effects
 
-with:(eff:Program, do:Program)
+env:(eff:Program, do:Program)
 eff
 
-The 'with' operator will hide the top stack value as initial state from the 'do' program. The 'do' program may invoke the 'eff' handler via 'eff' operator. The 'eff' program must have a `Request State -- Response State` stack effect, and may use 'eff' to invoke effects within the parent environment. 
+The 'env' operator will hide the top stack value as initial state from the 'do' program. The 'do' program may invoke the 'eff' handler via 'eff' operator. The 'eff' program must have a `Request State -- Response State` stack effect, and may use 'eff' to invoke effects within the parent environment. 
 
 *Aside:* It is feasible to use 'eff' to model a namespace, though it would depend heavily on abstract interpretation and partial evaluation to optimize routing. 
 
@@ -127,19 +133,22 @@ add, mul, sub, div, mod
 
 pushl, popl, pushr, popr, split, join, len
 
+Empty list is introduced by `data:[]`. 
+
 A logical reverse operator is feasible, but I'm uncertain of utility or full consequences. An indexing operator is feasible, but I'd prefer to encourage cursor/zipper-based approaches to iteration - i.e. split first, then operate in the middle.
 
 ### Dicts
 
-get, set, del, keys
+tag, select, delete, union, keys
 
-This design makes dicts highly dynamic by default. Static structs and records would be based on computing the keys statically via partial evaluation or abstract interpretation. 
+One goal here is to simplify elimination of tag-select pairs.
+
+
+Use of 'case' is almost the same as 'get' but also fails if the dictionary has more than one key. This supports variant data types. Use of 'keys' is for iteration and is probably not efficient for large, dynamic dictionaries.
 
 ## Glas Application Model
 
-Glas programs are a good fit for the *transaction machine* model, where applications are implicitly modeled as repeating transactions on an environment. See [Glas Apps](GlasApps.md) for details.
-
-Glas systems can specialize the effects API for use cases, e.g. web-app has effects for document object model and XMLHttpRequest, while console app has effects for binary streams (tty, file, or network socket). 
+See [Glas Apps](GlasApps.md).
 
 ## Acceleration
 
@@ -155,7 +164,7 @@ To simplify recognition and to resist invisible performance degradation, acceler
 
 ## Glas Object
 
-[Glas Object](GlasObject.md) will specify a standard binary serialization for Glas values, designed for scalability, simple parsing, content-addressed storage. Suitable for bootstrapping language modules. File extension is `.glob`.
+See [Glas Object](GlasObject.md).
 
 ## Automated Testing
 

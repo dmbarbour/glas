@@ -25,7 +25,6 @@ module BS =
             elif (fin < ini) then ByteString.Empty
             else ByteString(x.UnsafeBytes, ini + x.Offset, 1 + (fin - ini))
 
-
         static member inline FoldLeft f r0 (a:ByteString) =
             let mutable r = r0
             for ix = a.Offset to (a.Offset + a.Length - 1) do

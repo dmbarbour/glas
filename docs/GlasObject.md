@@ -1,4 +1,9 @@
-# Glas Object Encoding
+# Glas Object
+
+My goal for Glas object is an efficient, robust, standard encoding for content-addressed storage.
+
+ content-addressed storage.
+
 
 To support distributed incremental computing and sharing of very large values, Glas specifies this Glas Object (`.glob`) representation. 
 
