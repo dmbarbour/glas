@@ -81,7 +81,9 @@ Although the effects API can be tuned for different purposes, there are several 
 
 ### Variables
 
-Most applications need state, and variables are a convenient way both model state and to partition state for concurrent update. A minimal effects API:
+Most applications need state, and variables are a convenient way both model state and to partition state for concurrent update. 
+
+Effects API:
 
 * **get:(var:Var)** - response is current value of variable; fail if undefined
 * **set:(var:Var, val?Value, new?)** - sets value for variable, response is unit
@@ -92,16 +94,17 @@ Variables are identified by arbitrary values local to the application, and are n
 
 ### Channels
 
-Channels are a convenient model for processing of streaming data or events and coordination between abstract concurrent components. Channels are very transaction-friendly: Multiple writers and a single reader can evaluate in parallel and commit without conflict. And when there is a single reader, the value read is very stable so we can reduce need for rollback. 
+Channels are a convenient model for processing of streaming data or events and coordination between abstract concurrent components. Channels are transaction-friendly: Multiple writers and a single reader can evaluate in parallel and commit without conflict. 
 
-Minimal effects API:
+Effects API:
 
 * **read:(chan:Chan)** - Removes head value from channel buffer. Response is head value. Fails if channel is empty.
+* **unread:(chan:Chan, data:Val)** - Response is unit. Adds data to head of channel buffer.
 * **write:(chan:Chan, data:Val)** - Response is unit. Adds data to tail of channel buffer.
 
 Channels are identified by arbitrary values local to an application, and are normally allocated and managed by the application. Channels have identity behavior: read previous writes in FIFO order.
 
-Channels will often be coupled as a `(send, recv)` pair, supporting bi-directional communications. The 'send' channel is write-only, 'recv' is read-only, and there should be some cooperative protocol for communication. Even when communication is mostly unidirectional, the other channel can support flow control via sending or receiving 'ready' tokens.
+Channels will often be coupled as a `(send, recv)` pair, supporting bi-directional communications. The 'send' channel is write-only, 'recv' is read-only (enforced by types or user discipline), and there should be some cooperative protocol for communication. Even when communication is mostly unidirectional, the other channel can support flow control via sending or receiving 'ready' tokens.
 
 ### IO Channels and Variables
 
@@ -119,7 +122,7 @@ IO resources and their restrictions must be documented in the effects API.
 
 Effect API:
 
-* **fork:Value** - response is unit or failure. This response is consistent for a given value within the transaction, but non-deterministic between transactions. Essentially, the fork decision is cached under the value.
+* **fork:Value** - response is unit or failure. This response is consistent within the transaction but non-deterministic fair choice from one transaction to another. That is, the fork decision is implicitly cached per value.
 
 Fork values help stabilize incremental computing and debugging. They may also be descriptive of the decision made to help document application behavior.
 
@@ -129,12 +132,11 @@ Effect API:
 
 * **await:TimeStamp** - response is unit or failure. Fails if time-of-commit is less awaited timestamp, otherwise succeeds.
 
-Of course, we don't know actual time-of-commit before actually committing. This is resolved by using an estimated time of commit to guide the judgement, e.g. based on a history of how long the transaction takes to compute.
+We don't know time-of-commit before actually committing. This is resolved by using an estimated time of commit to guide the judgement, e.g. based on a history of how long the transaction takes to compute. 
 
-If the estimate is just a little high, we can delay to make the observed timestamps true. If the estimate is just a little low, we can check for conflicts with recent transactions then insert the transaction in the logical past. Otherwise, we rollback and recompute.
+If the estimate is just a little high, we can delay if necessary to make the highest observed await timestamp true. If the estimate is just a little low, we can check for conflicts with recent transactions then insert the transaction in the logical past. Otherwise, we rollback and recompute. It's best to estimate a just little high.
 
 *Note:* I propose use of Windows NT time for the TimeStamp. That is, number of 100ns intervals since midnight Jan 1, 1601 UT. This is significantly more precision than we're ever likely to use.
-
 
 ### Asynchronous Tasks
 
