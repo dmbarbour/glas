@@ -139,7 +139,7 @@ A logical reverse operator is feasible, but I'm uncertain of utility or full con
 
 ### Dicts
 
-tag, select, delete, union, keys
+tag, find, erase, union, keys
 
 One goal here is to simplify elimination of tag-select pairs.
 

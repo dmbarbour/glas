@@ -1,6 +1,6 @@
 # Glas Applications
 
-Glas programs easily support context-specific effects APIs. For example, we can develop one API for web-apps oriented around document object model, local storage, and XMLHttpRequest. Another API can be developed for console apps, oriented around filesystem, sockets, and binary streams. For portability, it is useful to develop applications against an idealized, purpose-specific effects API, then adapt it to a target system via 'env' operator.
+Glas programs support context-specific effects APIs. For example, we can develop one API for web-apps oriented around document object model, local storage, and XMLHttpRequest. Another API for console apps can be oriented around filesystem, sockets, and binary streams. For portability, it is useful to develop applications against an idealized, purpose-specific effects API, then adapt it to a target system via 'env' operator.
 
 However, effects APIs for Glas programs must be transactional. Every conditional and loop combinator is essentially a hierarchical transaction. When a 'try' clause fails, any effects from that clause should be reverted. Essentially, effects must reduce to manipulating variables, though several of those variables might be hidden behind an interface. 
 
@@ -90,7 +90,7 @@ Effects API:
  * *val* - optional. if excluded, set to undefined state.
  * *new* - flag. if included, fail if currently defined. 
 
-Variables are identified by arbitrary values local to the application, and are normally allocated and managed by the application. Variables have identity behavior: get whatever was last set. 
+Variables are identified by arbitrary values local to the application, and most are allocated and managed by the application. Variables have identity behavior: get whatever was last set. 
 
 ### Channels
 
@@ -102,21 +102,17 @@ Effects API:
 * **unread:(chan:Chan, data:Val)** - Response is unit. Adds data to head of channel buffer.
 * **write:(chan:Chan, data:Val)** - Response is unit. Adds data to tail of channel buffer.
 
-Channels are identified by arbitrary values local to an application, and are normally allocated and managed by the application. Channels have identity behavior: read previous writes in FIFO order.
+Channels are identified by arbitrary values local to an application, and most are allocated and managed by the application. Channels have identity behavior: read previous writes in FIFO order.
 
 Channels will often be coupled as a `(send, recv)` pair, supporting bi-directional communications. The 'send' channel is write-only, 'recv' is read-only (enforced by types or user discipline), and there should be some cooperative protocol for communication. Even when communication is mostly unidirectional, the other channel can support flow control via sending or receiving 'ready' tokens.
 
 ### IO Channels and Variables
 
-It is convenient for consistency, code reuse, and composition if external communication uses the same mechanisms as internal communications where feasible. To support this, I propose for Glas applications to reserve `io:(...)` resource identifiers for external bindings. 
+A subset of resource identifiers - `io:(...)` and dicts with the `io` key - are reserved for interaction between application and environment. Relevant resources include channels and variables, but should include any abstract resource models developed later. 
 
-IO variables can model environment variables, publish-subscribe communications, status and progress, virtual DOM. IO channels can model abstract object interfaces and support event processing, logging, and data streams. 
+IO resources are abstractly allocated and managed by the environment. That is, programs should never use constants such as `io:1` or `io:stdout`. Instead, IO resources are returned in response to effects.
 
-Most IO resources have usage restrictions. For example, the `io:stdout` channel for console apps is write-only and accepts only binary data. However, within restrictions, IO resources should behave normally. Ideally, safe use is well documented and typefully enforced.
-
-IO resources and their restrictions must be documented in the effects API.
-
-*Note:* The environment will allocate IO resources for use by an application, but the application should never specify resources for use by the environment. The motive is to control entanglement. This restriction simplifies security analysis, orthogonal persistence, and live program update. 
+IO resources often have usage restrictions, e.g. a standard output channel is write-only and accepts only binary data. Ideally, these restrictions are enforced typefully. However, the environment could dynamically enforce some properties - for example, attempting to read from standard output might fail.
 
 ### Fork
 
@@ -130,28 +126,35 @@ Fork values help stabilize incremental computing and debugging. They may also be
 
 Effect API:
 
-* **await:TimeStamp** - response is unit or failure. Fails if time-of-commit is less awaited timestamp, otherwise succeeds.
+* **await:TimeStamp** - response is unit or failure. Response is unit if estimated time-of-commit is greater than awaited timestamp, otherwise succeeds.
 
-We don't know time-of-commit before actually committing. This is resolved by using an estimated time of commit to guide the judgement, e.g. based on a history of how long the transaction takes to compute. 
-
-If the estimate is just a little high, we can delay if necessary to make the highest observed await timestamp true. If the estimate is just a little low, we can check for conflicts with recent transactions then insert the transaction in the logical past. Otherwise, we rollback and recompute. It's best to estimate a just little high.
+If the estimate is just a little high, we can delay actual commit based on highest successful await timestamp. Other cases are more complicated, and the best solution is often to make a new estimate, rollback, and recompute. A good runtime should aim for estimates to be just a little high. 
 
 *Note:* I propose use of Windows NT time for the TimeStamp. That is, number of 100ns intervals since midnight Jan 1, 1601 UT. This is significantly more precision than we're ever likely to use.
 
 ### Asynchronous Tasks
 
-For effects that do not complete immediately within a transaction, the environment can create a task to run in the background then immediately return a `(send, recv)` channel pair for interaction with the task. 
+For effects that do not complete immediately within a transaction, the environment can allocate a task to run in the background then immediately return a `(send, recv)` channel pair for interaction with this task. 
 
-Valid interactions over this channel pair might be described by a session type. As a convention, it should normally be possible to terminate interaction with a 'fin' token, releasing the IO resource.
+Valid interactions aren't limited to request-response and might be described by a session type. As a convention, it should normally be possible to terminate interaction with a 'fin' token, releasing the IO resource.
 
 ## Console App Effects API
 
+Console applications are my initial target. I don't need full potential of Unix apps, just enough to cover command line tooling and web servers.
 
+Requirements:
 
-
+* access to stdio resources, isatty
+* environment variables
+* file access - whole-file read and write, streaming read and write
+* network access - TCP and UDP sockets is sufficient
+* termination/exit
 
 
 ## Web App Effects API
 
 
+## Other Effects APIs
+
+It might be useful to develop application APIs specific to android, web-server components, etc.. 
 
