@@ -10,19 +10,21 @@ Glas applications will generally be modeled as transaction machines with problem
 
 ## Transaction Machines
 
-Transaction machines model software systems as a set of repeating transactions on a shared environment. Individual transactions are deterministic, while the set is scheduled non-deterministically but fairly. 
+Transaction machines model software systems as a set of repeating transactions on a shared environment. Individual transactions are deterministic, while the set is scheduled fairly but non-deterministically.
 
-This model is conceptually simple, easy to naively implement, and many useful properties emerge from the semantics.
+This model is conceptually simple, easy to implement naively, and has very nice emergent properties for a wide variety of systems-level concerns.
 
-### Process Control and Reactive Dataflow
+### Process Control
 
 Deterministic, unproductive transactions will also be unproductive when repeated unless there is a relevant change in the environment. The system can optimize by waiting for relevant changes. 
 
-Aborted transactions are obviously unproductive. Thus, aborting a transaction serves as an implicit request to wait for changes. If transactions read and write channels, we could abort when reading an empty channel to wait for data. This supports process control.
+Aborted transactions are obviously unproductive. Thus, aborting a transaction serves as an implicit request to wait for changes. For example, we could abort to wait for data on a channel, or abort to wait on time to reach a threshold condition. This supports process control.
 
-Transactions that repeatedly write the same values to variables are also unproductive. When a transaction reads several variables then writes variables in an acyclic manner, it can implicitly wait for changes in the values read. This supports reactive dataflow.
+### Reactive Dataflow
 
-Transaction machines can flexibly and robustly mix dataflow, stream processing, and event processing models.
+A successful transaction that reads and writes variables is unproductive if the written values are equal to the original content. Thus, a system can compare written and prior values to decide whether to wait for external changes. In some cases, e.g. when there is no cyclic data dependency, we can also predict that repetition is unproductive without comparing values.
+
+Effectively, transaction machines implicitly support a reactive dataflow system.
 
 ### Incremental Computing
 
@@ -34,15 +36,15 @@ To leverage incremental computing, transactions should be designed with a stable
 
 ### Task-Based Concurrency
 
-Task-based concurrency for transaction machines can be supported by a non-deterministic fork operations and incremental computing.
+Task-based concurrency for transaction machines can be supported by fair non-deterministic fork operation combined with incremental computing. 
 
 Relevant observations: A non-deterministic transaction is equivalent to choosing from a set of deterministic transactions, one per choice. For isolated transactions, repetition and replication are logically equivalent. When the choice is stable, replication reduces recomputation and latency. 
 
-Effectively, stable forks enables a single transaction to model a concurrent transaction machine. Fork is is conveniently dynamic and reactive. For example, if we fork based on configuration data, any change to the configuration will rollback the fork and rebuild a new set.
+Stable forks enable a single transaction to model a concurrent transaction machine. Fork is is conveniently dynamic and reactive. For example, if we fork based on configuration data, any change to the configuration will rollback the fork and rebuild a new set.
 
-*Note:* Although we cannot optimize forks after unstable operations, they're still useful for expressing non-deterministic systems.
+*Notes:* Unstable forks can still be used for non-deterministic operations. There may also be a quota on replication, above which forks are treated as unstable.
 
-### Real-Time Systems Programming
+### Real-Time Systems 
 
 The logical time of a transaction is the instant of commit. It is awkward for transactions to directly observe time before we commit. However, it is not difficult to constrain time of commit. If the transaction aborts because it's too early, the system knows how long to wait.
 
@@ -63,98 +65,127 @@ A complete solution for live coding requires additional support from the develop
 
 ### State Machines
 
-Transaction machines naturally model state machines. Each transaction observes states and inputs, dispatches appropriate code, then sets the next state. Dispatch can be decentralized, with several transactions each handling only the states they recognize, otherwise aborting.
+Transaction machines naturally model state machines. Each transaction observes states and inputs, dispatches appropriate code, and sets a next state. Dispatch can be decentralized, with several transactions each handling only the states they recognize, otherwise aborting.
 
 Unfortunately, transaction machines are often forced to model state machines. Relevantly, request-response IO cannot be expressed in a direct style. The request must be committed before a response is produced. Waiting on the response must be a separate transaction. With state machines, we can model sending the request as one state, awaiting response as another.
 
 Transaction machines would benefit from a higher-level language that can generate good state machines from direct-style code. Ideally, these machines should also be versioned or stable to simplify live program update.
 
+### Hierarchical Transactions
+
+Transaction machines are easily extended with hierarchical transactions. This is very convenient for error handling, testing, and invariants. We can review whether a subprogram tries anything problematic before committing. 
+
 ### Parallelism
 
-Transaction machines mitigate the issue of transaction conflict: a scheduler can heuristically arrange transactions history of conflict to run at separate times. Channels can reduce pressure on high-contention variables. With dataflow analysis, a compiler might leverage parallelism available within a transaction.
+Transactions can evaluate in parallel insofar as there is no conflict with serializability. Conflict can be difficult to predict, but it is possible to evaluate optimistically, detect conflicts upon commit, and abort all but one conflicting transaction. With transaction machines, we can remember conflict history and heuristically schedule to avoid conflict.
 
-Transaction machines have high potential for parallelism. However, the parallelism we can achieve depends ultimately on the problem. 
+The problem of designing programs to minimize conflict is left to programmers. There are useful patterns for this such as moving high-contention variables behind a channel. Of course, we're ultimately limited by parallelism available within the problem.
 
-## Common Effects API
+*Aside:* It is also feasible to support parallelism within a transaction. However, doing so is outside the domain of transaction machines.
 
-Although the effects API can be tuned for different purposes, there are several common patterns that we can usefully leverage. A relatively generic application environment can be specialized by specifying a few environment variables, public variables, and data ports. 
+## Common Effects
 
-### Variables
+Glas models transactions as normal Glas programs. The try/then/else conditional behavior is an implicit hierarchical transaction. Failure is implicit abort. Interaction with the environment is supported by the eff operator, and is mostly based on variables.
 
-Most applications need state, and variables are a convenient way both model state and to partition state for concurrent update. 
+### Concurrency
 
-Effects API:
+* **fork:Value** - response is unit or failure. This response is consistent for a given fork value within a transaction, but non-deterministic fair choice across transactions.
 
-* **get:(var:Var)** - response is current value of variable; fail if undefined
-* **set:(var:Var, val?Value, new?)** - sets value for variable, response is unit
- * *val* - optional. if excluded, set to undefined state.
- * *new* - flag. if included, fail if currently defined. 
+The system can optimize stable forks into concurrent replication of the transaction to support task-based concurrency. Unstable fork represents a non-deterministic random choice. The set of observations on fork values within a transaction can serve as an implicit transaction identifier.
 
-Variables are identified by arbitrary values local to the application, and most are allocated and managed by the application. Variables have identity behavior: get whatever was last set. 
+### Timing
+
+* **await:TimeStamp** - Response is unit if time-of-commit is equal or greater than the awaited timestamp. Otherwise fails.
+
+The system estimates time-of-commit. It's best to estimate just a little high: if necessary, the system can delay commit to make the estimate true. Ideally, the system will use await times to guide real-time scheduling.
+
+*Note:* For the default timestamp, I propose use of Windows NT time - a number of 0.1 microsecond intervals since midnight Jan 1, 1601 UT. This is more precision than we need. 
+
+### State
+
+* **var:(on:Var, op:Method)** - Response value or failure depends on method and state of the specified variable. 
+
+An application has a memory consisting of set of mutable variables, which are identified by arbitrary values. Each variable contains a value or is undefined. By default, variables are undefined. 
+
+In addition to a few general-purpose methods, there are several specialized methods to avoid conflicts for simple models of buffers and counters. For example, multiple black-box writers may blindly increment a number or append a list without conflict.
+
+#### Methods
+
+General purpose methods for variables:
+
+* **get** - Response is value contained in defined variable. Fails if undefined.
+* **set:Value** - Update defined variable to contain Value. Response is unit. Fails if undefined.
+* **new:Value** - Update undefined variable to contain Value. Response is unit. Fails if defined.
+* **del** - Delete the variable's definition. Response is unit, or fails if already undefined. 
+
+Specialized methods for buffers:
+
+* **read:Count** - Removes first Count items from head of list variable. Response is the sublist it removes. Fails for non-list variables or if the variable contains fewer than Count items.
+* **unread:\[List, Of, Vals\]** - Prepends list to head of list variable. Response is unit, or fails for non-list variables.
+* **write:\[List, Of, Vals\]** - Addends list to tail of list variable. Response is unit, or fails for non-list variables.
+
+Specialized methods for counters:
+
+* **inc:Count** - Increase number variable by given value. Response is unit, or fails for non-number variables.
+* **dec:Count** - Decrease number variable by given value. Response is unit, or fails for non-number variables or if would reduce value below zero.
 
 ### Channels
 
-Channels are a convenient model for processing of streaming data or events and coordination between abstract concurrent components. Channels are transaction-friendly: Multiple writers and a single reader can evaluate in parallel and commit without conflict. 
+Channels are a useful pattern for eventful communication. Channels are primarily modeled by a list variable with read and write methods. However, to support closing of channels and bounded-buffer flow control, I propose a `(data, ready)` pair of variable identifiers.
 
-Effects API:
+* *data* - a buffer variable. Written by writer, read or unread by reader. Deleted by reader when finished consuming. 
+* *ready* - a counter variable. Decremented by writer, incremented by reader per element read.Deleted by writer when finished producing. Initial value in 'ready' is the bounded-buffer capacity of a channel. 
 
-* **read:(chan:Chan)** - Removes head value from channel buffer. Response is head value. Fails if channel is empty.
-* **unread:(chan:Chan, data:Val)** - Response is unit. Adds data to head of channel buffer.
-* **write:(chan:Chan, data:Val)** - Response is unit. Adds data to tail of channel buffer.
+For bi-directional dataflow, channels will often be coupled as a `(send, recv)` pair, requiring a total of four variables. For convenience and to resist accidents, we might also label individual channels with their intended directionality, i.e. either `send:(data, ready)` or `recv:(data, ready)`.
 
-Channels are identified by arbitrary values local to an application, and most are allocated and managed by the application. Channels have identity behavior: read previous writes in FIFO order.
+Correct use of channels can be enforced by a type system or structured syntax.
 
-Channels will often be coupled as a `(send, recv)` pair, supporting bi-directional communications. The 'send' channel is write-only, 'recv' is read-only (enforced by types or user discipline), and there should be some cooperative protocol for communication. Even when communication is mostly unidirectional, the other channel can support flow control via sending or receiving 'ready' tokens.
+### IO Variables
 
-### IO Channels and Variables
+Applications can reserve a subset of variables for interaction with the environment. Doing so improves consistency by enabling external and internal interactions to use the same code. I propose to reserve variables identified by dicts containing `io` such as `io:42`. 
 
-A subset of resource identifiers - `io:(...)` and dicts with the `io` key - are reserved for interaction between application and environment. Relevant resources include channels and variables, but should include any abstract resource models developed later. 
+Allocation of IO variables should be fully left to the environment. These variables may be returned from other effects calls, such as `query:stdio`. The environment should normally avoid allocating and manipulating non-IO variables, though there are rare exceptions (such as debug views).
 
-IO resources are abstractly allocated and managed by the environment. That is, programs should never use constants such as `io:1` or `io:stdout`. Instead, IO resources are returned in response to effects.
+The environment can dynamically enforce invariants for how IO variables are used. For example, for a binary output channel, the environment can abort a transaction that attempts to read the channel or write non-binary data. To avoid unusual failure semantics, this abort could be deferred until commit.
 
-IO resources often have usage restrictions, e.g. a standard output channel is write-only and accepts only binary data. Ideally, these restrictions are enforced typefully. However, the environment could dynamically enforce some properties - for example, attempting to read from standard output might fail.
+### Environment
 
-### Fork
+* **query:Query** - Response value or failure depends on environment.
 
-Effect API:
-
-* **fork:Value** - response is unit or failure. This response is consistent within the transaction but non-deterministic fair choice from one transaction to another. That is, the fork decision is implicitly cached per value.
-
-Fork values help stabilize incremental computing and debugging. They may also be descriptive of the decision made to help document application behavior.
-
-### Time
-
-Effect API:
-
-* **await:TimeStamp** - response is unit or failure. Response is unit if estimated time-of-commit is greater than awaited timestamp, otherwise succeeds.
-
-If the estimate is just a little high, we can delay actual commit based on highest successful await timestamp. Other cases are more complicated, and the best solution is often to make a new estimate, rollback, and recompute. A good runtime should aim for estimates to be just a little high. 
-
-*Note:* I propose use of Windows NT time for the TimeStamp. That is, number of 100ns intervals since midnight Jan 1, 1601 UT. This is significantly more precision than we're ever likely to use.
+This represents an ad-hoc query to the environment. Use of query should be idempotent, commutative, and mostly stable. Query provides a useful layer of indirection to return IO variables for further interaction.
 
 ### Asynchronous Tasks
 
-For effects that do not complete immediately within a transaction, the environment can allocate a task to run in the background then immediately return a `(send, recv)` channel pair for interaction with this task. 
+For any long-running effects, a good option is to create a background task then immediately return an interface for the asynchronous interaction. This interface can be modeled as a `(send, recv)` channel pair.
 
-Valid interactions aren't limited to request-response and might be described by a session type. As a convention, it should normally be possible to terminate interaction with a 'fin' token, releasing the IO resource.
+### Termination
+
+Termination, if needed, should be explicit to ensure it is intentional. If a transaction machine halts implicitly, e.g. due to deadlock, that's probably a bug. Explicit termination could be represented by defining an IO exit variable before committing.
 
 ## Console App Effects API
 
-Console applications are my initial target. I don't need full potential of Unix apps, just enough to cover command line tooling and web servers.
+Console applications are my initial target. I don't need all of Unix, just enough to support command line tooling and web servers.
 
 Requirements:
 
 * access to stdio resources, isatty
 * environment variables
-* file access - whole-file read and write, streaming read and write
-* network access - TCP and UDP sockets is sufficient
+* filesystem access - browsing folders and files
+* network access - TCP and UDP is sufficient
 * termination/exit
+
 
 
 ## Web App Effects API
 
+A web-app should compile for running in a browser. 
 
-## Other Effects APIs
+Requirements:
 
-It might be useful to develop application APIs specific to android, web-server components, etc.. 
+* DOM or virtual DOM + React style UI
+* precompute a static document
+* XMLHttpRequest, Websockets
+* access to local storage
+
+A web-app should compile to an HTML document using JavaScript or WASM.
 

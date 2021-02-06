@@ -84,9 +84,17 @@ Glas programs do support indirect namespace models via the effects model.
 
 ### Data Flow
 
-copy, drop, dip:P, swap, data
+Glas uses a data stack as an intermediate representation of dataflow. Programs can be expressed using variables then compiled for the stack. Valid Glas programs have a statically predictable stack behavior (no recursion). A Glas compiler can eliminate the data stack and compute using a static allocation of variables.
 
-Use of copy, drop, and swap operate on the top stack values. Use of 'dip' hides the top stack value from a subprogram. Use of 'data' adds a constant value to the stack.
+        copy, drop, dip:P, swap, data:Val
+
+        copy        forall x,xs . x:xs -> x:x:xs
+        drop        forall x . x:xs -> xs
+        dip:P       P of xs->xs'   |-  dip:P of forall x. x:xs -> x:xs'
+        swap        forall x,y,xs . x:y:xs -> y:x:xs
+        data:Val    forall xs . xs -> const(Val):xs
+
+Elements on the stack may be arbitrary Glas values, thus dynamic memory is still used.
 
 ### Control Flow
 
@@ -97,43 +105,58 @@ fail
 eq
 lt
 
-The 'lt' operator asserts that a second stack element is 'less than' the top stack element. Is fairly arbitrary across types: numbers before dicts before lists, dicts compare keys before vals, and lists compare lexicographically.
+Sequential composition is represented by a list. Consequently, a list containing a list can be fully flattened.
 
-### Assertions
+Conditionals and loops branch based on success or failure of a 'try' program. The 'try' program may perform effects and manipulate the stack, and this is preserved on success. It is often possible to statically eliminate try operations based on context of use. We can also flatten conditionals such as 'try(try(...))'. 
+
+A lot of operators will fail conditionally. The 'fail' operator always fails. 
+
+The 'eq' operator will compare values of arbitrary size for equality. It could potentially use value reference equality for performance under the hood.
+
+The 'lt' operator imposes a total order on values, asserting the that the second stack element is less-than the top stack element. For example, `[data:4, data:5, lt]` succeeds while `[data:6, data:5, lt]` fails. The 'lt' operator primarily exists for deterministic iteration on dicts.
+
+The total order is arbitrary but deterministic:
+
+* numbers LT lists LT dicts
+* number n LT n+1
+* lists compare lexicographically
+* dicts compare as a list of `[[key1, val1], ...]` pairs, sorted by key.
+
+*Aside:* I originally was using dicts compare all keys before any vals, but that's both awkward to implement and doesn't work nicely with sorting dicts containing optional fields.
+
+### Assertions? Defer.
 
 Assertions don't need special operators. They can be expressed thusly:
 
         assert { P } = try { try { P } then { fail } else {} } then { fail } else {}
 
-I'm still contemplating whether it's worth adding an operator for assertions. If I use a lot of them, it might be worthwhile.
+I'm still contemplating whether it's worth adding an operator for assertions. If I use a lot of them, it might be worthwhile. Let's defer this.
 
 ### Annotations
 
 prog:(do:Program, ... Annotation Fields ...)
 stow
 
-Use of 'prog' represents a program or subprogram header that permits flexible annotations. It is possible to inject annotations within a sequence via adding annotations to an identity program.
-
-Use of 'stow' indicates content-addressed storage for the top stack element. Application of stowage is transparent and heuristic, and might be deferred lazily (e.g. performed by a GC pass to reduce memory pressure).
+Use of 'prog' represents a program or subprogram header with ad-hoc annotations. Use of 'stow' proposes moving the top stack element to content-addressed storage. Application of stowage is transparent and heuristic, and might be deferred lazily (e.g. performed by a GC pass to reduce memory pressure).
 
 ### Environment and Effects
 
 env:(eff:Program, do:Program)
 eff
 
-The 'env' operator will hide the top stack value as initial state from the 'do' program. The 'do' program may invoke the 'eff' handler via 'eff' operator. The 'eff' program must have a `Request State -- Response State` stack effect, and may use 'eff' to invoke effects within the parent environment. 
+The 'env' operator will take the top stack value as initial state, run the 'do' program, then place the final state back onto the stack. The 'eff' operator will invoke the current handler in context of the environment's state above the caller's stack.
 
-*Aside:* It is feasible to use 'eff' to model a namespace, though it would depend heavily on abstract interpretation and partial evaluation to optimize routing. 
+For now, I'll restrict 'eff' arity to only observe the top element on the caller's stack (the request), and to always produce a single value (the response). This might change when static analysis is mature. 
 
 ### Arithmetic
 
 add, mul, sub, div, mod
 
+Arithmetic removes two numbers on the stack and adds one number. Use of 'sub' will fail if it would result in a negative number. Use of 'div' or 'mod' will fail with a 0 divisor.
+
 ### Lists
 
 pushl, popl, pushr, popr, split, join, len
-
-Empty list is introduced by `data:[]`. 
 
 A logical reverse operator is feasible, but I'm uncertain of utility or full consequences. An indexing operator is feasible, but I'd prefer to encourage cursor/zipper-based approaches to iteration - i.e. split first, then operate in the middle.
 
@@ -142,7 +165,6 @@ A logical reverse operator is feasible, but I'm uncertain of utility or full con
 tag, find, erase, union, keys
 
 One goal here is to simplify elimination of tag-select pairs.
-
 
 Use of 'case' is almost the same as 'get' but also fails if the dictionary has more than one key. This supports variant data types. Use of 'keys' is for iteration and is probably not efficient for large, dynamic dictionaries.
 
@@ -168,14 +190,18 @@ See [Glas Object](GlasObject.md).
 
 ## Automated Testing
 
-Within a Glas folder, any module with name `test-*` could be implicitly processed for automatic testing purposes even if its value is not required by a `public` module. An error result or annotation would be reported to the developers.
+Within a Glas folder, any module with name `test-*` should be implicitly processed for automatic testing purposes even if its value is not required by the `public` module. An error result or annotation would be reported to the developers.
 
 Testing of programs or binary executables often requires simulating their evaluation. This is feasible via accelerators that can simulate a virtual machine for running a binary.
 
-## Program Search
+## Thoughts
+
+### Program Search
 
 I'm very interested in a style of metaprogramming where programmers express hard and soft constraints and search tactics for a program - respectively representing requirements and desiderata and recommendations - then the system searches for valid solutions. Glas is intended to provide a viable foundation for this idea, but it's still a distant future.
 
-## Provenance Tracking
+This does influence definition of language modules to support working with error, such that we can create indexing catalog modules that don't automatically break when any module is broken.
+
+### Provenance Tracking
 
 I'm very interested in potential for automatic provenance tracking, i.e. such that we can robustly trace a value to its contributing sources. However, I still don't have a good idea about how to best approach this.
