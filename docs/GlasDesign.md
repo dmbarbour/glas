@@ -22,19 +22,21 @@ We aren't limited to extracting binary executables. It is possible to extract a 
 
 In any case, binary extraction is the primary mechanism to get useful software artifacts out of the Glas system. Conveniently, these binaries remain accessible for further processing within the Glas system, such as automated testing.
 
-## Data Model
+## Graph-Structured Data Model
 
-Glas data is composed of immutable dictionaries, lists, and natural numbers, such as `(arbid:42, data:[1,2,3], xid:true)`. A specific data element is called a value. Glas values are acyclic and finite. Large values will often share structure via logical copies.
+Glas data is logically modeled as a closed, non-empty, directed, connected graph with labeled edges. Nodes are unlabeled except for a 'start' node, which represents focus. Edges are labeled in binary, 1 or 0, and labels are unique per node. Cycles are permitted. Data is represented in the graph structure. 
 
-Dictionaries are a set of `Key:Val` pairs with unique keys. Keys may be arbitrary Glas values; symbolic keys would be encoded as short binary strings. An empty dictionary `()` serves as a convenient unit value. Variant data is typically encoded by singleton dictionaries. For example, `type color = rgb:(...) | hsl:(...)` could be represented by a dictionary exclusively containing key `rgb` or `hsl`. 
+Natural numbers can be encoded as a chain of nodes whose edges are labeled in a unary representation (e.g. `1111...0`). Textual labels can be encoded as zero-terminated chains of natural numbers. A dictionary is encoded by a node with a set of textual labels. Labels with a common prefix will share the prefix a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). Variant data can be encoded as a singleton dictionary.
 
-Glas uses lists for sequential structure: arrays, binaries, deques, stacks, tables, or queues. Although lists could be used for tuples, dicts are favored for extensibility. To efficiently support a variety of applications with immutable data, Glas systems will generally represent large lists as [finger trees](https://en.wikipedia.org/wiki/Finger_tree). Binaries are further optimized via [rope-style chunking](https://en.wikipedia.org/wiki/Rope_%28data_structure%29). 
+Glas implementations will heavily optimize representations for natural numbers and textual labels so we can treat these features as performance primitives.
 
-Glas natural numbers do not have a hard upper limit, but will usually have a degradation point from a high-performance 'smallnum' to a low-performance 'bignum'. Glas is not designed for high-performance numeric computing unless using *Acceleration*. 
+For sequences, programmers can directly model linked lists, e.g. edge 0 is head, edge 1 is tail. Glas implementations could feasibly optimize representation for binary lists, but anything beyond this may require *acceleration*. Programmers should model finger-trees to work with very large sequences.
+
+*Aside:* Originally, I favored a conventional tree-structured data model. However, when integrating effects, the tree structure requires too much explicit reference management; the logical graph is too implicit.
 
 ## Content-Addressed Storage (CAS)
 
-Glas will support large data structures using content-addressed storage: a subtree may be serialized to disk or network then referenced by secure hash. Use of secure hashes simplifies incremental and distributed computing:
+Glas can support large data structures using content-addressed storage: a closed graph can be serialized to disk or network and referenced by secure hash. We could encode multiple subgraphs within a binary by also moving the entry point to the reference. Logical replication is preserved via [copy-on-write](https://en.wikipedia.org/wiki/Copy-on-write). Secure hashes simplify incremental and distributed computing:
 
 * persistent data structures, structure sharing
 * incremental upload and download by hash cache
@@ -45,38 +47,23 @@ Glas systems can use content-addressed storage to mitigate memory pressure simil
 
 *Note:* For [security reasons](https://tahoe-lafs.readthedocs.io/en/tahoe-lafs-1.12.1/convergence-secret.html), content-addressed binaries should have a header space to include a cryptographic salt (and other metadata). This salt prevents global deduplication, but local deduplication is supported by stable convergence secret.
 
-## Language Modules
-
-Language modules have a module name of form `language-*`. The value of a language module should be a dict of form `(compile:Program, ...)`. This program should at least pass a simple static arity check. The language module can be extended with other fields for documentation and tutorials, interactive interpreter, language server component, etc..
-
-The compile program is a value that represents a function from source to compiled value with limited log and load effects. A viable effects API:
-
-* **log:Message** - Response is unit. Messages may include warnings and issues, progress reports, code change proposals, etc.. 
-* **load:ModuleID** - Module ID is typically a symbol such as `foo`. Response value from compiling the identified module, or `error` if a value cannot be computed.
-
-Load errors may occur due to missing modules, ambiguous file names, dependency cyles, runtime type error, etc.. The cause of error is not reported to the module client, but may be reported by the development environment. There are potential use cases for explicitly returning `error` when compiling a module.
-
 ## Program Model
 
-Mature Glas systems can support many program models. However, to get started, we must define the standard program model for language modules. Design goals: trivial to interpret, good performance when compiled, deterministic and cacheable, low barriers for metaprogramming, reusable for runtime applications.
+Glas defines a foundational program model for language modules and as a suitable starting point for applications. Design goals for this model include simplicity, determinism, extensibility, incremental computing, and low barriers for metaprogramming. 
 
-Proposed model: 
+Programs are represented by an abstract syntax tree formed of variants, dictionaries, and lists. There are variant operators for sequencing, conditionals, loops, natural number arithmetic, annotations, etc.. Programs are second-class (no eval), acyclic (no directed cycles, modulo 'data'), and statically linked (no function pointers). These restrictions simplify the model.
 
-Programs are concretely represented by a structured value modeling an abstract syntax tree. There are nodes to express sequencing, conditionals, loops, arithmetic, etc.. Programs are second-class: there is no operator to interpret a runtime value as a program. Programs manipulate a tacit environment consisting of a data stack and effects handler. 
+Programs manipulate a tacit environment consisting of a graph, a cursor stack, and effects handler. The cursor stack essentially contains references to nodes within the graph. Because the tacit environment is effectively linear, operations can be usefully viewed as mutating the environment and as pure functions on the environment.
 
-The data stack contains Glas values. There is no separate heap, but large values such as lists or trees may be placed on the stack and manipulated. Programs are designed to support a lightweight static arity (stack effect) analysis in the normal case. A more refined static type analysis can be provided by the .
+The effects handler is a lightweight mechanism to interact with the environment. The env operator enables interception of this handler within scope of a subprogram. The runtime or compiler will provide the external effects handler. It is also possible to override an effects handler within scope of a subprogram.
 
-The effects handler is an abstract object that may be overridden within a subprogram. The runtime or compiler will provide the external effects handler. However, it is also possible to override an effects handler within scope of a subprogram.
-
-Conditionals and loops are based on failure and backtracking. Effects are also backtracked, though external effects might have special handling when canceled. Backtracking is expressive for pattern matching and parsing and suitable for modeling transactions. However, it does prohibit synchronous effects APIs.
+Conditionals and loops are based on failure and backtracking. Effects are also backtracked. Backtracking is expressive for pattern matching and parsing and suitable for modeling transactions. However, it does interfere with expression of synchronous interactions. 
 
 ## Namespace? Defer.
 
-It is feasible to introduce a namespace context within the program model, such that subprograms can easily reuse definitions. This could greatly improve concision, compressing the program. 
+The module system implicitly serves as a namespace layer, but results in too much duplicate code. Optimizers can deduplicate common subprograms via directed acyclic graph. It is feasible to model a namespace using the env/eff operators.
 
-However, there is a cost: programs depend more heavily on context, and assume more about context. To robustly share the program would require extracting and copying the relevant context. However, after similar contexts are copied many times for many subprograms, we lose most concision benefits. Worse, we now have many symbols whose meanings vary contextually.
-
-The alternative to namespaces is to inline all subprograms. This results in huge programs, but can be mitigated by structure sharing at the data layer, and deduplication by compilers. The benefits of a compiler-provided deduplication pass is that it doesn't need to align with human meaningful symbols, and may be applied after context-based optimizations are performed.
+Thus, there is no strong pressure to implement namespaces. Meanwhile, there is some pressure to avoid doing so: explicit sharing via namespaces can easily interfere with metaprogramming due to contextual entanglement. 
 
 Glas programs do support indirect namespace models via the effects model.
 
@@ -168,6 +155,20 @@ One goal here is to simplify elimination of tag-select pairs.
 
 Use of 'case' is almost the same as 'get' but also fails if the dictionary has more than one key. This supports variant data types. Use of 'keys' is for iteration and is probably not efficient for large, dynamic dictionaries.
 
+
+## Language Modules
+
+Language modules have a module name of form `language-*`. The value of a language module should be a dict of form `(compile:Program, ...)`. This program should at least pass a simple static arity check. The language module can be extended with other fields for documentation and tutorials, interactive interpreter, language server component, etc..
+
+The compile program is a value that represents a function from source to compiled value with limited log and load effects. A viable effects API:
+
+* **log(Message)** - Response is unit. Messages may include warnings and issues, progress reports, code change proposals, etc.. 
+* **load(ModuleID)** - Module ID is typically a symbol such as `foo`. Response is the copied from compiling the module, or failure if the module's value cannot be computed. 
+
+Load failure may occur due to missing modules, ambiguous file names, dependency cyles, runtime type error, etc.. Cause of failure is not reported. I assume the program model can catch failure. 
+
+
+
 ## Glas Application Model
 
 See [Glas Apps](GlasApps.md).
@@ -205,3 +206,7 @@ This does influence definition of language modules to support working with error
 ### Provenance Tracking
 
 I'm very interested in potential for automatic provenance tracking, i.e. such that we can robustly trace a value to its contributing sources. However, I still don't have a good idea about how to best approach this.
+
+### Graph-Based Data
+
+I could change Glas to support graph-structured data. 

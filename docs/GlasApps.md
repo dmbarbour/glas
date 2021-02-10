@@ -83,7 +83,88 @@ The problem of designing programs to minimize conflict is left to programmers. T
 
 *Aside:* It is also feasible to support parallelism within a transaction. However, doing so is outside the domain of transaction machines.
 
-## Common Effects
+## State Model
+
+Transactions operate primarily on state. State might be based on variables, channels, sessions, or graphs. Ideally, state resources are simple, extensible, expressive, composable, securable, manageable, and transaction-friendly. 
+
+If state is hierarchical, we can restrict a subprogram to operate on a subtree. Communication between subprograms is explicitly managed by the parent program. We'll use references to communicate and maintain a logical connectivity graph. Reference counting is awkward and difficult to manage.
+
+If state is graph-structured, we can restrict a subprogram to a subgraph reachable by directed edges. Communication between subprograms involves manipulating a shared subgraph. The connectivity graph is explicit in the model
+
+
+
+## Environment Design
+
+We can modify a system transactionally, but what should that system look like? The choice of environment model also has a significant impact on extensibility, liveness, and programming experience.
+
+
+
+
+### Asynchronous Interaction
+
+In many cases, it is impossible to accept a request and obtain a result within the same transaction. The request is processed by the system only after the transaction commits. We'll often desire to observe and influence the ongoing operation.
+
+Some options:
+
+* Environment allocates reference to an abstract task object.
+* Application allocates generic resources for task interface.
+* Anonymous allocation model for generic resources.
+
+Abstract task objects is a general solution and does the best job of enforcing invariants and supporting purpose-specific methods. Unfortunately, it is an awkward fit for Glas: I cannot easily introduce new abstract references via env/eff, nor robustly extend interactions.
+
+
+An application will allocate generic resources internally for its own use. Additionally, we could support 'effects' that bind to application-provided resources. In this case, part of the effect state would be invisible; the application will only 
+
+
+
+By providing generic resources for a task interface, the application can avoid explicit allocation
+
+Allocation of generic application resources, we assume the application has access to a pool of resources such as variables or channels. When creating a task, the application provides resources to serve as the application-environment interface. This has a benefit of unifying internal and external interactions. The environment can hide some implementation by associated state.
+
+Reserving a volume of resources, e.g. application resources with identifiers of form `io:(...)`, gives the environment a little more control over interactions and could simplify enforcement of invariants. However, the extra indirection from IO resources to others can hinder performance and requires explicit garbage collection of resources. Additionally, it's no use if we're doing graph-based environments.
+
+Of these options, I somewhat favor allocation of generic resources by the application. 
+
+### References vs. Cursors
+
+References access a resource through an intermediate identifier such as using `mem:42` to access a variable or memory cell. References are conventional and expressive, but also difficult to distinguish within a program, which is troublesome for memory management, rendering implicit relationships, etc..
+
+Cursors navigate an implicitly struc
+
+
+
+
+
+The advantage of doing so is that this is relatively conventional. A big disadvantage is that it becomes difficult to reason about memory management
+
+
+### IO Variables
+
+For consistent composition across internal and external systems, we can reserve a subset of variables for allocation by and interaction with the environment. For this role, I reserve variables identified by dicts containing `io` such as `io:42`.
+
+The environment could enforce invariants for how IO variables are used. For example, it could enforce that an output channel is write-only and binary-data-only. This might be enforced at the top-level transaction to avoid semantic observation of type errors.
+
+Without IO variables, it is feasible to use callback-style, i.e. an asynchronous effect receives a channel parameter representing where to put a result. However, it becomes difficult to 
+
+ results or to control a long-running task. However, this entangles layers and hinders maintenance of invariants.
+
+
+ and it doesn't compose nicely.
+
+Second, we could provide interface resources to the external task when it is established, such as channels modeled using variables.
+
+First, we could 'attach' the task to application control variables.
+
+One option is that the application specifies some variables for use as channels or futures. This includes channels both *to* the task and *from* the task. 
+
+
+This interface can be modeled as a `(send, recv)` channel pair.
+
+
+
+
+
+## Common Effects APIs
 
 Glas models transactions as normal Glas programs. The try/then/else conditional behavior is an implicit hierarchical transaction. Failure is implicit abort. Interaction with the environment is supported by the eff operator, and is mostly based on variables.
 
@@ -107,22 +188,19 @@ The system estimates time-of-commit. It's best to estimate just a little high: i
 
 An application has a memory consisting of set of mutable variables, which are identified by arbitrary values. Each variable contains a value or is undefined. By default, variables are undefined. 
 
-In addition to a few general-purpose methods, there are several specialized methods to avoid conflicts for simple models of buffers and counters. For example, multiple black-box writers may blindly increment a number or append a list without conflict.
-
-#### Methods
+In addition to a few general-purpose methods, there are several specialized methods to avoid conflicts for simple models of queues and counters. For example, multiple black-box writers may blindly increment a number or addend a list without conflict.
 
 General purpose methods for variables:
 
 * **get** - Response is value contained in defined variable. Fails if undefined.
 * **set:Value** - Update defined variable to contain Value. Response is unit. Fails if undefined.
 * **new:Value** - Update undefined variable to contain Value. Response is unit. Fails if defined.
-* **del** - Delete the variable's definition. Response is unit, or fails if already undefined. 
+* **del** - Delete the variable's definition. Response is unit. Fails if undefined. 
 
-Specialized methods for buffers:
+Specialized methods for queues:
 
-* **read:Count** - Removes first Count items from head of list variable. Response is the sublist it removes. Fails for non-list variables or if the variable contains fewer than Count items.
-* **unread:\[List, Of, Vals\]** - Prepends list to head of list variable. Response is unit, or fails for non-list variables.
-* **write:\[List, Of, Vals\]** - Addends list to tail of list variable. Response is unit, or fails for non-list variables.
+* **deq:Count** - Removes first Count items from head of list variable. Response is the sublist it removes. Fails for non-list variables or if the list contains fewer than Count items.
+* **enq:\[List, Of, Vals\]** - Addends to tail of list variable. Response is unit, or fails for non-list variables.
 
 Specialized methods for counters:
 
@@ -131,50 +209,63 @@ Specialized methods for counters:
 
 ### Channels
 
-Channels are a useful pattern for eventful communication. Channels are primarily modeled by a list variable with read and write methods. However, to support closing of channels and bounded-buffer flow control, I propose a `(data, ready)` pair of variable identifiers.
+For channels, we'll often want bounded buffer pushback and obvious termination. This can be modeled by a `(data, ready)` pair of variables, where 'data' is a queue, and 'ready' is a counter.
 
-* *data* - a buffer variable. Written by writer, read or unread by reader. Deleted by reader when finished consuming. 
-* *ready* - a counter variable. Decremented by writer, incremented by reader per element read.Deleted by writer when finished producing. Initial value in 'ready' is the bounded-buffer capacity of a channel. 
+A reader will dequeue from data and increment ready. A writer will enqueue on data and decrement ready. The initial number in 'ready' is essentially the maximum buffer size. For termination, the reader deletes 'data' to indicate it's done consuming, or the writer deletes 'ready' to indicate it's done producing.
 
-For bi-directional dataflow, channels will often be coupled as a `(send, recv)` pair, requiring a total of four variables. For convenience and to resist accidents, we might also label individual channels with their intended directionality, i.e. either `send:(data, ready)` or `recv:(data, ready)`.
+For bi-directional communication, channels can be paired as `(send, recv)`, for a total of four variables. For consistency, and to resist accident, single-direction channels should indicate their intended direction with a `send` or `recv` header, i.e. an output channel is fully represented by `send:(data:Var1, ready:Var2)`. Code to write to a channel then always selects a `send` header.
 
-Correct use of channels can be enforced by a type system or structured syntax.
+### Futures and Promises
 
-### IO Variables
+A future can be modeled as a single-use recv channel, and a promise is the corressponding single-use send channel. Benefits of modeling futures as a special case of channels include consistency and the ability to 'close' channels to indicate irrelevant futures or broken promises. 
 
-Applications can reserve a subset of variables for interaction with the environment. Doing so improves consistency by enabling external and internal interactions to use the same code. I propose to reserve variables identified by dicts containing `io` such as `io:42`. 
-
-Allocation of IO variables should be fully left to the environment. These variables may be returned from other effects calls, such as `query:stdio`. The environment should normally avoid allocating and manipulating non-IO variables, though there are rare exceptions (such as debug views).
-
-The environment can dynamically enforce invariants for how IO variables are used. For example, for a binary output channel, the environment can abort a transaction that attempts to read the channel or write non-binary data. To avoid unusual failure semantics, this abort could be deferred until commit.
+Futures are convenient for asynchronous IO. An effect can immediately allocate and return a future. The corresponding promise is implicitly handled by the external system. The main weakness is that futures need to be linear unless programmers explicitly introduce reference counts.
 
 ### Environment
 
 * **query:Query** - Response value or failure depends on environment.
 
-This represents an ad-hoc query to the environment. Use of query should be idempotent, commutative, and mostly stable. Query provides a useful layer of indirection to return IO variables for further interaction.
-
-### Asynchronous Tasks
-
-For any long-running effects, a good option is to create a background task then immediately return an interface for the asynchronous interaction. This interface can be modeled as a `(send, recv)` channel pair.
+For env/eff overrides, it is convenient to centralize ad-hoc queries under a single heading instead of having a dozen top-level effects. As a rule, queries should be idempotent, commutative, and mostly stable.
 
 ### Termination
 
+* **fin:ExitVal**
+
 Termination, if needed, should be explicit to ensure it is intentional. If a transaction machine halts implicitly, e.g. due to deadlock, that's probably a bug. Explicit termination could be represented by defining an IO exit variable before committing.
+
+## Filesystem API
+
+A filesystem can be treated as a special state resource, similar to variables, allowing synchronous access. Alternativel Streaming reads and writes for files is also feasible.
+
+
+## Network API
+
+
+
+### TCP
+
+### UDP
 
 ## Console App Effects API
 
-Console applications are my initial target. I don't need all of Unix, just enough to support command line tooling and web servers.
+Console applications are my initial target. I don't need all features, just enough to support command line tooling and web servers.
 
 Requirements:
 
-* access to stdio resources, isatty
-* environment variables
-* filesystem access - browsing folders and files
+* access to stdio resources
+* args and environment variables
+* filesystem access - browsing, reading, writing
 * network access - TCP and UDP is sufficient
 * termination/exit
 
+Network and filesystem access require some careful attention to the API. I assume we'll make heavy use of channels.
 
+Desiderata:
+
+* explicit content-addressed storage access
+* storing / reading values via Glas Objects 
+
+Notes: I looked into checking for console vs. pipe use, e.g. isatty, but it seems to not be a robust cross-platform feature. Also, it's more implicit than I'd prefer as an input. Instead, programs should use args to guide display mode.
 
 ## Web App Effects API
 
