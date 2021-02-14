@@ -1,5 +1,24 @@
 # Glas Object
 
+Some thoughts:
+
+* require lightweight type and version header, e.g. `glob0\n`
+* glob should preserve structure sharing within tree where feasible
+* interning hints. When a subtree is likely to appear in many resources, we could suggest it be interned by the runtime when loaded. This is a simple annotation.
+* deep references? A secure hash reference can be augmented with an offset into a resource. This would enable a stowage resource to aggregate a large number of related resources. It would also simplify partial reuse of stowage resources when constructing a tree.
+* 
+
+
+
+ if a subtree is widely shared, but is too small for a separate stowage resource, an interning hint could be useful. This could be a lightweight hash of the value being interned.
+* optimize for fast parse, fast query without 
+* byte-oriented - compact encoding within limits of byte alignment
+* 
+* header - every Glas object should have an optional header value, a full record. This header would include the 'salt' for cryptographic uniqueness.
+* 
+
+# ........ 
+
 My goal for Glas object is an efficient, robust, standard encoding for content-addressed storage.
 
  content-addressed storage.

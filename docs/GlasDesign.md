@@ -4,209 +4,214 @@
 
 Glas modules are typically represented by files and folders. Dependencies between Glas modules must be acyclic (i.e. a directed acyclic graph), and dependencies across folder boundaries are structurally restricted. Every module will deterministically compute a value. 
 
-To compute the value for a file `foo.ext`, the Glas system will compile the file binary according to a program defined in a module named `language-ext`. Although there is a special exception for bootstrapping, most syntax will be user-defined. The value of a folder is the value of a contained `public` module, if exists, otherwise a dictionary with an element per contained module.
+To compute the value for a file `foo.ext`, the Glas system will compile the file binary according to a program defined in a module named `language-ext`. Although there is a special exception for bootstrapping, most syntax will be user-defined. The value of a folder is the value of a contained `public` module, if exists, otherwise a record with an element per contained module..
 
 File extensions compose. For `foo.xyz.json`, apply `language-json` to the file binary, followed by `language-xyz`. Source input to the latter can be a structured value. Conversely, when a file has no extension, its computed value is its binary content. Folders also may use language extensions, i.e. `foo.xyz/` will first compute the folder value then compile this value via `language-xyz`.
 
 To find a module `foo`, a Glas system will first search for a local file or subfolder such as `foo.ext` or `foo/`, ignoring language extensions. If the module is not found locally, the Glas system will fall back to a non-local search based on a `GLAS_PATH` environment variable. Files and folders whose names start with `.` are naturally hidden from the Glas module system.
 
+The module system is our primary namespace in Glas. Multiple references to a resource 
+
 *Note:* Glas does not specify a package manager. I recommend use of Nix, Guix, or other package managers designed for reproducible builds.
 
-## Binary Extraction
+## Data Model
 
-Glas values can represent binaries as a list of small numbers (0..255). A subset of Glas modules will compute binaries, or values containing binaries. A Glas command line tool should provide a mechanism to extract computed binaries for external use. 
+Glas data is modeled as a binary tree. Edges from each node are uniquely labeled in binary (i.e. 0 or 1). Nodes are unlabeled except for the 'root' node that represents initial focus. All nodes are reachable from root. As an optimization, the tree may be represented as a directed acyclic graph, reusing subtrees internally. 
 
-A subset of binaries may represent executables. Thus, the Glas module system can compile executable binaries, which we extract then execute. The logic to compute an executable binary would be embedded in the module system instead of the command line tool. Target-specific builds are possible: we only need a target-specific `system-info` module in `GLAS_PATH`.
+Data is encoded in the tree structure. 
 
-We aren't limited to extracting binary executables. It is possible to extract a binary that represents a PDF document, PNG image, or a zipfile. If we aren't confident in our optimizers, we could extract a C++ file for external compilation.
+For example, algebraic product and sum types, `(A * B)` and `(A + B)`, can be encoded respectively as a node containing both edges or exactly one edge. Unit `()` is simply a node with no further edges. A linked list can be encoded as `type List A = () + (A * List A)`. However, products and sums are not extensible or versionable. 
 
-In any case, binary extraction is the primary mechanism to get useful software artifacts out of the Glas system. Conveniently, these binaries remain accessible for further processing within the Glas system, such as automated testing.
+For most use cases, symbolic records and variants are a better option. For example, `type Color = rgb:(r:Byte, g:Byte, b:Byte) | hsl:(h:Byte, s:Byte, l:Byte)`. In this type, choice of `rgb` or `hsl` is a variant, while `(r, g, b)` and `(h, s, l)` are records. Well chosen text labels have the added benefit of being slightly self-documenting. 
 
-## Graph-Structured Data Model
+Records are represented by encoding null-terminated UTF-8 text labels into a path through a tree. A 'path' traverses a sequence of nodes such as `01110000 01100001 01110100 01101000 00000000`. The associated value follows the terminator. Encoding multiple labels implicitly forms a [trie](https://en.wikipedia.org/wiki/Trie). For efficiency, Glas systems will compactly encode non-branching path segments, upgrading trie to [radix tree](https://en.wikipedia.org/wiki/Radix_tree). Variants are essentially single-element records. Symbols are unit variants.
 
-Glas data is logically modeled as a closed, non-empty, directed, connected graph with labeled edges. Nodes are unlabeled except for a 'start' node, which represents focus. Edges are labeled in binary, 1 or 0, and labels are unique per node. Cycles are permitted. Data is represented in the graph structure. 
+A byte is encoded by a fixed-width, non-branching path of 8 bits, msb to lsb, terminating in unit. For example, `00111101` encodes 61. Larger words are encoded similarly, just with more bits. However, binary data is normally encoded as a list of bytes, not a huge path.
 
-Natural numbers can be encoded as a chain of nodes whose edges are labeled in a unary representation (e.g. `1111...0`). Textual labels can be encoded as zero-terminated chains of natural numbers. A dictionary is encoded by a node with a set of textual labels. Labels with a common prefix will share the prefix a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). Variant data can be encoded as a singleton dictionary.
+Glas systems will use lists for most sequential structures - e.g. stacks, queues, arrays, binaries, etc.. Logically, lists are linked lists - `0` is empty list, `10` is head of list, `11` is tail of list. However, Glas systems will normally substitute a [finger tree](https://en.wikipedia.org/wiki/Finger_tree) representation under-the-hood. The finger-tree enables efficient access to the list and potential structure sharing of common sequences. [Rope-based extensions](https://en.wikipedia.org/wiki/Rope_%28data_structure%29) can support compact encodings of binary data.
 
-Glas implementations will heavily optimize representations for natural numbers and textual labels so we can treat these features as performance primitives.
+A compiler can use static analysis of types and dataflow to further specialize and optimize runtime representations. A record with known labels could be implemented by C-style struct. A linearly updated list can be implemented by mutable array.
 
-For sequences, programmers can directly model linked lists, e.g. edge 0 is head, edge 1 is tail. Glas implementations could feasibly optimize representation for binary lists, but anything beyond this may require *acceleration*. Programmers should model finger-trees to work with very large sequences.
+### Stowage via Content-Addressed Storage
 
-*Aside:* Originally, I favored a conventional tree-structured data model. However, when integrating effects, the tree structure requires too much explicit reference management; the logical graph is too implicit.
+Glas systems will support large data using content-addressed storage. A subtree can be serialized to cheap, high-latency storage and referenced by secure hash. I call this pattern 'stowage'. Stowage serves a similar role as virtual memory, but there are several benefits related to semantic data alignment and content-addressed storage:
 
-## Content-Addressed Storage (CAS)
+* implicit deduplication and structure sharing
+* incremental upload, download, and durability
+* provider-independent, validated distribution
+* memoization over large trees can use hashes
+* value-level alignment simplifies control
 
-Glas can support large data structures using content-addressed storage: a closed graph can be serialized to disk or network and referenced by secure hash. We could encode multiple subgraphs within a binary by also moving the entry point to the reference. Logical replication is preserved via [copy-on-write](https://en.wikipedia.org/wiki/Copy-on-write). Secure hashes simplify incremental and distributed computing:
+Glas programs have a 'stow' operator to guide use of stowage. However, modulo reflection effects, use of stowage is not observable within the program. Stowage can be deferred heuristically, e.g. waiting for memory pressure or potential GC of the stowed data.
 
-* persistent data structures, structure sharing
-* incremental upload and download by hash cache
-* efficient memoization, matches on tree hashes
-* provider-independent distribution, validation
+*Note:* For [security reasons](https://tahoe-lafs.readthedocs.io/en/tahoe-lafs-1.12.1/convergence-secret.html), content-addressed binaries should include a cryptographic salt. This salt prevents global deduplication, but local deduplication can be supported by convergence secret.
 
-Glas systems can use content-addressed storage to mitigate memory pressure similar to virtual paging, and to support distributed computations with lazy and incremental communication. However, content-addressed storage is not observable within the program - it's essentially an optimization.
+## Extraction and Executables
 
-*Note:* For [security reasons](https://tahoe-lafs.readthedocs.io/en/tahoe-lafs-1.12.1/convergence-secret.html), content-addressed binaries should have a header space to include a cryptographic salt (and other metadata). This salt prevents global deduplication, but local deduplication is supported by stable convergence secret.
+A subset of Glas modules will compute binary data. The Glas command-line tool will provide a utility to extract the computed binary for external use, e.g. writing bytes to stdout for the shell to redirect. For very large, potentially infinite binaries, the command-line tool should also support extraction from a program that generates a binary data stream.
 
-## Program Model
+The binary data could represent an executable, but is not limited by this. It could instead represent a pdf document or MP3 music. Perhaps a C file that can be integrated into another project. For multi-file artifacts, the binary might represent a tarball or zipfile.
 
-Glas defines a foundational program model for language modules and as a suitable starting point for applications. Design goals for this model include simplicity, determinism, extensibility, incremental computing, and low barriers for metaprogramming. 
+A relevant concern is targeting of executables. To support this, we can define a `system-info` module on `GLAS_PATH`. This module describes target architecture, OS, and other relevant details. A Glas installation could include a `system-info` targeting the current host, while cross-compilation only needs to tweak `GLAS_PATH`.
 
-Programs are represented by an abstract syntax tree formed of variants, dictionaries, and lists. There are variant operators for sequencing, conditionals, loops, natural number arithmetic, annotations, etc.. Programs are second-class (no eval), acyclic (no directed cycles, modulo 'data'), and statically linked (no function pointers). These restrictions simplify the model.
+In this design, responsibility for generating a useful binary is shifted into the module system. A useful consequence is that computed binaries are accessible within the module system for potential composition into a zipfile or automated testing. The command-line tool can be relatively small and simple by omitting this logic.
 
-Programs manipulate a tacit environment consisting of a graph, a cursor stack, and effects handler. The cursor stack essentially contains references to nodes within the graph. Because the tacit environment is effectively linear, operations can be usefully viewed as mutating the environment and as pure functions on the environment.
+## Automated Testing
 
-The effects handler is a lightweight mechanism to interact with the environment. The env operator enables interception of this handler within scope of a subprogram. The runtime or compiler will provide the external effects handler. It is also possible to override an effects handler within scope of a subprogram.
+Within a Glas folder, any module with name `test-*` should be implicitly processed for automatic testing purposes even if its value is not required by the `public` module. Failure and logged errors would be reported to developers. 
 
-Conditionals and loops are based on failure and backtracking. Effects are also backtracked. Backtracking is expressive for pattern matching and parsing and suitable for modeling transactions. However, it does interfere with expression of synchronous interactions. 
+Testing of programs or binary executables often requires simulating their evaluation environment. This is feasible via accelerators that can simulate a virtual machine for running a binary.
 
-## Namespace? Defer.
+## Glas Programs
 
-The module system implicitly serves as a namespace layer, but results in too much duplicate code. Optimizers can deduplicate common subprograms via directed acyclic graph. It is feasible to model a namespace using the env/eff operators.
+Glas programs are represented by variants, records, and lists. The user-layer syntax has already been parsed and processed by a language module. For example, Glas programs do not use variables, but user-layer syntax might express functions using local variables. Essentially, Glas programs are an intermediate language.
 
-Thus, there is no strong pressure to implement namespaces. Meanwhile, there is some pressure to avoid doing so: explicit sharing via namespaces can easily interfere with metaprogramming due to contextual entanglement. 
+Glas programs are based on a combinatory logic: each operator represents a function on the tacit environment, which consists of a few stacks and an abstract effects handler. Some operators compose other operators into larger programs. This design gives Glas a very procedural style, except that data cannot be pervasively mutated.
 
-Glas programs do support indirect namespace models via the effects model.
+Glas programs should be analyzed to verify statically bounded stack size before evaluation. This property is simple to check in Glas. More sophisticated static analysis based on type annotations is also recommended but not required.
 
-## Operators
+Conditional behavior in Glas programs is based on failure and backtracking. This is convenient for composable pattern matching, parsing, transactional models, and graceful error handling. However, backtracking is incompatible with synchronous remote requests, limiting direct use of some effects APIs.
 
-### Data Flow
+*Note:* Mature Glas systems will support multiple program models via metaprogramming, acceleration, and extraction. However, the Glas program model provides the robust foundation, and is necessary to describe language modules.
 
-Glas uses a data stack as an intermediate representation of dataflow. Programs can be expressed using variables then compiled for the stack. Valid Glas programs have a statically predictable stack behavior (no recursion). A Glas compiler can eliminate the data stack and compute using a static allocation of variables.
+### Stack Operators
 
-        copy, drop, dip:P, swap, data:Val
+* **copy** - copy top item on data stack
+* **drop** - remove top item on data stack
+* **dip:P** - run P below top item on data stack
+ * move top item from data stack to dip stack
+ * run P
+ * move top item from dip stack to data stack
+* **swap** - switch the top two items on stack
+* **data:V** - copy V to top of stack
 
-        copy        forall x,xs . x:xs -> x:x:xs
-        drop        forall x . x:xs -> xs
-        dip:P       P of xs->xs'   |-  dip:P of forall x. x:xs -> x:xs'
-        swap        forall x,y,xs . x:y:xs -> y:x:xs
-        data:Val    forall xs . xs -> const(Val):xs
+The data stack for a valid Glas program is statically bounded. A Glas compiler should replace the stack by a static set of variables. 
 
-Elements on the stack may be arbitrary Glas values, thus dynamic memory is still used.
+### Control Operators
 
-### Control Flow
+* **seq:\[List, Of, Operators\]** - sequential composition of operators. 
+ * *seq:\[\]* - empty sequence serves as identity operator, a nop
+* **cond:(try:P, then:Q, else:R)** - run P; if P does not fail, run Q; if P fails, backtrack then run R.
+* **loop:(try:P, then:Q)** - begin loop: run P; if P does not fail, run Q then repeat loop. If P fails, backtrack then exit loop.
+* **eq** - compare top two values on stack. If they are equal, do nothing. Otherwise fail.
+* **fail** - always fail
 
-\[list, of, operators\]
-cond:(try:P, then:Q, else:R)
-loop:(try:P, then:Q)
-fail
-eq
-lt
+### Effects Handler
 
-Sequential composition is represented by a list. Consequently, a list containing a list can be fully flattened.
+* **env:(do:P, eff:E)** - override effects handler in context of P.
+ * move top item from data stack to eff stack
+ * when `eff` is invoked within P (modulo further override):
+  * move top item from eff stack to data stack
+  * run E
+  * move top item from data stack to eff stack
+ * move top item from eff stack to data stack
+* **eff** - invoke effects handler on current stack.
 
-Conditionals and loops branch based on success or failure of a 'try' program. The 'try' program may perform effects and manipulate the stack, and this is preserved on success. It is often possible to statically eliminate try operations based on context of use. We can also flatten conditionals such as 'try(try(...))'. 
+The top-level effects handler is provided by runtime or compiler. Use of 'env' enables a program to sandbox a subprogram and control access to effects. Effects handlers should currently have type `Request State -- Response State`, i.e. stack arity 2-2, at least until we have more advanced static types and static analysis.
 
-A lot of operators will fail conditionally. The 'fail' operator always fails. 
+### Annotation Operators
 
-The 'eq' operator will compare values of arbitrary size for equality. It could potentially use value reference equality for performance under the hood.
+Annotations support static analysis, performance, automated testing, debugging, decompilation, and other external tooling. Annotations should not directly affect behavior of a program.
 
-The 'lt' operator imposes a total order on values, asserting the that the second stack element is less-than the top stack element. For example, `[data:4, data:5, lt]` succeeds while `[data:6, data:5, lt]` fails. The 'lt' operator primarily exists for deterministic iteration on dicts.
+* **prog:(do:P, ...)** - runs P. Except for 'do', all fields are annotations about P. Potential annotations:
+ * **name:Symbol** - an identifier to support debugging, profiling, logging, etc.. Will be hierarchical with other prog names. Preferably unique in context.
+ * **in:\[List, Of, Symbols\]** - human-meaningful labels for stack input; rightmost is top of stack. This also indicates expected input arity.
+ * **out:\[List, Of, Symbols\]** - human meaningful labels for stack output; rightmost is top of stack. This also indicates expected output arity. 
+ * **bref:B** - assert that program P has the same behavior as program B. In this case, the intention is that P is an optimized or refactored B.
+ * **type:Type** - assert P is compatible with a type description. This requires a type descriptor language.
+ * **memo:(...)** - remember outputs for given inputs for incremental computing. Options could include table sizes and other strategy.
+ * **accel:(...)** - tell compiler or interpreter to replace P by a known high-performance implementation
+* **assert:Q** - try to run Q; if successful, undo effects then continue. Otherwise, halt the program and report assertion failure. Verified statically if feasible.
+* **assume:Q** - infrequently checked assertion. Verified statically if feasible. Checked after things go wrong for error isolation. Might be checked on first encounter, too.
+* **stow** - move top stack value to cheap, high-latency, content-addressed storage. Subject to runtime heuristics.
 
-The total order is arbitrary but deterministic:
+Assertions and assumptions are expressive for describing expectations and intended behavior, but are expensive at runtime and difficult to verify statically. Type annotations are preferred, at least for properties that are easy to express using types, but developing a good type model is non-trivial.
 
-* numbers LT lists LT dicts
-* number n LT n+1
-* lists compare lexicographically
-* dicts compare as a list of `[[key1, val1], ...]` pairs, sorted by key.
+### Record Operators
 
-*Aside:* I originally was using dicts compare all keys before any vals, but that's both awkward to implement and doesn't work nicely with sorting dicts containing optional fields.
+* 
 
-### Assertions? Defer.
 
-Assertions don't need special operators. They can be expressed thusly:
-
-        assert { P } = try { try { P } then { fail } else {} } then { fail } else {}
-
-I'm still contemplating whether it's worth adding an operator for assertions. If I use a lot of them, it might be worthwhile. Let's defer this.
-
-### Annotations
-
-prog:(do:Program, ... Annotation Fields ...)
-stow
-
-Use of 'prog' represents a program or subprogram header with ad-hoc annotations. Use of 'stow' proposes moving the top stack element to content-addressed storage. Application of stowage is transparent and heuristic, and might be deferred lazily (e.g. performed by a GC pass to reduce memory pressure).
-
-### Environment and Effects
-
-env:(eff:Program, do:Program)
-eff
-
-The 'env' operator will take the top stack value as initial state, run the 'do' program, then place the final state back onto the stack. The 'eff' operator will invoke the current handler in context of the environment's state above the caller's stack.
-
-For now, I'll restrict 'eff' arity to only observe the top element on the caller's stack (the request), and to always produce a single value (the response). This might change when static analysis is mature. 
-
-### Arithmetic
+### Arithmetic Operators
 
 add, mul, sub, div, mod
 
 Arithmetic removes two numbers on the stack and adds one number. Use of 'sub' will fail if it would result in a negative number. Use of 'div' or 'mod' will fail with a 0 divisor.
 
-### Lists
+### List Operators
 
 pushl, popl, pushr, popr, split, join, len
 
 A logical reverse operator is feasible, but I'm uncertain of utility or full consequences. An indexing operator is feasible, but I'd prefer to encourage cursor/zipper-based approaches to iteration - i.e. split first, then operate in the middle.
 
-### Dicts
+### Records
 
 tag, find, erase, union, keys
 
 One goal here is to simplify elimination of tag-select pairs.
 
-Use of 'case' is almost the same as 'get' but also fails if the dictionary has more than one key. This supports variant data types. Use of 'keys' is for iteration and is probably not efficient for large, dynamic dictionaries.
+Use of 'case' is almost the same as 'get' but also fails if the record has more than one key. This supports variant data types. Use of 'keys' is for iteration and is probably not efficient for large, dynamic records.
+
+
+
+## Applications
+
+The Glas command-line tool can also provide a mode to run applications that conform to a limited effects API, e.g. with support for console, filesystem, network, and lightweight GUI. This would not rely on extraction of an executable.
+
+The main challenge here is API design. Synchronous APIs need to be avoided, and ideally we can ensure our GUI works nicely with live coding. These are relevant concerns even if we later extract executables. Discussion in[Glas Apps](GlasApps.md).
+
+## Acceleration
+
+Acceleration is an optimization pattern where we replace an inefficient reference implementation of a function with an optimized implementation. Accelerated code could leverage hardware resources that are difficult to use within normal Glas programs.
+
+For example, we can design a program model for GPGPU, taking notes from OpenCL, CUDA, or Haskell's [Accelerate](https://hackage.haskell.org/package/accelerate). This language should provide a safe (local, deterministic) subset of features available on most GPGPUs. A reference implementation can be implemented using the Glas program model. A hardware-optimized implementation can be developed and validated against the reference.
+
+Or we design a program model based on Kahn Process Networks. The accelerated implementation could support distributed, parallel, stream-processing computations. The main cost is limiting use of the effects handler.
+
+Accelerators are a high-risk investment because there are portability, security, and consistency concerns for the accelerated implementation. Ability to fuzz-test against a reference is useful for detecting flaws - in this sense, accelerators are better than primitives because they have an executable specification. Carefully selected accelerators can be worth the risk, extending Glas to new problem domains.
+
+To simplify recognition and to resist invisible performance degradation, acceleration must be explicitly annotated, e.g. via `prog:(do:Program, accel:ModelHints)`. This allows the compiler or interpreter to report when acceleration fails for any reason (i.e. unrecognized, deprecated, or no implementation for current target). It also enables evaluation with and without acceleration for validation.
+
+*Aside:* It is feasible to accelerate subsets of programs that conform to a common structure, thus a model hint could be broader than identifying a specific accelerator.
+
+## Types
 
 
 ## Language Modules
 
-Language modules have a module name of form `language-*`. The value of a language module should be a dict of form `(compile:Program, ...)`. This program should at least pass a simple static arity check. The language module can be extended with other fields for documentation and tutorials, interactive interpreter, language server component, etc..
+Language modules have a module name of form `language-*`. The value of a language module should be a record of form `(compile:Program, ...)`. This record can be extended with language utilities (e.g. linter, decompiler, interactive REPL). The compile program should minimally pass a static arity check.
 
-The compile program is a value that represents a function from source to compiled value with limited log and load effects. A viable effects API:
+The compile program should implement a function from source (usually binary data) to compiled value, with a limited effects API:
 
-* **log(Message)** - Response is unit. Messages may include warnings and issues, progress reports, code change proposals, etc.. 
-* **load(ModuleID)** - Module ID is typically a symbol such as `foo`. Response is the copied from compiling the module, or failure if the module's value cannot be computed. 
+* **load:ModuleID** - Module ID is typically encoded as a path symbol such as `foo`. Response is the copied from compiling the module, or failure if the module's value cannot be computed. 
+* **log:Message** - Response is unit. Messages may include warnings and issues, progress reports, code change proposals, etc.. 
 
-Load failure may occur due to missing modules, ambiguous file names, dependency cyles, runtime type error, etc.. Cause of failure is not reported. I assume the program model can catch failure. 
+Load failure may occur due to missing modules, ambiguous file names, dependency cyles, failed compile, etc.. Cause of failure is not reported.
 
+*Aside:* Support for an 'eval' effect might be useful for language modules, to support automated testing. However, I'd like to try implementing and accelerating a Glas interpreter within Glas first.
 
+## Binary Stream Generators
 
-## Glas Application Model
+For extraction of large (potentially non-terminating) binary streams, the command line tool should support a simple program type with no inputs, and whose only relevant output is to 'write' data. A viable effects API:
 
-See [Glas Apps](GlasApps.md).
+* **write:Binary** - Response is unit. Writes binary data (a list of bytes) to output.
+* **log:Message** - Response is unit. Use to report progress, issues, etc..
 
-## Acceleration
-
-Acceleration is an optimization where we replace an inefficient reference implementation of a  function with a hardware-optimized implementation. Unlike most optimizations, acceleration has the potential to expand the effective domain of a programming language.
-
-For example, Glas programs are inefficient for bit-banging algorithms. However, a Glas subprogram could simulate an abstract CPU that is effective for bit-banging. If we accelerate this CPU, Glas would become effective for compression, cryptography, and other domains that require heavy bit-banging. If the CPU separates code and data (Harvard architecture) and the abstract machine code is statically computed, we could even compile those algorithms ahead of time.
-
-Similarly, acceleration of a simulated GPGPU might be useful for purely functional video processing, machine learning, or physics simulations. Acceleration using FPGA could support flexible hardware simulations. Acceleration of Kahn Process Networks would enable builds to conveniently scale as distributed computations.
-
-Accelerators are high-risk because it's easy for the optimized implementation to deviate from the reference, especially with multiple ports. This can be mitigated by fuzz testing against the reference, and by favoring acceleration of a few 'generic' models (abstract code for CPU or GPGPU) instead of acceleration of many fixed functions (such as specific hash functions and floating point arithmetic).
-
-To simplify recognition and to resist invisible performance degradation, acceleration should be explicitly annotated within a program. A compiler or interpreter should report when acceleration fails for any reason (i.e. unrecognized, deprecated, or no implementation for current target).
+We could potentially describe a generator within a command line argument to 'query' a Glas module system in flexible ways.
 
 ## Glas Object
 
 See [Glas Object](GlasObject.md).
 
-## Automated Testing
-
-Within a Glas folder, any module with name `test-*` should be implicitly processed for automatic testing purposes even if its value is not required by the `public` module. An error result or annotation would be reported to the developers.
-
-Testing of programs or binary executables often requires simulating their evaluation. This is feasible via accelerators that can simulate a virtual machine for running a binary.
-
 ## Thoughts
 
 ### Program Search
 
-I'm very interested in a style of metaprogramming where programmers express hard and soft constraints and search tactics for a program - respectively representing requirements and desiderata and recommendations - then the system searches for valid solutions. Glas is intended to provide a viable foundation for this idea, but it's still a distant future.
+I'm very interested in a style of metaprogramming where programmers express hard and soft constraints and search tactics for a program - respectively representing requirements and desiderata and recommendations - then the system searches for valid solutions. Glas provides a viable foundation, but it's still a distant future.
 
-This does influence definition of language modules to support working with error, such that we can create indexing catalog modules that don't automatically break when any module is broken.
+Part of the solution will certainly involve loading 'catalog' modules that index other modules to support search.
 
 ### Provenance Tracking
 
 I'm very interested in potential for automatic provenance tracking, i.e. such that we can robustly trace a value to its contributing sources. However, I still don't have a good idea about how to best approach this.
 
-### Graph-Based Data
-
-I could change Glas to support graph-structured data. 
