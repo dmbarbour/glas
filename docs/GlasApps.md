@@ -85,7 +85,21 @@ The problem of designing programs to minimize conflict is left to programmers. T
 
 ## State Model
 
-Transactions operate primarily on state. State might be based on variables, channels, sessions, or graphs. Ideally, state resources are simple, extensible, expressive, composable, securable, manageable, and transaction-friendly. 
+Transactions primarily operate on state. 
+
+However, there are a lot of potential models for organizing state. For example: flat memory vs. hierarchical directory structure. It is feasible for a state model to 
+
+Additionally, it is feasible for a state model to directly maintain a conn
+
+ support robust access-control patterns,
+
+Additionally, it's convenient if the state model supports common access-control and robust communication patterns, reducing reliance on the type system. For example, a state model could have built-in notions of channel, data-bus, publish-subscribe. 
+
+
+ For example, we could have a sequential memory with 32-bit or 64-bit addressing. We could have a memory where addresses are arbitrary values. We cold have a hierarchical memory, where all addresses are lists of values.
+
+
+ State might be based on variables, channels, sessions, or graphs. Ideally, state resources are simple, extensible, expressive, composable, securable, manageable, and transaction-friendly. 
 
 If state is hierarchical, we can restrict a subprogram to operate on a subtree. Communication between subprograms is explicitly managed by the parent program. We'll use references to communicate and maintain a logical connectivity graph. Reference counting is awkward and difficult to manage.
 

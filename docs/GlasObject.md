@@ -6,7 +6,7 @@ Some thoughts:
 * glob should preserve structure sharing within tree where feasible
 * interning hints. When a subtree is likely to appear in many resources, we could suggest it be interned by the runtime when loaded. This is a simple annotation.
 * deep references? A secure hash reference can be augmented with an offset into a resource. This would enable a stowage resource to aggregate a large number of related resources. It would also simplify partial reuse of stowage resources when constructing a tree.
-* 
+* log-structured merges
 
 
 
