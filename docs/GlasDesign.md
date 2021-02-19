@@ -24,21 +24,15 @@ A byte is encoded as a string of 8 bits, i.e. a non-branching path with one bit 
 
 For general sequential structure, Glas uses lists. However, the linked list representation has poor performance for many use-cases. Glas systems resolve this by transparently using a [finger tree](https://en.wikipedia.org/wiki/Finger_tree) representation under-the-hood. Finger trees support constant-time access to both ends, logarithmic manipulation of the interior, and potential structure sharing for segments within the list.
 
-## Binary Extraction and Executables
+## Binary Extraction
 
-A subset of Glas modules will compute binary data. The Glas command-line tool will provide a utility to extract the computed binary for external use, e.g. writing bytes to stdout for the shell to redirect. For very large, potentially infinite binaries, the command-line tool can also have a mode for extraction from a program that generates a binary data stream.
+A subset of Glas modules will compute binary data. The Glas command-line tool shall provide modes to extract binary data to stdout or file. The binary data should represent an externally useful software artifact - e.g. pdf, music file, an executable, or a C program. For multi-file software artifacts, the binary could represent a tarball or zipfile.
 
-The binary data could represent an executable, but is not limited by this. It could instead represent a pdf document or MP3 music. Perhaps a C file that can be integrated into another project. For multi-file artifacts, the binary might represent a tarball or zipfile.
+For targeting of executables, I propose to define a central `system-info` module on `GLAS_PATH`. This module will describe the target architecture, OS, and other relevant details. The default target is the local system, but cross-compilation only requires a tweak to the path. 
 
-A relevant concern is targeting of executables. To support this, we can define a `system-info` module on `GLAS_PATH`. This module describes target architecture, OS, and other relevant details. A Glas installation could include a `system-info` targeting the current host, while cross-compilation only needs to tweak `GLAS_PATH`.
+Responsibility for generating a useful binary is shifted into the module system. A useful consequence is that computed binaries are accessible within the module system. This supports composition of binaries (e.g. into a tarball) and automated testing over binaries without leaving the Glas module system. 
 
-In this design, responsibility for generating a useful binary is shifted into the module system. A useful consequence is that computed binaries are accessible within the module system for potential composition into a zipfile or automated testing. The command-line tool can be relatively small and simple by omitting this logic.
-
-## Automated Testing
-
-For lightweight automatic testing, Glas systems will follow a convention where modules in a folder with name `test-*` are processed even when their value is not required by a `public` module. Failed tests are reported to developers. At a larger scale, it is feasible to track overall health of a module distribution based on failed and passing tests.
-
-Testing can be very flexible in Glas because the program representation is accessible and even the final binaries are still within the module system. Tests can abstractly analyze and interpret code, verify structure of binaries, simulate execution, etc..
+*Aside:* The Glas command-line utility can support binary extraction from anonymous modules provided by stdin or argument, with a default language optimized for one-liners. This enables the command shell to be used as a lightweight REPL.
 
 ## Glas Programs
 
@@ -82,7 +76,7 @@ My type notation is a little ad-hoc, but might help clarify.
 ### Control Operators
 
 * **seq:\[List, Of, Operators\]** - sequential composition of operators. 
- * **seq:\[\]** - empty sequence serves as the identity operator
+ * **seq:\[\]** - empty sequence doubles as identity operator (nop)
 * **cond:(try:P, then:Q, else:R)** - run P; if P does not fail, run Q; if P fails, backtrack then run R.
 * **loop:(try:P, then:Q)** - begin loop: run P; if P does not fail, run Q then repeat loop. If P fails, backtrack then exit loop.
 * **eq** - compare top two values on stack. If they are equal, do nothing. Otherwise fail.
@@ -154,8 +148,8 @@ A linked list has simple structure, but terrible performance for any use-case ex
 * **pushr** - given value and list, add value to right of list
 * **popr** - given non-empty list, split into last element and everything else
 * **join** - appends list at top of data stack to the list below it
-* **split** -  given number N and list, produce a pair of sub-lists such that join produces the original list, and the first portion of the list has N elements.
-* **len** - given list, return a number that represents length of list. Uses smallest encoding of number (no zero prefix).
+* **split** - given number N and list, produce a pair of sub-lists such that join produces the original list, and the first portion of the list has N elements.
+* **len** - given list, return a number that represents length of list. Uses smallest encoding of the number (i.e. no zeroes prefix).
 
 These operators assume a simplistic representation of lists: `type List = () | (Value * List)`. That is, every list node has no edges or two edges. In case of two edges, edge 0 is head and edge 1 is tail of list. List operators fail if applied to invalid lists, i.e. when what should be a list node has exactly one edge.
 
@@ -173,75 +167,84 @@ List operators:
 
 Bitwise operators:
 
-* **bneg** - bitwise 'not', flip all bits of bitstring
+* **bneg** - bitwise 'not'; flip all bits of one bitstring
 * **bmax** - bitwise 'or' of two bitstrings of equal length
 * **bmin** - bitwise 'and' of two bitstrings of equal length
-* **beq** - bitwise equivalence of two bitstrings of equal length (i.e. 1 where bits match, 0 otherwise)
+* **beq** - bitwise equivalence of two bitstrings of equal length, i.e. 1 where bits match, 0 otherwise. (Negation of 'xor'.)
 
-Bitwise operators fail if assumed conditions are not met: not a bitstring, or not equal length.
+Bitwise operators fail if assumed conditions are not met, e.g. not a bitstring, or not equal length.
 
 ### Arithmetic Operators
 
-Glas encodes natural numbers into bitstrings assuming msb-to-lsb order. For example, `00010111` encodes 23. Although the zeroes-prefix doesn't contribute to numeric value, Glas arithmetic operators preserve input structure in results, e.g. subtracting `1` results in `00010110`.
+Glas encodes natural numbers into bitstrings assuming msb-to-lsb order. For example, `00010111` encodes 23. Although the zeroes prefix `000` doesn't contribute to numeric value, Glas arithmetic operators preserve bitstring lengths (field widths). For example, subtracting 17 results in `00000110`.
 
-* **add** (N1 N2 -- Sum Carry) - compute sum of two numbers on stack. Sum has field width of lower number on stack, while carry uses field width of top stack element.
-* **mul** (N1 N2 -- Prod Overflow) - compute product of two numbers on stack. Product has field width of lower number on stack, while overflow uses field width of top stack element.
-* **sub** (N1 N2 -- Diff) - compute difference of two numbers on stack. Result has field width of lower number on stack. In case of underflow, this operator fails.
-* **div** (Dividend Divisor -- Quotient Remainder) - compute result of dividing two numbers, and remaining elements. The quotient has field width of dividend, and remainder has field width of divisor. Fails for zero divisor.
+* **add** (N1 N2 -- Sum Carry) - compute sum and carry for two numbers on stack. Sum has field width of N1, carry has field width of N2. Carry can be larger than 1 iff N2 is wider than N1 (e.g. adding 32-bit number to an 8-bit number).
+* **mul** (N1 N2 -- Prod Overflow) - compute product of two numbers on stack. Product has field width of N1, while overflow uses field width of N2. 
+* **sub** (N1 N2 -- Diff) - Computes a non-negative difference (N1 - N2), preserving field width of N1. Fails if result would be negative. This serves as the comparison operator for natural numbers.
+* **div** (Dividend Divisor -- Quotient Remainder) - If divisor is zero, this operator fails. Compute division of two numbers. Quotient has field width of dividend, and remainder has field width of divisor.
 
-*Note:* Use of 'sub' doubles as a conditional expression, i.e. that one number is greater than or equal to another.
+Glas doesn't have built-in support for negative numbers, floating point, etc..
+
+Although Glas does not support negative numbers, it is feasible to use two's complement arithmetic, i.e. using addition of a 'negative' number to model subtraction. However, this doesn't directly work for division. It is recommended that programmers explicitly model more advanced number models.
 
 ### Annotation Operators
 
-Annotations support static analysis, performance, automated testing, sanity checks, debugging, decompilation, and other external tooling. Annotations should not directly affect behavior of a program.
+Annotations support static analysis, performance, automated testing, safety and sanity, debugging, decompilation, and other external tooling. However, annotations cannot be directly observable within a program, modulo reflective effects API. For example, assertion failures must halt the program because normal failure is observable within a program via try/then/else.
 
-* **prog:(do:P, ...)** - runs P. Except for 'do', all fields are annotations about P. Potential example annotations:
- * **name:Symbol** - an identifier to support debugging, profiling, logging, etc.. Will be hierarchical with other prog names. Preferably unique in context.
+* **prog:(do:P, ...)** - runs P. Fields other than 'do' should be annotations regarding P. Potential annotations:
+ * **name:Symbol** - an identifier for the region to support debugging (logging, profiling, etc.) based on external configuration. Implicitly hierarchical with containing prog name.
  * **in:\[List, Of, Symbols\]** - human-meaningful labels for stack input; rightmost is top of stack. This also indicates expected input arity.
  * **out:\[List, Of, Symbols\]** - human meaningful labels for stack output; rightmost is top of stack. This also indicates expected output arity. 
- * **bref:B** - assert that program P has the same behavior as program B. In this case, the intention is that P is an optimized or refactored B.
- * **type:Type** - assert P is compatible with a type description. This requires a type descriptor language.
- * **icon:Image** - an icon to represent a program, e.g. in a visual programming environment or collapsed view for a debugger
- * **docs:(...)** - a record for arbitrary documentation, intended for a human or document generator.
- * **memo:(...)** - remember outputs for given inputs for incremental computing. Options could include table sizes and other strategy.
- * **accel:(...)** - tell compiler or interpreter to replace P by a known high-performance implementation
-* **assert:Q** - assert that Q should be able to run at given point. Verify by static analysis if feasible. Assertions are frequently checked at runtime, using the backtracking to undo any effects. Failure of an assertion is not observable within the program, but may halt the program at the runtime layer.
-* **assume:Q** - infrequently checked assertion, verified statically if feasible. Might be checked on first encounter then with exponential random backoff, or other heuristic strategy.
-* **stow** - move top stack value to cheap, high-latency, content-addressed storage. Subject to runtime heuristics.
+ * **type:Type** - describe type of subprogram P.
+ * **bref:B** - assert that program P has the same behavior as program B. In this case, the intention is usually that P is an optimized or refactored B.
+ * **docs:Docs** - a record for arbitrary documentation, intended for a human or document generator. Might include text, icons, example usage, etc.. 
+ * **memo:Hints** - remember outputs for given inputs for incremental computing. Options could include table sizes and other strategy.
+ * **accel:Hints** - tell compiler or interpreter to replace P by an enhanced-performance implementation
 
-Assertions and assumptions are very expressive for describing expectations and intended behavior, but are also expensive at runtime and relatively difficult to verify statically. In contrast, type descriptions can be restricted to ensure the properties they express support robust static analysis. This shifts the burden to development of the type model and encoding properties in types.
+* **note:(...)** - inline annotations for use with seq. Pseudo-operators on the tacit environment.
+ * **vars:\[List, Of, Symbols\]** - human-meaningful labels for top few stack elements; rightmost is top of stack.
+ * **type:Type** - describe assumptions about stack and state that should hold at this point in the program. 
+ * **probe:Symbol** - explicit debug point for use with 'seq'. By default write a debug log with debug symbol, stack, state, and timing info. May be externally configurable with filters or assertions or for use as a breakpoint or checkpoint, depending on development environment.
+ * **assert:Q** - assert that Q should succeed if run. Verify statically if feasible, otherwise check at runtime. Use backtracking to undo effects. Runtime assertion failures are uncatchable and directly halt the program.
+ * **assume:Q** - as assert, but with greater emphasis on static verification. Unchecked or infrequently checked at runtime.
+ * **stow** - hint to move top stack value to cheap, high-latency, content-addressed storage. Subject to runtime heuristics.
 
-## Language Modules
+The set of annotations is openly extensible and subject to de-facto standardization. When a compiler or interpreter first encounters annotation headers it does not recognize, it should log a warning to resist silent degradation of safety or performance. Annotations are placed under 'prog' and 'note' headers because it's an open set.
 
-Language modules have a module name of form `language-*`. The value of a language module should be a record of form `(compile:Program, ...)`. This record can be extended with language utilities (e.g. linter, decompiler, interactive REPL). The compile program should minimally pass a static arity check.
-
-The compile program should implement a function from source (usually binary data) to compiled value, with a limited effects API:
-
-* **load:ModuleID** - Module ID is typically encoded as a symbol such as `foo`. Response is the copied from compiling the module, or failure if the module's value cannot be computed. 
-* **log:Message** - Response is unit. Messages may include warnings and issues, progress reports, code change proposals, etc.. 
-
-Load failure may occur due to missing modules, ambiguous file names, dependency cyles, failed compile, etc.. Cause of failure is not reported.
-
-*Aside:* Support for an 'eval' effect might be useful for language modules, to support automated testing. However, I'd like to try implementing and accelerating a Glas interpreter within Glas first.
-
-## Binary Stream Generators
-
-For extraction of very large binary data, we might wish to recompute it as-needed instead of paying storage costs. The command line tool can support this by providing an option to interpret a program that generates a binary stream. 
-
-Such a program doesn't need many effects - just emitting binary data, and perhaps some notes on the side for debugging and progress reports. A viable effects API:
-
-* **write:Binary** - Response is unit. Writes binary data (a list of bytes) to output.
-* **log:Message** - Response is unit. Use to report progress, issues, etc..
-
-Relevantly, this program has no inputs, so it will produce the same binary every time unless there are relevant changes in code.
+*Aside:* Assertions are expressive and convenient for quick and dirty checks, but are difficult to statically analyze in a systematic manner. In contrast, types are restrictive but designed to support systematic static analysis. Glas systems should usually favor types.
 
 ## Applications
 
-The Glas command-line tool can provide an option to interpret applications that conform to a limited effects API, e.g. with support for console, filesystem, network, and lightweight GUI. This is useful for getting something running early on. 
+### Language Modules
 
-The main challenge here is API design. For example, synchronous APIs must be avoided due to backtracking. For my vision, I'd like to ensure our application works nicely with live coding by default. Discussion in [Glas Apps](GlasApps.md).
+Language modules have a module name of form `language-*`. The value of a language module should be a record of form `(compile:Program, ...)`. The compile program implements a function from source (e.g. file binary) to a compiled value on the stack. The compile program can also access other module values and generate some log outputs.
 
-## Stowage via Content-Addressed Storage
+Effects API:
+
+* **load:ModuleName** - Module name is typically encoded as a symbol such as `foo`. Response is the result from compiling the module, or failure if the module's value cannot be computed. 
+* **log:Message** - Response is unit. Messages may include warnings and issues, progress reports, code change proposals, etc.. 
+
+Load failure may occur due to missing modules, ambiguous file names, dependency cyles, failed compile, etc. The cause of failure is visible to the client module, but is reported in the development environment.
+
+*Aside:* The record for a language module is intended for extension with other utilities - linter, decompiler, interactive REPL, language documentation, etc..
+
+### Automated Testing
+
+For lightweight automatic testing, Glas systems will follow a convention where modules in a folder with name `test-*` are processed even when their value is not required by a `public` module. Failed tests are reported to developers. At a larger scale, it is feasible to track overall health of a module distribution based on failed and passing tests.
+
+Testing can be very flexible in Glas because the program representation is accessible and even the final binaries are still within the module system. Tests can abstractly analyze and interpret code, verify structure of binaries, simulate execution, etc..
+
+### User Applications
+
+Due to the backtracking features, Glas programs can be viewed as hierarchical transactions, and are a good fit for transaction-oriented application models. Transactions can support communication via message passing, channels, or tuple spaces. 
+
+However, transactions are incompatible with synchronous effects APIs: we must 'commit' a request before a response is possible. I'm additionally interested in improving on conventional applications, e.g. with live coding by default, and improved debuggability and extensibility. Thus, APIs for network, filesystem, console, and GUI need some redesign. I'm developing some ideas in the [Glas Apps](GlasApps.md) document.
+
+The Glas command-line utility should interpret applications, at least until executable extraction has matured.
+
+## Performance
+
+### Stowage via Content-Addressed Storage
 
 Glas systems will support large data using content-addressed storage. A subtree can be serialized to cheap, high-latency storage and referenced by secure hash. I call this pattern 'stowage'. Stowage serves a similar role as virtual memory, but there are several benefits related to semantic data alignment and content-addressed storage:
 
@@ -255,7 +258,19 @@ Glas programs have a 'stow' operator to guide use of stowage. However, modulo re
 
 *Note:* For [security reasons](https://tahoe-lafs.readthedocs.io/en/tahoe-lafs-1.12.1/convergence-secret.html), content-addressed binaries should include a cryptographic salt. This salt prevents global deduplication, but local deduplication can be supported by convergence secret.
 
-## Acceleration
+### Partial Evaluation
+
+Glas is designed to simplify partial evaluation: Linking is static. Stack allocation is static. Static record paths are readily distinguishable from dynamic record fields. Effects handlers can be inlined and partially applied, including a top-level compiler-provided handler. 
+
+However, partial evaluation is fragile unless supported by annotations. Robust partial evaluation benefits from type-system hints: we can require certain record fields or stack elements to be statically computable. Conveniently, it is easy to verify partial evaluation - we need only to try partial evaluation and see. 
+
+### Staged Metaprogramming
+
+Glas has implicit, pervasive staging: a module's source is processed and compiled into a value, and this value is processed and compiled further by a client module. It is possible to leverage this for metaprogramming using problem-specific intermediate representations. Additionally, language modules can potentially support user-defined, modular macros and other techniques.
+
+Glas doesn't have an eval primitive. To fully support staged metaprogramming requires implementing the eval program, such that language modules can directly interpret Glas programs. Glas is a relatively simple language, but this may require compiling the interpreter to an accelerated model for performance.
+
+### Acceleration
 
 Acceleration is an optimization pattern where we replace an inefficient reference implementation of a function with an optimized implementation. Accelerated code could leverage hardware resources that are difficult to use within normal Glas programs.
 
@@ -269,12 +284,29 @@ To simplify recognition and to resist invisible performance degradation, acceler
 
 *Aside:* It is feasible to accelerate subsets of programs that conform to a common structure, thus a model hint could be broader than identifying a specific accelerator.
 
-
-
 ## Types
 
+Glas requires a simple stack arity check, i.e. to ensure that loops have invariant stack size, and that conditionals have the same stack size on every branch. This check is easy to perform, but is pretty far from an adequate type system. 
 
+Desired Structural Properties: 
 
+* partial: type annotations can be ambiguous or constraints.
+* extensible: can easily grow the type model. 
+* meta types: simple type functions for common patterns.
+
+Desired Expression Properties:
+
+* abstract types: ensure a subprogram does not directly observe certain data
+* substructural types: may also restrict copy/drop for abstract types
+* row-polymorphic record types: static fields and absence thereof
+* fixed-width numeric types: bytes, 32-bit words, etc..
+* static data types: for robust partial evaluation.
+* session types: express protocols and grammars for effects and data structures.
+* dependent types: trustable encodings of metadata
+* refinement types, e.g. prime numbers only
+* units for numbers, and associated or phantom types in general
+
+Types are a deep subject, but I don't need to have everything up-front assuming I favor extensible models.
 
 ## Glas Object
 
@@ -291,27 +323,3 @@ Part of the solution will certainly involve loading 'catalog' modules that index
 ### Provenance Tracking
 
 I'm very interested in potential for automatic provenance tracking, i.e. such that we can robustly trace a value to its contributing sources. However, I still don't have a good idea about how to best approach this.
-
-### Natural Numbers in Paths
-
-An idea that comes up often is the idea of encoding arbitrary natural numbers into record labels, while ensuring compatibility with lexicographic order. The encoding of natural numbers doesn't have a clear suffix, so we'd need to use prefix-encoded sizes. 
-
-One option is to encode the number of bits in unary, followed by the bits. For example, to encode the number `6` we'd write `110110`. 
-
-
-
- while preserving lexicographic order. 
-
- So far, I have two approaches that could well. 
-
-First, I could encode the number of bits in the numb
-
-
-
-
-
-
-
-
-
-

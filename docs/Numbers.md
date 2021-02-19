@@ -75,7 +75,7 @@ For integers in two's complement, we can view the sign bit as repeating infinite
 
 This has the conventional assymmetry, where 127 and -128 both use 8 bits. If we encounter denormalized numbers, we can normalize by rewriting `11 => 1` or `00 => 0` in the number's prefix.
 
-## Structure Preserving Arithmetic
+## Structure Preserving Arithmetic (Selected)
 
 In the above cases, we 'normalize' numbers to eliminate a meaningless prefix. However, this throws away some information - field size - that might be important to the user in some cases. 
 
@@ -83,4 +83,4 @@ An alternative is to develop arithmetic operations that preserve field sizes in 
 
 An advantage of preserving field sizes is that we can decide more flexibly on whether to interpret a field as two's complement integers vs. natural numbers. It's close to how machine-words are used, just with a more flexible choice of field sizes.
 
-I like this approach for its flexibility. OTOH, dealing with signed vs. unsigned interpretations and specialized operators adds more complexity than I'd prefer to manage in Glas. I could resolve this by focusing on the unsigned interpretations only.
+I like this approach for its flexibility. OTOH, dealing with signed vs. unsigned interpretations and specialized operators adds more complexity than I'd prefer to manage in Glas. I could resolve this by focusing Glas operators exclusively on the unsigned interpretation.

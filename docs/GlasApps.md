@@ -12,7 +12,7 @@ Glas applications will generally be modeled as transaction machines with problem
 
 Transaction machines model software systems as a set of repeating transactions on a shared environment. Individual transactions are deterministic, while the set is scheduled fairly but non-deterministically.
 
-This model is conceptually simple, easy to implement naively, and has very nice emergent properties for a wide variety of systems-level concerns.
+This model is conceptually simple, easy to implement naively, and has many nice emergent properties for a wide variety of systems-level concerns.
 
 ### Process Control
 
@@ -22,15 +22,17 @@ Aborted transactions are obviously unproductive. Thus, aborting a transaction se
 
 ### Reactive Dataflow
 
-A successful transaction that reads and writes variables is unproductive if the written values are equal to the original content. Thus, a system can compare written and prior values to decide whether to wait for external changes. In some cases, e.g. when there is no cyclic data dependency, we can also predict that repetition is unproductive without comparing values.
+A successful transaction that reads and writes variables is unproductive if the written values are equal to the original content. If there is no cyclic data dependency, then repeating the transaction will always produce the same output. If there is a cyclic data dependency, it is possible to explicitly detect change to check for a stable fixpoint.
 
-Effectively, transaction machines implicitly support a reactive dataflow system.
+A system could augment reactive dataflow by scheduling transactions in a sequence based on the observed topological dependency graph. This would minimize 'glitches' where two variables are inconsistent due to the timing of an observation. A compiler could take this deeper with potential fusion of transactions. 
+
+*Aside:* Transaction machines can also use conventional techniques for acting on change, such as writing update events or dirty bits.  
 
 ### Incremental Computing
 
 Transaction machines are amenable to incremental computing, and will rely on incremental computing for performance. Instead of fully recomputing a transaction, we rollback and recompute based on changes. 
 
-To leverage incremental computing, transactions should be designed with a stable prefix that transitions to an unstable rollback-read-write-commit cycle. The stable prefix reads slow-changing data, such as configuration. The unstable tail can process channels or fast-changing variables.
+To leverage incremental computing, transactions should be designed with a stable prefix that transitions to an unstable rollback-read-write-commit cycle. The stable prefix reads slow-changing data, such as configuration. The unstable tail implicitly loops to process channels or fast-changing variables.
 
 *Aside:* With precise dataflow analysis, we can theoretically extract several independent rollback-read-write-commit cycles from a transaction. However, stable prefix is adequate for transaction machine performance.
 
@@ -42,7 +44,7 @@ Relevant observations: A non-deterministic transaction is equivalent to choosing
 
 Stable forks enable a single transaction to model a concurrent transaction machine. Fork is is conveniently dynamic and reactive. For example, if we fork based on configuration data, any change to the configuration will rollback the fork and rebuild a new set.
 
-*Notes:* Unstable forks can still be used for non-deterministic operations. There may also be a quota on replication, above which forks are treated as unstable.
+*Note:* Unstable forks can still be used for non-deterministic operations. There may also be a quota limit on replication, above which forks are effectively unstable.
 
 ### Real-Time Systems 
 
@@ -51,6 +53,14 @@ The logical time of a transaction is the instant of commit. It is awkward for tr
 When constrained by high-precision timestamps, transactions can control their own scheduling to a fine degree. Usefully, the system can also precompute transactions slightly ahead of time so they can 'commit' almost exactly on time. This enables precise control of timed IO effects, such as streaming sound.
 
 It is acceptable that only a subset of transactions are timed. The other transactions would be scheduled opportunistically. In case of transaction conflict, time-constrained transactions can be given heuristic priority over opportunistic transactions.
+
+### Reactive Routing
+
+A subset of transactions in a transaction machine can focus purely on data plumbing, moving or copying data without directly observing the data. The routing may depend on configuration variables. It is feasible for a system to optimize stable data plumbing configurations by remembering the route, verifying stability, then directly moving data to its destination.
+
+This optimization is especially useful where it enables data to be moved point-to-point across application and component boundaries. An application can behave as a switchboard for other applications without compromising locality, modularity, or latency.
+
+*Note:* It is feasible to support reactive routing with opaque transactions. We only need methods in the API to move data without reading it.
 
 ### Live Program Update
 
@@ -83,36 +93,24 @@ The problem of designing programs to minimize conflict is left to programmers. T
 
 *Aside:* It is also feasible to support parallelism within a transaction. However, doing so is outside the domain of transaction machines.
 
-## State Model
+## Application State and Communication Architecture
 
-Transactions primarily operate on state. 
+Transaction machines constrain direct use of synchronous communications, but this still leaves a huge design space for how state and communications are presented to the application. Design of this layer must not be neglected: it has a significant effect on system properties (security, extensibility, debuggability, performance, resilience) and the programmer's experience.
 
-However, there are a lot of potential models for organizing state. For example: flat memory vs. hierarchical directory structure. It is feasible for a state model to 
+Some desiderata:
 
-Additionally, it is feasible for a state model to directly maintain a conn
+* Applications compose hierarchically: applications may be components of applications, and we can implicitly view a top-level application as a component of a system application. All data plumbing between components is performed explicitly by the parent, leveraging 'reactive routing' optimizations. There is no persistent dataflow graph.
 
- support robust access-control patterns,
+* Trust and encapsulation are hierarchical in nature: an application can easily hide state and behavior from its components, and hide its components from each other, but components cannot hide from the containing application. Respecting a component's private state is a courtesy that may be abrogated for auditing, debugging, testing, reflection, persistence, quotas, etc.. 
 
-Additionally, it's convenient if the state model supports common access-control and robust communication patterns, reducing reliance on the type system. For example, a state model could have built-in notions of channel, data-bus, publish-subscribe. 
+* Safe extension and disruption: Every resource should have well-defined disruption semantics. Dataflow variables perhaps need a notion of staleness. Channels might be closed. When extending an interface, an unused channel might never be 'opened'.
 
-
- For example, we could have a sequential memory with 32-bit or 64-bit addressing. We could have a memory where addresses are arbitrary values. We cold have a hierarchical memory, where all addresses are lists of values.
-
-
- State might be based on variables, channels, sessions, or graphs. Ideally, state resources are simple, extensible, expressive, composable, securable, manageable, and transaction-friendly. 
-
-If state is hierarchical, we can restrict a subprogram to operate on a subtree. Communication between subprograms is explicitly managed by the parent program. We'll use references to communicate and maintain a logical connectivity graph. Reference counting is awkward and difficult to manage.
-
-If state is graph-structured, we can restrict a subprogram to a subgraph reachable by directed edges. Communication between subprograms involves manipulating a shared subgraph. The connectivity graph is explicit in the model
+* Resource management is local and mostly implicit: no system GC or reference counting, and such features also should almost never be required even within the application or component.
 
 
 
-## Environment Design
 
-We can modify a system transactionally, but what should that system look like? The choice of environment model also has a significant impact on extensibility, liveness, and programming experience.
-
-
-
+# ... OLD STUFF ...
 
 ### Asynchronous Interaction
 
@@ -267,6 +265,7 @@ Console applications are my initial target. I don't need all features, just enou
 Requirements:
 
 * access to stdio resources
+ * stderr might be reserved for debug logs
 * args and environment variables
 * filesystem access - browsing, reading, writing
 * network access - TCP and UDP is sufficient
@@ -293,4 +292,13 @@ Requirements:
 * access to local storage
 
 A web-app should compile to an HTML document using JavaScript or WASM.
+
+## Immediate Mode GUI
+
+Transaction machines can work well with retained-mode or immediate-mode GUIs. In the latter case, we would want to 'draw' a stable GUI, specifying resources for feedback. 
+
+ But for live coding, something closer to immediate-mode seems a better fit to ensure continuous transition. Attempting to work with GUI in terms of the GUI model's state is a awkward.
+
+ otherwise we can easily have some vestigial retained-mode GUI resources when we update the program. 
+
 
