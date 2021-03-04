@@ -18,7 +18,7 @@ Glas data is modeled as an immutable binary tree. Edges from each node are uniqu
 
 Data is encoded in the tree structure. For example, we can directly encode algebraic products `(A * B)` and sums `(A + B)` using a single node that contains two or one edges respectively. Unit `()` is can be encoded by a leaf node. However, algebraic products and sums are awkward to extend or version.
 
-Glas systems favor labeled records and variants. Records are represented by encoding null-terminated UTF-8 text labels into paths through a tree, with prefix sharing (forming a [trie](https://en.wikipedia.org/wiki/Trie)). A 'path' traverses a sequence of nodes such as `01110000 01100001 01110100 01101000 00000000`. The associated value follows the terminator. For efficiency, Glas systems will compactly encode non-branching path segments, implicitly upgrading trie to [radix tree](https://en.wikipedia.org/wiki/Radix_tree). Variants are simply single-element records.
+Glas systems strongly favor labeled records and variants. Records are represented by encoding multiple UTF-8 text labels into paths through a tree with prefix sharing, forming a [trie](https://en.wikipedia.org/wiki/Trie). Glas systems will compactly encode non-branching path segments, implicitly upgrading trie to [radix tree](https://en.wikipedia.org/wiki/Radix_tree). Variants are simply single-element records.
 
 A byte is encoded as a string of 8 bits, i.e. a non-branching path with one bit per edge such as `00010111`. Glas has a few specialized bitwise and arithmetic operators to work with bytes and bitstrings in general. However, binary data is encoded as a list of bytes. 
 
@@ -126,18 +126,19 @@ The top-level effects handler is provided by runtime or compiler. Use of 'env' e
         ENV ⊲ (S * State) → (S' * State)
     eff         type determined by env
 
-
 ### Record and Variant Operators
 
-A set of path-oriented operations useful for records and variants. Paths are encoded as bitstrings, i.e. a non-branching sequence of nodes that encode bits into edges.
+A set of operations useful for records and variants. 
 
-* **get** - given path and record, extract value on path from record. Fails if path is not within record.
-* **put** - given a path, value, and record, create new record including value on path. 
-* **del** - given path and record, create a new record value at path removed, and path removed modulo prefix sharing with other paths in record.
+Labels are encoded as bitstrings, a non-branching sequence of nodes that encodes bits into edges. Labels are expanded in the trie to prevent ambiguity. For example, `010` is expanded into `1011100`: each bit in path is prefixed by `1`, terminal `0`, associated value is represented by node reached following the terminal. Records are encoded as tries, sharing label prefixes in the tree, readily optimized by runtime into radix trees. Variants are singleton records. 
 
-It is feasible for a compiler to heavily optimize records and variants with statically known paths. These optimizations are greatly simplified by use of dedicated operators, in contrast to manipulating one bit at a time.
+Record operators:
 
-*Note:* These operators don't assume any path encoding. It could be UTF-8 null-terminated text, or fixed-width words (forming an intmap), or something else. However, the *prefix property* is required: no valid path is a prefix of another valid path in the record.
+* **get** - given label and record, extract value from record. Fails if label is not in record.
+* **put** - given a label, value, and record, create new record including value on label. 
+* **del** - given label and record, create new record with label removed modulo prefix sharing with other paths in record.
+
+Labels will normally encode short UTF-8 texts. This is at least the case for Glas programs. However, this isn't a restriction.
 
 ### List Operators
 
@@ -149,11 +150,11 @@ A linked list has simple structure, but terrible performance for any use-case ex
 * **popr** - given non-empty list, split into last element and everything else
 * **join** - appends list at top of data stack to the list below it
 * **split** - given number N and list, produce a pair of sub-lists such that join produces the original list, and the first portion of the list has N elements.
-* **len** - given list, return a number that represents length of list. Uses smallest encoding of the number (i.e. no zeroes prefix).
+* **len** - given list, return a number that represents length of list. Uses smallest encoding of number (i.e. no zeroes prefix).
 
-These operators assume a simplistic representation of lists: `type List = () | (Value * List)`. That is, every list node has no edges or two edges. In case of two edges, edge 0 is head and edge 1 is tail of list. List operators fail if applied to invalid lists, i.e. when what should be a list node has exactly one edge.
+These operators assume a simplistic representation of lists: `type List = () | (Value * List)`. That is, every list node has no edges or two edges. In case of two edges, edge 0 is head and edge 1 is tail of list. List operators fail if applied to invalid lists, i.e. if an alleged list node has exactly one edge.
 
-*Note:* Lists can be constructed and manipulated via non-list operators, but probably won't benefit from the optimized representation unless a later list operator converts them back.
+*Note:* Excepting empty record and list, which coincide, lists are invalid records and vice versa. Proof: non-empty lists have a backbone path consisting entirely of 1 edges, while every path in a non-empty record must contain a 0.
 
 ### Bitstring Operators
 
@@ -172,20 +173,18 @@ Bitwise operators:
 * **bmin** - bitwise 'and' of two bitstrings of equal length
 * **beq** - bitwise equivalence of two bitstrings of equal length, i.e. 1 where bits match, 0 otherwise. (Negation of 'xor'.)
 
-Bitwise operators fail if assumed conditions are not met, e.g. not a bitstring, or not equal length.
+Bitstring operators fail if assumed conditions are not met, i.e. not a bitstring or not of equal length.
 
 ### Arithmetic Operators
 
-Glas encodes natural numbers into bitstrings assuming msb-to-lsb order. For example, `00010111` encodes 23. Although the zeroes prefix `000` doesn't contribute to numeric value, Glas arithmetic operators preserve bitstring lengths (field widths). For example, subtracting 17 results in `00000110`.
+Glas encodes natural numbers into bitstrings assuming msb-to-lsb order. For example, `00010111` encodes 23. Although the zeroes prefix `000` doesn't contribute to numeric value, Glas arithmetic operators will preserve bitstring field widths. For example, subtracting 17 results in `00000110`.
 
 * **add** (N1 N2 -- Sum Carry) - compute sum and carry for two numbers on stack. Sum has field width of N1, carry has field width of N2. Carry can be larger than 1 iff N2 is wider than N1 (e.g. adding 32-bit number to an 8-bit number).
 * **mul** (N1 N2 -- Prod Overflow) - compute product of two numbers on stack. Product has field width of N1, while overflow uses field width of N2. 
 * **sub** (N1 N2 -- Diff) - Computes a non-negative difference (N1 - N2), preserving field width of N1. Fails if result would be negative. This serves as the comparison operator for natural numbers.
 * **div** (Dividend Divisor -- Quotient Remainder) - If divisor is zero, this operator fails. Compute division of two numbers. Quotient has field width of dividend, and remainder has field width of divisor.
 
-Glas doesn't have built-in support for negative numbers, floating point, etc..
-
-Although Glas does not support negative numbers, it is feasible to use two's complement arithmetic, i.e. using addition of a 'negative' number to model subtraction. However, this doesn't directly work for division. It is recommended that programmers explicitly model more advanced number models.
+Glas doesn't have built-in support for negative numbers, floating point, etc.. Extending arithmetic may benefit from *Acceleration*.
 
 ### Annotation Operators
 
@@ -209,7 +208,7 @@ Annotations support static analysis, performance, automated testing, safety and 
  * **assume:Q** - as assert, but with greater emphasis on static verification. Unchecked or infrequently checked at runtime.
  * **stow** - hint to move top stack value to cheap, high-latency, content-addressed storage. Subject to runtime heuristics.
 
-The set of annotations is openly extensible and subject to de-facto standardization. When a compiler or interpreter first encounters annotation headers it does not recognize, it should log a warning to resist silent degradation of safety or performance. Annotations are placed under 'prog' and 'note' headers because it's an open set.
+The set of annotations is openly extensible and subject to de-facto standardization. When a Glas compiler or interpreter encounters annotation labels it does not recognize, it should log a warning then ignore. 
 
 *Aside:* Assertions are expressive and convenient for quick and dirty checks, but are difficult to statically analyze in a systematic manner. In contrast, types are restrictive but designed to support systematic static analysis. Glas systems should usually favor types.
 

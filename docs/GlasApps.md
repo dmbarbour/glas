@@ -10,7 +10,7 @@ This document discusses transaction machines and development of applications wit
 
 Transaction machines model software systems as a set of repeating transactions on a shared environment. Individual transactions are deterministic, while the set is scheduled fairly but non-deterministically. 
 
-This model is conceptually simple, easy to implement naively, and has many nice emergent properties for a wide variety of systems-level concerns. However, a high-performance implementation is non-trivial, requiring incremental computing, replication on fork, and routing optimizations. This requires support from compiler or runtime system.
+This model is conceptually simple, easy to implement naively, and has very many nice emergent properties that cover a wide variety of systems-level concerns. The cost is that a high-performance implementation is non-trivial, requiring incremental computing, replication on fork, and data routing optimizations.
 
 ### Process Control
 
@@ -22,7 +22,7 @@ Aborted transactions are obviously unproductive. Thus, aborting a transaction se
 
 A successful transaction that reads and writes variables is unproductive if the written values are equal to the original content. If there is no cyclic data dependency, then repeating the transaction will always produce the same output. If there is a cyclic data dependency, it is possible to explicitly detect change to check for a stable fixpoint.
 
-A system could augment reactive dataflow by scheduling transactions in a sequence based on the observed topological dependency graph. This would minimize 'glitches' where two variables are inconsistent due to the timing of an observation. A compiler could take this deeper with potential fusion of transactions. 
+A system could augment reactive dataflow by scheduling transactions in a sequence based on the observed topological dependency graph. This would minimize 'glitches' where two variables are inconsistent due to the timing of an observation.
 
 *Aside:* Transaction machines can also use conventional techniques for acting on change, such as writing update events or dirty bits.  
 
@@ -32,7 +32,7 @@ Transaction machines are amenable to incremental computing, and will rely on inc
 
 To leverage incremental computing, transactions should be designed with a stable prefix that transitions to an unstable rollback-read-write-commit cycle. The stable prefix reads slow-changing data, such as configuration. The unstable tail implicitly loops to process channels or fast-changing variables.
 
-*Aside:* With precise dataflow analysis, we can theoretically extract several independent rollback-read-write-commit cycles from a transaction. However, stable prefix is adequate for transaction machine performance.
+Stable prefix and attention from the programmer is adequate for transaction machine performance. However, it is feasible to take incremental computing further with reordering optimizations such as lazy reads, or implicitly forking a transaction based on dataflow analysis.
 
 ### Task-Based Concurrency and Parallelism
 
@@ -40,11 +40,9 @@ Task-based concurrency for transaction machines can be supported by a fair non-d
 
 Relevant observations: A non-deterministic transaction is equivalent to choosing from a set of deterministic transactions, one per choice. For isolated transactions, repetition and replication are logically equivalent. When the choice is stable, replication reduces recomputation and latency. 
 
-Stable forks enable a single transaction to model a concurrent transaction machine. Fork is is conveniently dynamic and reactive. For example, if we fork based on configuration data, any change to the configuration will rollback the fork and rebuild a new set.
+Stable forks enable a single transaction to model a concurrent transaction machine. Forks are dynamic and reactive. For example, if we fork based on configuration data, any change to the configuration will rollback the fork and rebuild a new set.
 
 Transactions evaluate in parallel only insofar as conflict is avoided. When conflict occurs between two transactions, one must be aborted by the scheduler. Progress is still guaranteed, and a scheduler can also guarantee fairness for transactions that respect a compute quota. A scheduler heuristically avoids conflict based on known conflict history. Programmers avoid conflict based on design patterns and fine-grained state manipulations.
-
-*Note:* Unstable forks can still be used for non-deterministic operations. There may also be a quota limit on replication, above which forks are effectively unstable.
 
 ### Real-Time Systems 
 
@@ -56,9 +54,11 @@ It is acceptable that only a subset of transactions are timed. The other transac
 
 ### Declarative Routing
 
-Transactions can move or copy data without directly observing the data moved. While stable, further repetition will *continuously* move or copy data. The system can optimize by verifying stability then sending committed data directly to its destination.
+A subset of transactions may focus on wiring or routing data - i.e. moving or copying data without observing it. It is feasible for the system to identify stable routes, such that the writer transaction can directly send data to its destination, skipping one or several transactions. A motive is to eliminate latency and indirection of intermediate transactions. 
 
-This optimization is most useful where it bypasses interface boundaries between applications or components. An application can serve as a switchboard or introducer for other applications, yet preserves ability to modify routes based on a dynamic configuration. There is no compromise to latency, modularity, or reactivity.
+This optimization is most useful when it penetrates interface boundaries between applications or components. An application can serve as a switchboard or introducer for other applications, yet preserves ability to modify routes based on a time-varying configuration. There is no compromise to latency, modularity, or reactivity.
+
+Declarative routing can be supported by dedicated move and copy APIs, but it is awkward to use such APIs across abstraction layers and resource models. Thus, in practice, this optimization depends on abstract interpretation, lazy reads, and other techniques to distinguish blind dataflow.
 
 ### Live Program Update
 
@@ -70,46 +70,131 @@ Transaction machines greatly simplify live coding or continuous deployment. Ther
 
 A complete solution for live coding requires additional support from the development environment. Transaction machines only lower a few barriers.
 
-## Common Effects
+## High-level API Design
 
-### Memory
+### Hierarchical Composition
 
-I propose to model application memory as a Glas value, implicitly a field within a record. To support conflict analysis and avoidance, memory is accessed indirectly via 'eff' operator, and there are a few operators for abstract manipulation. Effects API:
+Applications should compose hierarchically. A host will use Glas env/eff operators to partition resources and integrate communications between component applications. The host should be able to sandbox activity on component boundaries, preferably with low runtime overheads. 
 
-* **mem:(on:Path, do:MemOp)** - Apply MemOp to memory element designated by Path. Path is a bitstring - conventionally encoding null-terminated UTF-8 text - and may be empty. MemOps:
- * **get** - Response is value on Path. Fail if Path does not exist.
- * **put:Value** - Set value on Path. Add Path if it does not exist.
- * **del** - Remove Path from memory, modulo shared prefix with other paths. 
- * **exist** -  Fails if path does not exist in memory. 
- * **read:N** - Split list in memory at Path. Response is first N elements. Remainder is kept in memory. 
- * **unread:List** - Prepend list argument to list value in memory at Path.
- * **write:List** - Append list argument to list value in memory at Path. 
- * **copy:(src:Src, dst:Dst)** - In context of Path, copy current state of Src to Dst. This includes deleting Dst if Src does not exist.
- * **wcopy:(src:Src, dst:Dst)** - In context of Path, append to list value at Dst a copy of the list value at Src. 
+Ideally, resources are also partitioned hierarchically, such that we can easily perform snapshots, reflection, resets, etc.. that align with component boundaries. Partitioning should be efficient and robust, not relying on fine-grained manipulation of calls.
 
-The get/put/del memops support basic record manipulations. Use of 'exist' is a more stable alternative to 'get'. The read/unread/write memops enable use of lists in memory as lightweight channels. The copy/wcopy memops support declarative routing.
+One viable API is to support structured entry/exit effects to operate on different partitions. The Glas system would enforce safe use either via static analysis of 'eff' (e.g. session types) or use 'env' to count balanced, non-negative entry/exit operations.
 
-This API is designed to simplify hierarchical composition of applications: to confine a component application to a subtree, it is sufficient to use the Glas program 'env' operator to add a prefix to the 'on' path field. 
+### Declarative Delegation
 
-Application memory is private to the application. Other effects will use different effects APIs, enabling the system to hide the implementation.
+In context of live coding or continuous deployment, an application cannot commit to any permanent distribution of authority. This relates to a few principles of secure interaction design: visibility, revocability, and trusted path.
 
-*Aside:* High-precision conflict analysis is essentially the same problem as incremental computing. It's a deep subject. But the memory API should be adequate for most use-cases.
+APIs should avoid directly introducing objects. Instead, APIs should be designed around declarative routing optimizations, such that distribution of authority is reactive to change in code or configuration. Essentially, applications should behave as switchboard, not matchmaker. 
+
+### Application Objects
+
+Application transactions are more extensible and composable if they take a parameter for method and arguments then produce a result. This parameter might be label 'step' when called from the scheduler, but may generally represent queries, signals, events, interrupts, or remote procedure calls.
+
+The system might support a mechanism for applications to register and bind services, perhaps requiring acyclic dependencies.
+
+Result and effects types may depend on the parameter. For example, a call to draw a user interface might have specialized effects for drawing boxed and buttons, and limited access to side-effects other than presenting user controls and a view.
+
+### Local References
+
+References are values that identify external resources. However, the ability to share references between applications has awkward consequences for resource management, security, and hierarchical composition. These issues can be mitigated by favoring local references that cannot be shared.
+
+In context of hierarchical composition, a convenient way to ensure locality of references is for each application to allocate its own references where feasible. For example, when opening a file, the file descriptor becomes a parameter to 'open' instead of a return value. This design supports static allocation and meaningful references.
+
+*Note:* We should avoid manually manipulating or rewriting individual references with env/eff. That quickly becomes a tarpit. Instead, we might use entry/exit effects to implicitly isolate all references within a scope.
+
+### Conflict Analysis
+
+To support parallel computation of transactions, the API must enable precise, fine-grained read-write conflict detection between forks within an application, and also between applications. This can be supported by partitioning state into small variables, and also by specializing updates such as blindly writing a channel.
+
+### Observable Failure
+
+A weakness of the try/then/else hierarchical transaction is that a program cannot present the cause of failure to a user. This hinders potential for dry-runs and comprehension of the system. Thus, we might also support hierarchical transactions at the effects layer, e.g. with a 'try' followed by a paired 'commit' or 'abort' almost independent of program structure.
+
+## Common Effects API
 
 ### Concurrency
 
-* **fork:Value** - response is unit or failure. This response is consistent for a given fork value within a transaction, but non-deterministic fair choice across transactions.
+For transaction machines, task-based concurrency is based on repeating transactions that perform a fair, non-deterministic choice.
 
-The system should optimize stable forks into concurrent replication of the transaction to support task-based concurrency. Unstable fork represents a non-deterministic random choice. The set of fork values observed serves as an implicit, stable identifier of the fork.
+* **fork** - response is unit or failure. This response is non-deterministic but fair. 
+
+In context of repeating transactions and incremental computing, stable forks can be optimized by replication, taking both paths. Replication requires special support from runtime or compiler, and effective integration with incremental computing. When a fork is unstable, it can be implemented by fair random choice instead of replication. 
+
+Each replicated fork may enter its own transaction loop, communicating indirectly via shared variables or reading and writing channels. Essentially, a replicated fork is the application thread of a transaction machine.
 
 ### Timing
 
-* **await:TimeStamp** - Response is unit if time-of-commit is equal or greater than TimeStamp. Otherwise fail.
+Transactions are logically instantaneous. The only relevant time of a transaction is when it commits. However, it is troublesome to observe time directly. The system must know how long it should 'wait' before recomputing an aborted transaction.
 
-The system does not know time-of-commit, but can estimate. It's best to estimate just a little high: if necessary, the system can delay commit to make the estimate true. The system will use await times to guide real-time scheduling.
+* **await:TimeStamp** - Response is unit if time-of-commit will be equal or greater than TimeStamp. Otherwise fail.
 
-Most Glas applications will support `nt:N` timestamps, referring to Windows NT time. Here, N is a natural number of 0.1 microsecond intervals since midnight Jan 1, 1601 UT. The `nt:` prefix is intended to support later extensions.
+The system does not know time-of-commit before committing, but can make a heuristic estimate based on timing of past executions. It's best to estimate a little high: the system can delay for a few milliseconds to make a passing 'await' true.
+
+The system will use 'await' to guide real-time scheduling by delaying transactions that abort after await fails. Even if nothing else changes, the transaction can be recomputed when 'await' is soon to succeed, then committed on time. A nice benefit of this design is that the transaction machine remains fully reactive to changes in variables observed before 'await'.
+
+Glas applications will initially support `nt:Nat` timestamps, referring to Windows NT time - a natural number of 0.1 microsecond intervals since midnight Jan 1, 1601 UT. 
+
+### Memory
+
+Application memory is an implicit record of Glas values. Conflict analysis can track which fields in the record are read or written. Initial state for a cell is unassigned, meaning 'get' will fail. A few specialized ops enable use of lists as local channels. Effects API:
+
+* **mem:(on:Label, op:MemOp)** - Apply MemOp to memory element designated by Label. Label is an arbitrary bitstring. MemOps:
+ * **get** - Response is value assigned to Label, or fail if unassigned.
+ * **put:Value** - Assign value to Label in memory.
+ * **del** - Remove assigned value from Label in memory. 
+ * **exist** -  Fails if Label is unassigned, otherwise respond with unit.
+ * **read:N** - splits a list value in Label, returning first N elements and keeping the rest in memory. Fails if the list is smaller than N elements.
+ * **unread:List** - Prepend list argument to list value in memory at Label.
+ * **write:List** - Append list argument to list value in memory at Label. 
+
+The get/put/del memops support basic record manipulations. Use of 'exist' is a stable alternative to 'get' for probing whether a cell is defined. The read/unread/write memops enable use of lists in memory as lightweight channels.
+
+More flexible analysis of memory, and access to memory as a record value, might be provided by reflection effects. 
+
+### Communication
+
+The application will int
+
+Shared memory is not a good communication model - it is awkward to model life cycles, enforce invariants, hide implementation, support a subset of synchronous interactions, etc.. Instead, an application should communicate with the system via attached interface objects with specialized APIs.
+
+This might be expressed as 'sys' or 'io' calls. 
+
+
+
+
+
+
+
+
+### System
+
+Sessions reify long-running interactions, and are useful for modeling asynchronous requests, network access, and other effects that require multiple transactions to complete. Interactions with the system that cannot be expressed as a single operation will usually be expressed as a session. 
+
+For Glas, session handles are allocated by the application then bound to a new system object. Like record fields, session handles are bitstring paths that must obey the prefix rule: no valid path is a prefix of another valid path.
+
+To simplify hierarchical composition, session operators centralize all references. 
+
+
+Requests that cannot complete immediately require allocating a task to continue processing in the background between transactions.
+
+obj.verb()
+obj2 = obj1.verb()
+obj3 = obj1.verb(obj2) - utility is unclear
+
+It is feasible for system objects to provide extra memory and support memops. But it might not be private memory, in this case.
+
+
+
+
 
 ### Random Numbers
+
+Random numbers should either be based on deterministic PRNG or asynchronous request for entropy.
+
+Transactions can request random numbers. However, it is troublesome if we observe the random numbers before commit. 
+
+random numbers are non-deterministic because that becomes an implicit 'fork'.
+
 
 ### Effects API Discovery
 
@@ -124,6 +209,10 @@ Most Glas applications will support `nt:N` timestamps, referring to Windows NT t
 ### Dataflow Interfaces
 
 ### Termination
+
+
+ system that it provides cert
+
 
 
 # ... OLD STUFF ...
@@ -223,6 +312,16 @@ Requirements:
 * access to local storage
 
 A web-app should compile to an HTML document using JavaScript or WASM.
+
+
+## Design: Applications as Service Consumers and Providers
+
+A system can serve as an introducer between components. One option is hard-wiring components, but a more interesting option is that applications discover each other. Each application can declare the services they provide and consume, preferably with enough precision to form a topological dependency graph.
+
+The question, then, is how to identify services. We might express a service as a session-type. Perhaps service dependencies can also be expressed as session types.
+
+In any case, this is low priority.
+
 
 ## Immediate Mode GUI
 
