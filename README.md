@@ -18,9 +18,9 @@ See the [design doc](docs/GlasDesign.md) for more detail.
 
 ## Project Goals
 
-The concrete goal is to bootstrap a command-line utility named `glas` with support for user-defined syntax, compilation of modules, extraction of binaries, content-addressed storage, incremental builds, and usable acceleration (ideally for CPU and KPN).
+The concrete goal is to bootstrap a command-line utility named `glas` with support for user-defined syntax, compilation of modules, extraction of binaries, content-addressed storage, incremental builds, continuous builds, and usable acceleration (ideally for CPU and KPN).
 
-The bootstrap implementation is written in F# and will be relatively minimal. It will include a simplistic application interpreter in addition to binary extraction.
+A minimal bootstrap implementation will be written in F#, with a motive to leverage JIT compilation for performance. The bootstrap will not support acceleration or stowage unless these prove necessary.
 
 ## Status of Language
 

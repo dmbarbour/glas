@@ -1,5 +1,44 @@
 # Glas Object
 
+Glas Object, or 'glob', is a data format for representing Glas data within binaries or files. This is intended for use with stowage, and indexed for efficient lookups.
+
+Glob represents tree nodes using less than one byte on average. The byte format is `nnoppppp` meaning we have two node-type bits `nn`, one offset bit `o`, and five path prefix bits `ppppp`. 
+
+The path prefix bits can encode up to four bits in the 'path' leading to this node, or can indicate an extended prefix mode. The node type indicates the number of children and supports an escape option for stowage, finger-tree lists, and other structure that requires special interpretation. The offset bit determines use of indirection.
+
+Node types: 
+
+* 00 - leaf. This is the terminal node type. There is no following node.
+* 01 - stem. This node just adds path prefix bits to the following node.
+* 10 - branch. This node is followed by an offset to the left node, then the right node.
+* 11 - escape. Following node has special interpretation, e.g. stowage or finger-tree.
+
+Offset bit: 
+
+* 0 - offset. The following node for stem or escape, or the right node of branch, is accessed indirectly via offset. 
+* 1 - immmediate. The following node for stem or escape, or the right node of a branch, immediately follows the current node.
+
+Leaf nodes use immediate mode; the leaf+offset combination, i.e. high bits `000`, is reserved for potential future extensions.
+
+Prefix bits:
+
+* 00001 - empty prefix
+* 00010 - left
+* 00011 - right
+* 00100 - left left
+* 00101 - right left
+* 00110 - left right
+* 00111 - right right
+* ...
+* 10111 - right right right left
+* 00000 - extended binary prefix 
+
+The extended prefix will encode a large number of prefix bits as a compact binary, but I haven't decided exact details. The basic structure of Glas is based around the leaf, stem, branch, prefix bits, and use of offsets. However, escape options are very ad-hoc and require careful standardization.
+
+
+
+....
+
 Some thoughts:
 
 * require lightweight type and version header, e.g. `glob0\n`

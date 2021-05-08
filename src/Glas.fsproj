@@ -6,9 +6,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="ByteString.fs" />
+    <Compile Include="Bits.fs" />
     <Compile Include="Value.fs" />
-    <Compile Include="FileStowage.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
 
