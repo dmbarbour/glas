@@ -9,11 +9,16 @@ type Bits =
 
 module Bits =
 
-    let private hibit = (1UL <<< 63)
-    let private lobit = 1UL
-    let inline private mm m n = ((m &&& n) = m) 
-    let inline private msb n = mm hibit n 
-    let inline private lsb n = mm lobit n 
+    let private hibit = 
+        (1UL <<< 63)
+    let private lobit = 
+        1UL
+    let inline private mm m n = 
+        ((m &&& n) = m) 
+    let inline private msb n = 
+        mm hibit n 
+    let inline private lsb n = 
+        mm lobit n 
 
     let inline private invalidArgMatchLen l r =
         invalidArg l "lists of different length"
@@ -45,8 +50,8 @@ module Bits =
     let tail (b : Bits) : Bits =
         if (1UL <> b.Head) then { b with Head = (b.Head >>> 1) } else
         match b.Tail with
-        | [] -> invalidArg "b" "tail of empty list"
         | (x :: xs) -> { Head = (hibit ||| (x >>> 1)); Tail = xs }
+        | [] -> invalidArg "b" "tail of empty list"
 
     let tryTail (b : Bits) : Bits option =
         if isEmpty b then None else Some (tail b)

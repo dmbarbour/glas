@@ -1,10 +1,10 @@
 # Glas Applications
 
-Glas programs are essentially transactional due to backtracking conditional behavior. This is a good fit for a *transaction machine* application architecture. 
+Glas can support procedural-loop applications, e.g. `int main() { ... mainloop ... }`. This can be achieved by typefully restricting use of effects within 'try' clauses, using a syntax that compiles to hide direct use of 'try' behind if/then/else or pattern matching. The main benefit of this design is that it's utterly conventional: we can directly adapt existing APIs.
 
-A transaction machine represents the main application loop as a repeating transaction. Transaction machines have many nice properties for process control, live coding, reactive behavior, and real-time systems. Their main weakness is that transactions do not support synchronous interaction with external systems; many APIs must be redesigned for asynchronous interaction.
+An intriguing alternative is to embrace the transactional nature of those 'try' clauses, and restrict effects to those that easily fit a *transaction machine* application model. The benefit of this alternative is that there are many nice non-functional properties for concurrency, process control, live coding, reactive behavior, and real-time systems. The weakness is that transactions do not support synchronous interaction with external systems, requiring a huge redesign of the APIs.
 
-This document discusses transaction machines and development of applications with Glas.
+This document discusses development of transaction machines based applications with Glas. However, it might be wiser to get started with Glas apps using the conventional style.
 
 ## Transaction Machines
 

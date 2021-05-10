@@ -237,9 +237,13 @@ Forks can select subtests, randomize parameters, and simulate non-deterministic 
 
 ### User Applications
 
-Backtracking conditionals are implicit hierarchical transactions. Glas programs are a good fit for transaction-based application models. Transaction machines are a transaction-based application model with a lot of nice properties, a good fit for my vision of live coding HCI and reactive systems. I'm developing this idea in the [Glas Apps](GlasApps.md) document.
+Glas can support a conventional procedural-loop application by constraining use of effects within the 'try' clause of loops and conditionals. 
 
-The Glas command-line utility can provide an interpreter or JIT-compiler for applications with a few effects for network, filesystem, console, and GUI. This would serve as a stopgap for binary generation, and also as a potential platform for live coding.
+One option is to distinguish statements vs. expressions, then require loops and conditionals to branch based on expressions. Or we could hide use of backtracking in our syntax, present a more conventional procedural syntax to the user. A third option is to embrace backtracking and design our effects APIs to be compatible with a transactional context.
+
+Glas programs are a good fit for a transaction machine application model, which is a good fit for my vision of live coding HCI and reactive systems. I'm developing this idea in the [Glas Apps](GlasApps.md) document. However, redesigning APIs and programming conventions for asynchronous interaction is a slog. I'm inclined to favor a conventional procedural loop to get started ASAP.
+
+The Glas command-line utility should provide an interpreter (or JIT-compiler) for at least a console application model, with access to network, filesystem, and stdio. 
 
 ## Performance
 

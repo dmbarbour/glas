@@ -7,7 +7,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="Sample.fs" />
+    <!-- Compile Include="Sample.fs" / -->
+    <Compile Include="TestBits.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
 

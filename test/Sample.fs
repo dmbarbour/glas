@@ -1,4 +1,4 @@
-module Tests
+module Sample
 
 open Expecto
 
