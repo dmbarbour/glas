@@ -1,8 +1,10 @@
 # Glas Object
 
-Glas Object, or 'glob', is a data format for representing Glas data within binaries or files. This is intended for use with stowage, and indexed for efficient lookups.
+Glas Object, or 'glob', is a data format for representing Glas data within binaries or files. 
 
-Glob represents tree nodes using less than one byte on average. The byte format is `nnoppppp` meaning we have two node-type bits `nn`, one offset bit `o`, and five path prefix bits `ppppp`. 
+A naive encoding of a Glas value is a bitstream representing a tree traversal, e.g. 00 leaf, 01 right, 10 left, 11 branch left then right. However, this encoding is not good because it doesn't provide an opportunity to represent for stowage or finger-tree lists, and reading the right subtree requires scanning the left.
+
+Glas Object will represent tree nodes using bytes with specialized encoding for sequential branches. The byte format is `nnoppppp` meaning we have two node-type bits `nn`, one offset bit `o`, and five path prefix bits `ppppp`. 
 
 The path prefix bits can encode up to four bits in the 'path' leading to this node, or can indicate an extended prefix mode. The node type indicates the number of children and supports an escape option for stowage, finger-tree lists, and other structure that requires special interpretation. The offset bit determines use of indirection.
 

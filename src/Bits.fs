@@ -240,19 +240,14 @@ module Bits =
         Array.foldBack cons a empty
 
     let ofList (l : bool list) : Bits =
-        List.foldBack cons l empty
+        List.fold (fun b e -> cons e b) empty l |> rev
 
     let ofSeq (s : bool seq) : Bits =
         Seq.fold (fun b e -> cons e b) empty s |> rev
 
     /// Conversion of byte to bits; ordered msb to lsb 
-    let ofByteMSB (b : uint8) : Bits =
+    let ofByte (b : uint8) : Bits =
         let inline cb n acc = cons (0uy <> ((1uy <<< n) &&& b)) acc
         empty |> cb 0 |> cb 1 |> cb 2 |> cb 3
               |> cb 4 |> cb 5 |> cb 6 |> cb 7
 
-    /// Conversion of byte to bits; ordered lsb to msb
-    let ofByteLSB (b : uint8) : Bits =
-        let inline cb n acc = cons (0uy <> ((1uy <<< n) &&& b)) acc
-        empty |> cb 7 |> cb 6 |> cb 5 |> cb 4
-              |> cb 3 |> cb 2 |> cb 1 |> cb 0

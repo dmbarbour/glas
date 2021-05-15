@@ -1,10 +1,10 @@
 # Glas Applications
 
-Glas can support procedural-loop applications, e.g. `int main() { ... mainloop ... }`. This can be achieved by typefully restricting use of effects within 'try' clauses, using a syntax that compiles to hide direct use of 'try' behind if/then/else or pattern matching. The main benefit of this design is that it's utterly conventional: we can directly adapt existing APIs.
+The conventional application model is the procedural loop, where an application initializes then enters a main loop. However, this is a poor fit for my vision of live coding and reactive systems. There is no mechanism to access state hidden within the loop during a software update, nor to robustly inform the application when its observations or assumptions have been invalidated. 
 
-An intriguing alternative is to embrace the transactional nature of those 'try' clauses, and restrict effects to those that easily fit a *transaction machine* application model. The benefit of this alternative is that there are many nice non-functional properties for concurrency, process control, live coding, reactive behavior, and real-time systems. The weakness is that transactions do not support synchronous interaction with external systems, requiring a huge redesign of the APIs.
+An intriguing alternative is the *transaction machine* model of applications. Transaction machines have many nice properties for concurrency, process control, live coding, reactive behavior, and real-time systems. They are also a good fit for Glas programs, where the 'try' clauses are essentially hierarchical transactions.
 
-This document discusses development of transaction machines based applications with Glas. However, it might be wiser to get started with Glas apps using the conventional style.
+The disadvantage of transaction machines is development overhead. Transactions do not support synchronous interaction, thus many APIs must be redesigned. This is a non-trivial effort. This document discusses transaction machines and suitable APIs to get started with this model.
 
 ## Transaction Machines
 
@@ -100,21 +100,17 @@ Because the system channel is write-only, there is no risk of read-write conflic
 
 ### Robust References
 
-References used by an application should be allocated within the application. For example, instead of `open file` *returning* a system-allocated reference such as a file descriptor, we should express `open file as foo` to specify that symbol 'foo' is the application-allocated reference for the newly opened file. In context of structured channels, this will mostly apply to channel references.
+References used by an application should be allocated by the application. For example, instead of `open file` *returning* a system-allocated reference such as a file descriptor, we should express `open file as foo` to specify that symbol 'foo' is the application-allocated reference for the newly opened file. 
 
-This design has several benefits: References can be allocated statically by application code. Reference values can be descriptive of purpose and provenance, simplifying debugging or reflection. Allocation of runtime references can be manually partitioned to resist read-write conflict on a central allocator. Because all references are internal, there are no security risks related to attempted forgery of system references.
+This design has several benefits: References can be allocated statically by application code. Reference values can be descriptive of purpose and provenance, simplifying debugging or reflection. Allocation of runtime references can be manually partitioned to resist read-write conflict on a central allocator. There are no security risks related to attempted forgery of system references. 
 
-To simplify conflict analysis, references will be linear, i.e. no aliasing. Forking of channels to support concurrent interaction should be an explicit request. However, linearity is not too onerous when combined with forking of transaction machines
-
-In context of transaction machines, concurrent transactions would still time-share the channels.
+In context of transaction machines, forked transactions can essentially time-share references within the application while preserving logical linearity of references.
 
 ### Specialized APIs
 
-System services can be specialized for the host. For example, web-apps can support services based around the document object model, local storage, XMLHttpRequest, and web-sockets. A console app might support an API based around TCP/UDP network sockets and file streams. These interactions can be modeled using a specialized protocol over the system channel.
+Systems and applications should have specialized effects APIs. For example, a console app at the system layer should have an API specialized for file and network access, while a web-app focuses on document object model and XMLHttpRequest. An application's effects model should be designed for the specific data and user interaction models - this simplifies model testing, analysis, protection of invariants, porting to different hosts, etc..
 
-Ideally, application APIs should be specialized by the developer, expressed in terms of a problem-specific data models, update events, effects, and editable projections. A specialized application API can simplify model testing, analysis, reuse, portability, and protection of invariants. 
-
-Application APIs will ultimately be constrained by implementation on an asynchronous host API, requiring an asynchronous adapter layer.
+Frameworks and generalized APIs are useful as intermediate models to simplify implementation of many applications across many hosts. But attempting to start with, say, a general model of channels to unify file streams and network sockets will normally prove a mistake due to the subtle differences.
 
 ## Common Effects
 
@@ -142,47 +138,18 @@ Timestamps will initially support `nt:Number` referring to Windows NT time - a n
 
 ### Memory
 
-All applications need private memory to carry information between transactions. Memory will be modeled as a Glas value, generally organized as a record such that each field models a variable for lightweight conflict analysis. Memory is accessible as a large value for purposes such as checkpointing.
+Applications need private memory to carry information across transactions. For convenience and simplicity, memory is modeled as a key-value database, where keys and values both are arbitrary Glas data. Allocation of keys, aka MemRefs, is left entirely to the application and is independent from other references.
 
-* **mem:(on:Path, op:MemOp)** - Path is a bitstring, and the MemOp represents an operation to observe or modify memory. The intention is that conflict analysis can mostly be based on path analysis. Independent paths must respect the pref
- * **get** - Response is memory value at Path; fails if there is no value.
- * **put:Value** - Insert or replace value at Path.
- * **del** - Remove assigned value (if any) from Path in memory. 
+* **mem:(on:MemRef, op:MemOp)** - MemRef is an arbitrary value. The MemOp represents an operation to observe or modify the associated value. 
+ * **get** - Response is associated memory value; fails if there is no value.
+ * **put:Value** - Insert or replace value associated with ref.
+ * **del** - Remove associated value (if any) from MemRef. 
  * **touch** - respond with unit if 'get' would succeed, otherwise fails.
- * **swap:Value** - Atomic get and put. Compared to separate get then put, swap avoids an implicit read-write dependency in case of black box conflict analysis.
+ * **swap:Value** - Atomic get and put. Supports precise conflict analysis: the value written doesn't depend on the value read.
 
-The get/put/del memops support basic record manipulations. The touch/swap memops help stabilize common update patterns. We can add further methods for reading and writing lists, but there is little need in context of communication channels. 
+The get/put/del memops support basic manipulations. The touch/swap memops help stabilize common update patterns. I might later add methods for partial observation and manipulation of lists or records, but doing so has relatively low priority.
 
-### Communication
-
-Channels work well with or without transactions due to their monotonic nature. Channels in Glas are second-class, but logical tunneling of subchannels can provide expressiveness very near to first-class channels. 
-
-A viable API:
-
-* **chan:ChanOp** - A namespace for channel operations.
- * **lo:(from:ChanRef, to:ChanRef)** - Create a new loopback channel pair. Writes to either channel can be read from the other after a non-deterministic delay. This delay means a transaction cannot read its own writes. Returns unit.
- * **co:(from:ChanRef, to:ChanRef)** - Connect two existing channels, such that elements in one channel are propagated to the other and vice versa. Channels cannot be manually read or written after connection. Returns unit.
- * **wd:(to:ChanRef, data:Elem, batch?)** - Write a data element to specified channel. Returns unit. Options:
-  * *batch* - flag. If set, *data* must be a list of multiple elements to write.
- * **wc:(to:ChanRef, as:ChanRef)** - Constructs a new tunnel through the 'to' channel, and binds the writer's endpoint to the freshly allocated 'as' channel reference. Returns unit.
- * **wq:(to:ChanRef)** - Quit writing the channel. Further elements written to the channel are dropped before they reach the reader. Returns unit.
- * **rd:(from:ChanRef, count?N, exact?)** - Read a data element from specified channel. Returns element. Fails if no element available, including if next element is not data. Options:
-  * *count* - optional number. If specified, returns list of up to N available data elements.
-  * *exact* - flag. If set, fail if fewer than *count* elements available.
- * **rc:(from:ChanRef, as:ChanRef)** - Bind an incoming subchannel to the freshly allocated 'as' reference. Fails if the next element is not a subchannel. Returns unit.
- * **rq:(from:ChanRef)** - Returns unit if all elements have been read and no more elements will be received, whether due to involuntary disruption or voluntary 'wq'. Otherwise fails.
-
-Channel references are arbitrary Glas values, allocated by the application. If a channel is already in use, binding it to a new channel will implicitly perform 'wq' on the prior channel.
-
-Writers cannot directly detect whether readers are present or active. Channel protocols should be designed with explicit feedback from readers - acknowledgements, ready tokens, etc. - to ensure writers aren't wasting their efforts. If a reader applies 'wq', it should eventually stop the writer. Network disruption is modeled as an implicit 'wq' in both directions.
-
-### Evolution
-
-We can follow the example of language modules and tests and introduce a **log** effect for development and debugging purposes.
-
-* **log:Message** - Response is unit. The message is intended for consumption by application developers or the development environment. Unlike most effects, even aborted log messages can be visible, perhaps distinguished by display color. Messages should have a variant header such as `warn:Warning` vs. `info:Information` to simplify routing.
-
-Integration between logging and the runtime environment is ad-hoc, e.g. `log:bp:Number` could provide a basis for breakpoints. In context of transaction machines, a stable repeating transaction will frequently repeat log messages, so it can be useful to the log as a 'frame' of active messages instead of a stream of past messages.
+*Aside:* It is feasible to support automatic garbage collection of memory by introducing an application method to trace all the living memory.
 
 ## Console Applications
 
@@ -197,55 +164,105 @@ Log output may bind stderr by default.
 
 ### Environment Variables and Command Line Arguments
 
-These values can be returned synchronously and modeled as implicit parameters:
+Accessed by effect as implicit parameters:
 
-* **query:cmd** - response is list of strings representing command-line arguments.
-* **query:env** - response is list of 'key=value' strings for environment variables.
+* **cmd** - response is list of strings representing command-line arguments.
+* **env** - response is list of 'key=value' strings for environment variables.
 
-There is no equivalent to 'setenv', but it is feasible to use the env/eff operator to intercept 'query' and override the environment within context of a subprogram.
+There is no equivalent to 'setenv', but it is feasible to use the env/eff operator to override these values in context of a subprogram.
 
-### Standard Input and Output
+### Standard IO
 
-Applications can start with access to standard input and output as a pre-allocated channel, with channel reference unit. Reads from this channel correspond to standard input, and writes to standard output.
+Standard input and output can be modeled as initially open file references, following convention. However, instead of integers, we could reserve symbols `stdin`, `stdout`, and `stderr` as meaningful file references.
 
 ### Filesystem
 
-I'm uncertain how to best model a filesystem API. Requirements include reading, writing, and addending files, and browsing folders. It would also be useful to continuously watch for filesystem changes, and perhaps to support Glas Object as a write mode alternative to binary read/write.
+Glas applications support a relatively direct translation of the conventional filesystem API. The main differences are that reads cannot directly wait for data, and for *robust references* I require the application to allocate the file reference.
 
-One idea is to combine browsing directories with watching for changes, e.g. by modeling the file browser as a channel that receives a stream of updates to maintain a view. 
+* **file:FileOp** - namespace for file operations. An open file is essentially a cursor into a file resource, with access to buffered data. 
+ * **open:(name:FileName, as:FileRef, for:(read | write | append | create | delete))** - Create a new system object to interact with the specified file resource. Fails if FileRef is already in use, otherwise returns unit. Whether the file is successfully opened is observable via 'state' a short while after request is committed. The intended interaction must be specified:
+  * *read* - read file as stream.
+  * *write* - erase current content of file or start a new file.
+  * *append* - extend current content of file.
+  * *create* - same as write, except fails if the file already exists.
+  * *delete* - removes a file. Use 'state' to observe done or error.
+ * **close:FileRef** - Delete the system object associated with this reference. FileRef is no longer in-use, and operations (except open) will fail.
+ * **read:(from:FileRef, count:N, exact?)** - read 1 to N bytes, limited by available data, returned as a list. Fails if no bytes can be returned; see 'state' to diagnose. Option:
+  * *exact* - flag. If set, fail if fewer than N bytes are available.
+ * **write:(to:FileRef, data:Binary)** - write a list of bytes to file. This fails if the file is read-only or is in an error state, otherwise returns unit. It is permitted to write while in a 'wait' state.
+ * **state:FileRef** - Return a representation of the state of the system object. 
+  * *init* - state immediately after 'open' until request is committed and processed.
+  * *ok* - seems to be in a good state. 
+  * *done* - requested interaction is complete. This currently applies to read or delete modes. 
+  * *error:Value* - any error state, with ad-hoc details. 
 
-* **file:FileOp** - A namespace for file operations.
- * **
+* **dir:DirOp** - filesystem directory (aka folder) operations.
+ * **open:(name:DirName, as:DirRef, for:(read | create | delete))** - Create a new system object to interact with a directory resource. Fails if DirRef is already in use, otherwise returns unit. Whether the directory is successfully opened is observable via 'state' a short while after the request is committed. Intended interactions must be specified:
+  * *read* - supports iteration through elements in the directory.
+  * *create* - creates a new directory. Use 'state' to observe done or error.
+  * *delete* - remove an empty directory. Use 'state' to observe done or error.
+ * **close:DirRef** - Delete the associated system object. DirRef is no longer in-use, and operations (except open) will fail. 
+ * **read:DirRef** - Read an entry from the directory table. An entry is a record of form `(name:String, type:(dir | file | ...), ...)` allowing ad-hoc extension with attributes or new types. An implementation may ignore types except for 'dir' and 'file', and must ignore the "." and ".." references. Fails if no entry can be read, see 'state' for reason. 
+ * **state:DirRef** - Return a representation of the state of the associated system object. 
+  * *init* - state immediately after 'open' until processed.
+  * *ok* - seems to be in a good state at the moment.
+  * *done* - requested interaction is complete. This applies to 'read' after reading the final entry, or after a successful create or delete.
+  * *error:Value* - any error state, with ad-hoc details.
 
-Response is unit. The operation is deferred until transaction commit, and the future result is provided via specified channel. The file path may specify a directory in some cases.
+The file and directory APIs could feasibly be extended with additional modes. However, the API as described is probably sufficient for developing many useful Glas applications.
 
-### TCP
+### Network
 
-Most console applications can simply use TCP for all their networking needs.
+We can cover the needs of most applications with support for TCP and UDP protocol layers. Instead of touching the mess that is sockets, I propose to specialize the API for each protocol required. Later, we might add raw IP sockets support. 
 
-### UDP
+* **tcp:TcpOp** - namespace for TCP operations
+ * **listener:ListenerOp** - namespace for TCP listener operations.
+  * **create:(port?Port, addrs?[List, Of, Addr], as:ListenerRef)** - Create a new ListenerRef. Return unit. Whether listener is successfully created is observable via 'state' a short while after the request is committed.
+   * *port* - indicates which local TCP port to bind; if excluded, leaves dynamic allocation to OS. 
+   * *addrs* - indicates which local network cards or ethernet interfaces to bind; if excluded, attempts to bind all of them.
+  * **accept:(from:ListenerRef, as:TcpRef)** - Receive an incoming connection, and bind the new connection to the specified TcpRef. This operation will fail if there is no pending connection. 
+  * **state:ListenerRef**
+   * *init* - create request hasn't been fully processed yet.
+   * *ok* - 
+   * *error:Value* - failed to create or detached by OS, with details. 
+  * **info:ListenerRef** - After successful creation of listener, returns `(port:Port, addrs:[List , Of, Addr])`. Fails if listener is not successfully created.
+  * **close:ListenerRef** - Release listener reference and associated resources.
+ * **connect:(dst:(port:Port, addr:Addr), src?(port?Port, addr?Addr), as:TcpRef)** - Create a new connection to a remote TCP port. Fails if TcpRef is already in use, otherwise returns unit. Whether the connection is successful is observable via 'state' a short while after the request is committed. Destination port and address must be specified, but source port and address are usually unspecified and determined dynamically.
+ * **read:(from:TcpRef, count:N, exact?)**
+ * **write:(to:TcpRef, data:Binary, fin?)** 
+ * **state:TcpRef**
+  * *init*
+  * *ok*
+  * *error:Value*
+  
+ * **info:TcpRef** - For a successful TCP connection (whether via 'tcp:connect' or 'tcp:listener:accept'), returns `(dst:(port:Port, addr:Addr), src:(port:Port, addr:Addr))`. Fails if TCP connection is not successful.
+ * **close:TcpRef**
+
+* **udp:UdpOp** - namespace for UDP operations.
+ * **connect:(port?Port, addrs?[List, Of, Addr], as:UdpRef)** - Bind a local UDP port, potentially across multiple ethernet interfaces. Fails if UdpRef is already in use, otherwise returns unit. Whether binding is successful is observable via 'state' after the request is committed. Options:
+  * *port* - normally included to determine which port to bind, but may be left to dynamic allocation. 
+  * *addr* - indicates which local ethernet interfaces to bind; if unspecified, binds all of them.
+ * **read:(from:UdpRef)** - returns the next available Message value, consisting of `(port:Port, addr:Addr, data:Binary)`. This refers to the remote UDP port and address, and the binary data payload. Fails if there is no available message.
+ * **write(to:UdpRef, data:Message)** - output a message using same form as messages read. Returns unit. Write may fail if the connection is in an error state, and attempting to write to an invalid port or address or oversized packets may result in an error state.
+ * **state:UdpRef**
+  * *init*
+  * *ok*
+  * *error:Value*
+ * **info:UdpRef** - For a successfully connected UDP connection, returns a `(port:Port, addrs:[List, Of, Addr])` pair. Fails if still initializing, or if there was an error during initialization.
+ * **close:UdpRef**
+
+An Addr can be a 32-bit number or a string such as "www.google.com" or "192.168.1.42". Similarly, a Port can be a 16-bit number or a string such as "ftp" that might be externally configured (cf. `/etc/services` in Linux).
+
+*Aside:* It might be useful to support a DNS lookup service directly, e.g. similar to getaddrinfo. However, this is low priority.
 
 ## Web Applications
 
-### DOM
-
-### HTTP Requests
-
-For a web-application, we might 
-
-### Web Sockets
-
-### Local Storage
-
+Another promising target for Glas is web applications, i.e. compiling apps to JavaScript and the Document Object Model, using XMLHttpRequest, WebSockets, and Local Storage as needed. 
 
 ## Meta
 
 ### Synchronous Syntax
 
-Transaction machines work most conveniently with asynchronous interaction models, such as message passing, channels, blackboard systems, and tuple spaces. 
+Transaction machines work most conveniently with asynchronous interaction models, but it's often more convenient to express programs as synchronous interactions. To resolve this, we could design a syntax that compiles a program into many smaller transactions, perhaps using a state machine to identify the safe intermediate states.
 
-However, it is feasible to support a program layer that compiles synchronous code to run on the transaction machine platform. This would involve representing control flow across transactions as a state machine, perhaps aligning continuations with labeled boundaries to improve stability.
-
-As a compilation target, the transaction machine would still provide a robust foundation for concurrency, process control, incremental computing, and live coding. 
-
-This seems a very promising direction to pursue in the long term.
+Transaction machines still provide a lot of benefits for process control and safe concurrency even when used this way. However, it is important to ensure the concurrency semantics are clear in the syntax.
