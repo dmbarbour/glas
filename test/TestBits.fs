@@ -15,6 +15,12 @@ let rec randomListLoop rng n acc =
 let randomList n =
     randomListLoop (System.Random()) n []
 
+let foldMSB (s : seq<bool>) : uint64 =
+    let addBit n b =
+        let e = if b then 1UL else 0UL
+        (n <<< 1) ||| e
+    Seq.fold addBit 0UL s
+
 [<Tests>]
 let tests =
     testList "bit tests" [
@@ -25,6 +31,33 @@ let tests =
             Expect.equal (Bits.length b) 8 "byte length"
             Expect.equal (Bits.rev b) (Bits.ofList (List.rev bl)) "reversed"
             Expect.equal 8 (Bits.sharedPrefixLen b b) "shared prefix"
+            match b with
+            | Bits.Byte n -> Expect.equal n 23uy "via Byte match"
+            | _ -> failtest "failed to match Byte"
+
+        testCase "n64" <| fun () ->
+            let bl = randomList 64
+            let n64 = foldMSB (List.toSeq bl)
+            Expect.equal (Bits.ofList bl) (Bits.ofU64 n64) "equal n64"
+            match (Bits.ofList bl) with
+            | Bits.U64 n -> Expect.equal n n64 "via U64 match"
+            | _ -> failtest "failed to match U64" 
+
+        testCase "n32" <| fun () ->
+            let bl = randomList 32
+            let n32 = foldMSB (List.toSeq bl) |> uint32
+            Expect.equal (Bits.ofList bl) (Bits.ofU32 n32) "equal n32"
+            match (Bits.ofList bl) with
+            | Bits.U32 n -> Expect.equal n n32 "via U32 match"
+            | _ -> failtest "failed to match U32"
+
+        testCase "n16" <| fun () ->
+            let bl = randomList 16
+            let n16 = foldMSB (List.toSeq bl) |> uint16
+            Expect.equal (Bits.ofList bl) (Bits.ofU16 n16) "equal n16"
+            match (Bits.ofList bl) with
+            | Bits.U16 n -> Expect.equal n n16 "via U16 match"
+            | _ -> failtest "failed to match U16"
 
         testCase "big bit lists" <| fun () ->
             let len = 223

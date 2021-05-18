@@ -7,6 +7,7 @@
 
   <ItemGroup>
     <Compile Include="Bits.fs" />
+    <Compile Include="FTList.fs" />
     <Compile Include="Value.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>

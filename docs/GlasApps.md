@@ -187,7 +187,7 @@ Glas applications support a relatively direct translation of the conventional fi
   * *create* - same as write, except fails if the file already exists.
   * *delete* - removes a file. Use 'state' to observe done or error.
  * **close:FileRef** - Delete the system object associated with this reference. FileRef is no longer in-use, and operations (except open) will fail.
- * **read:(from:FileRef, count:N, exact?)** - read 1 to N bytes, limited by available data, returned as a list. Fails if no bytes can be returned; see 'state' to diagnose. Option:
+ * **read:(from:FileRef, count:N, exact?)** - read 1 to N bytes, limited by available data, returned as a list. Fails if no bytes are available - see 'state' to diagnose. Option:
   * *exact* - flag. If set, fail if fewer than N bytes are available.
  * **write:(to:FileRef, data:Binary)** - write a list of bytes to file. This fails if the file is read-only or is in an error state, otherwise returns unit. It is permitted to write while in a 'wait' state.
  * **state:FileRef** - Return a representation of the state of the system object. 
@@ -205,7 +205,7 @@ Glas applications support a relatively direct translation of the conventional fi
  * **read:DirRef** - Read an entry from the directory table. An entry is a record of form `(name:String, type:(dir | file | ...), ...)` allowing ad-hoc extension with attributes or new types. An implementation may ignore types except for 'dir' and 'file', and must ignore the "." and ".." references. Fails if no entry can be read, see 'state' for reason. 
  * **state:DirRef** - Return a representation of the state of the associated system object. 
   * *init* - state immediately after 'open' until processed.
-  * *ok* - seems to be in a good state at the moment.
+  * *ok* - seems to be in a good state
   * *done* - requested interaction is complete. This applies to 'read' after reading the final entry, or after a successful create or delete.
   * *error:Value* - any error state, with ad-hoc details.
 
@@ -227,14 +227,14 @@ We can cover the needs of most applications with support for TCP and UDP protoco
    * *error:Value* - failed to create or detached by OS, with details. 
   * **info:ListenerRef** - After successful creation of listener, returns `(port:Port, addrs:[List , Of, Addr])`. Fails if listener is not successfully created.
   * **close:ListenerRef** - Release listener reference and associated resources.
- * **connect:(dst:(port:Port, addr:Addr), src?(port?Port, addr?Addr), as:TcpRef)** - Create a new connection to a remote TCP port. Fails if TcpRef is already in use, otherwise returns unit. Whether the connection is successful is observable via 'state' a short while after the request is committed. Destination port and address must be specified, but source port and address are usually unspecified and determined dynamically.
- * **read:(from:TcpRef, count:N, exact?)**
- * **write:(to:TcpRef, data:Binary, fin?)** 
+ * **connect:(dst:(port:Port, addr:Addr), src?(port?Port, addr?Addr), as:TcpRef)** - Create a new connection to a remote TCP port. Fails if TcpRef is already in use, otherwise returns unit. Whether the connection is successful is observable via 'state' a short while after the request is committed. Destination port and address must be specified, but source port and address are usually unspecified and determined dynamically by the OS.
+ * **read:(from:TcpRef, count:N, exact?)** - read 1 to N bytes, limited by available data, returned as a list. Fails if no bytes are available - see 'state' to diagnose. Option:
+  * *exact* - flag. If set, fail if fewer than N bytes are available.
+ * **write:(to:TcpRef, data:Binary)** 
  * **state:TcpRef**
   * *init*
   * *ok*
   * *error:Value*
-  
  * **info:TcpRef** - For a successful TCP connection (whether via 'tcp:connect' or 'tcp:listener:accept'), returns `(dst:(port:Port, addr:Addr), src:(port:Port, addr:Addr))`. Fails if TCP connection is not successful.
  * **close:TcpRef**
 
@@ -251,9 +251,11 @@ We can cover the needs of most applications with support for TCP and UDP protoco
  * **info:UdpRef** - For a successfully connected UDP connection, returns a `(port:Port, addrs:[List, Of, Addr])` pair. Fails if still initializing, or if there was an error during initialization.
  * **close:UdpRef**
 
-An Addr can be a 32-bit number or a string such as "www.google.com" or "192.168.1.42". Similarly, a Port can be a 16-bit number or a string such as "ftp" that might be externally configured (cf. `/etc/services` in Linux).
+An Addr can be a 32-bit number or a string such as "www.google.com" or "192.168.1.42". Similarly, a Port can be a 16-bit number or a string such as "ftp" that might be externally configured (cf. `/etc/services` in Linux). 
 
 *Aside:* It might be useful to support a DNS lookup service directly, e.g. similar to getaddrinfo. However, this is low priority.
+
+*Note:* Half-closed TCP is a potentially useful feature, but has been effectively disabled by many routers to help resist Denial of Service attacks. I've decided to not support it in this API.
 
 ## Web Applications
 

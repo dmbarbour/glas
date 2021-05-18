@@ -4,7 +4,7 @@ namespace Glas
 [<Struct>]
 type Bits = 
     { Head     : uint64         // 0 to 63 bits encoded in head.  
-    ; Tail     : uint64 list    // for 64 elements or more
+    ; Tail     : uint64 list    // each element is 64 bit chunk. 
     }
 
 module Bits =
@@ -13,12 +13,12 @@ module Bits =
         (1UL <<< 63)
     let private lobit = 
         1UL
-    let inline private mm m n = 
-        ((m &&& n) = m) 
+    let inline private match_mask mask n = 
+        ((mask &&& n) = mask) 
     let inline private msb n = 
-        mm hibit n 
+        match_mask hibit n 
     let inline private lsb n = 
-        mm lobit n 
+        match_mask lobit n 
 
     let inline private invalidArgMatchLen l r =
         invalidArg l "lists of different length"
@@ -245,9 +245,63 @@ module Bits =
     let ofSeq (s : bool seq) : Bits =
         Seq.fold (fun b e -> cons e b) empty s |> rev
 
-    /// Conversion of byte to bits; ordered msb to lsb 
-    let ofByte (b : uint8) : Bits =
-        let inline cb n acc = cons (0uy <> ((1uy <<< n) &&& b)) acc
-        empty |> cb 0 |> cb 1 |> cb 2 |> cb 3
-              |> cb 4 |> cb 5 |> cb 6 |> cb 7
+    /// Prefix a full byte, such that MSB is head.
+    let consByte (byte : uint8) (b : Bits) : Bits =
+        let inline cb n acc = cons (0uy <> ((1uy <<< n) &&& byte)) acc
+        b |> cb 0 |> cb 1 |> cb 2 |> cb 3
+          |> cb 4 |> cb 5 |> cb 6 |> cb 7
 
+    /// Conversion of byte to bits; ordered msb to lsb 
+    let inline ofByte (n : uint8) : Bits =
+        consByte n empty
+
+    let inline private matchHdLen hdlen n =
+        let expect_hibit = (1UL <<< hdlen)
+        let mask_hibits = ~~~(expect_hibit - 1UL)
+        ((mask_hibits &&& n) = expect_hibit)
+
+    let rec private matchListLen len xs =
+        match xs with
+        | [] -> (0 = len)
+        | (x::xs') -> if (len > 0) then matchListLen (len - 1) xs' else false
+
+    // matchlen is O(min(len, length b)), and requires constant time to
+    // match the expected head length.
+    let inline private matchLen len b =
+        matchHdLen (len % 64) (b.Head) && matchListLen (len / 64) (b.Tail)
+
+    let (|Byte|_|) (b : Bits) : uint8 option =
+        if not (matchLen 8 b) then None else
+        let addBit n e = (n <<< 1) ||| (if e then 1uy else 0uy)
+        fold addBit 0uy b |> Some
+
+    let ofU16 (n : uint16) : Bits =
+        let inline cb ix acc = consByte (uint8 (n >>> (8 * ix))) acc
+        empty |> cb 0 |> cb 1
+    
+    let (|U16|_|) (b : Bits) : uint16 option =
+        if not (matchLen 16 b) then None else
+        let addBit n e = (n <<< 1) ||| (if e then 1us else 0us)
+        fold addBit 0us b |> Some
+
+    let ofU32 (n : uint32) : Bits =
+        let inline cb ix acc = consByte (uint8 (n >>> (8 * ix))) acc
+        empty |> cb 0 |> cb 1 |> cb 2 |> cb 3
+
+    let (|U32|_|) (b : Bits) : uint32 option =
+        if not (matchLen 32 b) then None else
+        let addBit n e = (n <<< 1) ||| (if e then 1ul else 0ul)
+        fold addBit 0ul b |> Some
+
+    let ofU64 (n : uint64) : Bits =
+        let inline cb ix acc = consByte (uint8 (n >>> (8 * ix))) acc
+        empty |> cb 0 |> cb 1 |> cb 2 |> cb 3 |> cb 4 |> cb 5 |> cb 6 |> cb 7
+
+    let (|U64|_|) (b : Bits) : uint64 option =
+        if not (matchLen 64 b) then None else
+        let addBit n e = (n <<< 1) ||| (if e then 1UL else 0UL)
+        fold addBit 0UL b |> Some
+
+    // todo: consider support for dynamic-sized number representations,
+    // e.g. excluding the leading zeroes.
+    
