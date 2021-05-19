@@ -21,8 +21,8 @@ namespace Glas
 // 
 // At this point, we don't have a strongly normalizing representation. In normal
 // form, the last element of the spine is not a pair, and the Spine is not a 
-// singleton list (i.e. size is not 1). Fortunately, it is easy to convert any
-// value to normal form.
+// singleton list (i.e. size is not 1), and we need to ignore the tree-structure
+// within the finger tree. Fortunately, none of these constraints are difficult.
 //
 // This representation still elides use of Stowage, so scalability is limited by
 // volatile memory. However, it is adequate for a bootstrap interpreter. 
