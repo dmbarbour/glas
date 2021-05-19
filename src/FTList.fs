@@ -100,6 +100,7 @@ module FT =
 
         // chunkify is needed when appending trees.
         // minimum list size to chunkify is 2 elems.
+        // not tail-recursive, use only on small lists
         let rec chunkify<'V when 'V :> ISized> (lv : 'V list) : B<'V> list =
             match lv with
             | (b1::b2::rem) -> 
@@ -109,9 +110,7 @@ module FT =
                 | (b3::b4::[]) -> (mkB2 b1 b2)::(mkB2 b3 b4)::[] // 4 elems
                 | (b3::lv') -> (mkB3 b1 b2 b3)::(chunkify lv') // 5+ elems
             | _ -> invalidArg (nameof lv) "not enough data to chunkify" // 0 or 1 elems
-            
 
-    [<NoComparison; NoEquality>]
     type T<'V when 'V :> ISized> =
         | Empty
         | Single of 'V
@@ -129,16 +128,16 @@ module FT =
             | Empty -> true
             | _ -> false
 
-        let inline mkMany p f s =
+        let inline mkT p f s =
             let sz = D.size p + isize f + D.size s
             Many (size=sz, prefix=p, finger=f, suffix=s)
 
         let ofD (d:D<'V>) : T<'V> =
             match d with
             | D1 d1 -> Single d1
-            | D2 (d1,d2) -> mkMany (D1(d1)) Empty (D1(d2))
-            | D3 (d1,d2,d3) -> mkMany (D1(d1)) Empty (D2(d2,d3))
-            | D4 (d1,d2,d3,d4) -> mkMany (D2(d1,d2)) Empty (D2(d3,d4))
+            | D2 (d1,d2) -> mkT (D1(d1)) Empty (D1(d2))
+            | D3 (d1,d2,d3) -> mkT (D1(d1)) Empty (D2(d2,d3))
+            | D4 (d1,d2,d3,d4) -> mkT (D2(d1,d2)) Empty (D2(d3,d4))
 
         let rec viewL<'V when 'V :> ISized> (t : T<'V>) : struct('V * T<'V>) option =
             match t with
@@ -146,13 +145,15 @@ module FT =
             | Single v -> Some (v, Empty)
             | Many (prefix=p; finger=f; suffix=s) ->
                 match p with
-                | D4 (d1, d2, d3, d4) -> Some struct(d1, mkMany (D3(d2,d3,d4)) f s)
-                | D3 (d1, d2, d3) -> Some struct(d1, mkMany (D2(d2,d3)) f s)
-                | D2 (d1, d2) -> Some struct(d1, mkMany (D1(d2)) f s)
+                | D4 (d1, d2, d3, d4) -> Some struct(d1, mkT (D3(d2,d3,d4)) f s)
+                | D3 (d1, d2, d3) -> Some struct(d1, mkT (D2(d2,d3)) f s)
+                | D2 (d1, d2) -> Some struct(d1, mkT (D1(d2)) f s)
                 | D1 (d1) ->
-                    match viewL f with
-                    | Some struct(b, f') -> Some struct(d1, mkMany (B.toD b) f' s)
-                    | None -> Some struct(d1, ofD s)
+                    let t' = 
+                        match viewL f with
+                        | Some struct(b, f') -> mkT (B.toD b) f' s
+                        | None -> ofD s
+                    Some struct(d1, t')
         
         let rec viewR<'V when 'V :> ISized> (t : T<'V>) : struct(T<'V> * 'V) option =
             match t with
@@ -160,37 +161,39 @@ module FT =
             | Single v -> Some struct(Empty, v)
             | Many (prefix=p; finger=f; suffix=s) ->
                 match s with
-                | D4 (d1, d2, d3, d4) -> Some struct(mkMany p f (D3(d1,d2,d3)), d4)
-                | D3 (d1, d2, d3) -> Some struct(mkMany p f (D2(d1,d2)), d3)
-                | D2 (d1, d2) -> Some struct(mkMany p f (D1(d1)), d2)
+                | D4 (d1, d2, d3, d4) -> Some struct(mkT p f (D3(d1,d2,d3)), d4)
+                | D3 (d1, d2, d3) -> Some struct(mkT p f (D2(d1,d2)), d3)
+                | D2 (d1, d2) -> Some struct(mkT p f (D1(d1)), d2)
                 | D1 (d1) ->
-                    match viewR f with
-                    | Some struct(f', b) -> Some struct(mkMany p f' (B.toD b), d1)
-                    | None -> Some struct(ofD p, d1)
+                    let t' =
+                        match viewR f with
+                        | Some struct(f', b) -> mkT p f' (B.toD b)
+                        | None -> ofD p
+                    Some struct(t', d1)
 
         let rec cons<'V when 'V :> ISized> (v : 'V) (t : T<'V>) : T<'V> =
             match t with
             | Empty -> Single v
-            | Single v0 -> mkMany (D1(v)) Empty (D1(v0))
+            | Single v0 -> mkT (D1(v)) Empty (D1(v0))
             | Many (prefix=p; finger=f; suffix=s) ->
                 match p with
-                | D4 (d1,d2,d3,d4) -> mkMany (D2(v,d1)) (cons (B.mkB3 d2 d3 d4) f) s
-                | D3 (d1,d2,d3) -> mkMany (D4(v,d1,d2,d3)) f s
-                | D2 (d1,d2) -> mkMany (D3(v,d1,d2)) f s
-                | D1 (d1) -> mkMany (D2(v,d1)) f s
+                | D4 (d1,d2,d3,d4) -> mkT (D2(v,d1)) (cons (B.mkB3 d2 d3 d4) f) s
+                | D3 (d1,d2,d3) -> mkT (D4(v,d1,d2,d3)) f s
+                | D2 (d1,d2) -> mkT (D3(v,d1,d2)) f s
+                | D1 (d1) -> mkT (D2(v,d1)) f s
 
         let rec snoc<'V when 'V :> ISized> (t : T<'V>) (v : 'V) : T<'V> =
             match t with
             | Empty -> Single v
-            | Single v0 -> mkMany (D1(v0)) Empty (D1(v))
+            | Single v0 -> mkT (D1(v0)) Empty (D1(v))
             | Many (prefix=p; finger=f; suffix=s) ->
                 match s with
-                | D4 (d1,d2,d3,d4) -> mkMany p (snoc f (B.mkB3 d1 d2 d3)) (D2 (d4,v))
-                | D3 (d1,d2,d3) -> mkMany p f (D4(d1,d2,d3,v))
-                | D2 (d1,d2) -> mkMany p f (D3(d1,d2,v))
-                | D1 (d1) -> mkMany p f (D2(d1,v))
+                | D4 (d1,d2,d3,d4) -> mkT p (snoc f (B.mkB3 d1 d2 d3)) (D2 (d4,v))
+                | D3 (d1,d2,d3) -> mkT p f (D4(d1,d2,d3,v))
+                | D2 (d1,d2) -> mkT p f (D3(d1,d2,v))
+                | D1 (d1) -> mkT p f (D2(d1,v))
 
-        let inline ofList l =
+        let ofList l =
             List.fold snoc Empty l
 
         /// Append two trees.
@@ -205,7 +208,7 @@ module FT =
                 | Many (prefix=pr; finger=fr; suffix=sr) ->
                     let bc = B.chunkify (D.consDL sl (D.consDL pr List.empty))
                     let fl' = List.fold snoc fl bc
-                    mkMany pl (append fl' fr) sr
+                    mkT pl (append fl' fr) sr
 
         let rec private _splitListAcc<'V when 'V :> ISized> n acc l : struct ('V list * 'V * 'V list) =
             match l with
@@ -229,9 +232,9 @@ module FT =
                     let rt = 
                         if List.isEmpty r then
                             match viewL f with
-                            | Some struct(b, f') -> mkMany (B.toD b) f' s
+                            | Some struct(b, f') -> mkT (B.toD b) f' s
                             | None -> ofD s
-                        else mkMany (D.ofList r) f s
+                        else mkT (D.ofList r) f s
                     struct(ofList l, x, rt)
                 else if n < pfz then // split f
                     let n' = n - pz
@@ -240,15 +243,15 @@ module FT =
                     let lt = 
                         if List.isEmpty lb then
                             match viewR lf with
-                            | Some struct(lf', b') -> mkMany p lf' (B.toD b')
+                            | Some struct(lf', b') -> mkT p lf' (B.toD b')
                             | None -> ofD p
-                        else mkMany p lf (D.ofList lb)
+                        else mkT p lf (D.ofList lb)
                     let rt =
                         if List.isEmpty rb then
                             match viewL rf with
-                            | Some struct(b', rf') -> mkMany (B.toD b') rf' s
+                            | Some struct(b', rf') -> mkT (B.toD b') rf' s
                             | None -> ofD s
-                        else mkMany (D.ofList rb) rf s
+                        else mkT (D.ofList rb) rf s
                     struct(lt, x, rt)
                 else // split s
                     let n' = n - pfz
@@ -256,9 +259,9 @@ module FT =
                     let lt = 
                         if List.isEmpty l then
                             match viewR f with
-                            | Some struct(f', b) -> mkMany p f' (B.toD b)
+                            | Some struct(f', b) -> mkT p f' (B.toD b)
                             | None -> ofD p
-                        else mkMany p f (D.ofList l)
+                        else mkT p f (D.ofList l)
                     struct(lt, x, ofList r)
             | Empty -> failwith "inner split on empty tree; should be impossible"
 
@@ -304,13 +307,13 @@ type FTList<[<EqualityConditionalOn; ComparisonConditionalOn>] 'a when 'a :equal
         | _ -> false
     interface System.IEquatable<FTList<'a>> with
         member x.Equals(y) =
-            let rec eqloop (l : T<Atom<'a>>) (r : T<Atom<'a>>) : bool =
+            let rec eqLoop (l : T<Atom<'a>>) (r : T<Atom<'a>>) : bool =
                 match T.viewL l, T.viewL r with
                 | Some struct(l0,l'), Some struct(r0,r') ->
-                    if (l0.V) <> (r0.V) then false else eqloop l' r'
+                    if (l0.V) <> (r0.V) then false else eqLoop l' r'
                 | None, None -> true
                 | _ -> false
-            eqloop (x.T) (y.T)
+            eqLoop (x.T) (y.T)
     interface System.IComparable with
         member x.CompareTo(yobj) =
             match yobj with
