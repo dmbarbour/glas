@@ -18,13 +18,13 @@ Glas data is modeled as an immutable binary tree. Edges from each node are uniqu
 
 Data is encoded in the tree structure. For example, we can directly encode algebraic products `(A * B)` and sums `(A + B)` using a single node that contains two or one edges respectively. Unit `()` is can be encoded by a leaf node. However, basic algebraic products and sums are awkward to extend or version.
 
-Glas systems favor labeled records and variants. Null-terminated UTF-8 text is encoded into a path through a tree, e.g. `01110000 01100001 01110100 01101000 00000000` for label 'path'. The value follows the null terminator. The runtime can compactly encode non-branching path segments, thus a record becomes a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). However, a compiler could further optimize records into a C struct-like encoding. Variants are single element records, and symbols can be viewed as variants with the unit value.
+Glas systems favor labeled records and variants. Null-terminated UTF-8 text is encoded into a path through a tree, e.g. label 'path' uses bitstring `01110000 01100001 01110100 01101000 00000000`. The value follows the null terminator. The runtime can compactly encode non-branching path segments, thus a record becomes a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). A compiler could further optimize records, e.g. use a symbol table to share labels across records. Variants are single element records, and symbols can be viewed as variants with the unit value.
 
 A byte is encoded as a bitstring, i.e. a non-branching path encoding one bit per edge such as `00010111`. Glas has a few bitwise and unsigned arithmetic operators to work with bytes and bitstrings in general. Bitstrings are assumed to be reasonably short, often fixed-width.
 
-Binary data is encoded as a list of bytes. Glas uses lists for arbitrary size sequential structure. However, to avoid the awkward performance characteristics of linked lists, Glas systems substitute a [finger tree](https://en.wikipedia.org/wiki/Finger_tree) representation under-the-hood. Finger trees support constant-time access to both ends, and logarithmic manipulations in general.
+Binary data is logically encoded as a list of bytes. Glas uses lists for arbitrary size sequential structure. However, to avoid the awkward and awful performance scalability characteristics of linked lists, Glas systems often substitute a [finger tree](https://en.wikipedia.org/wiki/Finger_tree) representation for lists. Finger tree lists support constant-time access to both ends and logarithmic inner manipulations.
 
-*Note:* There is no built-in support for rational numbers, signed numbers, floating point numbers, complex numbers, matrix and vector math, and so on. However, it is feasible to extend Glas to support more types via *Acceleration*.
+*Note:* There is no built-in support for rational numbers, signed numbers, floating point numbers, complex numbers, matrix and vector math, and so on. However, it is feasible to extend Glas to support performance of more types via *Acceleration*.
 
 ## Binary Extraction
 
@@ -222,7 +222,6 @@ The compile program implements a function from source (e.g. file binary) to a co
 * **log:Message** - Response is unit. Messages may include warnings and issues, progress reports, code change proposals, etc.. 
 
 Load failure may occur due to missing modules, ambiguous file names, dependency cyles, failed compile, etc. The cause of failure is visible to the client module, but is reported in the development environment.
-
 
 ### Automated Testing
 

@@ -200,7 +200,10 @@ module FT =
         let rec append<'V when 'V :> ISized> (l : T<'V>) (r : T<'V>) : T<'V> =
             match l with
             | Empty -> r
-            | Single v -> cons v r
+            | Single v -> 
+                match r with
+                | Empty -> l 
+                | _ -> cons v r
             | Many (prefix=pl; finger=fl; suffix=sl) ->
                 match r with
                 | Empty -> l
@@ -213,9 +216,9 @@ module FT =
         let rec private _splitListAcc<'V when 'V :> ISized> n acc l : struct ('V list * 'V * 'V list) =
             match l with
             | (x::xs) -> 
-                let xsize = isize x
-                if (xsize > n) then struct(List.rev l, x, xs) else
-                _splitListAcc (n - xsize) (x::acc) xs
+                let xz = isize x
+                if (xz > n) then struct(List.rev l, x, xs) else
+                _splitListAcc (n - xz) (x::acc) xs
             | [] -> failwith "failed to find split point in list"
         let inline private _splitList n l = 
             _splitListAcc n (List.empty) l
@@ -273,6 +276,10 @@ module FT =
             assert((isize l = n) && (isize t = (1UL + n + isize r)))
             struct(l, cons x r)
 
+        // low priority:
+        // potential take/drop that avoids constructing the dropped subtree
+        // 
+
         let rec fold fn st t =
             match viewL t with
             | Some struct(x, t') -> fold fn (fn st x) t'
@@ -286,8 +293,9 @@ module FT =
 
 open FT
 
-/// An FTList is a list whose underlying finger-tree representation is
-/// abstracted away, though it's still accessible.
+/// An FTList is a list whose underlying representation is a finger-tree.
+/// This mostly enables efficient access to both ends, append, and slices.
+/// The cost is some complexity, so average ops are more expensive.
 ///
 /// ASIDE: 
 /// F# has some very awkward handling of equality/comparison constraints,
@@ -339,6 +347,19 @@ module FTList =
     let inline private toT (l : FTList<'a> ) : T<Atom<'a>> =
         l.T
 
+    let empty() = 
+        mkList Empty
+
+    let isEmpty ftl =
+        T.isEmpty (toT ftl)
+
+    /// Length of FTLists, reported as a uint64.
+    let inline length l = 
+        isize (toT l)
+
+    let append a b =
+        mkList (T.append (toT a) (toT b))
+
     let private snocAtom t e = 
         T.snoc t (Atom(e))
     let ofList l = 
@@ -348,9 +369,17 @@ module FTList =
     let ofArray a = 
         mkList <| Array.fold snocAtom Empty a
 
+    let fold fn (st0 : 'ST) ftl =
+        let fn' st (e : Atom<'a>) = fn st (e.V)
+        T.fold fn' st0 (toT ftl)
+    
+    let foldBack fn ftl (st0 : 'ST) =
+        let fn' (e : Atom<'a>) st = fn (e.V) st
+        T.foldBack fn' (toT ftl) st0
+
     let toList (ftl : FTList<'a>) : 'a list =
-        let ca (e : Atom<'a>) l = e.V :: l
-        T.foldBack ca (toT ftl) (List.empty)
+        let cons e l = e::l
+        foldBack cons ftl (List.empty)
 
     let toSeq (ftl : FTList<'a>) : 'a seq =
         let unf (t : T<Atom<'a>>) =
@@ -359,19 +388,26 @@ module FTList =
             | None -> None
         Seq.unfold unf (ftl.T) 
 
-    /// We can directly allocate an array of the correct size.
-    // let toArray (ftl : FTList<'a>) : 'a array =
+    let toArray (ftl : FTList<'a>) : 'a array =
+        // we can directly allocate the array to a known size.
+        let toobig = length ftl > uint64 System.Int32.MaxValue
+        if toobig then invalidArg (nameof ftl) "FTList too big for array" else
+        let sz = int (length ftl)
+        let arr = Array.zeroCreate sz
+        let mutable ix = 0
+        let mutable t = toT ftl
+        while (ix < sz) do
+            match T.viewL t with
+            | Some struct(e, t') ->
+                Array.set arr ix (e.V)
+                ix <- ix + 1
+                t <- t'
+            | None ->  
+                failwith "tree size or view is invalid"
+        arr
 
+    // todo: take, drop, splitAt, map, map2, iter, iter2, etc...
 
-
-
-    /// Empty FTList. This is a function
-    let inline empty() = 
-        mkList Empty
-
-    /// Length of FTLists, reported as a uint64.
-    let inline length l = 
-        isize (toT l)
     
 
 

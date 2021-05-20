@@ -1,193 +1,115 @@
 # Glas Object
 
-Glas Object, or 'glob', is a data format for representing Glas data within binaries or files. 
+## Status
 
-A naive encoding of a Glas value is a bitstream representing a tree traversal, e.g. 00 leaf, 01 right, 10 left, 11 branch left then right. However, this encoding is not good because it doesn't provide an opportunity to represent for stowage or finger-tree lists, and reading the right subtree requires scanning the left.
+The core of Glas Object is feature-complete, but it hasn't been performance-tested yet and design of escapes still needs a lot of work.
 
-Glas Object will represent tree nodes using bytes with specialized encoding for sequential branches. The byte format is `nnoppppp` meaning we have two node-type bits `nn`, one offset bit `o`, and five path prefix bits `ppppp`. 
+## Overview
 
-The path prefix bits can encode up to four bits in the 'path' leading to this node, or can indicate an extended prefix mode. The node type indicates the number of children and supports an escape option for stowage, finger-tree lists, and other structure that requires special interpretation. The offset bit determines use of indirection.
+Glas Object, or 'glob', is a data format for representing Glas data within files or binaries. Glob is intended for use together with content-addressed storage (which I call 'stowage') to support structure sharing at a larger scale. 
 
-Node types: 
+A naive encoding of a Glas value is a bitstream representing a tree traversal, e.g. 00 leaf, 01 right, 10 left, 11 branch left then right. However, this encoding is not good with respect to various desiderata:
 
-* 00 - leaf. This is the terminal node type. There is no following node.
-* 01 - stem. This node just adds path prefix bits to the following node.
-* 10 - branch. This node is followed by an offset to the left node, then the right node.
-* 11 - escape. Following node has special interpretation, e.g. stowage or finger-tree.
+* indexing - avoid scan of large structures for element lookup
+* sharing - reuse common subtrees, locally and globally
+* lists - support the finger-tree representation
+* tables - options for column-structured data encodings 
+* binaries - embedding of large and structured binary data
+* annotations - mix metadata such as provenance within data
+* extension - clear mechanism to introduce new features
+* laziness - options for deferred procedural generation
+* modules - adequate as a bootstrap language module
+* memory - adequate for direct use by interpreter
 
-Offset bit: 
+Glas Object should be efficient and also support these desiderata to a reasonable degree.
 
-* 0 - offset. The following node for stem or escape, or the right node of branch, is accessed indirectly via offset. 
-* 1 - immmediate. The following node for stem or escape, or the right node of a branch, immediately follows the current node.
+## Proposed Representation
 
-Leaf nodes use immediate mode; the leaf+offset combination, i.e. high bits `000`, is reserved for potential future extensions.
+The current proposal is an 8-bit byte-aligned representation where the most common node header is represented by a `"pppppnnn"` format: five bits to encode path prefix and three bits to encode node type.
 
-Prefix bits:
+### Path Prefix
 
-* 00001 - empty prefix
-* 00010 - left
-* 00011 - right
-* 00100 - left left
-* 00101 - right left
-* 00110 - left right
-* 00111 - right right
-* ...
-* 10111 - right right right left
-* 00000 - extended binary prefix 
+Five path prefix bits encode a sequence of zero to four non-branching edges preceding a node:
 
-The extended prefix will encode a large number of prefix bits as a compact binary, but I haven't decided exact details. The basic structure of Glas is based around the leaf, stem, branch, prefix bits, and use of offsets. However, escape options are very ad-hoc and require careful standardization.
+* 1zyxw - four edge path prefix `wxyz`, 
+* 01zyx - three edge path prefix `xyz`
+* 001zy - two edge prefix prefix `yz`
+* 0001z - one edge path prefix `z`
+* 00001 - no path prefix
+* 00000 - extended path prefix 
 
+Integrated path prefix bits are useful for short paths with many branches, but has 50% efficiency maximum. The extended path prefix can encode large, non-branching paths at near 100% efficiency. An extended path prefix immediately follows a node (before child nodes) and is encoded as a varnat (see below) followed by that number of bytes.
 
+Glas Object can support binary data by including escape nodes (see node types) to interpret large bitstrings as binary lists or other unboxed structures. Escape nodes can also potentially support reuse of common prefixes, e.g. interpreting a record trie from a paired list of labels and list of values.
 
-....
+### Node Types
 
-Some thoughts:
+Three node type bits determine how the elements following a node are interpreted:
 
-* require lightweight type and version header, e.g. `glob0\n`
-* glob should preserve structure sharing within tree where feasible
-* interning hints. When a subtree is likely to appear in many resources, we could suggest it be interned by the runtime when loaded. This is a simple annotation.
-* deep references? A secure hash reference can be augmented with an offset into a resource. This would enable a stowage resource to aggregate a large number of related resources. It would also simplify partial reuse of stowage resources when constructing a tree.
-* log-structured merges
+* branch - 1bb - lower two bits are inline vs. offset for children:
+ * 00 - offset left then offset right
+ * 01 - offset left then inline right
+ * 10 - offset right then inline left (offset before inline!)
+ * 11 - inline left then inline right (left tree should be small!)
+* stem - 01b - lower bit is inline (1) vs. offset (0) for child.
+* leaf - 001 - terminates a tree.
+* escape - 000 - interpret following inline node
 
+Glas values can be encoded using just inline branch, stem, and leaf nodes. Offsets support structure sharing, indexing, and organization within the binary. Offsets are encoded as a varnat (see below) and are always positive, thus it's impossible to directly represent a cycle.
 
+Escaped nodes are parsed as normal data but require an extra interpretation step. For example, we might interpret stowage or module references by loading the appropriate resource. Design of escapes requires careful attention, but does not require new node types.
 
- if a subtree is widely shared, but is too small for a separate stowage resource, an interning hint could be useful. This could be a lightweight hash of the value being interned.
-* optimize for fast parse, fast query without 
-* byte-oriented - compact encoding within limits of byte alignment
-* 
-* header - every Glas object should have an optional header value, a full record. This header would include the 'salt' for cryptographic uniqueness.
-* 
+### Varnat Encoding
 
-# ........ 
+The varnat encoding favored by Glas Object uses a prefix in the msb of the first byte `1*0` to encode the total number of bytes (equal to number of bits in prefix). For example:
 
-My goal for Glas object is an efficient, robust, standard encoding for content-addressed storage.
+        0xxxxxxx
+        10xxxxxx xxxxxxxx
+        110xxxxx xxxxxxxx xxxxxxxx
+        1110xxxx xxxxxxxx xxxxxxxx xxxxxxxx
 
- content-addressed storage.
+This gives us 7 bits per byte, and preserves lexicographic order. In the interpretation for offsets or extended prefix size fields, Glas varnats start at 1. 
 
+        00000000    1
+        00000001    2
+        00000010    3
+        ...
+        01111111    128
 
-To support distributed incremental computing and sharing of very large values, Glas specifies this Glas Object (`.glob`) representation. 
+Although varnats are extensible, at a certain point we'll likely favor stowage references (secure hashes of binaries) instead of offsets within the binary. 
 
-Some thoughts:
-* Glas Object should be designed for [Glas Application](GlasApps.md) access and update patterns, because applications, because apps can easily produce very large structures over time.
-* Binaries are useful for interaction. Whether a list is fully binary should perhaps be recorded in the secure hash references.
+### Escapes
 
-# MISC
+Escape nodes tell a Glas Object parser to interpret the following node. For extensibility, the following node should be an open variant. For efficiency, there should be low overhead for common escapes. A viable design is to use a varnat encoding for the variant prefix following the node. 
 
-Currently, this is a relatively low priority.
+In practice, we're unlikely to ever have 128 escape codes, so escape headers will cost three bytes: one for the escape node (which might have its own prefix bits), then two for the varnat selector (at 4 bits per byte). The body of the escape code can also be reasonably compact.
 
+Useful Escapes:
 
+* references - stowage and modules could be combined
+* annotations - pair any value with an ignored value
+* failure - explicit error options
+* fallback - if one data option has error, use other
+* binary data - interpret bitstring as binary list
+* finger tree - efficient representation of lists
 
-## Note on Unstable Hashes
+We can use annotations on the top-level node to provide a header of sorts.
 
-Secure hashes for a value represented using Glas Object are 'unstable' in the sense that a single value may have a number of hashes. 
+Possibilities:
 
+* unboxed - as binary data, but with a type parameter
+* variant - bind label to value; enables shared labels
+* record - bind a list of labels to a list of values
+* table - bind a list of labels to a list of record elements
+* transpose - logically reorient rows and columns
+* reshape - logically reshape a matrix
+* patch - logically update a value, useful with stowage 
+* path - logically select value, useful with modularity
 
+We could feasibly use escapes to support arbitrary computation in Glas Object.
 
-*Note:* Secure hashes in Glas Object are 'unstable' in the sense that a single value may have any number of hashes. This is true for many reasons: log-structured updates, finger-tree construction, heuristic node sizes, metadata, and potential [entropy added for security purposes](https://tahoe-lafs.readthedocs.io/en/tahoe-lafs-1.12.1/convergence-secret.html).
+### Memory
 
+Glas Object is not primarily designed for use in-memory, but it could potentially work with 2-space nursery garbage collector and a shared region for older generation data. 
 
-
-finger)
-
-## Values as Path Sets
-
-In some contexts, it is useful to view Glas values as homomorphic to a set of structured 'path' strings. In this view, the empty dictionary `()` maps to an empty set, while `(a:(x:(), y:()), b:())` might map to the set `{a/x/, a/y/, b/}`. This set may 
-
- Glas then supports bulk operations on the set based on shared prefixes.
-
-
-...
-
-
-
-
-Glas values can potentially be understood as sets of path strings. This set is represented in a manner that supports prefix sharing, implicitly forming the tree of dictionaries. Glas supports bulk data manipulations (copy, move, erasures, unions) based on common prefixes. 
-
-The main difficulty I've had with this view is how to deal with the empty set and empty path. In particular, I want to avoid the scenario where `(a:())` is equivalent to `()`. However, if we distinguish empty sets, then it does make sense for `(a:(~))` to be equivalent to `()`.
-
-But it's unclear it should mean for a dictionary that contains other paths to not also contain the empty path. Like, what is the result of cutting `p` from `(prefix:(), posix:())`. Is it some form of partial dictionary `(~ refix:(), osix:())` that excludes the empty path?
-
-Or should we simply elide the empty path in all cases? If so, 
-
-
-
-
-Desiderata:
-
-* Log-structured merge tree updates, for efficient deep writes.
-* Distributed structure sharing and value identification, via secure hashes. 
-* Bit-level branching of nodes, to avoid problems with 'wide' dictionaries.
-* Encoding of keys has a [self synchronizing](https://en.wikipedia.org/wiki/Self-synchronizing_code) property, at the bit level.
-* Keys are lexicographically sorted by default.
-* Keys containing numbers are sorted numerically.
-
-
-, and favors file suffix `.glob`.. This representation is based on log-structured merge trees (for O(1) amortized update), radix trees (for prefix-oriented indexing and manipulations), and content-addressed Merkle trees (for modularity, distributed structure sharing, provider-independent distribution, incremental diffs and downloads). This standard representation is called [
-
-Glas Object has specialized support for large lists/arrays based on finger-trees, building on the Glas dictionaries. This provides constant-time access to the endpoints (e.g. enqueue, dequeue) and logarithmic-time manipulations in the middle (random access, split, composition). Binaries are further specialized as rope data structures, with compact encoding of binary fragments near the leaves.
-
-This design makes Glas Object suitable for large-scale computations, e.g. modeling large key-value databases, logs, queues. But it can still be used for small values, e.g. as an alternative to JSON or MessagePack.
-
-Glas Object also maintains a few tag-bits for indexing purposes. 
-
-Another valuable feature of Glas Object is that values may have tag bits for indexing purposes. The parent node will a union of these tag bits.
-
-Thoughts: Lists should probably support ranged inserts, deletions, and reversals.
-
-
-Another important feature of Glas Object is some built-in support for deferred/static computation, warnings, and errors. Within the Glas Object, deferred computation and errors are indexed, allowing for efficient search and processing.
-
-
-Finally, Glas Objects will support deferred compuation, using a simple homoiconic representation for computations (see below!). Deferred computation is indexed for efficient processing. 
-
-This is indexed, allowing efficient filtering discovery of elements may require further evaluation, and enabling programmers to quickly discover
-
-
-
-
-
-
-
-
- This allows for flexible templating and abstraction.
-
-Ultimately, Glas Object is suitable for modeling very large key-value databases, logs and queues and streams, and filesystem-like structures. Further, it can do so on a distributed system scale, with incremental upload and download via content-addressed references.
-
-
-
-
-
-via Glas dictionaries, thus supports constant-time manipulations of the ends and logarithmic-time manipulations of the middle.
-
-The intention is that Glas Object can scale from minor use cases up to massive databases or filesystems. 
-
-
-
-
- using a representation based on finger-trees, plus ropes for binary sequences. This supports O(lg(N)) random access and manipulations, with O(1) near head or tail.
-
-
-
-l
-For uniformity, Glas encodes terminal values such as `42`, `[1,2,3]`, and `True` as dictionaries. Standard encodings will be detailed later. The only terminal value in Glas is the empty dictionary, `()`.
-
-Glas will standardize a representation for serializing, sharing, and efficiently manipulating its dictionary values at a large scale, called [Glas object](GlasObject.md). Glas object uses concepts from Merkle trees and log-structured merge trees to support structure sharing, provider-independent distribution, and incremental updates.
-
-Because Glas values are dictionaries, they are relatively easy to extend with new labels, though this requires writing computations in a row-polymorphic style.
-
-## Note: Unstable Hashes
-
-Glas Object does not attempt to ensure stable hashes for values. In particular, Glas supports log-structured updates and heuristic partitioning of nodes below the level of 
-
- partitioning of nodes
-
-The [Unison project](https://www.unisonweb.org/docs/tour) focuses on identifying objects by secure hash, with a projectional editor. 
-
-
-https://www.unisonweb.org/docs/tour
- favors a more conventional file-based module system.
-
-Glas Object is primarily intended for back-end systems, not for direct human manipulations. 
-
-A consequence of this design is that secure hashes are not directly aligned with Glas values, nor is there any effort to ensure a deterministic hash for a value.
-
+The main issue is that it's awkward to have variable-width offsets when estimating memory consumption. This issue can be mitigated by specializing the in-memory representation, e.g. using overlong offset varnats or switching from offsets to absolute pointers.
