@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <Compile Include="TestBits.fs" />
+    <Compile Include="TestFTList.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
 

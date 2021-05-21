@@ -15,7 +15,7 @@ namespace Glas
 module FT = 
     /// to compute tree sizes across different element types.
     type ISized =
-        abstract member Size : uint64
+        abstract member Size : int
 
     let inline isize (v : 'V when 'V :> ISized) = 
         (v :> ISized).Size
@@ -26,7 +26,7 @@ module FT =
         val V: 'V
         new(v) = { V = v }
         interface ISized with
-            member _.Size = 1UL
+            member _.Size = 1
     
     type D<'V> =
         | D1 of 'V
@@ -36,7 +36,7 @@ module FT =
 
     module D =
 
-        let size (d : D<'V> when 'V :> ISized) : uint64 =
+        let size (d : D<'V> when 'V :> ISized) : int =
             match d with
             | D1 (d1) -> isize d1
             | D2 (d1,d2) -> isize d1 + isize d2
@@ -71,8 +71,8 @@ module FT =
                             | _ -> invalidArg (nameof l0) "too many elements for D"
         
     type B<'V> =
-        | B2 of size:uint64 * b1:'V * b2:'V
-        | B3 of size:uint64 * b1:'V * b2:'V * b3:'V
+        | B2 of size:int * b1:'V * b2:'V
+        | B3 of size:int * b1:'V * b2:'V * b3:'V
         interface ISized with
             member b.Size =
                 match b with
@@ -111,14 +111,15 @@ module FT =
                 | (b3::lv') -> (mkB3 b1 b2 b3)::(chunkify lv') // 5+ elems
             | _ -> invalidArg (nameof lv) "not enough data to chunkify" // 0 or 1 elems
 
+    [< NoEquality; NoComparison >]
     type T<'V when 'V :> ISized> =
         | Empty
         | Single of 'V
-        | Many of size:uint64 * prefix:D<'V> * finger:T<B<'V>> * suffix:D<'V>
+        | Many of size:int * prefix:D<'V> * finger:T<B<'V>> * suffix:D<'V>
         interface ISized with
             member t.Size =
                 match t with
-                | Empty -> 0UL
+                | Empty -> 0
                 | Single v -> isize v
                 | Many (size=sz) -> sz
 
@@ -217,13 +218,13 @@ module FT =
             match l with
             | (x::xs) -> 
                 let xz = isize x
-                if (xz > n) then struct(List.rev l, x, xs) else
+                if (xz > n) then struct(List.rev acc, x, xs) else
                 _splitListAcc (n - xz) (x::acc) xs
-            | [] -> failwith "failed to find split point in list"
+            | [] -> failwith "failed to find split point in list" 
         let inline private _splitList n l = 
             _splitListAcc n (List.empty) l
 
-        let rec private _splitAt<'V when 'V :> ISized> (n : uint64) (t : T<'V>) : struct (T<'V> * 'V * T<'V>) =
+        let rec private _splitAt<'V when 'V :> ISized> (n : int) (t : T<'V>) : struct (T<'V> * 'V * T<'V>) =
             assert(n < isize t) // invariant
             match t with
             | Single v -> struct(Empty, v, Empty)
@@ -269,26 +270,28 @@ module FT =
             | Empty -> failwith "inner split on empty tree; should be impossible"
 
         /// Split tree based on index. 
-        let splitAt<'V when 'V :> ISized> (n : uint64) (t : T<'V>) : struct(T<'V> * T<'V>) =
+        let splitAt<'V when 'V :> ISized> (n : int) (t : T<'V>) : struct(T<'V> * T<'V>) =
             // ensure n < isize t for internal _splitAt
             if (n >= isize t) then struct(t, Empty) else
             let struct(l, x, r) = _splitAt n t
-            assert((isize l = n) && (isize t = (1UL + n + isize r)))
+            assert((isize l = n) && (isize t = n + 1 + isize r))
             struct(l, cons x r)
 
-        // low priority:
-        // potential take/drop that avoids constructing the dropped subtree
-        // 
+        let rec eqAtoms (l : T<Atom<'a>>) (r : T<Atom<'a>>) = 
+            match viewL l, viewL r with
+            | Some struct(l0,l'), Some struct(r0,r') ->
+                if (l0.V) <> (r0.V) then false else eqAtoms l' r'
+            | None, None -> true
+            | _ -> false
 
-        let rec fold fn st t =
-            match viewL t with
-            | Some struct(x, t') -> fold fn (fn st x) t'
-            | None -> st
-
-        let rec foldBack fn t st =
-            match viewR t with
-            | Some struct(t', x) -> foldBack fn t' (fn x st)
-            | None -> st
+        let rec cmpAtoms (l : T<Atom<'a>>) (r : T<Atom<'a>>) =
+            match viewL l, viewL r with
+            | Some struct(l0, l'), Some struct(r0,r') ->
+                let cmp = compare (l0.V) (r0.V)
+                if (0 <> cmp) then cmp else cmpAtoms l' r'
+            | Some _, None -> 1
+            | None, Some _ -> -1
+            | None, None -> 0
     
 
 open FT
@@ -297,85 +300,83 @@ open FT
 /// This mostly enables efficient access to both ends, append, and slices.
 /// The cost is some complexity, so average ops are more expensive.
 ///
-/// ASIDE: 
-/// F# has some very awkward handling of equality/comparison constraints,
-/// especially in context of generics. For example, we cannot elide the
-/// :equality constraint even with the EqualityConditionalOn attribute. 
-[<Struct; CustomEquality; CustomComparison>]
-type FTList<[<EqualityConditionalOn; ComparisonConditionalOn>] 'a when 'a :equality and 'a :comparison> = 
+/// ASIDE: I tried adding equality and comparison, but I'm having too much
+/// trouble working with F# generic constraints (could not be generalized
+/// because it would escape scope; implicit conversions to IComparable; etc.)
+[<Struct>]
+type FTList<'a> = 
     val T: T<Atom<'a>> 
     new(t) = { T = t }
-    override x.GetHashCode() =
-        // based on fnv-1a hash function.
-        let hmix (h : int) (a : Atom<'a>) : int = 16777619 * (h ^^^ hash (a.V))
-        T.fold hmix (int 2166136261ul) (x.T)
-    override x.Equals(yobj) =
-        match yobj with
-        | :? FTList<'a> as y -> (x :> System.IEquatable<_>).Equals(y)
-        | _ -> false
-    interface System.IEquatable<FTList<'a>> with
-        member x.Equals(y) =
-            let rec eqLoop (l : T<Atom<'a>>) (r : T<Atom<'a>>) : bool =
-                match T.viewL l, T.viewL r with
-                | Some struct(l0,l'), Some struct(r0,r') ->
-                    if (l0.V) <> (r0.V) then false else eqLoop l' r'
-                | None, None -> true
-                | _ -> false
-            eqLoop (x.T) (y.T)
-    interface System.IComparable with
-        member x.CompareTo(yobj) =
-            match yobj with
-            | :? FTList<'a> as y -> (x :> System.IComparable<_>).CompareTo(y)
-            | _ -> invalidArg (nameof yobj) "comparison of different types"
-    interface System.IComparable<FTList<'a>> with
-        member x.CompareTo(y) =
-            let rec cmpLoop (l : T<Atom<'a>>) (r : T<Atom<'a>>) =
-                match T.viewL l, T.viewL r with
-                | Some struct(l0, l'), Some struct(r0,r') ->
-                    let cmp = compare (l0.V) (r0.V)
-                    if (0 <> cmp) then cmp else cmpLoop l' r'
-                | Some _, None -> 1
-                | None, Some _ -> -1
-                | None, None -> 0
-            cmpLoop (x.T) (y.T)
+
 
 module FTList =
 
-    let inline private mkList t = 
+    let inline ofT (t : T<Atom<'a>>) : FTList<'a> = 
         FTList(t)
 
-    let inline private toT (l : FTList<'a> ) : T<Atom<'a>> =
+    let inline toT (l : FTList<'a> ) : T<Atom<'a>> =
         l.T
 
-    let empty() = 
-        mkList Empty
+    let empty<'a> : FTList<'a> = 
+        ofT Empty
 
-    let isEmpty ftl =
-        T.isEmpty (toT ftl)
+    let isEmpty l =
+        T.isEmpty (toT l)
+
+    let singleton a = 
+        ofT (Single (Atom(a)))
 
     /// Length of FTLists, reported as a uint64.
     let inline length l = 
         isize (toT l)
 
+    let inline tryViewL l = 
+        match T.viewL (toT l) with
+        | Some struct(e,t') -> Some (e.V, ofT t')
+        | None -> None
+
+    let (|ViewL|_|) l = tryViewL l
+
+    let inline tryViewR l = 
+        match T.viewR (toT l) with
+        | Some struct(t',e) -> Some (ofT t', e.V)
+        | None -> None
+
+    let (|ViewR|_|) l = tryViewR l
+
+    let eq x y =
+        T.eqAtoms (toT x) (toT y)
+
+    let compare x y = 
+        T.cmpAtoms (toT x) (toT y)
+
+    let cons e l = 
+        ofT (T.cons (Atom(e)) (toT l))
+
+    let snoc l e =
+        ofT (T.snoc (toT l) (Atom(e)))
+
     let append a b =
-        mkList (T.append (toT a) (toT b))
+        ofT (T.append (toT a) (toT b))
 
-    let private snocAtom t e = 
-        T.snoc t (Atom(e))
     let ofList l = 
-        mkList <| List.fold snocAtom Empty l
-    let ofSeq s = 
-        mkList <| Seq.fold snocAtom Empty s
-    let ofArray a = 
-        mkList <| Array.fold snocAtom Empty a
+        List.fold snoc empty l
 
-    let fold fn (st0 : 'ST) ftl =
-        let fn' st (e : Atom<'a>) = fn st (e.V)
-        T.fold fn' st0 (toT ftl)
+    let ofSeq s = 
+        Seq.fold snoc empty s
+
+    let ofArray a = 
+        Array.fold snoc empty a
+
+    let rec fold fn (st0 : 'ST) ftl =
+        match T.viewL (toT ftl) with
+        | Some struct(e, t') -> fold fn (fn st0 (e.V)) (ofT t')
+        | None -> st0
     
-    let foldBack fn ftl (st0 : 'ST) =
-        let fn' (e : Atom<'a>) st = fn (e.V) st
-        T.foldBack fn' (toT ftl) st0
+    let rec foldBack fn ftl (st0 : 'ST) =
+        match T.viewR (toT ftl) with
+        | Some struct(t', e) -> foldBack fn (ofT t') (fn (e.V) st0)
+        | None -> st0
 
     let toList (ftl : FTList<'a>) : 'a list =
         let cons e l = e::l
@@ -390,9 +391,7 @@ module FTList =
 
     let toArray (ftl : FTList<'a>) : 'a array =
         // we can directly allocate the array to a known size.
-        let toobig = length ftl > uint64 System.Int32.MaxValue
-        if toobig then invalidArg (nameof ftl) "FTList too big for array" else
-        let sz = int (length ftl)
+        let sz = length ftl
         let arr = Array.zeroCreate sz
         let mutable ix = 0
         let mutable t = toT ftl
@@ -406,7 +405,25 @@ module FTList =
                 failwith "tree size or view is invalid"
         arr
 
-    // todo: take, drop, splitAt, map, map2, iter, iter2, etc...
+    let inline splitAt n ftl =
+        let struct(l,r) = T.splitAt n (toT ftl)
+        (ofT l, ofT r)
+
+    let inline take n ftl =
+        fst (splitAt n ftl)
+    
+    let inline skip n ftl =
+        snd (splitAt n ftl)
+
+    let inline map fn ftl =
+        let fn' e l = cons (fn e) l 
+        foldBack fn' ftl empty
+
+    /// FTList doesn't do logical reverse, so this is O(N).
+    /// An advantage of FTList is that you can often avoid reverse.
+    let rev ftl =
+        let fn l e = cons e l
+        fold fn empty ftl
 
     
 

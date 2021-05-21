@@ -53,22 +53,22 @@ Three node type bits determine how the elements following a node are interpreted
  * 11 - inline left then inline right (left tree should be small!)
 * stem - 01b - lower bit is inline (1) vs. offset (0) for child.
 * leaf - 001 - terminates a tree.
-* escape - 000 - interpret following inline node
+* escape - 000 - operator then inline node.
 
 Glas values can be encoded using just inline branch, stem, and leaf nodes. Offsets support structure sharing, indexing, and organization within the binary. Offsets are encoded as a varnat (see below) and are always positive, thus it's impossible to directly represent a cycle.
 
-Escaped nodes are parsed as normal data but require an extra interpretation step. For example, we might interpret stowage or module references by loading the appropriate resource. Design of escapes requires careful attention, but does not require new node types.
+Escaped nodes are always parsed the same way: a varnat operator directly followed by the inline argument node. The operator indicates how to interpret the argument. For example, an escape might interpret an argument as a stowage or module reference, logically replacing the escape node by the referent's value.
 
 ### Varnat Encoding
 
-The varnat encoding favored by Glas Object uses a prefix in the msb of the first byte `1*0` to encode the total number of bytes (equal to number of bits in prefix). For example:
+The varnat encoding favored by Glas Object uses a prefix `(1)*0` to encode the total number of bytes. For example:
 
         0xxxxxxx
         10xxxxxx xxxxxxxx
         110xxxxx xxxxxxxx xxxxxxxx
         1110xxxx xxxxxxxx xxxxxxxx xxxxxxxx
 
-This gives us 7 bits per byte, and preserves lexicographic order. In the interpretation for offsets or extended prefix size fields, Glas varnats start at 1. 
+Overlong encodings aren't permitted. This gives us 7 bits per byte, and ensures a lexicographic order of numbers. In the interpretation for offsets or extended prefix size fields, Glas varnats start at 1.
 
         00000000    1
         00000001    2
@@ -76,40 +76,32 @@ This gives us 7 bits per byte, and preserves lexicographic order. In the interpr
         ...
         01111111    128
 
-Although varnats are extensible, at a certain point we'll likely favor stowage references (secure hashes of binaries) instead of offsets within the binary. 
+In practice, varnats are unlikely to use more than four bytes in Glas systems.
 
 ### Escapes
 
-Escape nodes tell a Glas Object parser to interpret the following node. For extensibility, the following node should be an open variant. For efficiency, there should be low overhead for common escapes. A viable design is to use a varnat encoding for the variant prefix following the node. 
-
-In practice, we're unlikely to ever have 128 escape codes, so escape headers will cost three bytes: one for the escape node (which might have its own prefix bits), then two for the varnat selector (at 4 bits per byte). The body of the escape code can also be reasonably compact.
+Escape nodes are how Glas Object supports stowage, finger trees, binary embeddings via interpreting extended path prefix, and extension with new features. Escapes should be carefully designed and standardized, but it's still feasible to parse an escape node even if the operator is not recognized.
 
 Useful Escapes:
 
-* references - stowage and modules could be combined
-* annotations - pair any value with an ignored value
-* failure - explicit error options
-* fallback - if one data option has error, use other
+* annotations - pair value with notes or comments.
+* references - stowage, modules, perhaps futures.
 * binary data - interpret bitstring as binary list
 * finger tree - efficient representation of lists
 
-We can use annotations on the top-level node to provide a header of sorts.
+Glas Object does not have a 'header', but annotation of a top-level node can easily serve that role.
 
 Possibilities:
 
-* unboxed - as binary data, but with a type parameter
-* variant - bind label to value; enables shared labels
-* record - bind a list of labels to a list of values
-* table - bind a list of labels to a list of record elements
-* transpose - logically reorient rows and columns
-* reshape - logically reshape a matrix
-* patch - logically update a value, useful with stowage 
-* path - logically select value, useful with modularity
+* label - bind labels to values, e.g. share a record's symbol table
+* unbox - binary data with a type parameter
+* matrix - logically transpose or reshape structures
+* patch - logically update values, useful with references
+* select - extract one value from another with simple queries
+* failure and fallback - if first option has error, try another
 
-We could feasibly use escapes to support arbitrary computation in Glas Object.
+Glas Object is intended to be simple. Integrating too many dynamic features into a data model will easily grow out of control, so it's best to defer standardization of new features until we have a strong use case and clear implementation.
 
 ### Memory
 
-Glas Object is not primarily designed for use in-memory, but it could potentially work with 2-space nursery garbage collector and a shared region for older generation data. 
-
-The main issue is that it's awkward to have variable-width offsets when estimating memory consumption. This issue can be mitigated by specializing the in-memory representation, e.g. using overlong offset varnats or switching from offsets to absolute pointers.
+Glas Object is not primarily designed for use in-memory, but it could potentially work as an in-memory representation. I think the main issue would be that variable-width offsets become awkward in context of a migrating garbage collector. We could perhaps specialize the in-memory representation to use fixed-width offsets or pointers instead.

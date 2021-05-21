@@ -17,7 +17,13 @@ namespace Glas
 // To support this, we can represent structures of form `(A * (B * (C * D)))` as
 // lists. We have a valid 'list' type when the final element (D) has unit value.
 // 
-//     type Value = { Neck: Bits; Spine: FTList<Value> }
+//     type Value = { Stem: Bits; Spine: (Value * FTList<Value> * EndValue) option }
+//
+// Here EndValue is any value that is not a pair. This could be enforced by smart
+// constructor or by a wrapper such as `L of Value | R of Value | U`. The last item
+// of a spine would be the EndValue.
+//
+// This ensures a normalizing semantic representation, 
 // 
 // At this point, we don't have a strongly normalizing representation. In normal
 // form, the last element of the spine is not a pair, and the Spine is not a 
