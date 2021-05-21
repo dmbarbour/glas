@@ -8,73 +8,83 @@ namespace Glas
 // numbers. If an allocation is required per bit, this is much too inefficient.
 // So, I favor a radix tree structure that compacts the non-branching stem:
 //
-//     type Value = { Stem: Bits; Node: (Value * Value) option }
+//     type Value = { Stem: Bits; Term: (Value * Value) option }
 //
-// This is barely adequate, but inefficient if we use many ad-hoc list ops in
-// our language modules. 
-//
+// This is barely adequate, but inefficient if we use many ad-hoc list ops.
 // Glas programs assume that lists are accelerated using a finger-tree encoding.
 // To support this, we can represent structures of form `(A * (B * (C * D)))` as
-// lists. We have a valid 'list' type when the final element (D) has unit value.
+// finger-tree lists. 
 // 
 //     type Value = { Stem: Bits; Spine: (Value * FTList<Value> * EndValue) option }
 //
-// Here EndValue is any value that is not a pair. This could be enforced by smart
-// constructor or by a wrapper such as `L of Value | R of Value | U`. The last item
-// of a spine would be the EndValue.
-//
-// This ensures a normalizing semantic representation, 
+// This enables us to efficiently check whether a value is a list, and to manipulate
+// list values with the expected algorithmic efficiencies. The EndValue type will
+// ensure we have anormal form with no pair in the EndValue type.
 // 
-// At this point, we don't have a strongly normalizing representation. In normal
-// form, the last element of the spine is not a pair, and the Spine is not a 
-// singleton list (i.e. size is not 1), and we need to ignore the tree-structure
-// within the finger tree. Fortunately, none of these constraints are difficult.
-//
-// This representation still elides use of Stowage, so scalability is limited by
-// volatile memory. However, it is adequate for a bootstrap interpreter. 
+// This representation still excludes Stowage or rope-like chunks for binaries, so
+// there is a lot that could be improved. But it is adequate for bootstrap.
+
 
 [<Struct>]
-type Branch<'V> = { L: 'V; R: 'V }
-
-[<Struct>]
-type Value = { Stem : Bits; Term: Branch<Value> option }
+type Value = { Stem : Bits; Spine: Option<struct(Value * FTList<Value> * EndVal)> }
+and [<Struct>] EndVal =
+    val Value : Value
+    new(v : Value) =
+        if Bits.isEmpty v.Stem && Option.isSome v.Spine then 
+            invalidArg (nameof v) "EndVal must not be a pair"
+        { Value = v }
 
 module Value =
 
     /// The unit (1) value is represented by the single-element tree.
     let unit = 
-        { Stem = Bits.empty; Term = None }
+        { Stem = Bits.empty; Spine = None }
 
-    let isUnit v =
-        Option.isNone (v.Term) && Bits.isEmpty (v.Stem)
+    let inline isUnit v =
+        Option.isNone (v.Spine) && Bits.isEmpty (v.Stem)
 
-    /// We can represent basic pair types (A * B) as a node with two children.
-    /// This is mostly used for representing lists. Glas systems favor records
-    /// instead of pairs in most cases.
-    let inline pair a b =
-        { Stem = Bits.empty; Term = Some { L=a; R=b } }
+    /// A node with two children can represent a pair (A * B).
+    /// To support list processing, there is some special handling of pairs.
+    /// A list is essentially a right spine of pairs (A * (B * (C * (...)))).
+    let inline isPair v =
+        Option.isSome (v.Spine) && Bits.isEmpty (v.Stem)
 
-    let (|Pair|_|) (v : Value) =
-        if (Bits.isEmpty v.Stem) then v.Term else None
+    let inline (|Pair|_|) v =
+        if Bits.isEmpty v.Stem then v.Spine else None
+
+    let pair a b =
+        match b with 
+        | Pair struct(b0,bs,bend) -> 
+            { Stem = Bits.empty; Spine=Some struct(a, FTList.cons b0 bs, bend) }
+        | _ -> 
+            { Stem = Bits.empty; Spine=Some struct(a, FTList.empty, EndVal(b)) }
 
     let fst v =
         match v with
-        | Pair p -> p.L
+        | Pair struct(v0,_,_) -> v0
         | _ -> invalidArg "v" "not a pair"
 
     let tryFst v =
         match v with
-        | Pair p -> Some p.L
+        | Pair struct(v0,_,_) -> Some v0
         | _ -> None
     
     let snd v =
         match v with
-        | Pair p -> p.R
+        | Pair struct(_, vs, vend) -> 
+            match FTList.tryViewL vs with
+            | Some (v1, vs') -> { Stem = Bits.empty; Spine = Some struct(v1, vs', vend) }
+            | None -> vend.Value
         | _ -> invalidArg "v" "not a pair"
 
     let trySnd v =
         match v with
-        | Pair p -> Some p.R
+        | Pair struct(_, vs, vend) -> 
+            let r = 
+                match FTList.tryViewL vs with
+                | Some (v1, vs') -> { Stem = Bits.empty; Spine = Some struct(v1, vs', vend) }
+                | None -> vend.Value
+            Some r
         | _ -> None
 
     /// We can represent basic sum types (A + B) as a node with a single child.
@@ -85,7 +95,7 @@ module Value =
     let inline isLeft v =
         if Bits.isEmpty v.Stem then false else (false = (Bits.head v.Stem))
 
-    let (|Left|_|) v =
+    let inline (|Left|_|) v =
         if isLeft v then Some { v with Stem = Bits.tail v.Stem } else None
 
     /// The right sum adds a `1` prefix to an existing value.
@@ -95,43 +105,44 @@ module Value =
     let inline isRight v = 
         if Bits.isEmpty v.Stem then false else (true = (Bits.head v.Stem))
 
-    let (|Right|_|) v = 
+    let inline (|Right|_|) v = 
         if isRight v then Some { v with Stem = Bits.tail v.Stem } else None
 
     /// Any bitstring can be a value. Glas uses bitstrings for numbers and
     /// labels, but not for binaries. Binaries are encoded as a list of bytes.
     let inline ofBits b =
-        { Stem = b; Term = None }
+        { Stem = b; Spine = None }
 
-    let inline isbits v = Option.isNone v.Term
+    let inline isBits v = 
+        Option.isNone v.Spine
 
     let (|Bits|_|) v =
-        if isbits v then Some v.Stem else None
+        if isBits v then Some v.Stem else None
 
     /// We can encode a byte as a short bitstring.
     let inline u8 (n : uint8) : Value = 
         Bits.ofByte n |> ofBits
     
-    let (|U8|_|) v =
-        if isbits v then Bits.(|Byte|_|) v.Stem else None
+    let inline (|U8|_|) v =
+        if isBits v then Bits.(|Byte|_|) v.Stem else None
 
     let inline u16 (n : uint16) : Value = 
         Bits.ofU16 n |> ofBits
 
-    let (|U16|_|) v =
-        if isbits v then Bits.(|U16|_|) v.Stem else None
+    let inline (|U16|_|) v =
+        if isBits v then Bits.(|U16|_|) v.Stem else None
 
     let inline u32 (n : uint32) : Value =
         Bits.ofU32 n |> ofBits
 
-    let (|U32|_|) v =
-        if isbits v then Bits.(|U32|_|) v.Stem else None
+    let inline (|U32|_|) v =
+        if isBits v then Bits.(|U32|_|) v.Stem else None
 
     let inline u64 (n : uint64) : Value =
         Bits.ofU64 n |> ofBits
 
-    let (|U64|_|) v = 
-        if isbits v then Bits.(|U64|_|) v.Stem else None
+    let inline (|U64|_|) v = 
+        if isBits v then Bits.(|U64|_|) v.Stem else None
 
     let private consLabel (s : string) (b : Bits) : Bits =
         let strbytes = System.Text.Encoding.UTF8.GetBytes(s)
@@ -185,85 +196,72 @@ module Value =
     //let record_insert ()
 
 
-    /// Glas encodes lists using pairs, e.g. (A * (B * (C * ()))).
+    /// Glas logically encodes lists using pairs terminating in unit.
     ///
-    /// The intention is that list representations will be optimized by
-    /// Glas systems, using finger trees for large lists or struct tuples
-    /// for short lists. This module uses a direct representation, which
-    /// is barely adequate for bootstrap. 
-    let rec isList (v : Value) =
+    ///    (A * (B * (C * (D * (E * ()))))).
+    /// 
+    /// This check can be performed in O(1) time based on the finger-tree
+    /// representation of list structures.
+    let isList (v : Value) =
         if not (Bits.isEmpty v.Stem) then false else
-        match v.Term with
-        | Some b -> isList b.R
+        match v.Spine with
         | None -> true
+        | Some struct(_,_,vend) -> isUnit vend.Value
 
-    // A consequence of this is that we cannot cheaply check whether a  
-    // value is a valid list. However, we can view all structures as
-    // almost-valid lists, modulo the terminal, and use this to help 
-    // handle conversions.
+    let tryFTList v =
+        if not (Bits.isEmpty v.Stem) then None else
+        match v.Spine with
+        | None -> Some (FTList.empty)
+        | Some struct(v0,vs,vend) ->
+            if not (isUnit vend.Value) then None else
+            Some (FTList.cons v0 vs)
 
+    let inline (|FTList|_|) v =
+        tryFTList v
 
-    /// Convert an F# list to a Glas list.
-    let ofList (vs : Value list) : Value =
-        List.foldBack pair vs unit
+    let inline toFTList (v : Value) : FTList<Value> =
+        match tryFTList v with
+        | Some f -> f
+        | None -> invalidArg (nameof v) "not a list"
 
-    /// Convert an F# list to a Glas list value with mapped conversions.
-    let ofListM fn xs =
-        List.foldBack (fun x v -> pair (fn x) v) xs unit
+    /// We can directly convert from an FTList of values.
+    let ofFTList (fv : FTList<Value>) : Value =
+        match FTList.tryViewL fv with
+        | None -> unit // empty list
+        | Some (fv0, fv') ->
+            { Stem = Bits.empty; Spine = Some struct(fv0, fv', EndVal(unit)) }
 
-    /// Convert an F# array to a Glas list.
-    let ofArray (vs : Value array) : Value =
-        Array.foldBack pair vs unit
-
-    /// Convert an F# array to a Glas list with mapped conversions.
-    let ofArrayM fn xs =
-        Array.foldBack (fun x v -> pair (fn x) v) xs unit
-    
-    /// Convert an F# seq to a Glas list.
-    let ofSeq (vs : Value seq) : Value =
-        Seq.foldBack pair vs unit
-
-    /// Convert an F# seq to a Glas list with conversions. 
-    let ofSeqM fn xs =
-        ofSeq (Seq.map fn xs)
-
+    /// Convert from a binary 
     let ofBinary (s : uint8 array) : Value =
-        ofArrayM u8 s 
+        let fn e l = pair (u8 e) l
+        Array.foldBack fn s unit
 
-    /// Strings are normally represented 
+    let toBinary (v : Value) : uint8 array =
+        let mutable f = toFTList v
+        let sz = FTList.length f
+        let arr = Array.zeroCreate sz
+        let mutable ix = 0
+        while (ix < sz) do
+            match FTList.tryViewL f with
+            | Some (U8 b, f') ->
+                Array.set arr ix b
+                ix <- ix + 1
+                f <- f'
+            | _ -> invalidArg (nameof v) "non-binary data"
+        arr
+
+
+    /// Convert from a string, using UTF-8. 
+    /// Glas uses UTF-8 as its common text encoding.
     let ofString (s : string) : Value =
         ofBinary (System.Text.Encoding.UTF8.GetBytes(s))
 
 
 
 
-    /// Convert a Glas list to an F# seq
-    let listToSeq (v : Value) : Value = 
-        unit 
-
-
-    let rec private tryRevListLoop acc v =
-        if not (Bits.isEmpty v.Stem) then None else
-        match v.Term with
-        | Some b -> tryRevListLoop (pair b.L acc) (b.R)
-        | None -> Some acc
-
-    let tryRevList (v : Value) : Value option =
-        tryRevListLoop unit v
-
-    let revList (v : Value) : Value =
-        match tryRevList v with
-        | Some rv -> rv
-        | None -> invalidArg "v" "value is not a valid list"
-
-    let inline tryListHead v = fst v
-
-
 
 
 (*
-* **pushl** - given value and list, add value to left (head) of list
-* **popl** - given a non-empty list, split into head and tail.
 * **pushr** - given value and list, add value to right of list
 * **popr** - given non-empty list, split into last element and everything else
 * **join** - appends list at top of data stack to the list below it

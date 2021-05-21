@@ -104,4 +104,4 @@ Glas Object is intended to be simple. Integrating too many dynamic features into
 
 ### Memory
 
-Glas Object is not primarily designed for use in-memory, but it could potentially work as an in-memory representation. I think the main issue would be that variable-width offsets become awkward in context of a migrating garbage collector. We could perhaps specialize the in-memory representation to use fixed-width offsets or pointers instead.
+Glas Object is not primarily designed for use in-memory, but it could potentially work as an in-memory representation. I think the main issue would be that variable-width and unidirectional offsets are awkward in context of a migrating garbage collector and deferred computation of escapes. We could specialize the in-memory representation to use pointers instead, so it isn't Glas Object but has a simple translation to Glas Object.
