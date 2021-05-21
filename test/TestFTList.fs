@@ -16,29 +16,48 @@ let randomRange m n =
 let randomList m n =
     mkRandomList (randomRange m n) (List.empty)
 
+// this variation is intended to ensure an irregular branch structure
+let randomFTList m n =
+    let mutable ftl = FTList.empty
+    while (FTList.length ftl < n) do
+        ftl <- FTList.append ftl (FTList.ofList (randomList 1 20))
+        ftl <- FTList.append (FTList.ofList (randomList 1 20)) ftl
+        let shuffle = randomRange 0 (FTList.length ftl)
+        let (l,r) = FTList.splitAt shuffle ftl
+        ftl <- FTList.append r l
+    FTList.take (randomRange m n) ftl
+    
+
 [<Tests>]
 let tests =
     testList "ftlist tests" [
         testCase "empty" <| fun () ->
-            Expect.equal (List.empty) (FTList.toList FTList.empty) "empty is as empty does"
+            Expect.equal (FTList.toList FTList.empty) (List.empty) "empty is as empty does"
 
         testCase "list conversions" <| fun () ->
             let l = randomList 2000 4000
-            Expect.equal l (FTList.toList (FTList.ofList l)) "ofList toList"
+            Expect.equal (FTList.toList (FTList.ofList l)) l "ofList toList"
+            let f = randomFTList 2000 4000
+            Expect.isTrue (FTList.eq f (FTList.ofList (FTList.toList f))) "toList ofList"
 
         testCase "reverse" <| fun () ->
             let l = randomList 2000 4000
-            Expect.equal (List.rev l) (FTList.toList (FTList.rev (FTList.ofList l))) "round trip reversed"
+            Expect.equal (FTList.toList (FTList.rev (FTList.ofList l))) (List.rev l) "round trip reversed"
+            let f = randomFTList 2000 4000
+            Expect.equal (FTList.toList (FTList.rev f)) (List.rev (FTList.toList f)) "equal reverse irregular"
 
         testCase "map" <| fun () ->
             let l = randomList 2000 4000
-            Expect.equal (List.map hash l) (FTList.toList (FTList.map hash (FTList.ofList l))) "hashes to hashes"
+            Expect.equal (FTList.toList (FTList.map hash (FTList.ofList l))) (List.map hash l)  "hashes to hashes"
 
         testCase "length" <| fun () ->
             let l = List.map (fun i -> randomList i (2 * i)) [0; 5; 10; 20; 100; 200; 400; 800; 1600]
             let lz = List.map (fun x -> List.length x) l
             let ftlz = List.map (fun x -> FTList.length (FTList.ofList x)) l
             Expect.equal ftlz lz "equal list lengths"
+
+            let f = randomFTList 2000 4000
+            Expect.equal (List.length (FTList.toList f)) (FTList.length f) "equal lengths irregular"
 
         testCase "split" <| fun () ->
             let len = 1000
@@ -53,9 +72,9 @@ let tests =
 
         testCase "append" <| fun () ->
             for _ in 1 .. 100 do
-                let l1 = randomList 0 1000
-                let l2 = randomList 0 1000
-                Expect.equal (FTList.toList (FTList.append (FTList.ofList l1) (FTList.ofList l2))) (List.append l1 l2) "equal append"
+                let l1 = randomFTList 0 1000
+                let l2 = randomFTList 0 1000
+                Expect.equal (FTList.toList (FTList.append l1 l2)) (List.append (FTList.toList l1) (FTList.toList l2)) "equal append"
 
         testCase "toArray" <| fun () ->
             let l = randomList 1000 2000
@@ -72,5 +91,23 @@ let tests =
         testCase "ofSeq" <| fun () ->
             let l = randomList 1000 2000
             Expect.equal (FTList.toList (FTList.ofSeq (List.toSeq l))) l "equal via ofSeq"
+
+        testCase "equal" <| fun () ->
+            let l = randomList 100 200
+            Expect.isTrue (FTList.eq (FTList.ofList l) (FTList.ofList l)) "eq"
+            Expect.isFalse (FTList.eq (FTList.ofList l) (FTList.append (FTList.ofList l) (FTList.singleton 17))) "not eq"
+
+        testCase "compare" <| fun () ->
+            let l = randomList 100 200
+            let f1 = FTList.ofList l
+            let f2 = FTList.map (fun x -> x) f1
+            let fx1 = FTList.ofList [-1]
+            let fx2 = FTList.ofList [0]
+            Expect.equal 0 (FTList.compare f1 f2) "eq compare"
+            Expect.equal 1 (FTList.compare (FTList.append f1 fx1) f2) "longer lists"
+            Expect.equal -1 (FTList.compare f1 (FTList.append f2 fx1)) "shorter list"
+            Expect.equal 1 (FTList.compare (FTList.append f1 fx2) (FTList.append f2 fx1)) "diff lists"
+            Expect.equal -1 (FTList.compare (FTList.append f1 fx1) (FTList.append f2 fx2)) "diff lists 2"
+            Expect.equal 0 (FTList.compare (FTList.append f1 fx1) (FTList.append f2 fx1)) "eq compare 2"
 
     ]

@@ -274,7 +274,6 @@ module FT =
             // ensure n < isize t for internal _splitAt
             if (n >= isize t) then struct(t, Empty) else
             let struct(l, x, r) = _splitAt n t
-            assert((isize l = n) && (isize t = n + 1 + isize r))
             struct(l, cons x r)
 
         let rec eqAtoms (l : T<Atom<'a>>) (r : T<Atom<'a>>) = 
