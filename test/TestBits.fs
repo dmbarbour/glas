@@ -31,33 +31,45 @@ let tests =
             Expect.equal (Bits.length b) 8 "byte length"
             Expect.equal (Bits.rev b) (Bits.ofList (List.rev bl)) "reversed"
             Expect.equal 8 (Bits.sharedPrefixLen b b) "shared prefix"
-            match b with
-            | Bits.Byte n -> Expect.equal n 23uy "via Byte match"
-            | _ -> failtest "failed to match Byte"
 
         testCase "n64" <| fun () ->
             let bl = randomList 64
             let n64 = foldMSB (List.toSeq bl)
             Expect.equal (Bits.ofList bl) (Bits.ofU64 n64) "equal n64"
-            match (Bits.ofList bl) with
-            | Bits.U64 n -> Expect.equal n n64 "via U64 match"
-            | _ -> failtest "failed to match U64" 
 
         testCase "n32" <| fun () ->
             let bl = randomList 32
             let n32 = foldMSB (List.toSeq bl) |> uint32
             Expect.equal (Bits.ofList bl) (Bits.ofU32 n32) "equal n32"
-            match (Bits.ofList bl) with
-            | Bits.U32 n -> Expect.equal n n32 "via U32 match"
-            | _ -> failtest "failed to match U32"
 
         testCase "n16" <| fun () ->
             let bl = randomList 16
             let n16 = foldMSB (List.toSeq bl) |> uint16
             Expect.equal (Bits.ofList bl) (Bits.ofU16 n16) "equal n16"
-            match (Bits.ofList bl) with
-            | Bits.U16 n -> Expect.equal n n16 "via U16 match"
-            | _ -> failtest "failed to match U16"
+
+        testCase "match sizes" <| fun () ->
+            for sz in 0 .. 128 do
+                let l = randomList sz
+                let c = foldMSB (List.toSeq l) 
+                match (Bits.ofList l) with
+                | Bits.U64 n64 -> 
+                    Expect.equal sz 64 "size 64" 
+                    Expect.equal (uint64 c) n64 "equal n64"
+                | _ when sz = 64 -> failtest "failed to match U64"
+                | Bits.U32 n32 -> 
+                    Expect.equal sz 32 "size 32"
+                    Expect.equal (uint32 c) n32 "equal n32"
+                | _ when sz = 32 -> failtest "failed to match U32"
+                | Bits.U16 n16 -> 
+                    Expect.equal sz 16 "size 16"
+                    Expect.equal (uint16 c) n16 "equal n16"
+                | _ when sz = 16 -> failtest "failed to match U32"
+                | Bits.Byte n8 -> 
+                    Expect.equal sz 8 "size 8"
+                    Expect.equal (uint8 c) n8 "equal n8"
+                | _ when sz = 8 -> failtest "failed to match Byte"
+                | _ -> ()
+
 
         testCase "big bit lists" <| fun () ->
             let len = 223

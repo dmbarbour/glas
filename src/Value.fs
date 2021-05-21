@@ -224,7 +224,7 @@ module Value =
         | Some f -> f
         | None -> invalidArg (nameof v) "not a list"
 
-    /// We can directly convert from an FTList of values.
+    /// We can directly convert from an FTList of values. O(1)
     let ofFTList (fv : FTList<Value>) : Value =
         match FTList.tryViewL fv with
         | None -> unit // empty list

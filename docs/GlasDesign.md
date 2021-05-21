@@ -190,8 +190,7 @@ Annotations support static analysis, performance, automated testing, safety and 
 
 * **prog:(do:P, ...)** - runs P. Fields other than 'do' should be annotations regarding P. Potential annotations:
  * **name:Symbol** - an identifier for the region to support debugging (logging, profiling, etc.) based on external configuration. Implicitly hierarchical with containing prog name.
- * **in:\[List, Of, Symbols\]** - human-meaningful labels for stack input; rightmost is top of stack. This also indicates expected input arity.
- * **out:\[List, Of, Symbols\]** - human meaningful labels for stack output; rightmost is top of stack. This also indicates expected output arity. 
+ * **stack:(in:\[Arg,Symbols\], out:\[Result,Symbols\])** - human-meaningful labels for stack effect. This can be leveraged for decompilation, debugging, arity checking, syntax bindings of keyword arguments and results, in-out parameters, etc..
  * **type:Type** - describe type of subprogram P.
  * **bref:B** - assert that program P has the same behavior as program B. In this case, the intention is usually that P is an optimized or refactored B.
  * **docs:Docs** - a record for arbitrary documentation, intended for a human or document generator. Might include text, icons, example usage, etc.. 
@@ -199,7 +198,7 @@ Annotations support static analysis, performance, automated testing, safety and 
  * **accel:Hints** - tell compiler or interpreter to replace P by an enhanced-performance implementation
 
 * **note:(...)** - inline annotations for use with seq. Pseudo-operators on the tacit environment.
- * **vars:\[List, Of, Symbols\]** - human-meaningful labels for top few stack elements; rightmost is top of stack.
+ * **stack:\[List, Of, Symbols\]** - human-meaningful labels for top few stack elements; rightmost is top of stack.
  * **type:Type** - describe assumptions about stack and state that should hold at this point in the program. 
  * **probe:Symbol** - explicit debug point for use with 'seq'. By default write a debug log with debug symbol, stack, state, and timing info. May be externally configurable with filters or assertions or for use as a breakpoint or checkpoint, depending on development environment.
  * **assert:Q** - assert that Q should succeed if run. Verify statically if feasible, otherwise check at runtime. Use backtracking to undo effects. Runtime assertion failures are uncatchable and directly halt the program.

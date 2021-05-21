@@ -68,7 +68,7 @@ The varnat encoding favored by Glas Object uses a prefix `(1)*0` to encode the t
         110xxxxx xxxxxxxx xxxxxxxx
         1110xxxx xxxxxxxx xxxxxxxx xxxxxxxx
 
-Overlong encodings aren't permitted. This gives us 7 bits per byte, and ensures a lexicographic order of numbers. In the interpretation for offsets or extended prefix size fields, Glas varnats start at 1.
+This gives us 7 data bits per byte. To ensure a lexicographic order of numbers, overlong encodings aren't permitted. Glas varnats are usually interpreted to start at 1.
 
         00000000    1
         00000001    2
@@ -76,7 +76,7 @@ Overlong encodings aren't permitted. This gives us 7 bits per byte, and ensures 
         ...
         01111111    128
 
-In practice, varnats are unlikely to use more than four bytes in Glas systems.
+In practice, varnats are unlikely to use more than four bytes in Glas Objects. At some point in the range above a few megabytes, use of stowage becomes superior for scaling and structure sharing than use of big binaries. 
 
 ### Escapes
 
