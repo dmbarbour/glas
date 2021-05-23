@@ -276,6 +276,42 @@ module FT =
             let struct(l, x, r) = _splitAt n t
             struct(l, cons x r)
 
+
+        let rec private _elemAtListRem n l =
+            match l with
+            | (x::xs) -> 
+                let xz = isize x
+                if (xz > n) then struct(n, x) else
+                _elemAtListRem (n - xz) xs
+            | [] -> failwith "failed to find offset of elem in list" 
+        let inline private _elemAtList n l =
+            let struct(nRem, x) = _elemAtListRem n l
+            struct(n - nRem, x)
+
+        let rec private _elemAt<'V when 'V :> ISized> (n : int) (t : T<'V>) : struct(int * 'V) =
+            match t with
+            | Single v -> struct(0,v)
+            | Many (prefix=p; finger=f; suffix=s) ->
+                let pz = D.size p
+                let pfz = pz + isize f
+                if n < pz then  
+                    _elemAtList n (D.toList p)
+                else if n < pfz then 
+                    let n' = n - pz
+                    let struct(flz, b) = _elemAt n' f // find correct branch
+                    let struct(blz, x) = _elemAtList (n' - flz) (B.toList b)
+                    struct(pz + flz + blz, x)
+                else
+                    let struct(szr, x) = _elemAtList (n - pfz) (D.toList s)
+                    struct(pfz + szr, x)
+            | Empty -> failwith "inner elemAt on empty tree; should be impossible"
+
+
+        let elemAt<'V when 'V :> ISized> (n : int) (t : T<'V>) : 'V =
+            if (n < 0) || (n >= isize t) then invalidArg (nameof n) "index out of range" else
+            let struct(_, v) = _elemAt n t
+            v
+
         let rec eqAtoms (l : T<Atom<'a>>) (r : T<Atom<'a>>) = 
             match viewL l, viewL r with
             | Some struct(l0,l'), Some struct(r0,r') ->
@@ -424,6 +460,8 @@ module FTList =
         let fn l e = cons e l
         fold fn empty ftl
 
+    let item n x =
+        (T.elemAt n (toT x)).V
     
 
 

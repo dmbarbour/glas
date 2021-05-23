@@ -103,11 +103,17 @@ let tests =
             let f2 = FTList.map (fun x -> x) f1
             let fx1 = FTList.ofList [-1]
             let fx2 = FTList.ofList [0]
-            Expect.equal 0 (FTList.compare f1 f2) "eq compare"
-            Expect.equal 1 (FTList.compare (FTList.append f1 fx1) f2) "longer lists"
-            Expect.equal -1 (FTList.compare f1 (FTList.append f2 fx1)) "shorter list"
-            Expect.equal 1 (FTList.compare (FTList.append f1 fx2) (FTList.append f2 fx1)) "diff lists"
-            Expect.equal -1 (FTList.compare (FTList.append f1 fx1) (FTList.append f2 fx2)) "diff lists 2"
-            Expect.equal 0 (FTList.compare (FTList.append f1 fx1) (FTList.append f2 fx1)) "eq compare 2"
+            Expect.equal (FTList.compare f1 f2) 0 "eq compare"
+            Expect.equal (FTList.compare (FTList.append f1 fx1) f2) 1 "longer lists"
+            Expect.equal (FTList.compare f1 (FTList.append f2 fx1)) -1 "shorter list"
+            Expect.equal (FTList.compare (FTList.append f1 fx2) (FTList.append f2 fx1)) 1 "diff lists"
+            Expect.equal (FTList.compare (FTList.append f1 fx1) (FTList.append f2 fx2)) -1 "diff lists 2"
+            Expect.equal (FTList.compare (FTList.append f1 fx1) (FTList.append f2 fx1)) 0 "eq compare 2"
+
+        testCase "index" <| fun () ->
+            let fl = randomFTList 1000 2000
+            let a = FTList.toArray fl
+            for ix in 0 .. (FTList.length fl - 1) do
+                Expect.equal (FTList.item ix fl) (Array.item ix a) "equal list item"
 
     ]

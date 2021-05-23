@@ -144,6 +144,7 @@ module Value =
     let inline (|U64|_|) v = 
         if isBits v then Bits.(|U64|_|) v.Stem else None
 
+    // factored from 'label' and 'variant'
     let private consLabel (s : string) (b : Bits) : Bits =
         let strbytes = System.Text.Encoding.UTF8.GetBytes(s)
         Array.foldBack Bits.consByte strbytes (Bits.consByte 0uy b)
@@ -154,7 +155,7 @@ module Value =
     let label (s : string) : Bits =
         consLabel s Bits.empty
 
-    /// A variant is modeled by adding a label to an existing value.
+    /// A variant is modeled by prefixing a value with a label.
     let variant s v =
         { v with Stem = (consLabel s v.Stem) }
 
@@ -168,14 +169,17 @@ module Value =
         if halt then struct(a, b) else
         dropSharedPrefix (Bits.tail a) (Bits.tail b) 
 
-    /// Attempt to match bitstring prefix with value.
-    let (|Prefixed|_|) (p : Bits) (v : Value) : Value option =
+    let tryMatchStem p v = 
         let struct(p', stem') = dropSharedPrefix p (v.Stem)
         if Bits.isEmpty p' then Some { v with Stem = stem' } else None
 
+    /// Attempt to match bitstring prefix with value. This corr
+    let inline (|Stem|_|) (p : Bits) (v : Value) : Value option =
+        tryMatchStem p v
+
     /// Prefixed with a string label.
-    let (|Labeled|_|) (s : string) (v : Value) : Value option =
-        (|Prefixed|_|) (label s) v
+    let inline (|Variant|_|) (s : string) (v : Value) : Value option =
+        tryMatchStem (label s) v
 
     let rec private accumSharedPrefixLoop acc a b =
         let halt = Bits.isEmpty a || Bits.isEmpty b || (Bits.head a <> Bits.head b)
@@ -186,11 +190,70 @@ module Value =
     let inline private findSharedPrefix a b = 
         accumSharedPrefixLoop (Bits.empty) a b
 
+    // same as `Bits.append (Bits.rev a) b`.
     let private bitsAppendRev a b =
         Bits.fold (fun acc e -> Bits.cons e acc) b a
 
-    // construction of records
-    // pattern matching on records? maybe match a list of symbols?
+    /// Access a value within a record. Essentially a radix tree lookup.
+    let rec record_lookup (p:Bits) (r:Value) : Value option =
+        let struct(p',stem') = dropSharedPrefix p (r.Stem)
+        if (Bits.isEmpty p') then Some { r with Stem = stem' } else
+        if not (Bits.isEmpty stem') then None else
+        match r.Spine with
+        | Some struct(l, s, r) -> _rlu_spine p' l s r
+        | None -> None
+    and private _rlu_spine p l s r =
+        let pRem = Bits.tail p
+        if Bits.head p then record_lookup pRem l else
+        match FTList.tryViewL s with
+        | None -> record_lookup pRem (r.Value)
+        | Some (l', s') -> 
+            if not (Bits.isEmpty pRem) then _rlu_spine pRem l' s' r else 
+            Some { Stem = Bits.empty; Spine = Some struct(l', s', r) } 
+
+(*
+    let rec record_delete (p:Bits) (r:Value) : Value =
+        let struct(common, p', stem') = findSharedPrefix p (r.Stem)
+        if Bits.isEmpty p' then unit else
+        if not (Bits.isEmpty stem') then r else
+        match r.Spine with
+        | Some struct(l, s, e) ->
+            let spine' = _rdel_spine 
+        _rdel_spine p' l s e
+        | None -> r
+    and private _rdel_spine
+
+*)
+
+(*
+    let rec _record_delete acc p r =
+        let struct(sh, p', stem') = findSharedPrefix p (r.Stem)
+        if Bits.isEmpty p' then unit else // value entirely on path p
+        if not (Bits.isEmpty stem') then r else // value does not have p
+        match r.Spine with
+        | Some struct(l, s, e) -> _rdel_spine p' l s e 
+        | None -> r // 
+
+    /// Remove path from a record value. O(len(p)). 
+    /// This also removes the vestigial path, unless shared by another value.
+    let record_delete (p:Bits) (r:Value) : Value =
+        _record_delete [] p r
+
+
+
+
+
+
+    /// Insert a value into a record at a given path.
+    let record_insert (p:Bits) (v:Value) (r:Value) : Value =
+*)
+
+
+//* **get** - given label and record, extract value from record. Fails if label is not in record.
+//* **put** - given a label, value, and record, create new record that is almost the same except with value on label. 
+//* **del** - given label and record, create new record with label removed modulo prefix sharing with other paths in record.
+
+
 
     /// Record values will share prefixes in the style of a radix tree.
     //let record_insert ()
@@ -257,15 +320,4 @@ module Value =
         ofBinary (System.Text.Encoding.UTF8.GetBytes(s))
 
 
-
-
-
-
-(*
-* **pushr** - given value and list, add value to right of list
-* **popr** - given non-empty list, split into last element and everything else
-* **join** - appends list at top of data stack to the list below it
-* **split** - given number N and list of at least N elements, produce a pair of sub-lists such that join produces the original list, and the head portion has exactly N elements.
-* **len** - given list, return a number that represents length of list. Uses smallest encoding of number (i.e. no zeroes prefix).
-*)
 
