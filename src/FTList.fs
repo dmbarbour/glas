@@ -355,10 +355,10 @@ module FTList =
     let empty<'a> : FTList<'a> = 
         ofT Empty
 
-    let isEmpty l =
+    let inline isEmpty l =
         T.isEmpty (toT l)
 
-    let singleton a = 
+    let inline singleton a = 
         ofT (Single (Atom(a)))
 
     /// Length of FTLists, reported as a uint64.
@@ -370,28 +370,30 @@ module FTList =
         | Some struct(e,t') -> Some (e.V, ofT t')
         | None -> None
 
-    let (|ViewL|_|) l = tryViewL l
+    let inline (|ViewL|_|) l = 
+        tryViewL l
 
     let inline tryViewR l = 
         match T.viewR (toT l) with
         | Some struct(t',e) -> Some (ofT t', e.V)
         | None -> None
 
-    let (|ViewR|_|) l = tryViewR l
+    let inline (|ViewR|_|) l = 
+        tryViewR l
 
-    let eq x y =
+    let inline eq x y =
         T.eqAtoms (toT x) (toT y)
 
-    let compare x y = 
+    let inline compare x y = 
         T.cmpAtoms (toT x) (toT y)
 
-    let cons e l = 
+    let inline cons e l = 
         ofT (T.cons (Atom(e)) (toT l))
 
-    let snoc l e =
+    let inline snoc l e =
         ofT (T.snoc (toT l) (Atom(e)))
 
-    let append a b =
+    let inline append a b =
         ofT (T.append (toT a) (toT b))
 
     let ofList l = 
@@ -460,7 +462,7 @@ module FTList =
         let fn l e = cons e l
         fold fn empty ftl
 
-    let item n x =
+    let inline item n x =
         (T.elemAt n (toT x)).V
     
 

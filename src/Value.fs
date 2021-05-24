@@ -35,6 +35,11 @@ and [<Struct>] EndVal =
         { Value = v }
 
 module Value =
+    // intermediate construct to help insert/delete/pair ops
+    let inline private _ofSE s e =
+        match FTList.tryViewL s with
+        | Some (s0, s') -> { Stem = Bits.empty; Spine = Some struct(s0,s',e) }
+        | None -> e.Value
 
     /// The unit (1) value is represented by the single-element tree.
     let unit = 
@@ -43,49 +48,48 @@ module Value =
     let inline isUnit v =
         Option.isNone (v.Spine) && Bits.isEmpty (v.Stem)
 
+    // TODO: eq, compare, hash
+
     /// A node with two children can represent a pair (A * B).
     /// To support list processing, there is some special handling of pairs.
     /// A list is essentially a right spine of pairs (A * (B * (C * (...)))).
     let inline isPair v =
         Option.isSome (v.Spine) && Bits.isEmpty (v.Stem)
 
-    let inline (|Pair|_|) v =
+    let inline private tryPairSpine v =
         if Bits.isEmpty v.Stem then v.Spine else None
 
+    let inline (|Pair|_|) v = 
+        match tryPairSpine v with
+        | Some struct(l, s, e) -> Some (l, _ofSE s e)
+        | None -> None
+
     let pair a b =
-        match b with 
-        | Pair struct(b0,bs,bend) -> 
-            { Stem = Bits.empty; Spine=Some struct(a, FTList.cons b0 bs, bend) }
-        | _ -> 
+        match tryPairSpine b with 
+        | Some struct(l,s,e) -> 
+            { Stem = Bits.empty; Spine=Some struct(a, FTList.cons l s, e) }
+        | None -> 
             { Stem = Bits.empty; Spine=Some struct(a, FTList.empty, EndVal(b)) }
 
     let fst v =
-        match v with
-        | Pair struct(v0,_,_) -> v0
-        | _ -> invalidArg "v" "not a pair"
+        match tryPairSpine v with
+        | Some struct(v0,_,_) -> v0
+        | None -> invalidArg "v" "not a pair"
 
     let tryFst v =
-        match v with
-        | Pair struct(v0,_,_) -> Some v0
-        | _ -> None
+        match tryPairSpine v with
+        | Some struct(v0,_,_) -> Some v0
+        | None -> None
     
     let snd v =
-        match v with
-        | Pair struct(_, vs, vend) -> 
-            match FTList.tryViewL vs with
-            | Some (v1, vs') -> { Stem = Bits.empty; Spine = Some struct(v1, vs', vend) }
-            | None -> vend.Value
-        | _ -> invalidArg "v" "not a pair"
+        match tryPairSpine v with
+        | Some struct(_, s, e) -> _ofSE s e 
+        | None -> invalidArg "v" "not a pair"
 
     let trySnd v =
-        match v with
-        | Pair struct(_, vs, vend) -> 
-            let r = 
-                match FTList.tryViewL vs with
-                | Some (v1, vs') -> { Stem = Bits.empty; Spine = Some struct(v1, vs', vend) }
-                | None -> vend.Value
-            Some r
-        | _ -> None
+        match tryPairSpine v with
+        | Some struct(_, s, e) -> Some (_ofSE s e) 
+        | None -> None
 
     /// We can represent basic sum types (A + B) as a node with a single child.
     /// Glas mostly uses labeled variants instead, but this is illustrative.
@@ -190,10 +194,6 @@ module Value =
     let inline private findSharedPrefix a b = 
         accumSharedPrefixLoop (Bits.empty) a b
 
-    // same as `Bits.append (Bits.rev a) b`.
-    let private bitsAppendRev a b =
-        Bits.fold (fun acc e -> Bits.cons e acc) b a
-
     /// Access a value within a record. Essentially a radix tree lookup.
     let rec record_lookup (p:Bits) (r:Value) : Value option =
         let struct(p',stem') = dropSharedPrefix p (r.Stem)
@@ -211,52 +211,58 @@ module Value =
             if not (Bits.isEmpty pRem) then _rlu_spine pRem l' s' r else 
             Some { Stem = Bits.empty; Spine = Some struct(l', s', r) } 
 
-(*
+
+    // same as `Bits.append (Bits.rev a) b`.
+    let inline private _bitsAppendRev a v =
+        { v with Stem = Bits.fold (fun acc e -> Bits.cons e acc) (v.Stem) a }
+
     let rec record_delete (p:Bits) (r:Value) : Value =
+        // handle shared prefix of p and r
         let struct(common, p', stem') = findSharedPrefix p (r.Stem)
-        if Bits.isEmpty p' then unit else
-        if not (Bits.isEmpty stem') then r else
+        let p_deleted = _rdel_diff p' { r with Stem = stem' }
+        if isUnit p_deleted then unit else
+        _bitsAppendRev common p_deleted
+    and _rdel_diff p r = 
+        if Bits.isEmpty p then unit else
+        if not (Bits.isEmpty (r.Stem)) then r else
         match r.Spine with
         | Some struct(l, s, e) ->
-            let spine' = _rdel_spine 
-        _rdel_spine p' l s e
-        | None -> r
-    and private _rdel_spine
-
-*)
-
-(*
-    let rec _record_delete acc p r =
-        let struct(sh, p', stem') = findSharedPrefix p (r.Stem)
-        if Bits.isEmpty p' then unit else // value entirely on path p
-        if not (Bits.isEmpty stem') then r else // value does not have p
-        match r.Spine with
-        | Some struct(l, s, e) -> _rdel_spine p' l s e 
-        | None -> r // 
-
-    /// Remove path from a record value. O(len(p)). 
-    /// This also removes the vestigial path, unless shared by another value.
-    let record_delete (p:Bits) (r:Value) : Value =
-        _record_delete [] p r
+            let p' = Bits.tail p
+            if not (Bits.head p) then // delete left (false)
+                let l' = record_delete p' l
+                if isUnit l' then right (_ofSE s e) else 
+                { unit with Spine = Some struct(l', s, e) }
+            else // delete right (true)
+                // note: potentially optimize to avoid _ofSE
+                let se' = record_delete p' (_ofSE s e)
+                if isUnit se' then left l else pair l se'
+        | None -> unit 
 
 
-
-
-
-
-    /// Insert a value into a record at a given path.
-    let record_insert (p:Bits) (v:Value) (r:Value) : Value =
-*)
-
-
-//* **get** - given label and record, extract value from record. Fails if label is not in record.
-//* **put** - given a label, value, and record, create new record that is almost the same except with value on label. 
-//* **del** - given label and record, create new record with label removed modulo prefix sharing with other paths in record.
-
-
-
-    /// Record values will share prefixes in the style of a radix tree.
-    //let record_insert ()
+    let rec record_insert (p:Bits) (v:Value) (r:Value) : Value =
+        // handle the shared prefix of p and r
+        let struct(common, p', stem') = findSharedPrefix p (r.Stem)
+        _bitsAppendRev common (_rins_diff p' v { r with Stem = stem' } )
+    and _rins_diff p v r =
+        if Bits.isEmpty p then v else
+        if not (Bits.isEmpty (r.Stem)) then
+            // new branch node in record 
+            assert (Bits.head p <> Bits.head (r.Stem))
+            let v' = { v with Stem = Bits.append (Bits.tail p) (v.Stem) }
+            let r' = { r with Stem = (Bits.tail (r.Stem)) } 
+            if Bits.head p then pair r' v' else pair v' r'
+        else
+            // insert follows branch
+            match r.Spine with
+            | Some struct(l, s, e) ->
+                let p' = Bits.tail p
+                if not (Bits.head p) then // insert left (false)
+                    let l' = record_insert p' v l
+                    { unit with Spine = Some struct(l', s, e) }
+                else // insert right (true)
+                    // note: potentially optimize to avoid _ofSE
+                    pair l (record_insert p' v (_ofSE s e))
+            | None -> { v with Stem = Bits.append p (v.Stem) } 
 
 
     /// Glas logically encodes lists using pairs terminating in unit.
@@ -264,7 +270,7 @@ module Value =
     ///    (A * (B * (C * (D * (E * ()))))).
     /// 
     /// This check can be performed in O(1) time based on the finger-tree
-    /// representation of list structures.
+    /// representation of list-like structures.
     let isList (v : Value) =
         if not (Bits.isEmpty v.Stem) then false else
         match v.Spine with
