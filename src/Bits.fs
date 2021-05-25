@@ -302,6 +302,15 @@ module Bits =
         let addBit n e = (n <<< 1) ||| (if e then 1UL else 0UL)
         fold addBit 0UL b |> Some
 
+    /// lexicographic comparison
+    let rec cmp x y =
+        if (isEmpty x) && (isEmpty y) then 0 else
+        if (isEmpty x) then -1 else
+        if (isEmpty y) then 1 else
+        let cmp0 = compare (head x) (head y)
+        if 0 <> cmp0 then cmp0 else 
+        cmp (tail x) (tail y)
+
     // todo: consider support for dynamic-sized number representations,
     // e.g. excluding the leading zeroes.
     

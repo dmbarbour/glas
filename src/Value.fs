@@ -19,10 +19,11 @@ namespace Glas
 //
 // This enables us to efficiently check whether a value is a list, and to manipulate
 // list values with the expected algorithmic efficiencies. The EndValue type will
-// ensure we have anormal form with no pair in the EndValue type.
+// ensure we have normal forms with no pair in the EndValue type. This does complicate
+// some operations, but not too much.
 // 
 // This representation still excludes Stowage or rope-like chunks for binaries, so
-// there is a lot that could be improved. But it is adequate for bootstrap.
+// there is a lot that could be improved. But it seems adequate for bootstrap.
 
 
 [<Struct>]
@@ -41,12 +42,57 @@ module Value =
         | Some (s0, s') -> { Stem = Bits.empty; Spine = Some struct(s0,s',e) }
         | None -> e.Value
 
+    // remove shared prefix without recording the prefix.
+    let rec private dropSharedPrefix a b =
+        let halt = Bits.isEmpty a || Bits.isEmpty b || (Bits.head a <> Bits.head b)
+        if halt then struct(a, b) else
+        dropSharedPrefix (Bits.tail a) (Bits.tail b) 
+
     /// The unit (1) value is represented by the single-element tree.
     let unit = 
         { Stem = Bits.empty; Spine = None }
 
     let inline isUnit v =
         Option.isNone (v.Spine) && Bits.isEmpty (v.Stem)
+
+    /// Check for value equality. 
+    let rec eq x y =
+        if (x.Stem <> y.Stem) then false else
+        match x.Spine, y.Spine with
+        | Some struct(lx,sx,ex), Some struct(ly,sy,ey) ->
+            (eq lx ly) && (eqList sx sy) && (eq ex.Value ey.Value)
+        | None, None -> true
+        | _ -> false
+    and eqList x y =
+        match FTList.tryViewL x, FTList.tryViewL y with
+        | Some (x0, x'), Some(y0, y') -> (eq x0 y0) && (eqList x' y')
+        | None, None -> true
+        | _ -> false
+
+    /// Compare values.
+    let rec cmp x y = 
+        let cmpStem = Bits.cmp (x.Stem) (y.Stem)
+        if (0 <> cmpStem) then cmpStem else
+        match x.Spine, y.Spine with
+        | Some struct(lx, sx, ex), Some struct(ly, sy, ey) ->
+            let cmpL = cmp lx ly
+            if (0 <> cmpL) then cmpL else
+            let cmpS = cmpList sx sy 
+            if (0 <> cmpS) then cmpS else
+            cmp (ex.Value) (ey.Value)
+        | None, None -> 0
+        | Some _, None -> 1
+        | None, Some _ -> -1
+    and cmpList x y =
+        match FTList.tryViewL x, FTList.tryViewL y with
+        | Some (x0,x'), Some (y0,y') ->
+            let cmp0 = cmp x0 y0
+            if (0 <> cmp0) then cmp0 else
+            cmpList x' y'
+        | None, None -> 0
+        | Some _, None -> 1
+        | None, Some _ -> -1
+
 
     // TODO: eq, compare, hash
 
@@ -167,11 +213,6 @@ module Value =
     let inline symbol s =
         variant s unit
 
-    // remove shared prefix without recording the prefix.
-    let rec private dropSharedPrefix a b =
-        let halt = Bits.isEmpty a || Bits.isEmpty b || (Bits.head a <> Bits.head b)
-        if halt then struct(a, b) else
-        dropSharedPrefix (Bits.tail a) (Bits.tail b) 
 
     let tryMatchStem p v = 
         let struct(p', stem') = dropSharedPrefix p (v.Stem)
@@ -200,16 +241,16 @@ module Value =
         if (Bits.isEmpty p') then Some { r with Stem = stem' } else
         if not (Bits.isEmpty stem') then None else
         match r.Spine with
-        | Some struct(l, s, r) -> _rlu_spine p' l s r
+        | Some struct(l, s, e) -> _rlu_spine p' l s e
         | None -> None
-    and private _rlu_spine p l s r =
-        let pRem = Bits.tail p
-        if Bits.head p then record_lookup pRem l else
+    and private _rlu_spine p l s e =
+        let p' = Bits.tail p
+        if not (Bits.head p) then record_lookup p' l else
         match FTList.tryViewL s with
-        | None -> record_lookup pRem (r.Value)
+        | None -> record_lookup p' (e.Value)
         | Some (l', s') -> 
-            if not (Bits.isEmpty pRem) then _rlu_spine pRem l' s' r else 
-            Some { Stem = Bits.empty; Spine = Some struct(l', s', r) } 
+            if not (Bits.isEmpty p') then _rlu_spine p' l' s' e else 
+            Some { Stem = Bits.empty; Spine = Some struct(l', s', e) } 
 
 
     // same as `Bits.append (Bits.rev a) b`.
@@ -270,20 +311,20 @@ module Value =
     ///    (A * (B * (C * (D * (E * ()))))).
     /// 
     /// This check can be performed in O(1) time based on the finger-tree
-    /// representation of list-like structures.
+    /// representation of list-like structures. We only need to check if
+    /// the EndVal is unit instead of some non-list terminal.
     let isList (v : Value) =
         if not (Bits.isEmpty v.Stem) then false else
         match v.Spine with
         | None -> true
-        | Some struct(_,_,vend) -> isUnit vend.Value
+        | Some struct(_,_,e) -> isUnit e.Value
 
     let tryFTList v =
         if not (Bits.isEmpty v.Stem) then None else
         match v.Spine with
+        | Some struct(l,s,e) when isUnit e.Value -> Some (FTList.cons l s)
         | None -> Some (FTList.empty)
-        | Some struct(v0,vs,vend) ->
-            if not (isUnit vend.Value) then None else
-            Some (FTList.cons v0 vs)
+        | _ -> None
 
     let inline (|FTList|_|) v =
         tryFTList v
