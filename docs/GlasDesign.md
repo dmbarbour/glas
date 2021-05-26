@@ -188,7 +188,7 @@ Glas doesn't have built-in support for negative numbers, floating point, etc.. E
 
 Annotations support static analysis, performance, automated testing, safety and sanity, debugging, decompilation, and other external tooling. However, annotations cannot be directly observable within a program, modulo reflective effects API. For example, assertion failures must halt the program because normal failure is observable within a program via try/then/else.
 
-* **prog:(do:P, ...)** - runs P. Fields other than 'do' should be annotations regarding P. Potential annotations:
+* **prog:(do:P, ...)** - runs P. Fields other than 'do' should be annotations about P. Potential annotations:
  * **name:Symbol** - an identifier for the region to support debugging (logging, profiling, etc.) based on external configuration. Implicitly hierarchical with containing prog name.
  * **stack:(in:\[Arg,Symbols\], out:\[Result,Symbols\])** - human-meaningful labels for stack effect. This can be leveraged for decompilation, debugging, arity checking, syntax bindings of keyword arguments and results, in-out parameters, etc..
  * **type:Type** - describe type of subprogram P.
@@ -204,6 +204,7 @@ Annotations support static analysis, performance, automated testing, safety and 
  * **assert:Q** - assert that Q should succeed if run. Verify statically if feasible, otherwise check at runtime. Use backtracking to undo effects. Runtime assertion failures are uncatchable and directly halt the program.
  * **assume:Q** - as assert, but with greater emphasis on static verification. Unchecked or infrequently checked at runtime.
  * **stow** - hint to move top stack value to cheap, high-latency, content-addressed storage. Subject to runtime heuristics.
+ * **test:T** - add automatic tests to your code; compiler may interpret per *Automated Testing*.
 
 The set of annotations is openly extensible and subject to de-facto standardization. When a Glas compiler or interpreter encounters annotation labels it does not recognize, it should log a warning then ignore. 
 
@@ -224,14 +225,16 @@ Load failure may occur due to missing modules, ambiguous file names, dependency 
 
 ### Automated Testing
 
-For lightweight automatic testing, Glas systems will follow a convention where modules with name `test-*` should produce a test program, which is then evaluated with access to 'fork' effects for fuzzing of input. Effects API:
+For lightweight automatic testing, Glas systems will follow a convention where modules with name `test-*` should produce a test program. The test program is then evaluated with access to 'fork' effects for fuzzing of input. Effects API:
 
 * **fork** - response is unit or failure, non-deterministically.
 * **log:Message** - arbitrary output message to simplify debugging.
 
-Test programs are stack neutral. Input to the test program is based on a sequence of 'fork' results. Primary output is success or failure of the program, though reflection on logged messages and location of failure would be visible for debugging. The test program will be evaluated many times with different forks, and each test's fork sequence can be recorded as a binary for replay.
+Test programs should be stack neutral. Input to the test program is based on a sequence of 'fork' results. Primary output is success or failure of the program, though reflection on logged messages and location of failure would be visible for debugging. 
 
-Forks can select subtests, randomize parameters, and simulate non-deterministic or variable environments. When there are only a few forks, the system will test exhaustively. Otherwise, a good test environment will use heuristics and whitebox analysis to select forks, aiming for maximal branch coverage and efficient error discovery.
+The test program can be evaluated many times with different forks, and a test's fork history can be recorded as a binary for replay. Usefully, each fork is essentially independent so we can continue a test with prior errors, yet incremental computing is also feasible where we cache the computations up to a fork.
+
+Forks can select subtests, randomize parameters, and simulate non-deterministic or variable environments. When there are only a few forks, the system will test exhaustively. Otherwise, a good test environment might use heuristics and analysis to search for useful forks, aiming for branch coverage and error discovery.
 
 ### User Applications
 

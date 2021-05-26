@@ -21,7 +21,7 @@ module Bits =
         match_mask lobit n 
 
     let inline private invalidArgMatchLen l r =
-        invalidArg l "lists of different length"
+        invalidArg (nameof l) "lists of different length"
 
     /// Verify a Bits is structured correctly.
     /// This requires only that Head is non-zero.
@@ -41,7 +41,7 @@ module Bits =
         if (1UL <> b.Head) then lsb b.Head else 
         match b.Tail with
         | (x :: _) -> lsb x
-        | [] -> invalidArg "b" "head of empty list"
+        | [] -> invalidArg (nameof b) "head of empty list"
 
     let tryHead (b : Bits) : bool option =
         if isEmpty b then None else Some (head b)
@@ -51,7 +51,7 @@ module Bits =
         if (1UL <> b.Head) then { b with Head = (b.Head >>> 1) } else
         match b.Tail with
         | (x :: xs) -> { Head = (hibit ||| (x >>> 1)); Tail = xs }
-        | [] -> invalidArg "b" "tail of empty list"
+        | [] -> invalidArg (nameof b) "tail of empty list"
 
     let tryTail (b : Bits) : Bits option =
         if isEmpty b then None else Some (tail b)
@@ -63,6 +63,10 @@ module Bits =
         if msb b.Head 
           then { Head = 1UL; Tail = (hd' :: b.Tail) }
           else { b with Head = hd' }   
+
+    let inline (|Cons|_|) b =
+        if isEmpty b then None else
+        Some (head b, tail b)
 
     /// Add N elements of the same value to head of list.
     let rec consN (count : int) (e : bool) (b : Bits) : Bits =
@@ -102,7 +106,7 @@ module Bits =
 
     let inline private bmap2UL (fn) (bL : Bits) (bR : Bits) : Bits =
         let m = headBits bL.Head
-        if (m <> headBits bR.Head) then invalidArgMatchLen "bL" "bR" else
+        if (m <> headBits bR.Head) then invalidArgMatchLen bL bR else
         { Head = ((~~~m) &&& bL.Head) ||| (m &&& (fn bL.Head bR.Head))
         ; Tail = List.map2 fn bL.Tail bR.Tail
         }
@@ -139,7 +143,7 @@ module Bits =
     /// Fold over a pair of lists of equal length. 
     let rec fold2 fn (st : 'ST) (bL : Bits) (bR : Bits) : 'ST = 
         if (isEmpty bL) && (isEmpty bR) then st else
-        if (isEmpty bL) || (isEmpty bR) then invalidArgMatchLen "bL" "bR" else
+        if (isEmpty bL) || (isEmpty bR) then invalidArgMatchLen bL bR else
         fold2 fn (fn st (head bL) (head bR)) (tail bL) (tail bR)
 
     module private FoldBack64 =
@@ -167,7 +171,7 @@ module Bits =
     /// Reverse fold on two lists.
     let foldBack2 fn (bL : Bits) (bR : Bits) (st0 : 'ST) : 'ST =
         let fill = lenHd bL.Head
-        if (fill <> (lenHd bR.Head)) then invalidArgMatchLen "bL" "bR" else
+        if (fill <> (lenHd bR.Head)) then invalidArgMatchLen bL bR else
         let fb64 nL nR st = FoldBack64.foldBack2 fn 64 nL nR st
         let stTail = List.foldBack2 fb64 (bL.Tail) (bR.Tail) st0
         FoldBack64.foldBack2 fn fill (bL.Head) (bR.Head) stTail
@@ -185,7 +189,7 @@ module Bits =
     let rec item (nth : int) (b : Bits) =
         // naive implementation for now. We could feasibly optimize
         // indexing into the tail of b.
-        if isEmpty b then invalidArg "nth" "index out of range" else
+        if isEmpty b then invalidArg (nameof nth) "index out of range" else
         if (0 = nth) then head b else
         item (nth - 1) (tail b)
 
@@ -208,13 +212,13 @@ module Bits =
         // naive implementation for now. I could potentially optimize 
         // skipping several 64-bit chunks in the tail.
         if (0 >= count) then b else
-        if isEmpty b then invalidArg "count" "skip more than list length" else
+        if isEmpty b then invalidArg (nameof count) "skip more than list length" else
         skip (count - 1) (tail b)
 
     let rec private takeAccum (count) (b) (acc) =
         // this 'take' is one bit at a time.
         if (count < 1) then rev acc else
-        if isEmpty b then invalidArg "count" "taking more than list length" else
+        if isEmpty b then invalidArg (nameof count) "taking more than list length" else
         takeAccum (count - 1) (tail b) (cons (head b) acc)
 
     /// Keep count items from the head.
@@ -299,6 +303,21 @@ module Bits =
 
     let (|U64|_|) (b : Bits) : uint64 option =
         if not (matchLen 64 b) then None else
+        let addBit n e = (n <<< 1) ||| (if e then 1UL else 0UL)
+        fold addBit 0UL b |> Some
+
+    let rec private _trim_zero_prefix b =
+        if (isEmpty b) || (head b) then b else
+        _trim_zero_prefix (tail b)
+
+    /// min-width representation of number
+    let ofNat64 n =
+        _trim_zero_prefix (ofU64 n) 
+
+    /// convert up to 64 bits to a number
+    let (|Nat64|_|) b =
+        let len_ok = (List.isEmpty b.Tail) || ((1UL = b.Head) && (matchListLen 1 b.Tail))
+        if not len_ok then None else
         let addBit n e = (n <<< 1) ||| (if e then 1UL else 0UL)
         fold addBit 0UL b |> Some
 

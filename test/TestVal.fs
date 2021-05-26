@@ -145,6 +145,15 @@ let tests =
             | Some (U64 12345UL) -> ()
             | x -> failtest (sprintf "saturated lookup 11 -> %A" x)
         
+        testCase "record delete" <| fun () ->
+            let r = left (right (pair unit unit))
+            Expect.isTrue (eq r (record_delete (Bits.ofList [true]) r)) "delete non-present field"
+            Expect.isTrue (isUnit (record_delete (Bits.empty) r)) "delete empty path is unit"
+            Expect.isTrue (isUnit (record_delete (Bits.ofList [false]) r)) "delete l is unit"
+            Expect.isTrue (isUnit (record_delete (Bits.ofList [false; true]) r)) "delete lr is unit"
+            Expect.isTrue (eq (left (right (right unit))) (record_delete (Bits.ofList [false; true; false]) r)) "delete lrl is lrr"
+            Expect.isTrue (eq (left (right (left unit))) (record_delete (Bits.ofList [false; true; true]) r)) "delete lrr is lrl"
+            Expect.isTrue (eq (left (right (right unit))) (record_delete (Bits.ofList [false; true; false; true]) r)) "delete lrlr is lrr"
 
         testCase "record insert" <| fun () ->
             let checkElem k m r =
@@ -186,6 +195,19 @@ let tests =
                     m <- Map.remove k m
                     r <- record_delete (Bits.ofByte k) r
                     checkElem k m r
+
+        testCase "toKey" <| fun () ->
+            Expect.equal (toKey (pair unit (left unit))) (Bits.ofByte 0xC4uy) "pair unit (left unit)"
+            Expect.equal (toKey (left (left (right unit)))) (Bits.ofByte 0x58uy) "llr"
+            Expect.equal (toKey (left (right (left unit)))) (Bits.ofByte 0x64uy) "lrl"
+            Expect.equal (toKey (right (pair unit unit))) (Bits.ofByte 0xB0uy) "right (pair unit unit)"
+        
+        testCase "ofKey" <| fun () ->
+            Expect.isTrue (eq (pair unit (left unit)) (ofKey (Bits.ofByte 0xC4uy))) "pair unit (left unit)"
+            Expect.isTrue (eq (left (left (right unit))) (ofKey (Bits.ofByte 0x58uy))) "llr"
+            Expect.isTrue (eq (left (right (left unit))) (ofKey (Bits.ofByte 0x64uy))) "lrl"
+            Expect.isTrue (eq (right (pair unit unit)) (ofKey (Bits.ofByte 0xB0uy))) "right (pair unit unit)"
+
     ]
 
 

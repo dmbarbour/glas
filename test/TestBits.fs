@@ -70,12 +70,30 @@ let tests =
                 | _ when sz = 8 -> failtest "failed to match Byte"
                 | _ -> ()
 
+        testCase "nat" <| fun () ->
+            for x in 1 .. 64 do
+                let n = foldMSB (List.toSeq (true::randomList (x-1)))  
+                let b = Bits.ofNat64 n
+                Expect.equal (Bits.length b) x "expected length"
+                match b with
+                | Bits.Nat64 n' -> Expect.equal n' n "match values"
+                | _ -> failtest "did not match Nat64"
+
+            match Bits.empty with
+            | Bits.Nat64 n -> Expect.equal n 0UL "match empty bits"
+            | _ -> failtest "did not match empty bits"
+
+            match Bits.ofList (randomList 65) with
+            | Bits.Nat64 _ -> failtest "match oversized list"
+            | _ -> ()
+
 
         testCase "big bit lists" <| fun () ->
             let len = 223
             let b0 = randomList len
             let b1 = List.append b0 (true :: randomList 13)
             let b2 = List.append b0 (false :: randomList 29)
+            Expect.equal (Bits.length (Bits.ofList b0)) len "expected length"
             Expect.equal (Bits.toList (Bits.ofList b0)) b0 "equal encoding via list"
             Expect.equal (Bits.toList (Bits.rev (Bits.ofList b0))) (List.rev b0) "equal reversed lists"
             Expect.equal (Bits.sharedPrefixLen (Bits.ofList b1) (Bits.ofList b2)) len "shared prefix"

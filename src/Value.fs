@@ -69,7 +69,7 @@ module Value =
         | None, None -> true
         | _ -> false
 
-    /// Compare values.
+    /// Compare values. Rather arbitrary.
     let rec cmp x y = 
         let cmpStem = Bits.cmp (x.Stem) (y.Stem)
         if (0 <> cmpStem) then cmpStem else
@@ -80,21 +80,27 @@ module Value =
             let cmpS = cmpList sx sy 
             if (0 <> cmpS) then cmpS else
             cmp (ex.Value) (ey.Value)
-        | None, None -> 0
-        | Some _, None -> 1
-        | None, Some _ -> -1
+        | l,r -> compare (Option.isSome l) (Option.isSome r)
     and cmpList x y =
         match FTList.tryViewL x, FTList.tryViewL y with
         | Some (x0,x'), Some (y0,y') ->
             let cmp0 = cmp x0 y0
             if (0 <> cmp0) then cmp0 else
             cmpList x' y'
-        | None, None -> 0
-        | Some _, None -> 1
-        | None, Some _ -> -1
+        | l,r -> compare (Option.isSome l) (Option.isSome r)
 
+    let inline private hmix h0 h =
+        16777619 * (h0 ^^^ h) // FNV-1a
 
-    // TODO: eq, compare, hash
+    /// ad-hoc hash function for use with hashtables
+    let rec vhash (v : Value) : int =
+        match (v.Spine) with
+        | None -> hmix (hash v.Stem) 0
+        | Some struct(l, s, e) ->
+            let h0 = hmix (hash v.Stem) (2 + FTList.length s)
+            let hl = hmix h0 (vhash l)
+            let hs = FTList.fold (fun h x -> hmix h (vhash x)) hl s
+            hmix hs (vhash e.Value)
 
     /// A node with two children can represent a pair (A * B).
     /// To support list processing, there is some special handling of pairs.
@@ -193,6 +199,12 @@ module Value =
 
     let inline (|U64|_|) v = 
         if isBits v then Bits.(|U64|_|) v.Stem else None
+
+    let inline nat n =
+        Bits.ofNat64 n |> ofBits
+    
+    let inline (|Nat|_|) v =
+        if isBits v then Bits.(|Nat64|_|) v.Stem else None
 
     // factored from 'label' and 'variant'
     let private consLabel (s : string) (b : Bits) : Bits =
@@ -306,6 +318,72 @@ module Value =
             | None -> { v with Stem = Bits.append p (v.Stem) } 
 
 
+
+    // edge is `01` for left, `10` for right. accum in reverse order
+    let inline private _key_edge acc e =
+        if e 
+            then (Bits.cons false (Bits.cons true acc)) // right acc10 
+            else (Bits.cons true (Bits.cons false acc)) // left acc01 
+
+    let rec private _key_val bi br v =
+        let bi_stem = Bits.fold _key_edge bi (v.Stem)
+        match v.Spine with
+        | None -> 
+            let bi' = (Bits.cons false (Bits.cons false bi_stem)) // leaf
+            match br with
+            | (v'::br') -> _key_val bi' br' v'
+            | [] -> bi'
+        | Some struct(v', s, e) ->
+            let br' = (_ofSE s e)::br
+            let bi' = (Bits.cons true (Bits.cons true bi_stem)) // branch
+            _key_val bi' br' v'
+
+    /// Translate value to bitstrings with unique prefix property, suitable
+    /// for use as a record key. 
+    ///
+    /// This uses a naive encoding:
+    /// 
+    ///   00 - leaf
+    ///   01 - left (followed by node reached)
+    ///   10 - right (followed by node reached)
+    ///   11 - branch (followed by left then right)
+    ///
+    /// This means we have two bits per node in the value. Also, there is no 
+    /// implicit sharing of internal structure. The assumption is that keys 
+    /// are relatively small values where this is not a significant concern.
+    let toKey (v : Value) : Bits =
+        Bits.rev (_key_val (Bits.empty) (List.empty) v)
+
+    let rec private _key_stem sb k =
+        match k with
+        | Bits.Cons (false, Bits.Cons (true, k')) -> _key_stem (Bits.cons false sb) k'
+        | Bits.Cons (true, Bits.Cons (false, k')) -> _key_stem (Bits.cons true sb) k'
+        | _ -> struct(Bits.rev sb, k)
+
+    // note: this isn't tail recursive and might bust the stack if we have
+    // a very 'deep' key, including a long list.
+    let rec private _key_parse k =
+        let struct(stem, kim) = _key_stem (Bits.empty) k
+        match kim with
+        | Bits.Cons (false, Bits.Cons (false, k')) -> 
+            Some struct(ofBits stem, k')
+        | Bits.Cons (true, Bits.Cons (true, kl)) ->
+            match _key_parse kl with
+            | None -> None
+            | Some struct(l, kr) ->
+                match _key_parse kr with
+                | None -> None
+                | Some struct(r, k') ->
+                    let v = { (pair l r) with Stem = stem }
+                    Some struct(v, k')
+        | _ -> None
+
+    /// Parse a key back into a value. This may fail, raising invalidArg
+    let ofKey (b : Bits) : Value =
+        match _key_parse b with
+        | Some struct(v, _) -> v
+        | None -> invalidArg (nameof b) "not a valid key"
+
     /// Glas logically encodes lists using pairs terminating in unit.
     ///
     ///    (A * (B * (C * (D * (E * ()))))).
@@ -365,6 +443,4 @@ module Value =
     /// Glas uses UTF-8 as its common text encoding.
     let ofString (s : string) : Value =
         ofBinary (System.Text.Encoding.UTF8.GetBytes(s))
-
-
 

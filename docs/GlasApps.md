@@ -70,47 +70,41 @@ Transaction machines greatly simplify live coding or continuous deployment. Ther
 
 A complete solution for live coding requires additional support from the development environment. Transaction machines only lower a few barriers.
 
-## Application Model Design
+## Abstract Design
 
-One goal is to get started soon, so I'd prefer to avoid radical ideas that complicate the implementation on modern OS. However, within that constraint, I'd like to tune design of applications to better fit transaction machines and my vision for software systems.
+### Application Objects
 
-### Applications as Objects
+A transaction machine can be usefully viewed as an object with private memory and transactional step method. The scheduler repeatedly calls 'step', resulting in the essential transaction machine behavior. However, additional methods might be called under suitable conditions to simplify extension of the application integration between the application and its host.
 
-Almost any application will have some private state to model state machines. A transaction machine can be modeled as a scheduler repeatedly applying a transactional 'step' method to an application object. 
+For example, we can introduce an 'icon' method that computes a small PNG icon based on application state. This potentially indicates whether the application is busy or has pending notifications. The icon might be infrequently requested by the system, and forbid some effects such as await, fork, and write.
 
-Then methods other than 'step' can support a user or system interacting with the application. For example, GUI integration might benefit from an 'icon' method that returns an application icon, or a 'notifications' method that returns a list of active alerts for the user. Those methods might only be called occasionally. The system might support a few methods to support hibernation mode, graceful termination, garbage collection, or API versioning.
+We could similarly have a 'status' method that provides a lightweight summary of what the application is doing or whether it requires administrative attention.
 
-I propose to model application objects as a `Method -[Effects]- Result` program, where effect and result types may depend on the method. For the `step` method, the result should also be `step` so in the simplest case we could ignore the method parameter and define an application as just the repeating step operation.
+Applications might have an 'imgui' method that renders an immediate-mode GUI with texts, boxes, and buttons. To support multiple users and flexible views, imgui effects model could be oriented around interaction with a user-model that includes navigation, display size and capabilities, display preferences, clipboard and other tools, bearer tokens for authority, etc..
 
-### Structured Channels
+Applications that do not require passive background behavior could optionally define the 'step' method to directly fail, then focus on 'imgui' and other methods. Methods such as 'imgui' would still be applied repeatedly while the application is in the foreground.
 
-Communication with external systems should not assume they are local, transactional, or stable. Thus, external communications should be asynchronous, monotonic, and disruption tolerant. Channels are an excellent model under these constraints. Plain data channels are too inflexible, but we can support subtasks using subchannels. 
-
-Glas can support second-class subchannels: the writer may write a choice of data or subchannel, and the reader can detect whether the next element is a subchannel or data and receive it appropriately. An operator may exist to logically wire channels together, which serves as a pseudo first-class channel transfer. 
-
-Loopback channels can support consistent composition and modularity within applications. To ensure consistent behavior with external channels, a transaction cannot read its own writes to a loopback, i.e. there is implicitly an external transaction that forwards the data and subchannels.
-
-*Aside:* Although it is feasible to extend point-to-point channels into a broadcast databus shared by multiple writers and readers, I believe it wiser to limit channels to point-to-point then model broadcast explicitly via connection to intermediate services.
-
-### System Services
-
-For consistency, I propose to model an application's access to the host system as a channel. System requests will mostly be represented by writing a subchannel per request then writing the request description as the first value in the subchannel. The subchannel can receive the future result or support ad-hoc interaction with a long-running background task.
-
-Because the system channel is write-only, there is no risk of read-write conflict between transactions initiating new system requests. Usefully, the system channel preserves *order* of requests, which can be relevant when incrementally patching system state. It is feasible to support a system request to fork the system channel. Requests on different forks would be processed in a non-deterministic order.
+I propose to model applications as Glas programs of type `Method -[Eff]- Result` - a single parameter representing the method, a single result for the method return value, and suitable effects. This is is a lightweight dependent type: effects and result types may depend on the method variant.
 
 ### Robust References
 
-References used by an application should be allocated by the application. For example, instead of `open file` *returning* a system-allocated reference such as a file descriptor, we should express `open file as foo` to specify that symbol 'foo' is the application-allocated reference for the newly opened file. 
+There are a lot of benefits to having applications allocate their own references. For example, instead of `open file` returning a system-allocated reference, we express `open file as foo` to specify that symbol 'foo' will be our reference to the new file. 
 
-This design has several benefits: References can be allocated statically by application code. Reference values can be descriptive of purpose and provenance, simplifying debugging or reflection. Allocation of runtime references can be manually partitioned to resist read-write conflict on a central allocator. There are no security risks related to attempted forgery of system references. 
+This supports static allocation of references. The references can be descriptive and meaningful for debugging, reflection, and extension. Dynamic allocation of references is easily partitioned, reducing contention on a central allocator. There are no security risks related to potential forgery of system references.
 
-In context of transaction machines, forked transactions can essentially time-share references within the application while preserving logical linearity of references.
+### Regarding Remote Procedure Calls
+
+RPC should not be modeled as an application method because composition becomes too awkward. It's infeasible for an application to directly call another app. It's also difficult to know where to route a call in case of hierarchical composition. 
+
+However, asynchronous RPC can be implemented above network connections or abstract channels. The transaction machine would simply fork a loop to read and handle incoming requests. Intriguingly, we could also support 'continuous' RPC if we build upon a publish-subscribe model. 
 
 ### Specialized APIs
 
-Systems and applications should have specialized effects APIs. For example, a console app at the system layer should have an API specialized for file and network access, while a web-app focuses on document object model and XMLHttpRequest. An application's effects model should be designed for the specific data and user interaction models - this simplifies model testing, analysis, protection of invariants, porting to different hosts, etc..
+For applications and their platforms, specialized effects APIs are better. A console app platform should have an API specialized for file and network access, while a web-app platform would focus on document object model and XMLHttpRequest. 
 
-Frameworks and generalized APIs are useful as intermediate models to simplify implementation of many applications across many hosts. But attempting to start with, say, a general model of channels to unify file streams and network sockets will normally prove a mistake due to the subtle differences.
+The application should have an effects API that is specific to the application's data and user interaction model, almost independent of the host. This simplifies model testing, analysis, protection of invariants, porting to different hosts, etc.
+
+General APIs and frameworks should be used mostly for intermediate adapter layers between application and host.
 
 ## Common Effects
 
@@ -122,7 +116,7 @@ Task-based concurrency is based on repeating transactions that perform fair, sta
 
 * **fork** - response is non-deterministic unit or failure. 
 
-Fork becomes a random choice if used in an unstable context or beyond the limits of a replication quota.
+Fork reduces to fair random choice when used in an unstable or non-repeating context. Or if further replication is not supported, e.g. due to quotas.
 
 ### Timing
 
@@ -138,18 +132,16 @@ Timestamps will initially support `nt:Number` referring to Windows NT time - a n
 
 ### Memory
 
-Applications need private memory to carry information across transactions. For convenience and simplicity, memory is modeled as a key-value database, where keys and values both are arbitrary Glas data. Allocation of keys, aka MemRefs, is left entirely to the application and is independent from other references.
+Applications need private memory to carry information across transactions. For convenience and simplicity, memory is modeled as a key-value database. Keys (MemRefs) and values both are arbitrary Glas data. The default value associated with a key is unit. Allocation of refs to each purpose is left to the application and is independent from other references.
 
 * **mem:(on:MemRef, op:MemOp)** - MemRef is an arbitrary value. The MemOp represents an operation to observe or modify the associated value. 
- * **get** - Response is associated memory value; fails if there is no value.
- * **put:Value** - Insert or replace value associated with ref.
- * **del** - Remove associated value (if any) from MemRef. 
- * **touch** - respond with unit if 'get' would succeed, otherwise fails.
- * **swap:Value** - Atomic get and put. Supports precise conflict analysis: the value written doesn't depend on the value read.
+ * **get** - Response is value currently associated with ref.
+ * **put:Value** - Modify memory so value is subsequently associated with ref.
+ * **swap:Value** - Combines get and put to avoid some read-write conflicts.
 
-The get/put/del memops support basic manipulations. The touch/swap memops help stabilize common update patterns. I might later add methods for partial observation and manipulation of lists or records, but doing so has relatively low priority.
+It is feasible to add more operations, e.g. specialized list ops so transactions operating at opposite ends of the list avoid conflict. However, this is not a high priority.
 
-*Aside:* It is feasible to support automatic garbage collection of memory by introducing an application method to trace all the living memory.
+Memory is managed manually. Assigning unit to a memref can release underlying memory resources. We can potentially extend memory operations with dedicated ops for lists and records to improve precise conflict analysis. Garbage collection is also feasible, e.g. using several application methods for roots, tracing, and disposal such that they can run incrementally.
 
 ## Console Applications
 
@@ -169,11 +161,11 @@ Accessed by effect as implicit parameters:
 * **cmd** - response is list of strings representing command-line arguments.
 * **env** - response is list of 'key=value' strings for environment variables.
 
-There is no equivalent to 'setenv', but it is feasible to use the env/eff operator to override these values in context of a subprogram.
+There is no equivalent to 'setenv', but it is feasible to use the env/eff operator to override these values in context of a subprogram. Similarly, use of env/eff operators can control a subprogram's exposure to command line arguments.
 
 ### Standard IO
 
-Standard input and output can be modeled as initially open file references, following convention. However, instead of integers, we could reserve symbols `stdin`, `stdout`, and `stderr` as meaningful file references.
+Standard input and output can be modeled as initially open file references, following convention. However, instead of integers, I propose to reserve symbols `stdin`, `stdout`, and `stderr` as file references.
 
 ### Filesystem
 
@@ -251,15 +243,15 @@ We can cover the needs of most applications with support for TCP and UDP protoco
  * **info:UdpRef** - For a successfully connected UDP connection, returns a `(port:Port, addrs:[List, Of, Addr])` pair. Fails if still initializing, or if there was an error during initialization.
  * **close:UdpRef**
 
-An Addr can be a 32-bit number or a string such as "www.google.com" or "192.168.1.42". Similarly, a Port can be a 16-bit number or a string such as "ftp" that might be externally configured (cf. `/etc/services` in Linux). 
+An Addr could be a 32-bit number (IPv4), a 128-bit number (IPv6), or a string such as "www.google.com" or "192.168.1.42". Similarly, a Port can be a 16-bit number or a string such as "ftp" that is externally associated with a port (cf. `/etc/services` in Linux). 
 
-*Aside:* It might be useful to support a DNS lookup service directly, e.g. similar to getaddrinfo. However, this is low priority.
+At the moment, I'm not providing APIs for `getaddrinfo` and similar address lookup services. It is feasible to do so later, but it is very low priority.
 
 *Note:* Half-closed TCP is a potentially useful feature, but has been effectively disabled by many routers to help resist Denial of Service attacks. I've decided to not support it in this API.
 
 ## Web Applications
 
-Another promising target for Glas is web applications, i.e. compiling apps to JavaScript and the Document Object Model, using XMLHttpRequest, WebSockets, and Local Storage as needed. 
+Another promising target for Glas is web applications, compiling apps to JavaScript and using effects based on Document Object Model, XMLHttpRequest, WebSockets, and Local Storage. 
 
 ## Meta
 
