@@ -196,6 +196,15 @@ let tests =
                     r <- record_delete (Bits.ofByte k) r
                     checkElem k m r
 
+        testCase "asRecord" <| fun () ->
+            let v = asRecord ["fe"; "fi"; "fo"; "fum"] (List.map u8 [1uy .. 4uy])
+            match v with
+            | Record ["fe"; "fi"; "fo"; "foo"] 
+               ([Some (U8 1uy); Some (U8 2uy); Some (U8 3uy); None]
+               ,Variant "fum" (U8 4uy)) -> ()
+            | _ -> failwith "record match failed"
+
+
         testCase "toKey" <| fun () ->
             Expect.equal (toKey (pair unit (left unit))) (Bits.ofByte 0xC4uy) "pair unit (left unit)"
             Expect.equal (toKey (left (left (right unit)))) (Bits.ofByte 0x58uy) "llr"

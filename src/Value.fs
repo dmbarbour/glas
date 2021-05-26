@@ -317,7 +317,15 @@ module Value =
                     pair l (record_insert p' v (_ofSE s e))
             | None -> { v with Stem = Bits.append p (v.Stem) } 
 
+    let asRecord ks vs = 
+        let addElem r k v = record_insert (label k) v r
+        List.fold2 addElem unit ks vs
 
+    let (|Record|) ks r =
+        let lks = List.map label ks
+        let vs = List.map (fun k -> record_lookup k r) lks
+        let r' = List.fold (fun s k -> record_delete k s) r lks
+        (vs,r')
 
     // edge is `01` for left, `10` for right. accum in reverse order
     let inline private _key_edge acc e =
@@ -354,33 +362,35 @@ module Value =
     let toKey (v : Value) : Bits =
         Bits.rev (_key_val (Bits.empty) (List.empty) v)
 
+    // return a reversed key stem and remaining key bits
     let rec private _key_stem sb k =
         match k with
         | Bits.Cons (false, Bits.Cons (true, k')) -> _key_stem (Bits.cons false sb) k'
         | Bits.Cons (true, Bits.Cons (false, k')) -> _key_stem (Bits.cons true sb) k'
-        | _ -> struct(Bits.rev sb, k)
-
-    // note: this isn't tail recursive and might bust the stack if we have
-    // a very 'deep' key, including a long list.
-    let rec private _key_parse k =
-        let struct(stem, kim) = _key_stem (Bits.empty) k
+        | _ -> struct(sb, k)
+    and private _key_parse st k =
+        let struct(rstem, kim) = _key_stem (Bits.empty) k
         match kim with
         | Bits.Cons (false, Bits.Cons (false, k')) -> 
-            Some struct(ofBits stem, k')
-        | Bits.Cons (true, Bits.Cons (true, kl)) ->
-            match _key_parse kl with
-            | None -> None
-            | Some struct(l, kr) ->
-                match _key_parse kr with
-                | None -> None
-                | Some struct(r, k') ->
-                    let v = { (pair l r) with Stem = stem }
-                    Some struct(v, k')
+            _key_term st (ofBits (Bits.rev rstem)) k'
+        | Bits.Cons (true, Bits.Cons (true, k')) ->
+            let st' = struct(rstem, None) :: st
+            _key_parse st' k'
         | _ -> None
+    and private _key_term st v k =
+        match st with
+        | [] -> Some struct(v, k)
+        | (struct(stem, None) :: stRem) -> 
+            let st' = struct(stem, Some v) :: stRem
+            _key_parse st' k
+        | (struct(stem, Some l) :: st') ->
+            let p = _bitsAppendRev stem (pair l v)
+            _key_term st' p k
+
 
     /// Parse a key back into a value. This may fail, raising invalidArg
     let ofKey (b : Bits) : Value =
-        match _key_parse b with
+        match _key_parse (List.empty) b with
         | Some struct(v, _) -> v
         | None -> invalidArg (nameof b) "not a valid key"
 

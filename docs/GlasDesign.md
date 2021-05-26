@@ -128,7 +128,7 @@ The top-level effects handler is provided by runtime or compiler. Use of 'env' e
 
 ### Record and Variant Operators
 
-A set of operations useful for records and variants. 
+A set of operations useful for records and variants. Pair and sum types aren't directly supported in Glas programs except as the trivial case of records with one-bit labels.
 
 Labels are encoded into bitstrings, usually as null-terminated UTF-8 text. Within a record, label bitstrings must exhibit the prefix property: no valid label is a prefix of another valid label. Other than null terminators, this could be supported by fixed-width label encodings, e.g. forming an intmap.
 
