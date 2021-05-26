@@ -55,39 +55,38 @@ module Value =
     let inline isUnit v =
         Option.isNone (v.Spine) && Bits.isEmpty (v.Stem)
 
-    /// Check for value equality. 
-    let rec eq x y =
+    let rec private _eq rs x y =
         if (x.Stem <> y.Stem) then false else
         match x.Spine, y.Spine with
-        | Some struct(lx,sx,ex), Some struct(ly,sy,ey) ->
-            (eq lx ly) && (eqList sx sy) && (eq ex.Value ey.Value)
-        | None, None -> true
-        | _ -> false
-    and eqList x y =
-        match FTList.tryViewL x, FTList.tryViewL y with
-        | Some (x0, x'), Some(y0, y') -> (eq x0 y0) && (eqList x' y')
-        | None, None -> true
+        | Some struct(x',sx,ex), Some struct(y',sy,ey) ->
+            let rs' = struct(_ofSE sx ex, _ofSE sy ey) :: rs
+            _eq rs' x' y'
+        | None, None -> 
+            match rs with
+            | (struct(x',y')::rs') -> _eq rs' x' y'
+            | [] -> true
         | _ -> false
 
-    /// Compare values. Rather arbitrary.
-    let rec cmp x y = 
+    /// Check for value equality. 
+    let eq x y =
+        _eq (List.empty) x y
+
+    let rec private _cmp rs x y =
         let cmpStem = Bits.cmp (x.Stem) (y.Stem)
-        if (0 <> cmpStem) then cmpStem else
+        if 0 <> cmpStem then cmpStem else
         match x.Spine, y.Spine with
-        | Some struct(lx, sx, ex), Some struct(ly, sy, ey) ->
-            let cmpL = cmp lx ly
-            if (0 <> cmpL) then cmpL else
-            let cmpS = cmpList sx sy 
-            if (0 <> cmpS) then cmpS else
-            cmp (ex.Value) (ey.Value)
+        | Some struct(x', sx, ex), Some struct(y', sy, ey) ->
+            let rs' = struct(_ofSE sx ex, _ofSE sy ey) :: rs
+            _cmp rs' x' y'
+        | None, None ->
+            match rs with
+            | (struct(x',y')::rs') -> _cmp rs' x' y'
+            | [] -> 0
         | l,r -> compare (Option.isSome l) (Option.isSome r)
-    and cmpList x y =
-        match FTList.tryViewL x, FTList.tryViewL y with
-        | Some (x0,x'), Some (y0,y') ->
-            let cmp0 = cmp x0 y0
-            if (0 <> cmp0) then cmp0 else
-            cmpList x' y'
-        | l,r -> compare (Option.isSome l) (Option.isSome r)
+
+    /// Compare values. Rather arbitrary.
+    let cmp x y = 
+        _cmp (List.empty) x y
 
     let inline private hmix h0 h =
         16777619 * (h0 ^^^ h) // FNV-1a
@@ -362,7 +361,6 @@ module Value =
     let toKey (v : Value) : Bits =
         Bits.rev (_key_val (Bits.empty) (List.empty) v)
 
-    // return a reversed key stem and remaining key bits
     let rec private _key_stem sb k =
         match k with
         | Bits.Cons (false, Bits.Cons (true, k')) -> _key_stem (Bits.cons false sb) k'
@@ -380,19 +378,19 @@ module Value =
     and private _key_term st v k =
         match st with
         | [] -> Some struct(v, k)
-        | (struct(stem, None) :: stRem) -> 
-            let st' = struct(stem, Some v) :: stRem
+        | (struct(rstem, None) :: stRem) -> 
+            let st' = struct(rstem, Some v) :: stRem
             _key_parse st' k
-        | (struct(stem, Some l) :: st') ->
-            let p = _bitsAppendRev stem (pair l v)
+        | (struct(rstem, Some l) :: st') ->
+            let p = _bitsAppendRev rstem (pair l v)
             _key_term st' p k
 
 
     /// Parse a key back into a value. This may fail, raising invalidArg
     let ofKey (b : Bits) : Value =
         match _key_parse (List.empty) b with
-        | Some struct(v, _) -> v
-        | None -> invalidArg (nameof b) "not a valid key"
+        | Some struct(v, rem) when Bits.isEmpty rem -> v
+        | _ -> invalidArg (nameof b) "not a valid key"
 
     /// Glas logically encodes lists using pairs terminating in unit.
     ///

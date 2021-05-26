@@ -43,6 +43,15 @@ let tests =
             Expect.equal (cmp t f) 1 "cmp t f"
             Expect.equal (cmp f t) -1 "cmp f t"
 
+        testCase "pair comparisons" <| fun () ->
+            let t = right unit
+            let f = left unit
+            Expect.equal (cmp (pair t f) (pair t t)) -1 "cmp ptf ptt"
+            Expect.equal (cmp (pair t t) (pair t f)) 1 "cmp ptt ptf"
+            Expect.equal (cmp unit (pair unit unit)) -1 "cmp pu puu"
+            Expect.equal (cmp t (pair unit unit)) 1 "cmp t puu"
+            Expect.equal (cmp f (pair unit unit)) 1 "cmp f puu"
+
         testCase "number comparisons" <| fun () ->
             let l = List.map uint32 (randomList 20 30)
             for x in l do
@@ -206,16 +215,18 @@ let tests =
 
 
         testCase "toKey" <| fun () ->
-            Expect.equal (toKey (pair unit (left unit))) (Bits.ofByte 0xC4uy) "pair unit (left unit)"
-            Expect.equal (toKey (left (left (right unit)))) (Bits.ofByte 0x58uy) "llr"
-            Expect.equal (toKey (left (right (left unit)))) (Bits.ofByte 0x64uy) "lrl"
-            Expect.equal (toKey (right (pair unit unit))) (Bits.ofByte 0xB0uy) "right (pair unit unit)"
+            Expect.equal (toKey (pair unit (left unit))) (Bits.ofByte 0xC4uy) "pulu"
+            Expect.equal (toKey (left (left (right unit)))) (Bits.ofByte 0x58uy) "llru"
+            Expect.equal (toKey (left (right (left unit)))) (Bits.ofByte 0x64uy) "lrlu"
+            Expect.equal (toKey (right (pair unit unit))) (Bits.ofByte 0xB0uy) "rpuu"
+            Expect.equal (toKey (right (left (pair unit unit)))) (Bits.ofNat64 0x270UL) "lrpuu"
         
         testCase "ofKey" <| fun () ->
-            Expect.isTrue (eq (pair unit (left unit)) (ofKey (Bits.ofByte 0xC4uy))) "pair unit (left unit)"
-            Expect.isTrue (eq (left (left (right unit))) (ofKey (Bits.ofByte 0x58uy))) "llr"
-            Expect.isTrue (eq (left (right (left unit))) (ofKey (Bits.ofByte 0x64uy))) "lrl"
-            Expect.isTrue (eq (right (pair unit unit)) (ofKey (Bits.ofByte 0xB0uy))) "right (pair unit unit)"
+            Expect.isTrue (eq (pair unit (left unit)) (ofKey (Bits.ofByte 0xC4uy))) "pulu"
+            Expect.isTrue (eq (left (left (right unit))) (ofKey (Bits.ofByte 0x58uy))) "llru"
+            Expect.isTrue (eq (left (right (left unit))) (ofKey (Bits.ofByte 0x64uy))) "lrlu"
+            Expect.isTrue (eq (right (pair unit unit)) (ofKey (Bits.ofByte 0xB0uy))) "rpuu"
+            Expect.isTrue (eq (right (left (pair unit unit))) (ofKey (Bits.ofNat64 0x270UL))) "lrpuu"
 
     ]
 
