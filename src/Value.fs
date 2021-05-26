@@ -91,15 +91,22 @@ module Value =
     let inline private hmix h0 h =
         16777619 * (h0 ^^^ h) // FNV-1a
 
-    /// ad-hoc hash function for use with hashtables
-    let rec vhash (v : Value) : int =
+    let rec private _vhash rs h v =
         match (v.Spine) with
-        | None -> hmix (hash v.Stem) 0
+        | None ->
+            let h' = (hash v.Stem) |> hmix h |> hmix 0
+            match rs with
+            | (r::rs') -> _vhash rs' h' r
+            | [] -> h'
         | Some struct(l, s, e) ->
-            let h0 = hmix (hash v.Stem) (2 + FTList.length s)
-            let hl = hmix h0 (vhash l)
-            let hs = FTList.fold (fun h x -> hmix h (vhash x)) hl s
-            hmix hs (vhash e.Value)
+            let h' = (hash v.Stem) |> hmix h |> hmix (2 + FTList.length s)
+            let rs' = (_ofSE s e)::rs
+            _vhash rs' h' l
+
+
+    /// ad-hoc hash function for use with hashtables
+    let vhash (v : Value) : int =
+        _vhash (List.empty) (int 2166136261ul) v 
 
     /// A node with two children can represent a pair (A * B).
     /// To support list processing, there is some special handling of pairs.
