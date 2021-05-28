@@ -68,44 +68,60 @@ module Program =
         | Sub -> "sub"
         | Div -> "div"
 
-    /// Print program to value. 
-    ///
-    /// This has unbounded recursion, which is not ideal. 
-    let rec print (p : Program) : Value =
-        match p with
-        | Op(op) -> symbol (opStr op)
-        | Dip(p) -> variant "dip" (print p)
-        | Data(v) -> variant "data" v
-        | Seq(ps) -> 
-            let pps = List.fold (fun l p -> FTList.snoc l (print p)) (FTList.empty) ps
-            variant "seq" (ofFTList pps)
-        | Cond (Try=c; Then=a; Else=b) ->
-            let ks = ["try"; "then"; "else"]
-            let vs = List.map print [c;a;b]
-            variant "seq" <| asRecord ks vs
-        | Loop (Try=c; Then=a) ->
-            let ks = ["try";"then"]
-            let vs = List.map print [c;a]
-            variant "loop" <| asRecord ks vs
-        | Env (Do=p; Eff=e) ->
-            let ks = ["do"; "eff"]
-            let vs = List.map print [p;e]
-            variant "env" <| asRecord ks vs
-        | Prog (Do=p; Note=v) ->
-            // prog:(do:P, ... Annotations ...)
-            let r = record_insert (label "do") (print p) v
-            variant "prog" r
-        | Note v -> variant "note" v
+    module private Printer =
+        // for tail-recursive print, I defunctionalize the continuation.
+        type K =
+            | Done
+            | V of K * string
+            | R of K * Value * string * List<string> * List<Program>
+            | S of K * FTList<Value> * List<Program>
 
+        let rec appK (k:K) (v:Value) : Value =
+            match k with
+            | Done -> v
+            | V (k', s) -> appK k' (variant s v)
+            | R (k', r, s, ls, lp) -> 
+                let r' = record_insert (label s) v r
+                pR k' r' ls lp
+            | S (k', vs, lp) ->
+                let vs' = FTList.snoc vs v
+                pS k' vs' lp
+        and pR k r ls lp =
+            match ls, lp with
+            | [], [] -> appK k r
+            | (s::ls'), (p::lp') -> print (R(k, r, s, ls', lp')) p
+            | _ -> failwith "size mismatch for record print"
+        and pS k vs lp =
+            match lp with
+            | (p::lp') -> print (S(k,vs,lp')) p
+            | [] -> appK k (ofFTList vs)
+        and print (k:K) (p:Program) : Value =
+            match p with
+            | Op(op) -> appK k (symbol (opStr op))
+            | Dip(p) -> print (V(k,"dip")) p
+            | Data(v) -> appK k (variant "data" v)
+            | Seq(ps) -> pS (V(k,"seq")) (FTList.empty) ps
+            | Cond (Try=c; Then=a; Else=b) ->
+                pR (V(k,"cond")) unit ["try"; "then"; "else"] [c; a; b]
+            | Loop (Try=c; Then=a) ->
+                pR (V(k,"loop")) unit ["try"; "then"] [c; a]
+            | Env (Do=p; Eff=e) ->
+                pR (V(k,"env")) unit ["do"; "eff"] [p; e]
+            | Prog (Do=p; Note=v) ->
+                pR (V(k,"prog")) v ["do"] [p]
+            | Note v -> appK k (variant "note" v)
+
+
+
+
+    /// Print program to value. 
+    let print (p : Program) : Value =
+        Printer.print (Printer.K.Done) p
 
     /// Parse from value.
     //let parse (v:Value) : Program option =
 
 
-    // program validation of value
-    // parsing program from value
-    // printing program to value
     // static arity analysis.
-    // initial program interpreter.
-    // eq and hash on programs
+    // initial interpreter or compiler.
 

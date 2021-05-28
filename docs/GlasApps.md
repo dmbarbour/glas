@@ -76,13 +76,9 @@ A complete solution for live coding requires additional support from the develop
 
 A transaction machine can be usefully viewed as an object with private memory and transactional step method. The scheduler repeatedly calls 'step', resulting in the essential transaction machine behavior. However, additional methods might be called under suitable conditions to simplify extension of the application integration between the application and its host.
 
-For example, we can introduce an 'icon' method that computes a small PNG icon based on application state. This potentially indicates whether the application is busy or has pending notifications. The icon might be infrequently requested by the system, and forbid some effects such as await, fork, and write.
+For example, we can introduce an 'icon' method that computes a small PNG icon based on application state. This potentially indicates whether the application is busy or has pending notifications. The icon might be infrequently requested by the system, and forbid some effects such as await, fork, and write. We could similarly have a 'status' method that provides a lightweight summary of what the application is doing or whether it requires administrative attention.
 
-We could similarly have a 'status' method that provides a lightweight summary of what the application is doing or whether it requires administrative attention.
-
-Applications might have an 'imgui' method that renders an immediate-mode GUI with texts, boxes, and buttons. To support multiple users and flexible views, imgui effects model could be oriented around interaction with a user-model that includes navigation, display size and capabilities, display preferences, clipboard and other tools, bearer tokens for authority, etc..
-
-Applications that do not require passive background behavior could optionally define the 'step' method to directly fail, then focus on 'imgui' and other methods. Methods such as 'imgui' would still be applied repeatedly while the application is in the foreground.
+Applications that do not require passive background behavior could potentially define the 'step' method to fail, then rely on other methods to handle system requests or user interaction.
 
 I propose to model applications as Glas programs of type `Method -[Eff]- Result` - a single parameter representing the method, a single result for the method return value, and suitable effects. This is is a lightweight dependent type: effects and result types may depend on the method variant.
 
@@ -91,12 +87,6 @@ I propose to model applications as Glas programs of type `Method -[Eff]- Result`
 There are a lot of benefits to having applications allocate their own references. For example, instead of `open file` returning a system-allocated reference, we express `open file as foo` to specify that symbol 'foo' will be our reference to the new file. 
 
 This supports static allocation of references. The references can be descriptive and meaningful for debugging, reflection, and extension. Dynamic allocation of references is easily partitioned, reducing contention on a central allocator. There are no security risks related to potential forgery of system references.
-
-### Regarding Remote Procedure Calls
-
-RPC should not be modeled as an application method because composition becomes too awkward. It's infeasible for an application to directly call another app. It's also difficult to know where to route a call in case of hierarchical composition. 
-
-However, asynchronous RPC can be implemented above network connections or abstract channels. The transaction machine would simply fork a loop to read and handle incoming requests. Intriguingly, we could also support 'continuous' RPC if we build upon a publish-subscribe model. 
 
 ### Specialized APIs
 
@@ -251,9 +241,34 @@ At the moment, I'm not providing APIs for `getaddrinfo` and similar address look
 
 ## Web Applications
 
-Another promising target for Glas is web applications, compiling apps to JavaScript and using effects based on Document Object Model, XMLHttpRequest, WebSockets, and Local Storage. 
+Another promising target for Glas is web applications, compiling apps to JavaScript and using effects based on Document Object Model, XMLHttpRequest, WebSockets, and Local Storage. Compilation to JavaScript should be written as a function within Glas.
 
-## Meta
+### Document Object Model
+
+### Local Storage
+
+### HTTP Requests
+
+### Web Sockets
+
+
+## Miscellaneous
+
+### IMGUI
+
+The immediate mode graphical user interface (IMGUI) design pattern is a great fit for my vision of live coding and robust reactive systems. However, retained mode GUI is much more prevalent today. Transaction machines can provide APIs for either approach.
+
+A viable approach to immediate mode GUI: the application provides an 'imgui' method that the system implicitly evaluates at 30Hz (or other framerate) while a user is observing. The method will draw boxes, buttons, text, and graphical primitives. Incremental computing applies: a stable GUI doesn't need to be fully recomputed. The 'fork' effect might be interpreted as partitioning the GUI into layers that may update independently.
+
+The imgui method also has access to the user model - clipboard, cookies, display resolution, preferences, authority, attention, etc.. While drawing interactive elements such as buttons, there can be immediate feedback for whether the user is pressing that button. Multiple users can concurrently interact with an app, and a single user might have multiple concurrent sessions and views.
+
+The specialized APIs design principle implies we should provide a retained mode API if that's what the underlying platform supports. An IMGUI API would be implemented as an adapter layer, above the platform but below the app. Support for IMGUI, thus, will depend on maturity of the Glas system.
+
+### RPC
+
+Remote Procedure Calls (RPC) should not be modeled as an application method because composition becomes too awkward. It's infeasible for an application to directly call another app. It's also difficult to know where to route a call in case of hierarchical composition. 
+
+However, asynchronous RPC can be implemented above network connections or abstract channels. The transaction machine would simply fork a loop to read and handle incoming requests. Intriguingly, we could also support 'continuous' RPC if we build upon a publish-subscribe model. 
 
 ### Synchronous Syntax
 

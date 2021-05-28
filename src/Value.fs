@@ -373,7 +373,7 @@ module Value =
         | Bits.Cons (false, Bits.Cons (true, k')) -> _key_stem (Bits.cons false sb) k'
         | Bits.Cons (true, Bits.Cons (false, k')) -> _key_stem (Bits.cons true sb) k'
         | _ -> struct(sb, k)
-    and private _key_parse st k =
+    let rec private _key_parse st k =
         let struct(rstem, kim) = _key_stem (Bits.empty) k
         match kim with
         | Bits.Cons (false, Bits.Cons (false, k')) -> 
@@ -392,12 +392,16 @@ module Value =
             let p = _bitsAppendRev rstem (pair l v)
             _key_term st' p k
 
+    /// Parse key to value, return remaining bits.
+    let ofKey' b =
+        _key_parse (List.empty) b
 
     /// Parse a key back into a value. This may fail, raising invalidArg
-    let ofKey (b : Bits) : Value =
-        match _key_parse (List.empty) b with
+    let inline ofKey (b : Bits) : Value =
+        match ofKey' b with
         | Some struct(v, rem) when Bits.isEmpty rem -> v
         | _ -> invalidArg (nameof b) "not a valid key"
+
 
     /// Glas logically encodes lists using pairs terminating in unit.
     ///

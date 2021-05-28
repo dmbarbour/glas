@@ -210,6 +210,12 @@ The set of annotations is openly extensible and subject to de-facto standardizat
 
 *Aside:* Assertions are expressive and convenient for quick and dirty checks, but are difficult to statically analyze in a systematic manner. In contrast, types are restrictive but designed to support systematic static analysis. Glas systems should usually favor types.
 
+## Glas Initial Syntax (g0)
+
+Glas requires an initial syntax for bootstrap. This syntax should be textual for initial use of conventional development environments. It should also be simple, unambiguous, have an obvious compilation to the Glas program model, and be reasonably pleasant to work with.
+
+See [g0 syntax](GlasZero.md).
+
 ## Applications
 
 ### Language Modules
@@ -238,9 +244,9 @@ Forks can select subtests, randomize parameters, and simulate non-deterministic 
 
 ### User Applications
 
-Glas programs are a good fit for the *transaction machine* model of applications. And transaction machines are a good fit for my vision of live coding and reactive systems. I'm developing this idea in the [Glas Apps](GlasApps.md) document. 
+Glas program are a good fit for the *transaction machine* model of applications. Of course, it is feasible to design alternative program models as a basis for user applications. But transaction machines are an excellent fit for my long-term vision of live coding and reactive systems. I'm developing this idea in the [Glas Apps](GlasApps.md) document. 
 
-The Glas command-line utility should provide an interpreter (or JIT-compiler) for at least a console application model, with access to network, filesystem, and stdio. 
+A Glas command-line utility can provide a lightweight interpreter for console apps.
 
 ## Performance
 
@@ -316,9 +322,19 @@ See [Glas Object](GlasObject.md).
 
 ### Cyclic Data
 
-I've considered using cyclic graph data structures instead of trees. Similar to the current model, each node in the graph has at most two outbound edges, labeled 0 or 1. Complex labels would be formed by an arc through the graph. 
+I've considered using cyclic graph data structures instead of trees. Similar to the current model, each node in a graph has at most two outbound edges, labeled 0 or 1. Complex labels would be formed by an arc through the graph. 
 
 I decided against graphs because they are relatively difficult to locally reason about and control compared to trees, interact awkwardly with stowage, and are unnecessary for the initial goals of Glas. However, Glas systems could eventually compile or accelerate program models based around cyclic graph structures.
+
+### Eval Operator
+
+I could add an 'eval' operator for Glas that receives values representing program and initial data stack, then either fails or returns the final data stack.
+
+        eval    ((S * Stack) * Program) -> (S * Stack)
+
+The benefit of a built-in 'eval' operator is that it simplifies metaprogramming. The cost is that it complicates the Glas program compiler: we have a single operator with unbounded complexity, it's unclear how much static analysis should be performed on the Program value, integration with acceleration or optimization is not well defined.
+
+For now, I've decided to avoid a built-in eval operator. It is also feasible to define an interpreter manually, which would make the analysis, optimization, memoization, acceleration, and compilation tactics much more explicit. However, for convenient access to metaprogramming, I've decided to include static eval in the initial g0 syntax.
 
 ### Program Search
 
