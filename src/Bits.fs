@@ -80,12 +80,16 @@ module Bits =
     /// Just one bit.
     let inline singleton (e : bool) : Bits = cons e empty
 
-    let rec private lenHdLoop n hd =
-        if (1UL >= hd) then n else
-        lenHdLoop (n + 1) (hd >>> 1)
-
     let inline private lenHd hd = 
-        lenHdLoop 0 hd
+        // 6-step computation of size via binary division.
+        let mutable v = hd
+        let mutable n = 0
+        if (0UL <> (0xFFFFFFFF00000000UL &&& v)) then n <- n + 32; v <- v >>> 32;
+        if (0UL <> (        0xFFFF0000UL &&& v)) then n <- n + 16; v <- v >>> 16;
+        if (0UL <> (            0xFF00UL &&& v)) then n <- n +  8; v <- v >>>  8;
+        if (0UL <> (              0xF0UL &&& v)) then n <- n +  4; v <- v >>>  4;
+        if (0UL <> (               0xCUL &&& v)) then n <- n +  2; v <- v >>>  2;
+        if (0UL <> (               0x2UL &&& v)) then n+1 else n
 
     /// Return number of bits.
     let length (b : Bits) : int =

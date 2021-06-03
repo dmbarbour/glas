@@ -87,6 +87,10 @@ let tests =
             | Bits.Nat64 _ -> failtest "match oversized list"
             | _ -> ()
 
+        testCase "list length" <| fun () ->
+            for n in 0 .. 256 do
+                let l = randomList n
+                Expect.equal (Bits.length (Bits.ofList l)) n "compute length correctly"
 
         testCase "big bit lists" <| fun () ->
             let len = 223
