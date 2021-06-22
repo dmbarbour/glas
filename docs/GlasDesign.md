@@ -34,17 +34,12 @@ For targeting of executables, I propose to define a central `system-info` module
 
 Responsibility for generating a useful binary is shifted into the module system. A useful consequence is that computed binaries are accessible within the module system. This supports composition of binaries (e.g. into a tarball) and automated testing over binaries without leaving the Glas module system. 
 
+
 ## Glas Programs
 
-Glas programs are represented using variants, records, and lists. We assume the user-layer syntax has already been parsed and compiled by a language module. For example, Glas programs do not use variables, but user-layer syntax could express functions using local variables that are compiled away by the language module. Essentially, Glas programs are an intermediate language.
+Glas systems can support multiple program models, but a standard model is required for bootstrap of language modules. This program model is essentially an intermediate program representation for an abstract machine, focused on basic operation, composition, annotation, and simple interpretation. Many program features - such as named variables, keyword parameters, etc. - are left to the syntax layer. Performance is a significant long-term concern: it should be feasible to compile and accelerate language modules for expensive build-time computations.
 
-Glas programs are based on a combinatory logic: each operator represents a function on the tacit environment, which consists of a few stacks and an abstract effects handler. Some operators compose other operators into larger programs. This design gives Glas a very procedural style, except that data cannot be pervasively mutated.
-
-Glas programs should be analyzed to verify statically bounded stack size before evaluation. This property is simple to check in Glas. More sophisticated static analysis based on type annotations is also recommended but not required.
-
-Conditional behavior in Glas programs is based on failure and backtracking. This is convenient for composable pattern matching, parsing, transactional models, and graceful error handling. However, backtracking is incompatible with synchronous remote requests, limiting direct use of some effects APIs.
-
-*Note:* Mature Glas systems will support multiple program models via metaprogramming, acceleration, and extraction. However, the Glas program model provides the robust foundation, and is necessary to describe language modules.
+This section describes the standard program model. The only required static check for Glas programs is verifying that stack arity is static, i.e. branches are balanced and loops are stack-invariant. 
 
 ### Stack Operators
 
@@ -57,7 +52,7 @@ Conditional behavior in Glas programs is based on failure and backtracking. This
 * **swap** - switch the top two items on stack
 * **data:V** - copy V to top of stack
 
-A Glas compiler should completely eliminate stack operators. For a valid Glas program the stack is statically bound, so the compiler can generally allocate all the variables we'll need before running the program. Stack shuffling is just an intermediate representation of dataflow. However, it could be directly implemented by an interpreter.
+The stack in Glas is really an intermediate data plumbing model. User syntax will often hide stack shuffling behind local variables, and a Glas compiler may eliminate the stack in favor of a static allocation of memory, depending on the static stack arity of valid Glas programs. Of course, a subprogram might use a list to represent a continuation stack within a loop.
 
 My type notation is a little ad-hoc, but might help clarify.
 
@@ -73,12 +68,13 @@ My type notation is a little ad-hoc, but might help clarify.
             ------------------------- 
             data:V ⊲ ∀S . S → (S * A)
 
+
 ### Control Operators
 
 * **seq:\[List, Of, Operators\]** - sequential composition of operators. 
  * **seq:\[\]** - empty sequence doubles as identity operator (nop)
-* **cond:(try:P, then:Q, else:R)** - run P; if P does not fail, run Q; if P fails, backtrack then run R.
-* **loop:(try:P, then:Q)** - begin loop: run P; if P does not fail, run Q then repeat loop. If P fails, backtrack then exit loop.
+* **cond:(try:P, then:Q, else:R)** - run P; if P does not fail, run Q; if P fails, backtrack P then run R.
+* **loop:(try:P, then:Q)** - begin loop: run P; if P does not fail, run Q then repeat loop. If P fails, backtrack P then exit loop.
 * **eq** - compare top two values on stack. If they are equal, do nothing. Otherwise fail.
 * **fail** - always fail
 
@@ -99,12 +95,12 @@ My type notation is a little ad-hoc, but might help clarify.
             Q ⊲ S' → S
             -------------------
             LOOP ⊲ S → S
-        eq : ∀S,A,B . ((S * A) * B) → ((S * A) * B) | FAIL
+        eq : ∀S,A,B . ((S * A) * B) → ((S * B) * B) | FAIL
         fail : ∀S . S → FAIL
 
-There are a lot of potential optimizations, e.g. we can attempt to combine conditionals that share a lot of work, we can flatten sequences within sequences, and we can reduce statically known failure in many cases.
+User syntax can effectively extend the set of control operators. For example, a language module could compile a set of mutually recursive functions into a common loop with an implicit continuation parameter. 
 
-Glas does not have first-class functions, i.e. there is no 'eval' operator. However, it is feasible to develop an evaluator for Glas as a Glas subprogram.
+*Note:* Glas does not have an 'eval' operator or first-class functions. However, it is possible to implement a Glas interpreter within Glas to support staged metaprogramming.
 
 ### Effects Handler
 
@@ -117,7 +113,7 @@ Glas does not have first-class functions, i.e. there is no 'eval' operator. Howe
  * move top item from eff stack to data stack
 * **eff** - invoke current effects handler on current stack.
 
-The top-level effects handler is provided by runtime or compiler. Use of 'env' enables a program to sandbox a subprogram and control access to effects. Effects handlers should have type `Request State -- Response State`, i.e. stack arity 2-2, until we have sufficiently advanced static types and static analysis.
+The top-level effects handler is provided by runtime or compiler. Use of 'env' enables a program to sandbox a subprogram and control access to effects. Effects handlers should have type `Request State -- Response State`, i.e. stack arity 2-2, at least for bootstrap and further until we have sufficiently advanced static types and static analysis.
 
     env:(do:P, eff:E)           (as ENV)
         E ⊲ (Sf * State) → (Sf' * State)
@@ -175,18 +171,18 @@ Bitstring operators fail if assumed conditions are not met, i.e. not a bitstring
 
 ### Arithmetic Operators
 
-Glas encodes natural numbers into bitstrings assuming msb-to-lsb order. For example, `00010111` encodes 23. Although the zeroes prefix `000` doesn't contribute to numeric value, Glas arithmetic operators will preserve bitstring field widths. For example, subtracting 17 results in `00000110`.
+Glas encodes natural numbers into bitstrings assuming msb-to-lsb order. For example, `00010111` encodes 23. Although the zeroes prefix `000` doesn't contribute to numeric value, Glas arithmetic operators preserve bitstring field widths. For example, subtracting 17 results in `00000110`.
 
 * **add** (N1 N2 -- Sum Carry) - compute sum and carry for two numbers on stack. Sum has field width of N1, carry has field width of N2. Carry can be larger than 1 iff N2 is wider than N1 (e.g. adding 32-bit number to an 8-bit number).
 * **mul** (N1 N2 -- Prod Overflow) - compute product of two numbers on stack. Product has field width of N1, while overflow uses field width of N2. 
-* **sub** (N1 N2 -- Diff) - Computes a non-negative difference (N1 - N2), preserving field width of N1. Fails if result would be negative. This serves as the comparison operator for natural numbers.
+* **sub** (N1 N2 -- Diff) - Computes a non-negative difference (N1 - N2), preserving field width of N1. Fails if result would be negative. This also serves as the comparison operator for natural numbers.
 * **div** (Dividend Divisor -- Quotient Remainder) - If divisor is zero, this operator fails. Compute division of two numbers. Quotient has field width of dividend, and remainder has field width of divisor.
 
-Glas doesn't have built-in support for negative numbers, floating point, etc.. Extending arithmetic may benefit from *Acceleration*.
+Glas doesn't have built-in support for negative numbers, floating point, etc.. Extending arithmetic will benefit from *Acceleration*.
 
 ### Annotation Operators
 
-Annotations support static analysis, performance, automated testing, safety and sanity, debugging, decompilation, and other external tooling. However, annotations cannot be directly observable within a program, modulo reflective effects API. For example, assertion failures must halt the program because normal failure is observable within a program via try/then/else.
+Annotations support static analysis, performance, automated testing, safety, debugging, decompilation, and other external tooling. However, annotations should not be directly observable within a program's evaluation. They might be indirectly observable via reflection (e.g. performance is reflected in timing, and assertion failures might be visible via special log).
 
 * **prog:(do:P, ...)** - runs P. Fields other than 'do' should be annotations about P. Potential annotations:
  * **name:Symbol** - an identifier for the region to support debugging (logging, profiling, etc.) based on external configuration. Implicitly hierarchical with containing prog name.
@@ -326,7 +322,7 @@ I've considered using cyclic graph data structures instead of trees. Similar to 
 
 I decided against graphs because they are relatively difficult to locally reason about and control compared to trees, interact awkwardly with stowage, and are unnecessary for the initial goals of Glas. However, Glas systems could eventually compile or accelerate program models based around cyclic graph structures.
 
-### Eval Operator
+### Eval Operator? No.
 
 I could add an 'eval' operator for Glas that receives values representing program and initial data stack, then either fails or returns the final data stack.
 
@@ -334,7 +330,9 @@ I could add an 'eval' operator for Glas that receives values representing progra
 
 The benefit of a built-in 'eval' operator is that it simplifies metaprogramming. The cost is that it complicates the Glas program compiler: we have a single operator with unbounded complexity, it's unclear how much static analysis should be performed on the Program value, integration with acceleration or optimization is not well defined.
 
-For now, I've decided to avoid a built-in eval operator. It is also feasible to define an interpreter manually, which would make the analysis, optimization, memoization, acceleration, and compilation tactics much more explicit. However, for convenient access to metaprogramming, I've decided to include static eval in the initial g0 syntax.
+For now, I've decided to avoid built-in eval. It is feasible to define an interpreter manually, and doing so would make analysis, optimization, memoization, compilation, and expected acceleration features explicit. It would also apply to a wider variety of DSLs.
+
+However, for convenient access to metaprogramming, I plan to include static eval in language model for the bootstrap syntax (g0). I expect many other language models will include some form of static eval.
 
 ### Program Search
 

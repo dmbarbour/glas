@@ -1,18 +1,29 @@
 # Static Analysis and Type System for Glas
 
-Glas is designed for use with static analysis. Most static analysis will be user-defined, performed by intermediate modules or top-level compilation modules.
+Most static analysis in Glas is user-defined. The exception is static stack arity checking in context of language modules and automated tests. Other than these required checks, anything else is performed by other modules as part of transforming structures.
 
-## Overview of Issues
+## Stack Arity
 
-### Stack Arity
+The minimum static analysis for a Glas program is the static stack arity check. This check ensures that loops are stack-invariant, that conditionals have the same stack effect on both branches, and that most applications or language modules have a simple `arg -- result` stack effect. Checking stack annotations isn't required but might be included with the stack arity check.
 
-The minimum static analysis for a Glas program is a static stack arity check. This check ensures that loops are stack-invariant, that conditionals have the same stack effect on both branches, and that applications or language modules have a simple `arg -- result` stack effect. Checking stack annotations can be included. 
+The Glas program model is designed to support stack arity check in linear time with program size. Redundant efforts for repeating subprograms can be mitigated by memoization.
 
-The Glas program model is designed to support stack arity check in linear time with program size. Glas programs might grow very large due to logical inlining, but redundant analysis can be mitigated by memoization.
+## Type System
 
-### Type System
+Glas doesn't specify a type system, but a type system is naturally influenced by the data and program models. Ideally, they type system should support partial type annotations, i.e. such that programmers can express just their local intentions without capturing the entire type at one location. 
 
-Although Glas doesn't specify a type system, the type system is naturally influenced by the data and program models. 
+Types should capture both representation and meaning (e.g. units for numbers).
+
+Representation types can include:
+
+* symbols, enums
+* records (open or closed)
+* lists and tuples
+ * non-homogeneous, grammar patterned lists?
+* natural numbers
+* other numbers (floating point? complex/vectors?)
+* 
+
 
 All data types are essentially refinements of binary trees. A type system might specialize list, record, and variant types explicitly. Programs will have stack types and effect types, both of which have significant integration with data types.
 

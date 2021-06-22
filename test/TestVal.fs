@@ -42,6 +42,7 @@ let tests =
             Expect.equal (compare f f) 0 "cmp f f"
             Expect.equal (compare t f) 1 "cmp t f"
             Expect.equal (compare f t) -1 "cmp f t"
+            Expect.isLessThan f t "lessThan f t"
 
         testCase "pair comparisons" <| fun () ->
             let t = right unit
