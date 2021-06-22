@@ -327,13 +327,18 @@ module Bits =
 
     /// lexicographic comparison
     let rec cmp x y =
-        if (isEmpty x) && (isEmpty y) then 0 else
-        if (isEmpty x) then -1 else
-        if (isEmpty y) then 1 else
+        let ex = isEmpty x
+        let ey = isEmpty y
+        if ex && ey then 0 else
+        if ex then -1 else
+        if ey then 1 else
         let cmp0 = compare (head x) (head y)
         if 0 <> cmp0 then cmp0 else 
         cmp (tail x) (tail y)
 
     // todo: consider support for dynamic-sized number representations,
     // e.g. excluding the leading zeroes.
+    
+    // todo: more efficient matching on a prefix, more efficient take.
+    // presumably we can match on chunks instead of one bit at a time.
     

@@ -24,40 +24,40 @@ let tests =
             Expect.isTrue (isUnit unit) "isUnit unit"
         
         testCase "unit comparisons" <| fun () ->
-            Expect.isTrue (eq unit unit) "unit eq unit"
-            Expect.isFalse (eq unit (left unit)) "unit not-eq false"
-            Expect.isFalse (eq unit (right unit)) "unit not-eq true"
-            Expect.equal (cmp unit unit) 0 "compare unit"
-            Expect.equal (cmp unit (left unit)) -1 "compare unit false"
-            Expect.equal (cmp unit (right unit)) -1 "compare unit true"
+            Expect.equal unit unit "unit eq unit"
+            Expect.notEqual unit (left unit) "unit not-eq false"
+            Expect.notEqual unit (right unit) "unit not-eq true"
+            Expect.equal (compare unit unit) 0 "compare unit"
+            Expect.isLessThan unit (left unit) "compare unit false"
+            Expect.isLessThan unit (right unit) "compare unit true"
 
         testCase "bool comparisons" <| fun () ->
             let t = right unit
             let f = left unit
-            Expect.isTrue (eq t t) "eq t t"
-            Expect.isTrue (eq f f) "eq f f"
-            Expect.isFalse (eq t f) "eq t f"
-            Expect.isFalse (eq f t) "eq f t"
-            Expect.equal (cmp t t) 0 "cmp t t"
-            Expect.equal (cmp f f) 0 "cmp f f"
-            Expect.equal (cmp t f) 1 "cmp t f"
-            Expect.equal (cmp f t) -1 "cmp f t"
+            Expect.equal t t "eq t t"
+            Expect.equal f f "eq f f"
+            Expect.notEqual t f "eq t f"
+            Expect.notEqual f t "eq f t"
+            Expect.equal (compare t t) 0 "cmp t t"
+            Expect.equal (compare f f) 0 "cmp f f"
+            Expect.equal (compare t f) 1 "cmp t f"
+            Expect.equal (compare f t) -1 "cmp f t"
 
         testCase "pair comparisons" <| fun () ->
             let t = right unit
             let f = left unit
-            Expect.equal (cmp (pair t f) (pair t t)) -1 "cmp ptf ptt"
-            Expect.equal (cmp (pair t t) (pair t f)) 1 "cmp ptt ptf"
-            Expect.equal (cmp unit (pair unit unit)) -1 "cmp pu puu"
-            Expect.equal (cmp t (pair unit unit)) 1 "cmp t puu"
-            Expect.equal (cmp f (pair unit unit)) 1 "cmp f puu"
+            Expect.equal (compare (pair t f) (pair t t)) -1 "cmp ptf ptt"
+            Expect.equal (compare (pair t t) (pair t f)) 1 "cmp ptt ptf"
+            Expect.equal (compare unit (pair unit unit)) -1 "cmp pu puu"
+            Expect.equal (compare t (pair unit unit)) 1 "cmp t puu"
+            Expect.equal (compare f (pair unit unit)) 1 "cmp f puu"
 
         testCase "number comparisons" <| fun () ->
             let l = List.map uint32 (randomList 20 30)
             for x in l do
                 for y in l do
-                    Expect.equal (cmp (u32 x) (u32 y)) (compare x y) "compare numbers"
-                    Expect.equal (eq (u32 x) (u32 y)) (x = y) "eq numbers"
+                    Expect.equal (compare (u32 x) (u32 y)) (compare x y) "compare numbers"
+                    Expect.equal ((u32 x) = (u32 y)) (x = y) "eq numbers"
 
         testCase "number round trip" <| fun () ->
             let l = randomList 200 300
@@ -156,13 +156,13 @@ let tests =
         
         testCase "record delete" <| fun () ->
             let r = left (right (pair unit unit))
-            Expect.isTrue (eq r (record_delete (Bits.ofList [true]) r)) "delete non-present field"
+            Expect.equal r (record_delete (Bits.ofList [true]) r) "delete non-present field"
             Expect.isTrue (isUnit (record_delete (Bits.empty) r)) "delete empty path is unit"
             Expect.isTrue (isUnit (record_delete (Bits.ofList [false]) r)) "delete l is unit"
             Expect.isTrue (isUnit (record_delete (Bits.ofList [false; true]) r)) "delete lr is unit"
-            Expect.isTrue (eq (left (right (right unit))) (record_delete (Bits.ofList [false; true; false]) r)) "delete lrl is lrr"
-            Expect.isTrue (eq (left (right (left unit))) (record_delete (Bits.ofList [false; true; true]) r)) "delete lrr is lrl"
-            Expect.isTrue (eq (left (right (right unit))) (record_delete (Bits.ofList [false; true; false; true]) r)) "delete lrlr is lrr"
+            Expect.equal (left (right (right unit))) (record_delete (Bits.ofList [false; true; false]) r) "delete lrl is lrr"
+            Expect.equal (left (right (left unit))) (record_delete (Bits.ofList [false; true; true]) r) "delete lrr is lrl"
+            Expect.equal (left (right (right unit))) (record_delete (Bits.ofList [false; true; false; true]) r) "delete lrlr is lrr"
 
         testCase "record insert" <| fun () ->
             let checkElem k m r =
@@ -222,11 +222,11 @@ let tests =
             Expect.equal (toKey (right (left (pair unit unit)))) (Bits.ofNat64 0x270UL) "lrpuu"
         
         testCase "ofKey" <| fun () ->
-            Expect.isTrue (eq (pair unit (left unit)) (ofKey (Bits.ofByte 0xC4uy))) "pulu"
-            Expect.isTrue (eq (left (left (right unit))) (ofKey (Bits.ofByte 0x58uy))) "llru"
-            Expect.isTrue (eq (left (right (left unit))) (ofKey (Bits.ofByte 0x64uy))) "lrlu"
-            Expect.isTrue (eq (right (pair unit unit)) (ofKey (Bits.ofByte 0xB0uy))) "rpuu"
-            Expect.isTrue (eq (right (left (pair unit unit))) (ofKey (Bits.ofNat64 0x270UL))) "lrpuu"
+            Expect.equal (pair unit (left unit)) (ofKey (Bits.ofByte 0xC4uy)) "pulu"
+            Expect.equal (left (left (right unit))) (ofKey (Bits.ofByte 0x58uy)) "llru"
+            Expect.equal (left (right (left unit))) (ofKey (Bits.ofByte 0x64uy)) "lrlu"
+            Expect.equal (right (pair unit unit)) (ofKey (Bits.ofByte 0xB0uy)) "rpuu"
+            Expect.equal (right (left (pair unit unit))) (ofKey (Bits.ofNat64 0x270UL)) "lrpuu"
 
     ]
 

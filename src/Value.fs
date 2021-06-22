@@ -10,34 +10,106 @@ namespace Glas
 //
 //     type Value = { Stem: Bits; Term: (Value * Value) option }
 //
-// This is barely adequate, but inefficient if we use many ad-hoc list ops.
-// Glas programs assume that lists are accelerated using a finger-tree encoding.
-// To support this, we can represent structures of form `(A * (B * (C * D)))` as
-// finger-tree lists. 
+// This is barely adequate, but Glas programs assume that lists are accelerated 
+// using a finger-tree encoding for efficient split, append, and indexing. To 
+// support this, we can represent structures of form `(A * (B * (C * D)))` as
+// finger-tree lists, restricting the final value to be a non-pair. 
 // 
-//     type Value = { Stem: Bits; Spine: (Value * FTList<Value> * EndValue) option }
+//     type Value = { Stem: Bits; Spine: (Value * FTList<Value> * NonPairVal) option }
 //
 // This enables us to efficiently check whether a value is a list, and to manipulate
-// list values with the expected algorithmic efficiencies. The EndValue type will
-// ensure we have normal forms with no pair in the EndValue type. This does complicate
-// some operations, but not too much.
-// 
-// This representation still excludes Stowage or rope-like chunks for binaries, so
-// there is a lot that could be improved. But it seems adequate for bootstrap.
+// list values with the expected algorithmic efficiencies. 
+//
+// This representation still excludes support for Stowage or rope-like chunks for 
+// binaries, much less support for acceleration of matrix math and so on. However,
+// it is adequate for bootstrap and has the advantage of normal form.
 
+[<Struct; CustomComparison; CustomEquality>]
+type Value = 
+    { Stem : Bits
+    ; Spine: Option<struct(Value * FTList<Value> * NonPairVal)> 
+    }
 
-[<Struct>]
-type Value = { Stem : Bits; Spine: Option<struct(Value * FTList<Value> * EndVal)> }
-and [<Struct>] EndVal =
+    // Custom Equality and Comparison
+    static member private OfSE s e =
+        match FTList.tryViewL s with
+        | Some (s0, s') -> { Stem = Bits.empty; Spine = Some struct(s0,s',e) }
+        | None -> e.Value
+
+    static member Cmp rs x y = 
+        let cmpStem = Bits.cmp (x.Stem) (y.Stem)
+        if 0 <> cmpStem then cmpStem else
+        match x.Spine, y.Spine with
+        | Some struct(x', sx, ex), Some struct(y', sy, ey) ->
+            let rs' = struct(Value.OfSE sx ex, Value.OfSE sy ey) :: rs
+            Value.Cmp rs' x' y'
+        | None, None ->
+            match rs with
+            | (struct(x',y')::rs') -> Value.Cmp rs' x' y'
+            | [] -> 0
+        | l,r -> compare (Option.isSome l) (Option.isSome r)
+
+    static member private Eq rs x y =
+        if (x.Stem <> y.Stem) then false else
+        match x.Spine, y.Spine with
+        | Some struct(x',sx,ex), Some struct(y',sy,ey) ->
+            let rs' = struct(Value.OfSE sx ex, Value.OfSE sy ey) :: rs
+            Value.Eq rs' x' y'
+        | None, None -> 
+            match rs with
+            | (struct(x',y')::rs') -> Value.Eq rs' x' y'
+            | [] -> true
+        | _ -> false
+
+    override x.Equals yobj =
+        match yobj with
+        | :? Value as y -> Value.Eq (List.empty) x y
+        | _ -> false
+
+    interface System.IEquatable<Value> with
+        member x.Equals y = 
+            Value.Eq (List.empty) x y
+
+    static member inline private HMix a b = 
+        16777619 * (a ^^^ b) // FNV-1a
+
+    static member private Hash rs h v = 
+        match (v.Spine) with
+        | None ->
+            let h' = (hash v.Stem) |> Value.HMix h |> Value.HMix 0
+            match rs with
+            | (r::rs') -> Value.Hash rs' h' r
+            | [] -> h'
+        | Some struct(l, s, e) ->
+            let h' = (hash v.Stem) |> Value.HMix h |> Value.HMix (2 + FTList.length s)
+            let rs' = (Value.OfSE s e)::rs
+            Value.Hash rs' h' l
+
+    override x.GetHashCode() =
+        Value.Hash (List.empty) (int 2166136261ul) x 
+
+    interface System.IComparable with
+        member x.CompareTo yobj =
+            match yobj with
+            | :? Value as y -> Value.Cmp (List.empty) x y
+            | _ -> invalidArg (nameof yobj) "Comparison between Value and Non-Value"
+
+    interface System.IComparable<Value> with
+        member x.CompareTo y =
+            Value.Cmp (List.empty) x y        
+    
+
+and [<Struct>] NonPairVal = 
+    // restriction via smart constructor
     val Value : Value
     new(v : Value) =
-        if Bits.isEmpty v.Stem && Option.isSome v.Spine then 
-            invalidArg (nameof v) "EndVal must not be a pair"
+        if Option.isSome v.Spine && Bits.isEmpty v.Stem then 
+            invalidArg (nameof v) "NonPairVal must not be a pair"
         { Value = v }
 
 module Value =
     // intermediate construct to help insert/delete/pair ops
-    let inline private _ofSE s e =
+    let inline private _ofSE s e = 
         match FTList.tryViewL s with
         | Some (s0, s') -> { Stem = Bits.empty; Spine = Some struct(s0,s',e) }
         | None -> e.Value
@@ -55,58 +127,8 @@ module Value =
     let inline isUnit v =
         Option.isNone (v.Spine) && Bits.isEmpty (v.Stem)
 
-    let rec private _eq rs x y =
-        if (x.Stem <> y.Stem) then false else
-        match x.Spine, y.Spine with
-        | Some struct(x',sx,ex), Some struct(y',sy,ey) ->
-            let rs' = struct(_ofSE sx ex, _ofSE sy ey) :: rs
-            _eq rs' x' y'
-        | None, None -> 
-            match rs with
-            | (struct(x',y')::rs') -> _eq rs' x' y'
-            | [] -> true
-        | _ -> false
-
-    /// Check for value equality. 
-    let eq x y =
-        _eq (List.empty) x y
-
-    let rec private _cmp rs x y =
-        let cmpStem = Bits.cmp (x.Stem) (y.Stem)
-        if 0 <> cmpStem then cmpStem else
-        match x.Spine, y.Spine with
-        | Some struct(x', sx, ex), Some struct(y', sy, ey) ->
-            let rs' = struct(_ofSE sx ex, _ofSE sy ey) :: rs
-            _cmp rs' x' y'
-        | None, None ->
-            match rs with
-            | (struct(x',y')::rs') -> _cmp rs' x' y'
-            | [] -> 0
-        | l,r -> compare (Option.isSome l) (Option.isSome r)
-
-    /// Compare values. Rather arbitrary.
-    let cmp x y = 
-        _cmp (List.empty) x y
-
-    let inline private hmix h0 h =
-        16777619 * (h0 ^^^ h) // FNV-1a
-
-    let rec private _vhash rs h v =
-        match (v.Spine) with
-        | None ->
-            let h' = (hash v.Stem) |> hmix h |> hmix 0
-            match rs with
-            | (r::rs') -> _vhash rs' h' r
-            | [] -> h'
-        | Some struct(l, s, e) ->
-            let h' = (hash v.Stem) |> hmix h |> hmix (2 + FTList.length s)
-            let rs' = (_ofSE s e)::rs
-            _vhash rs' h' l
-
-
-    /// ad-hoc hash function for use with hashtables
-    let vhash (v : Value) : int =
-        _vhash (List.empty) (int 2166136261ul) v 
+    let inline (|Unit|NotUnit|) v =
+        if isUnit v then Unit else (NotUnit v)
 
     /// A node with two children can represent a pair (A * B).
     /// To support list processing, there is some special handling of pairs.
@@ -127,7 +149,7 @@ module Value =
         | Some struct(l,s,e) -> 
             { Stem = Bits.empty; Spine=Some struct(a, FTList.cons l s, e) }
         | None -> 
-            { Stem = Bits.empty; Spine=Some struct(a, FTList.empty, EndVal(b)) }
+            { Stem = Bits.empty; Spine=Some struct(a, FTList.empty, NonPairVal(b)) }
 
     let fst v =
         match tryPairSpine v with
@@ -409,7 +431,7 @@ module Value =
     /// 
     /// This check can be performed in O(1) time based on the finger-tree
     /// representation of list-like structures. We only need to check if
-    /// the EndVal is unit instead of some non-list terminal.
+    /// the NonPairVal is unit instead of some non-list terminal.
     let isList (v : Value) =
         if not (Bits.isEmpty v.Stem) then false else
         match v.Spine with
@@ -436,7 +458,7 @@ module Value =
         match FTList.tryViewL fv with
         | None -> unit // empty list
         | Some (fv0, fv') ->
-            { Stem = Bits.empty; Spine = Some struct(fv0, fv', EndVal(unit)) }
+            { Stem = Bits.empty; Spine = Some struct(fv0, fv', NonPairVal(unit)) }
 
     /// Convert from a binary 
     let ofBinary (s : uint8 array) : Value =
@@ -456,10 +478,4 @@ module Value =
                 f <- f'
             | _ -> invalidArg (nameof v) "non-binary data"
         arr
-
-
-    /// Convert from a string, using UTF-8. 
-    /// Glas uses UTF-8 as its common text encoding.
-    let ofString (s : string) : Value =
-        ofBinary (System.Text.Encoding.UTF8.GetBytes(s))
 
