@@ -14,26 +14,31 @@ Modules are identified by symbols such as `foo`, eliding representation details 
 
 ## Data Model
 
-Glas data is modeled as an immutable binary tree. Edges from each node are uniquely labeled in binary (i.e. 0 or 1). Operations on data return a new value. As an optimization, the tree is usually represented by a directed acyclic graph, reusing common subtrees.
+Glas data is modeled as immutable binary trees. Each node may have up to two edges, uniquely labeled 0 and 1, to subtrees. A naive representation is:
 
-Data is encoded in the tree structure. For example, we can directly encode algebraic products `(A * B)` and sums `(A + B)` using a single node that contains two or one edges respectively. Unit `()` is can be encoded by a leaf node. However, basic algebraic products and sums are awkward to extend or version.
+        type T = ((1+T) * (1+T))
 
-Glas systems favor labeled records and variants. Null-terminated UTF-8 text is encoded into a path through a tree, e.g. label 'path' uses bitstring `01110000 01100001 01110100 01101000 00000000`. The value follows the null terminator. The runtime can compactly encode non-branching path segments, thus a record becomes a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). A compiler could further optimize records, e.g. use a symbol table to share labels across records. Variants are single element records, and symbols can be viewed as variants with the unit value.
+This supports algebraic products (both edges), sums (choice of one edge), and the unit value (no edges). However, Glas encourages use of labeled data structures instead of basic products and sums. Labels greatly improve extensibility and documentation of data.
 
-A byte is encoded as a bitstring, i.e. a non-branching path encoding one bit per edge such as `00010111`. Glas has a few bitwise and unsigned arithmetic operators to work with bytes and bitstrings in general. Bitstrings are assumed to be reasonably short, often fixed-width.
+Glas can encode labels or symbols using 'bitstrings', which are long sequences of nodes with only one edge. For example, symbol 'path' is represented by the bitstring `01110000 01100001 01110100 01101000 00000000`, which simply encodes 'path' in UTF-8 with a null-terminator. For labeled products, aka records, the labels form a [radix tree](https://en.wikipedia.org/wiki/Radix_tree), with the associated value following the null terminator. Labeled sums, aka variants, are essentially singleton records. To support this heavy use of labels, the representation of trees in Glas systems will usually compact bitstring sequences.
 
-Binary data is logically encoded as a list of bytes. Glas uses lists for arbitrary size sequential structure. However, to avoid the awkward and awful performance scalability characteristics of linked lists, Glas systems often substitute a [finger tree](https://en.wikipedia.org/wiki/Finger_tree) representation for lists. Finger tree lists support constant-time access to both ends and logarithmic inner manipulations.
+Numbers are also encoded as bitstrings in msb to lsb order. Fixed-width numbers will literally be encoded as a bitstring of fixed width, e.g. `00010111` is an 8-bit representation of the number 23. There is no limit on the size of a number, nor for alignment to multiples of 8 bits, but performance of the implementation may degrade for large numbers.
 
-*Note:* There is no built-in support for rational numbers, signed numbers, floating point numbers, complex numbers, matrix and vector math, and so on. However, it is feasible to extend Glas to support performance of more types via *Acceleration*.
+Pairs are mostly used for lists. Lists are simply modeled as `type List a = (a * List a) | 1`, and are widely used for modeling sequential structure in Glas systems. For example, binaries are modeled as lists of bytes. To improve performance working with lists, Glas systems are expected to replace the simplistic linked-list representation with a [finger tree](https://en.wikipedia.org/wiki/Finger_tree) representation. Finger tree lists support constant-time access to both ends and logarithmic inner manipulations.
+
+To control memory resources, Glas systems may offload large subtrees to content-addressed storage. I call this pattern *Stowage* (see below), and also has benefits for incremental computation and communication. 
+
+*Note:* There is no built-in support for rational numbers, signed numbers, floating point numbers, complex numbers, matrix and vector math, and so on. However, it is feasible to extend Glas systems to support performance of more types via *Acceleration*.
 
 ## Binary Extraction
 
-A subset of Glas modules will compute binary data. The Glas command-line tool shall provide modes to extract binary data to stdout or file. The binary data should represent an externally useful software artifact - e.g. pdf, music file, an executable, or a C program. For multi-file software artifacts, the binary could represent a tarball or zipfile.
+A subset of Glas modules may define binary outputs. Common representations include a list of bytes or a program that writes a stream of binary fragments (see *Streaming Binaries* below). The Glas command-line tool will provide modes to extract common representations of binary data to file or stdout.  
 
-For targeting of executables, I propose to define a central `system-info` module on `GLAS_PATH`. This module will describe the target architecture, OS, and other relevant details. The default target is the local system, but cross-compilation only requires a tweak to the path. 
+An extracted binary should represent an externally useful software artifact - e.g. pdf, music file, an executable, a meme image, or a JavaScript program. To represent multi-file software artifacts, the binary can represent a tarball or zipfile which can be extracted by another tool.
 
-Responsibility for generating a useful binary is shifted into the module system. A useful consequence is that computed binaries are accessible within the module system. This supports composition of binaries (e.g. into a tarball) and automated testing over binaries without leaving the Glas module system. 
+Compilation in Glas is based on binary extraction: a 'compile' is essentially a module that specifies the executable. It is feasible to target binaries for specific machines by having the compiler depend on a `target` module, which might specify the local machine or be overridden in `GLAS_PATH` for cross-compilation.
 
+An intriguing consequence is that compiled binaries remain accessible within the module system for further composition or automated testing.
 
 ## Glas Programs
 
@@ -52,8 +57,6 @@ This section describes the standard program model. The only required static chec
 * **swap** - switch the top two items on stack
 * **data:V** - copy V to top of stack
 
-The stack in Glas is really an intermediate data plumbing model. User syntax will often hide stack shuffling behind local variables, and a Glas compiler may eliminate the stack in favor of a static allocation of memory, depending on the static stack arity of valid Glas programs. Of course, a subprogram might use a list to represent a continuation stack within a loop.
-
 My type notation is a little ad-hoc, but might help clarify.
 
         copy        ∀S,V . (S * V) → ((S * V) * V)
@@ -68,13 +71,16 @@ My type notation is a little ad-hoc, but might help clarify.
             ------------------------- 
             data:V ⊲ ∀S . S → (S * A)
 
+The stack in Glas is really an intermediate data plumbing model. User syntax could hide stack shuffling behind local variables. The Glas compiler can replace the stack with static memory and register allocations, leveraging static arity of valid Glas programs. The main reason for the stack is that it simplifies operators, which don't need to specify input sources or output targets.
+
+*Note:* For modeling locally recursive functions, a language module compiler may model its own continuation stack as a recursive variant or list. This would be independent of the Glas program stack.
 
 ### Control Operators
 
 * **seq:\[List, Of, Operators\]** - sequential composition of operators. 
  * **seq:\[\]** - empty sequence doubles as identity operator (nop)
 * **cond:(try:P, then:Q, else:R)** - run P; if P does not fail, run Q; if P fails, backtrack P then run R.
-* **loop:(try:P, then:Q)** - begin loop: run P; if P does not fail, run Q then repeat loop. If P fails, backtrack P then exit loop.
+* **loop:(while:P, do:Q)** - begin loop: run P; if P does not fail, run Q then repeat loop. If P fails, backtrack P then exit loop.
 * **eq** - compare top two values on stack. If they are equal, do nothing. Otherwise fail.
 * **fail** - always fail
 
@@ -90,7 +96,7 @@ My type notation is a little ad-hoc, but might help clarify.
             R ⊲ S → S''
             -------------------
             COND ⊲ S → S''
-        loop:(try:P, then:Q)    (as LOOP)
+        loop:(while:P, do:Q)    (as LOOP)
             P ⊲ S → S' | FAIL
             Q ⊲ S' → S
             -------------------
@@ -98,13 +104,11 @@ My type notation is a little ad-hoc, but might help clarify.
         eq : ∀S,A,B . ((S * A) * B) → ((S * B) * B) | FAIL
         fail : ∀S . S → FAIL
 
-User syntax can effectively extend the set of control operators. For example, a language module could compile a set of mutually recursive functions into a common loop with an implicit continuation parameter. 
-
-*Note:* Glas does not have an 'eval' operator or first-class functions. However, it is possible to implement a Glas interpreter within Glas to support staged metaprogramming.
+User syntax can extend the effective set of control operators, e.g. compiling a mutually recursive function group into a central loop. Also, although there is no 'eval' operator, it is quite feasible and useful to implement an eval subprogram.
 
 ### Effects Handler
 
-* **env:(do:P, eff:E)** - override effects handler in context of P.
+* **env:(do:P, with:E)** - override effects handler in context of P.
  * move top item from data stack to eff stack
  * where `eff` is invoked within P (modulo further override):
   * move top item from eff stack to top of data stack
@@ -113,26 +117,30 @@ User syntax can effectively extend the set of control operators. For example, a 
  * move top item from eff stack to data stack
 * **eff** - invoke current effects handler on current stack.
 
-The top-level effects handler is provided by runtime or compiler. Use of 'env' enables a program to sandbox a subprogram and control access to effects. Effects handlers should have type `Request State -- Response State`, i.e. stack arity 2-2, at least for bootstrap and further until we have sufficiently advanced static types and static analysis.
+The top-level effects handler is provided by runtime or compiler. Use of 'env' enables a program to sandbox a subprogram to monitor or control access to effects. At least for bootstrap and early development, effects handlers should have type `Request State -- Response State`. Later, with sufficiently advanced static analysis, it is feasible for 'eff' to be dependently typed with variable arity.
 
-    env:(do:P, eff:E)           (as ENV)
+    env:(do:P, with:E)           (as ENV)
         E ⊲ (Sf * State) → (Sf' * State)
         eff ⊲ Sf → Sf' ⊢ P ⊲ S → S'
         --------------------------------
         ENV ⊲ (S * State) → (S' * State)
     eff         type determined by env
 
+A design feature of env/eff is that the handler code can be inlined and partially evaluated by a compiler. Effective support for partial evaluation will mitigate branching overheads, and top-level effects can be baked into an executable or eliminated if unused.
+
+*Note:* I decided against named effects because it's difficult to intercept, restrict, and delegate. However, partial evaluation can serve a similar role as named effects.
+
 ### Record and Variant Operators
 
-A set of operations useful for records and variants. Pair and sum types aren't directly supported in Glas programs except as the trivial case of records with one-bit labels.
+A set of operations useful for records and variants. Pair and sum types are also supported by these operators as a trivial case using one-bit labels. However, Glas systems don't favor use of pairs and sums because they lack convenient extensibility. 
 
 Labels are encoded into bitstrings, usually as null-terminated UTF-8 text. Within a record, label bitstrings must exhibit the prefix property: no valid label is a prefix of another valid label. Other than null terminators, this could be supported by fixed-width label encodings, e.g. forming an intmap.
 
 Record operators:
 
-* **get** - given label and record, extract value from record. Fails if label is not in record.
-* **put** - given a label, value, and record, create new record that is almost the same except with value on label. 
-* **del** - given label and record, create new record with label removed modulo prefix sharing with other paths in record.
+* **get** ((label:V|R) label -- V) - given label and record, extract value from record. Fails if label is not in record.
+* **put** ((label?_|R) V label -- (label:V|R)) - given a label, value, and record, create new record that is almost the same except with value on label.
+* **del** ((label?_|R) label -- R) - given label and record, create new record with label removed modulo prefix sharing with other paths in record. 
 
 A record may have many labels, sharing prefixes. Non-branching path segments can be compactly encoded to reduce the number of pointers. It is feasible for a compiler to optimize records with statically known labels like a C struct. A variant is a singleton record. 
 
@@ -140,13 +148,13 @@ A record may have many labels, sharing prefixes. Non-branching path segments can
 
 A linked list has simple structure, but terrible performance for any use-case except a stack. To solve this, Glas provides a few dedicated operators for lists. This enables the runtime or compiler to transparently substitute a more efficient representation such as a [finger tree](https://en.wikipedia.org/wiki/Finger_tree).
 
-* **pushl** - given value and list, add value to left (head) of list
-* **popl** - given a non-empty list, split into head and tail.
-* **pushr** - given value and list, add value to right of list
-* **popr** - given non-empty list, split into last element and everything else
-* **join** - appends list at top of data stack to the list below it
-* **split** - given number N and list of at least N elements, produce a pair of sub-lists such that join produces the original list, and the head portion has exactly N elements.
-* **len** - given list, return a number that represents length of list. Uses smallest encoding of number (i.e. no zeroes prefix).
+* **pushl** (V L -- V:L) - given value and list, add value to left (head) of list
+* **popl** (V:L -- V L) - given a non-empty list, split into head and tail. 
+* **pushr** (L V -- L:V) - given value and list, add value to right of list
+* **popr** (L:V -- L V) - given non-empty list, split into last element and everything else
+* **join** (L1 L2 -- L1+L2) - appends list at top of data stack to the list below it
+* **split** (Lm+Ln |Lm| -- Lm Ln) - given number N and list of at least N elements, produce a pair of sub-lists such that join produces the original list, and the head portion has exactly N elements.
+* **len** (L -- |L|) - given list, return a number that represents length of list. Uses smallest encoding of number (i.e. no zeroes prefix).
 
 These operators assume a simplistic, Lisp-like representation of lists: `type List = () | (Value * List)`. That is, each list node has either no edges or two edges. In a non-empty list node, edge 0 refers to the head value and edge 1 to the remaining list.
 
@@ -208,11 +216,9 @@ The set of annotations is openly extensible and subject to de-facto standardizat
 
 ## Glas Initial Syntax (g0)
 
-Glas requires an initial syntax for bootstrap. This syntax should be textual for initial use of conventional development environments. It should also be simple, unambiguous, have an obvious compilation to the Glas program model, and be reasonably pleasant to work with.
+Glas requires an initial syntax for bootstrap. To serve this role, I define [the g0 syntax](GlasZero.md). However, g0 is a rather simplistic language, with a Forth-like look and feel but lacking Forth's metaprogramming features. The intention is to simplify bootstrap implementation. A more sophisticated language modules (with support for local variables, recursive function groups, metaprogramming, etc.) should be developed for normal programming in Glas. 
 
-See [g0 syntax](GlasZero.md).
-
-## Applications
+## Application Models
 
 ### Language Modules
 
@@ -221,28 +227,39 @@ Language modules have a module name of form `language-*`. The value of a languag
 The compile program implements a function from source (e.g. file binary) to a compiled value on the stack. The compile program can also access other module values and generate some log outputs. Effects API:
 
 * **load:ModuleName** - Module names are typically encoded as a symbol such as `foo`, but mightl later be extended. Response is the result from compiling the module, or failure if the module's value cannot be computed.
-* **log:Message** - Response is unit. Messages may include warnings and issues, progress reports, code change proposals, etc.. 
+* **log:Message** - Response is unit. Arbitrary output message, useful for progress reports, debugging, code change proposals, etc.. 
 
 Load failure may occur due to missing modules, ambiguous file names, dependency cyles, failed compile, etc. The cause of failure is visible to the client module, but is reported in the development environment.
 
+### Streaming Binaries
+
+It is frequently convenient to represent large or computed binaries as programs that generate a stream of binary fragments. A viable representation is a zero-arity program (no input or output on data stack) with a 'write' effect for outputting binary fragments. Effects API:
+
+* **write:Binary** - addend a binary (a list of bytes) to the generated output stream. Response is unit, or fails if argument is not valid binary.
+* **log:Message** - Response is unit. Arbitrary output message, useful for progress reports or debugging.
+
+It is possible for a binary stream to fail after writing a few megabytes. Failure should be interpreted as a stream error, but exactly how this error is handled will depend on context.
+
+*Aside:* [The g0 syntax](GlasZero.md) does not have direct access to static evaluation, thus will rely on streaming binaries for extraction. 
+
 ### Automated Testing
 
-For lightweight automatic testing, Glas systems will follow a convention where modules with name `test-*` should produce a test program. The test program is then evaluated with access to 'fork' effects for fuzzing of input. Effects API:
+For lightweight automatic testing, Glas systems will support a convention where modules with name `test-*` should produce a record containing `(test:Program, ...)`. The test program should be zero-arity (no input or output on data stack) and use a 'fork' effect for fuzzing of input. Effects API:
 
 * **fork** - response is unit or failure, non-deterministically.
-* **log:Message** - arbitrary output message to simplify debugging.
+* **log:Message** - Response is unit. Arbitrary output message to simplify debugging.
 
-Test programs should be stack neutral. Input to the test program is based on a sequence of 'fork' results. Primary output is success or failure of the program, though reflection on logged messages and location of failure would be visible for debugging. 
+The only input to the test program is the sequence of 'fork' outcomes. Fork inputs can be used to select independent sub-tests or randomize test parameters. Backtracking and incremental computing of tests with a similar 'fork' prefix is feasible, allowing implicit sharing of test setup overheads while maintaining logical independence. A good test system may heuristically explore the input space to improve coverage or statically analyze the test program to search for inputs leading to potential failure conditions. 
 
-The test program can be evaluated many times with different forks, and a test's fork history can be recorded as a binary for replay. Usefully, each fork is essentially independent so we can continue a test with prior errors, yet incremental computing is also feasible where we cache the computations up to a fork.
+The primary output from a test is success or failure. If the test terminates without failing, it is considered a success even if the log includes error or warning messages. The log is a secondary output, intended for humans or the integrated development environment.
 
-Forks can select subtests, randomize parameters, and simulate non-deterministic or variable environments. When there are only a few forks, the system will test exhaustively. Otherwise, a good test environment might use heuristics and analysis to search for useful forks, aiming for branch coverage and error discovery.
+*Aside:* Including test modules within a package system could provide a good measure of the health of the system.
 
 ### User Applications
 
-Glas program are a good fit for the *transaction machine* model of applications. Of course, it is feasible to design alternative program models as a basis for user applications. But transaction machines are an excellent fit for my long-term vision of live coding and reactive systems. I'm developing this idea in the [Glas Apps](GlasApps.md) document. 
+Due to backtracking conditional behavior, Glas programs are a good fit for the *transaction machine* model of applications. Of course, it is feasible to design alternative program models as a basis for user applications. But transaction machines are an excellent fit for my long-term vision of live coding and reactive systems. I'm developing this idea in the [Glas Apps](GlasApps.md) document. 
 
-A Glas command-line utility can provide a lightweight interpreter for console apps.
+A Glas command-line utility should provide a lightweight interpreter or JIT for console apps that does not rely on full binary extraction.
 
 ## Performance
 
@@ -270,7 +287,7 @@ However, partial evaluation is fragile unless supported by annotations. Robust p
 
 Glas has implicit, pervasive staging: a module's source is processed and compiled into a value, and this value is processed and compiled further by a client module. It is possible to leverage this for metaprogramming using problem-specific intermediate representations. Additionally, language modules can potentially support user-defined, modular macros and other techniques.
 
-Glas doesn't have an eval primitive. To fully support staged metaprogramming requires implementing the eval program, such that language modules can directly interpret Glas programs. Glas is a relatively simple language, but this may require compiling the interpreter to an accelerated model for performance.
+However, access to this feature depends on syntax. For example, [the g0 syntax](GlasZero.md) does not support metaprogramming. But users could implement a Glas program or macro interpreter for static evaluation by user-defined language modules. By leveraging *acceleration* we can feasibly achieve excellent performance for staging.
 
 ### Acceleration
 
@@ -288,7 +305,7 @@ To simplify recognition and to resist invisible performance degradation, acceler
 
 ## Types
 
-Glas requires a simple stack arity check, i.e. to ensure that loops have invariant stack size, and that conditionals have the same stack size on every branch. This check is easy to evaluate and simplifies a few optimizations, but we could do a lot more.
+Glas requires a simple stack arity check, i.e. to ensure that loops have invariant stack size, and that conditionals have the same stack size on every branch. This check is easy to evaluate and simplifies a few optimizations. But we can do a lot more.
 
 Desired Structural Properties: 
 
@@ -316,32 +333,22 @@ See [Glas Object](GlasObject.md).
 
 ## Thoughts
 
-### Cyclic Data
+### Graph Based Data
 
-I've considered using cyclic graph data structures instead of trees. Similar to the current model, each node in a graph has at most two outbound edges, labeled 0 or 1. Complex labels would be formed by an arc through the graph. 
+I've considered using graph based data structures instead of tree based. Similar to the current model, each node in a graph has at most two outbound edges, labeled 0 or 1. Complex labels would be formed by an arc through the graph. The difference is that we can also form directed cycles within this graph. 
 
-I decided against graphs because they are relatively difficult to locally reason about and control compared to trees, interact awkwardly with stowage, and are unnecessary for the initial goals of Glas. However, Glas systems could eventually compile or accelerate program models based around cyclic graph structures.
+I decided against graphs because they are relatively awkward to manipulate with using conventional operators in a purely functional style. Also, most cyclic phenomena is actually fractal or temporal, so the ability for finite graph data to usefully model the phenomena is limited.
 
-### Eval Operator? No.
-
-I could add an 'eval' operator for Glas that receives values representing program and initial data stack, then either fails or returns the final data stack.
-
-        eval    ((S * Stack) * Program) -> (S * Stack)
-
-The benefit of a built-in 'eval' operator is that it simplifies metaprogramming. The cost is that it complicates the Glas program compiler: we have a single operator with unbounded complexity, it's unclear how much static analysis should be performed on the Program value, integration with acceleration or optimization is not well defined.
-
-For now, I've decided to avoid built-in eval. It is feasible to define an interpreter manually, and doing so would make analysis, optimization, memoization, compilation, and expected acceleration features explicit. It would also apply to a wider variety of DSLs.
-
-However, for convenient access to metaprogramming, I plan to include static eval in language model for the bootstrap syntax (g0). I expect many other language models will include some form of static eval.
+Of course, we can still model graph data indirectly using adjacency lists, matrices, DSL programs that construct graphs, or other non-graph structures. And it might be worthwhile to develop some accelerated models for working with graphs when Glas is a little more mature.
 
 ### Program Search
 
-I'm very interested in a style of metaprogramming where programmers express hard and soft constraints and search tactics for a program - respectively representing requirements and desiderata and recommendations - then the system searches for valid solutions. Glas provides a viable foundation, but it's still a distant future.
+I'm very interested in a style of metaprogramming where programmers express hard and soft constraints and search tactics for a program - respectively representing requirements and desiderata and recommendations - then the system searches for valid solutions. Glas provides a viable foundation, but it's still a distant future. Part of the solution will certainly involve loading 'catalog' modules that index other modules to support search.
 
-Part of the solution will certainly involve loading 'catalog' modules that index other modules to support search.
+Because search in context of Glas modules will be deterministic, we cannot rely on non-determinism to learn or stabilize heuristic choices. A challenge will be effective memoization and caching to avoid unnecessary recomputation of choices across minor changes in source.
 
 ### Provenance Tracking
 
-I'm very interested in potential for automatic provenance tracking, i.e. such that we can robustly trace a value to its contributing sources. However, I still don't have a good idea about how to best approach this.
+I'm very interested in potential for automatic provenance tracking, i.e. such that we can robustly trace a value to its contributing sources. However, I still don't have a good idea about how to best approach this across multiple layers of language modules and metaprogramming. One idea is to keep some source metadata with every bit that can be traced back to its few 'best' sources. This seems very expensive, but viable.
 
 

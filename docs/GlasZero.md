@@ -1,86 +1,64 @@
-# g0 Syntax
+# The g0 Syntax
 
-The bootstrap syntax for Glas is g0, with the eponymous file extension `.g0`. This syntax is structured UTF-8 text to work well with conventional development environments. Design goals include: simple, unambiguous, easy to parse, obvious runtime behavior, and refactors redundant expression. 
+The g0 syntax looks and feels similar to a Forth, and is intended to serve a bootstrap role in the Glas system. Associated file extension is `.g0`. 
 
-Viable desiderata: 
+The g0 syntax is limited in what it can express: it does not support metaprogramming, automatic data plumbing, recursive function groups, extensibility, type annotations, export control, and many other convenient features. The intention is that g0 is transitory; more sophisticated language modules will be developed beyond bootstrap.
 
-* local variables to automate data plumbing where desired
-* implicit 'environment' parameter(s), with dynamic scope 
-* effective syntax for local references (namespace constants?)
-* local general recursion with implicit continuation stack
-* tail recursive loops, explicit tail recursion (e.g. goto)
-* lightweight namespaces with import and export control
-* unambiguous provenance; single inheritance for unqualified imports
-* namespace indicates type - `prog`, `data`, `type`, `macro`, etc.
-* usage of names depends on its exposed variant type in namespace. 
-* support for importing grammars, rules, language extensions.
-* static eval for macros, higher-order programming, metaprogramming
-* effective syntax for annotations for programs or sequences
-* language incorporates named resources based on type and context
-* support for regular expressions and grammars
+## Top Level
 
-I think we might need to parse g0 to an intermediate AST that is subsequently compiled to Glas programs. The intermediate AST would support variables, recursion groups, etc. locally within the file.
+The top-level of a g0 program consists of namespace management, i.e. imports and new definitions, plus ad-hoc  line comments.
 
-## Local Variables
+        open foo
+        from bar import baz, word as bar-word
 
-If g0 syntax makes the stack directly accessible, we can define local variables as taking items from the stack then plumbing them through a program via transform. Alternatively, g0 could fully hide the stack and use keyword parameters and results via records. Transform to a stack-based dataflow would be a compilation step.
+        # this is a line comment
+        prog word { Program }
 
-Between these two options, I prefer keyword parameters and results. 
+A single 'open' is permitted to inherit words defined by a prior module. This may be followed by multiple imports, then by multiple definitions. Shadowing any explicitly imported or defined word will result in a warning.
 
-We can define local variables as taking a result from the stack, or w
+The g0 namespace is flat, i.e. there is no support in g0 for qualified imports or dotted paths into a hierarchical namespace. Also, module names and words used within g0 are restricted by syntax: if a file or function has an awkward name, a g0 program cannot even refer to it. This is a non-issue for bootstrap because we control the dependencies.
 
-## Namespace
+The output for a g0 program is a record of all defined words. There is no export control. Compiled program definitions in g0 will always have a 'prog' header, e.g. `prog:(do:CompiledProgram)`. This enables extension of namespaces to define data, types, macros, and other objects. Although g0 does not need this extension, it will simplify integration with other language modules.
 
-The g0 syntax enables programmers to define functions and data. By default, a g0 module will output a value that concretely represents the namespace at the end of the file. 
+## Bootstrap 
 
-## Static Eval
+As a special case, the language-g0 module will go through a bootstrap process in Glas. The command-line implementation of g0 and language-g0 module's compile function may have some variation in use of optimizations, annotations, and even a support for language extensions. However, the language-g0 implementation is the final authority.
 
-Static eval in the syntax mitigates need for an eval operator within the Glas program model. The g0 language module will need to include a Glas interpreter, but this simplifies metaprogramming because we can use programs to manipulate programs. 
+The bootstrap command-line utility provides a naive implementation for an adequate subset of g0. This should first be used to compile module language-g0 to a value of form `(compile:P0, ...)`. Program P0 is then used to rebuild language-g0, producing `(compile:P1, ...)`. Program P1 is then used to rebuild language-g0, producing `(compile:P2, ...)`. We then check that P1 and P2 are the same. If so, bootstrap of g0 is successful! 
 
-## Rejected Features
+If bootstrap of g0 fails, we must debug definition of language-g0 and the command-line tool. This bootstrap process requires that module language-g0 is carefully defined to achieve fixpoint after a single cycle, i.e. the behavior of P0 and P1 should be equivalent even though their program representations are not (i.e. due to variation in optimizations and annotations). To simplify bootstrap, the language-g0 module should be isolated to a folder, with no external module dependencies.
 
-My goal with g0 is ease of both use and implementation. Some features I'd like to explore are not good for this:
+The next step is to bootstrap the command-line utility. This requires modeling the application and compiler to the target architecture, then extracting the binary to an executable file. However, this task is outside the scope of this document.
 
-* yield - requires implicit stack defunctionalization; useful for asynch and coroutines 
-* typeful overloading - requires mixed type analysis, function tables, and search; convenient for generic programming.
+## Embedded Data
 
+The g0 program syntax has built-in support for numbers, symbols, and strings.
 
+        0b010111                (becomes identical bitstring)
+        23                      0b10111         (the min-width representation)
+        0x17                    0b00010111      (always multiple of four bits)
+        'word                   0x776f726400    (symbols for every valid word)
+        "hello"                 (list of ascii bytes; forbids C0, DEL, and '"')
 
-##
+It is feasible to develop a series of words such that `23 u8` is equivalent to `0x17`. Strings do not have escape characters but can similarly be post-processed by a subsequent word. There is currently no support for embedded records or lists, but those may be constructed programmatically via put and pushr.
 
+## Words
 
-## Data
+A word in g0 must match regex `[a-z]+('-'[a-z]+)*(0-9)*`.
 
-## Functions
+Within a program, a word is immediately compiled by replacing it with the definition. This results in a form of static scoping and linking. If there is no definition for a word, a warning should be logged and the word is replaced by 'fail' operator.
 
-## 
+## Default Definitions
 
+By default, a g0 program defines a word for each symbolic operator: copy, drop, swap, eq, fail, eff, get, put, del, pushl, popl, pushr, popr, join, split, len, bjoin, bsplit, blen, bneg, bmax, bmin, beq, add, mul, sub, div. The default behavior of these words is to compile to the eponymous operator. It is possible to shadow these words with an import or a new definition, but a warning may be logged.
 
+## Keywords
 
+The g0 syntax has a few keywords to cover the structured operators in Glas programs. These words cannot be redefined.
 
-Desiderata:
+        dip { Program }                                         (dip)
+        while { Program } do { Program }                        (loop)
+        try { Program } then { Program } else { Program }       (cond)
+        with { Program } do { Program }                         (env)
 
-* data - lightweight data embedding.
-* local vars - automatic data plumbing on stack where feasible.
-* tail recursion - loops can be expressed as tail-recursive function calls
-* pattern matching - lightweight pattern matching for lists, records.
-* namespaces - static programs and data, imports
-
-Under consideration:
-* staged programming - evaluate some expressions at parse-time; might be too complicated
-* yield - automatic defunctionalization of continuations; might be too complicated
-
-a subset of functions can 'yield' a value and defunctionalized continuation. This might be more complicated than I desire (compilation strategy is not obvious).
-
-
-
-## Basics
-
-
-
-
-
-
-* single parameter and return - g0 functions have 1-to-1 arity by construction.
-
-
+Sequences are implicit, e.g. `{ foo bar 42 baz }` becomes a sequence of four operations (modulo optimizations), and `{}` becomes the empty sequence, a NOP. 

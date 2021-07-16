@@ -98,7 +98,7 @@ let tests =
             let a = pair (u8 111uy) (u16 2222us)
             let b = pair (u32 33333ul) (u64 444444UL)
             match (pair a b) with
-            | Pair (Pair (U8 w, U16 x), Pair (U32 y, U64 z)) ->
+            | P (P (U8 w, U16 x), P (U32 y, U64 z)) ->
                 Expect.equal w 111uy "match U8"
                 Expect.equal x 2222us "match U16"
                 Expect.equal y 33333ul "match U32"
@@ -107,11 +107,11 @@ let tests =
 
         testCase "matchLR" <| fun () ->
             match (left (u8 27uy)) with
-            | Left (U8 x) -> Expect.equal x 27uy "match left"
+            | L (U8 x) -> Expect.equal x 27uy "match left"
             | _ -> failtest "failed to match left"
 
             match (right (u16 22222us)) with
-            | Right (U16 x) -> Expect.equal x 22222us "match right"
+            | R (U16 x) -> Expect.equal x 22222us "match right"
             | _ -> failtest "failed to match right"
 
         testCase "list round-trip" <| fun () ->

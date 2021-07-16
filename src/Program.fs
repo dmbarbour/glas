@@ -17,16 +17,17 @@ type SymOp =
 /// It is also suitable for transaction machine applications.
 /// 
 /// Note: Converting between F# and Glas program values complicates
-/// maintenance of structure sharing. Perhaps I should instead model
-/// programs as an abstract type? But this is adequate for bootstrap. 
+/// maintenance of structure sharing. To resolve this, I currently
+/// use a memo-cache for interning, but it isn't optimal due to lack
+/// of  
 type Program =
     | Op of SymOp
     | Dip of Program
     | Data of Value
     | Seq of Program list
     | Cond of Try:Program * Then:Program * Else:Program
-    | Loop of Try:Program * Then:Program
-    | Env of Do:Program * Eff:Program
+    | Loop of While:Program * Do:Program
+    | Env of Do:Program * With:Program
     | Prog of Do:Program * Note:Value 
     | Note of Value
 
@@ -73,57 +74,45 @@ module Program =
         | Sub -> "sub"
         | Div -> "div"
 
-    module private Printer =
-        // we might try to improve printer with a cache 
-        // for structure sharing.
+    module Printer =
+        // continuation for a printer
+        type K = Value list -> Value
 
-        // for tail-recursive print, model a continuation.
-        type K =
-            | Done
-            | V of K * string
-            | R of K * Value * string * List<string> * List<Program>
-            | S of K * FTList<Value> * List<Program>
+        // for round-trip structure sharing, intern common subtrees. 
+        type C = Map<Program,Value> 
 
-        let rec appK (k:K) (v:Value) : Value =
-            match k with
-            | Done -> v
-            | V (k', s) -> appK k' (variant s v)
-            | R (k', r, s, ls, lp) -> 
-                let r' = record_insert (label s) v r
-                pR k' r' ls lp
-            | S (k', vs, lp) ->
-                let vs' = FTList.snoc vs v
-                pS k' vs' lp
-        and pR k r ls lp =
-            match ls, lp with
-            | [], [] -> appK k r
-            | (s::ls'), (p::lp') -> print (R(k, r, s, ls', lp')) p
-            | _ -> failwith "size mismatch for record print"
-        and pS k vs lp =
-            match lp with
-            | (p::lp') -> print (S(k,vs,lp')) p
-            | [] -> appK k (ofFTList vs)
-        and print (k:K) (p:Program) : Value =
+        // to separate op handling from caching and recursion details...
+        let split (p : Program) : struct(Program list * K) =
             match p with
-            | Op(op) -> appK k (symbol (opStr op))
-            | Dip(p) -> print (V(k,"dip")) p
-            | Data(v) -> appK k (variant "data" v)
-            | Seq(ps) -> pS (V(k,"seq")) (FTList.empty) ps
-            | Cond (Try=c; Then=a; Else=b) ->
-                pR (V(k,"cond")) unit ["try"; "then"; "else"] [c; a; b]
-            | Loop (Try=c; Then=a) ->
-                pR (V(k,"loop")) unit ["try"; "then"] [c; a]
-            | Env (Do=p; Eff=e) ->
-                pR (V(k,"env")) unit ["do"; "eff"] [p; e]
-            | Prog (Do=p; Note=v) ->
-                // the 'do' here is added into 'v'
-                pR (V(k,"prog")) v ["do"] [p]
-            | Note v -> appK k (variant "note" v)
+            | Op op -> struct([], fun _ -> symbol (opStr op))
+            | Dip pDip -> struct([pDip], asRecord ["dip"])
+            | Data v -> struct([], fun _ -> variant "data" v)
+            | Seq ps -> struct(ps, FTList.ofList >> Value.ofFTList >> variant "seq")
+            | Cond (Try=pTry; Then=pThen; Else=pElse) ->
+                struct([pTry; pThen; pElse], asRecord ["try"; "then"; "else"] >> variant "cond")
+            | Loop (While=pWhile; Do=pDo) ->
+                struct([pWhile; pDo], asRecord ["while"; "do"] >> variant "loop")
+            | Env (Do=pDo; With=pWith) ->
+                struct([pDo; pWith], asRecord ["do"; "with"] >> variant "env")
+            | Prog (Do=pDo; Note=vNote) ->
+                struct([pDo], fun vs -> variant "prog" (record_insert (label "do") (vs.[0]) vNote))
+            | Note vNote -> struct([], fun _ -> variant "note" vNote)
+
+        // printer handles recursion and caching at the moment.
+        // currently not tail-recursive.
+        let rec print (c0:C) (p:Program) : (Value * C) =
+            match Map.tryFind p c0 with
+            | Some v -> (v, c0)
+            | None ->
+                let struct(ps, k) = split p
+                let (vs, c') = List.mapFold print c0 ps
+                let v = k vs
+                (v, Map.add p v c')
 
     /// Print program to value. 
     let print (p : Program) : Value =
-        Printer.print (Printer.K.Done) p
-
+        let (v, _) = Printer.print (Map.empty) p
+        v
 
     let opArity (op : SymOp) : struct(int * int) =
         match op with 
@@ -156,11 +145,12 @@ module Program =
         | Div -> struct(2,2)
 
     /// Compute static stack arity, i.e. number of stack inputs and outputs,
-    /// if this value can be computed. This requires effect handlers are 1-1.
-    /// Ignores annotations. 
+    /// if this value can be computed. This requires effect handlers have a
+    /// static arity of 2--2 including the handler state (1--1 from 'Eff' call).
     ///
-    /// Currently not tail-recursive. This shouldn't be a problem for most programs.
-    /// TODO: consider including a reason when arity fails. Exception?
+    /// Ignores annotations.
+    ///
+    /// TODO: consider error message when arity fails.
     let rec static_arity (p : Program) : struct(int * int) option =
         match p with
         | Op (op) -> Some (opArity op)
@@ -178,13 +168,13 @@ module Program =
             | Some struct(li, lo), Some struct(ri, ro) when ((li - lo) = (ri - ro)) ->
                 if (li > ri) then l else r
             | _, _ -> None
-        | Loop (Try=c; Then=a) ->
+        | Loop (While=c; Do=a) ->
             // seq:[c,a] must be stack invariant.
             let s = static_seq_arity [c;a]
             match s with
             | Some struct (i,o) when (i = o) -> s
             | _ -> None
-        | Env (Do=p; Eff=e) -> 
+        | Env (Do=p; With=e) -> 
             // constraining bootstrap eff handlers to be 2-2 including state.
             // i.e. forall S . ((S * Request) * St) -> ((S * Response) * St)
             match static_arity e with
@@ -207,24 +197,57 @@ module Program =
                 let o' = o + d + (b - a) 
                 _static_seq_arity i' o' ps'
 
-    // should a parser attempt to preserve common substructure?
-    // at least for now, it seems low priority to do so.
+    module Parser =
+        // memo-cache to support structure sharing
+        type C = Map<Value, Program>
 
-    let private _opMap =
-        let ins m op = Map.add (label (opStr op)) op m
-        List.fold ins (Map.empty) op_list
+        // when all components parse, build composite.
+        type K = Program list -> Program
 
-    /// Parse SymOp from value.
-    let parseOp (v:Value) : SymOp option =
-        if not (isBits v) then None else
-        Map.tryFind (v.Stem) _opMap
+        let private _opMap =
+            let ins m op = Map.add (label (opStr op)) op m
+            List.fold ins (Map.empty) op_list
 
+        /// Parse SymOp from value.
+        let (|ParseOp|_|) v = 
+            match v with 
+            | Bits b -> Map.tryFind b _opMap
+            | _ -> None
 
-    /// Parse from value.
-    // let parse (v:Value) : Program option =
-    //     match v with
-    //     | Variant 
+        // single-step pattern maching; returns list of component vals to parse
+        let parseShallow (v : Value) : (Value list * K) option =
+            match v with
+            | ParseOp op -> Some ([], fun _ -> Op op)
+            | Variant "dip" vDip -> Some ([vDip], List.head >> Dip)
+            | Variant "data" vData -> Some ([], fun _ -> Data vData)
+            | Variant "seq" (FTList vs) -> Some (FTList.toList vs, Seq)
+            | Variant "cond" (Record ["try";"then";"else"] ([Some vTry; Some vThen; Some vElse], U)) -> 
+                Some ([vTry; vThen; vElse], fun ps -> Cond (Try=ps.[0], Then=ps.[1], Else=ps.[2]))
+            | Variant "loop" (Record ["while"; "do"] ([Some vWhile; Some vDo], U)) ->
+                Some ([vWhile; vDo], fun ps -> Loop (While=ps.[0], Do=ps.[1]))
+            | Variant "env" (Record ["do"; "with"] ([Some vDo; Some vWith], U)) ->
+                Some ([vDo; vWith], fun ps -> Env (Do=ps.[0], With=ps.[1]))
+            | Variant "prog" (Record ["do"] ([Some vDo], vNote)) ->
+                Some ([vDo], fun ps -> Prog (Do = ps.[0], Note = vNote))
+            | Variant "note" vNote -> Some ([], fun _ -> Note vNote)
+            | _ -> None // failed parse
 
+        let rec parse (c0:C) (v:Value) : ((Program option) * C) =
+            let fromCache = Map.tryFind v c0
+            if Option.isSome fromCache then (fromCache, c0) else
+            match parseShallow v with
+            | None -> (None, c0) 
+            | Some (vs, k) -> 
+                let (psOpts, c') = List.mapFold parse c0 vs
+                if List.exists Option.isNone psOpts then (None, c') else
+                let pParsed = k (List.map Option.get psOpts)
+                (Some pParsed, Map.add v pParsed c')
 
-    // initial interpreter or compiler.
+    let tryParse (v : Value) : Program option =
+        let (pParsed, _) = Parser.parse (Map.empty) v
+        pParsed
 
+    let inline (|Program|_|) v = 
+        tryParse v
+
+    // TODO: simple interpreter

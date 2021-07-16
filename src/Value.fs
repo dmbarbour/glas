@@ -18,11 +18,12 @@ namespace Glas
 //     type Value = { Stem: Bits; Spine: (Value * FTList<Value> * NonPairVal) option }
 //
 // This enables us to efficiently check whether a value is a list, and to manipulate
-// list values with the expected algorithmic efficiencies. 
+// list values with expected algorithmic efficiencies.
 //
 // This representation still excludes support for Stowage or rope-like chunks for 
 // binaries, much less support for acceleration of matrix math and so on. However,
-// it is adequate for bootstrap and has the advantage of normal form.
+// this should be adequate for bootstrap. I'd prefer to shove the more advanced 
+// value representation features to post-bootstrap.
 
 [<Struct; CustomComparison; CustomEquality>]
 type Value = 
@@ -36,21 +37,26 @@ type Value =
         | Some (s0, s') -> { Stem = Bits.empty; Spine = Some struct(s0,s',e) }
         | None -> e.Value
 
-    static member Cmp rs x y = 
+    static member private Cmp rs x y = 
         let cmpStem = Bits.cmp (x.Stem) (y.Stem)
         if 0 <> cmpStem then cmpStem else
-        match x.Spine, y.Spine with
-        | Some struct(x', sx, ex), Some struct(y', sy, ey) ->
-            let rs' = struct(Value.OfSE sx ex, Value.OfSE sy ey) :: rs
-            Value.Cmp rs' x' y'
-        | None, None ->
+        if LanguagePrimitives.PhysicalEquality x.Spine y.Spine then 
+            // this includes None None and fast-matches subtrees by ref.
             match rs with
             | (struct(x',y')::rs') -> Value.Cmp rs' x' y'
             | [] -> 0
-        | l,r -> compare (Option.isSome l) (Option.isSome r)
+        else 
+            match x.Spine, y.Spine with
+            | Some struct(x', sx, ex), Some struct(y', sy, ey) ->
+                let rs' = struct(Value.OfSE sx ex, Value.OfSE sy ey) :: rs
+                Value.Cmp rs' x' y'
+            | l,r -> 
+                assert (Option.isSome l <> Option.isSome r)
+                compare (Option.isSome l) (Option.isSome r)
 
     static member private Eq rs x y =
         if (x.Stem <> y.Stem) then false else
+        if LanguagePrimitives.PhysicalEquality x.Spine y.Spine then true else
         match x.Spine, y.Spine with
         | Some struct(x',sx,ex), Some struct(y',sy,ey) ->
             let rs' = struct(Value.OfSE sx ex, Value.OfSE sy ey) :: rs
@@ -70,6 +76,16 @@ type Value =
         member x.Equals y = 
             Value.Eq (List.empty) x y
 
+    interface System.IComparable with
+        member x.CompareTo yobj =
+            match yobj with
+            | :? Value as y -> Value.Cmp (List.empty) x y
+            | _ -> invalidArg (nameof yobj) "Comparison between Value and Non-Value"
+
+    interface System.IComparable<Value> with
+        member x.CompareTo y =
+            Value.Cmp (List.empty) x y        
+
     static member inline private HMix a b = 
         16777619 * (a ^^^ b) // FNV-1a
 
@@ -88,16 +104,6 @@ type Value =
     override x.GetHashCode() =
         Value.Hash (List.empty) (int 2166136261ul) x 
 
-    interface System.IComparable with
-        member x.CompareTo yobj =
-            match yobj with
-            | :? Value as y -> Value.Cmp (List.empty) x y
-            | _ -> invalidArg (nameof yobj) "Comparison between Value and Non-Value"
-
-    interface System.IComparable<Value> with
-        member x.CompareTo y =
-            Value.Cmp (List.empty) x y        
-    
 
 and [<Struct>] NonPairVal = 
     // restriction via smart constructor
@@ -127,9 +133,6 @@ module Value =
     let inline isUnit v =
         Option.isNone (v.Spine) && Bits.isEmpty (v.Stem)
 
-    let inline (|Unit|NotUnit|) v =
-        if isUnit v then Unit else (NotUnit v)
-
     /// A node with two children can represent a pair (A * B).
     /// To support list processing, there is some special handling of pairs.
     /// A list is essentially a right spine of pairs (A * (B * (C * (...)))).
@@ -139,10 +142,6 @@ module Value =
     let inline private tryPairSpine v =
         if Bits.isEmpty v.Stem then v.Spine else None
 
-    let inline (|Pair|_|) v = 
-        match tryPairSpine v with
-        | Some struct(l, s, e) -> Some (l, _ofSE s e)
-        | None -> None
 
     let pair a b =
         match tryPairSpine b with 
@@ -177,20 +176,26 @@ module Value =
         { a with Stem = Bits.cons false (a.Stem) }
 
     let inline isLeft v =
-        if Bits.isEmpty v.Stem then false else (false = (Bits.head v.Stem))
+        if Bits.isEmpty v.Stem then false else (not (Bits.head v.Stem))
 
-    let inline (|Left|_|) v =
-        if isLeft v then Some { v with Stem = Bits.tail v.Stem } else None
 
     /// The right sum adds a `1` prefix to an existing value.
     let inline right b = 
         { b with Stem = Bits.cons true (b.Stem) }
 
     let inline isRight v = 
-        if Bits.isEmpty v.Stem then false else (true = (Bits.head v.Stem))
+        if Bits.isEmpty v.Stem then false else (Bits.head v.Stem)
 
-    let inline (|Right|_|) v = 
-        if isRight v then Some { v with Stem = Bits.tail v.Stem } else None
+    /// pattern matching support on a single node.
+    let (|L|R|P|U|) v =
+        if Bits.isEmpty v.Stem then 
+            match v.Spine with
+            | Some struct(l,s,e) -> P (l, _ofSE s e)
+            | None -> U
+        else
+            let hd = Bits.head v.Stem
+            let v' = { v with Stem = Bits.tail v.Stem }
+            if hd then R v' else L v'
 
     /// Any bitstring can be a value. Glas uses bitstrings for numbers and
     /// labels, but not for binaries. Binaries are encoded as a list of bytes.
@@ -465,17 +470,23 @@ module Value =
         let fn e l = pair (u8 e) l
         Array.foldBack fn s unit
 
-    let toBinary (v : Value) : uint8 array =
-        let mutable f = toFTList v
-        let sz = FTList.length f
-        let arr = Array.zeroCreate sz
-        let mutable ix = 0
-        while (ix < sz) do
-            match FTList.tryViewL f with
-            | Some (U8 b, f') ->
-                Array.set arr ix b
-                ix <- ix + 1
-                f <- f'
-            | _ -> invalidArg (nameof v) "non-binary data"
-        arr
+    let rec private _tryBinary l arr ix =
+        match FTList.tryViewL l with
+        | Some (U8 n, l') -> Array.set arr ix n; _tryBinary l' arr (ix + 1)
+        | None when (Array.length arr = ix) -> Some arr
+        | _ -> None
+
+    let tryBinary (v : Value) : uint8 array option =
+        match v with 
+        | FTList l -> _tryBinary l (Array.zeroCreate (FTList.length l)) 0
+        | _ -> None
+
+    let inline (|Binary|_|) v = 
+        tryBinary v
+
+    let toBinary v =
+        match v with
+        | Binary arr -> arr
+        | _ -> invalidArg (nameof v) "value is not a binary"
+
 

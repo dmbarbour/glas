@@ -6,6 +6,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Compile Include="HashMap.fs" /-->
     <Compile Include="Bits.fs" />
     <Compile Include="FTList.fs" />
     <Compile Include="Value.fs" />
