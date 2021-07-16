@@ -87,6 +87,25 @@ let tests =
             | Bits.Nat64 _ -> failtest "match oversized list"
             | _ -> ()
 
+        testCase "bits to bigint to bits" <| fun () ->
+            Expect.equal (Bits.empty) (Bits.ofI 0I) "zero bits"
+            for x in 1 .. 400 do
+                let b = Bits.ofList (true::randomList (x - 1)) 
+                let i = Bits.toI b
+                let b' = Bits.ofI i
+                Expect.equal b b' "equal round trip conversion"
+
+        testCase "bigint to bits to bigint" <| fun () ->
+            let rng = System.Random()
+            for sz in 1 .. 50 do
+                let arr = Array.zeroCreate (1 + sz)
+                for ix in 1 .. sz do
+                    arr.[ix - 1] <- byte (rng.Next())
+                let i = bigint(arr)
+                let b = Bits.ofI i
+                let i' = Bits.toI b
+                Expect.equal i i' "equal round trip conversion"
+
         testCase "list length" <| fun () ->
             for n in 0 .. 256 do
                 let l = randomList n

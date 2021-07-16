@@ -214,24 +214,28 @@ module Program =
             | Bits b -> Map.tryFind b _opMap
             | _ -> None
 
-        // single-step pattern maching; returns list of component vals to parse
-        let parseShallow (v : Value) : (Value list * K) option =
+        /// Returns a list of component values to parse into programs, and a
+        /// continuation function to combine the component programs. Separates
+        /// parse logic from cache and recursion logic.
+        let parseShallow (v : Value) : (struct(Value list * K)) option =
             match v with
-            | ParseOp op -> Some ([], fun _ -> Op op)
-            | Variant "dip" vDip -> Some ([vDip], List.head >> Dip)
-            | Variant "data" vData -> Some ([], fun _ -> Data vData)
-            | Variant "seq" (FTList vs) -> Some (FTList.toList vs, Seq)
-            | Variant "cond" (Record ["try";"then";"else"] ([Some vTry; Some vThen; Some vElse], U)) -> 
-                Some ([vTry; vThen; vElse], fun ps -> Cond (Try=ps.[0], Then=ps.[1], Else=ps.[2]))
-            | Variant "loop" (Record ["while"; "do"] ([Some vWhile; Some vDo], U)) ->
-                Some ([vWhile; vDo], fun ps -> Loop (While=ps.[0], Do=ps.[1]))
-            | Variant "env" (Record ["do"; "with"] ([Some vDo; Some vWith], U)) ->
-                Some ([vDo; vWith], fun ps -> Env (Do=ps.[0], With=ps.[1]))
-            | Variant "prog" (Record ["do"] ([Some vDo], vNote)) ->
-                Some ([vDo], fun ps -> Prog (Do = ps.[0], Note = vNote))
-            | Variant "note" vNote -> Some ([], fun _ -> Note vNote)
+            | ParseOp op -> Some struct([], fun _ -> Op op)
+            | Variant "dip" vDip -> Some struct([vDip], List.head >> Dip)
+            | Variant "data" vData -> Some struct([], fun _ -> Data vData)
+            | Variant "seq" (FTList vs) -> Some struct(FTList.toList vs, Seq)
+            | Variant "cond" (FullRec ["try";"then";"else"] (vs, U)) -> 
+                Some struct(vs, fun ps -> Cond (Try=ps.[0], Then=ps.[1], Else=ps.[2]))
+            | Variant "loop" (FullRec ["while"; "do"] (vs, U)) ->
+                Some struct(vs, fun ps -> Loop (While=ps.[0], Do=ps.[1]))
+            | Variant "env" (FullRec ["do"; "with"] (vs, U)) ->
+                Some struct(vs, fun ps -> Env (Do=ps.[0], With=ps.[1]))
+            | Variant "prog" (FullRec ["do"] (vs, vNote)) ->
+                Some struct(vs, fun ps -> Prog (Do = ps.[0], Note = vNote))
+            | Variant "note" vNote -> Some struct([], fun _ -> Note vNote)
             | _ -> None // failed parse
 
+        /// A simple parse function with cache support. 
+        /// (Non-struct output type to work with List.mapFold)
         let rec parse (c0:C) (v:Value) : ((Program option) * C) =
             let fromCache = Map.tryFind v c0
             if Option.isSome fromCache then (fromCache, c0) else
@@ -243,11 +247,138 @@ module Program =
                 let pParsed = k (List.map Option.get psOpts)
                 (Some pParsed, Map.add v pParsed c')
 
+        // TODO: Write parser function for diagnosis of parse errors.
+        // This is relatively low priority compared to similar for g0.
+
+    /// Attempt to parse a value into a program.
     let tryParse (v : Value) : Program option =
         let (pParsed, _) = Parser.parse (Map.empty) v
         pParsed
 
+    /// Use program parser with F# pattern matching.
     let inline (|Program|_|) v = 
         tryParse v
 
-    // TODO: simple interpreter
+    /// Utilities to support bitstring arithmetic. 
+    /// Glas has some unusual behavior for overflow.
+    /// Currently converting through bigint. 
+    module Arithmetic =
+
+        let private splitWidths w1 w2 b = 
+            let wb = Bits.length b
+            assert ((w1 + w2) >= wb)
+            if (w1 >= wb) then
+                let bw1 = Bits.addZeroesPrefix (w1 - wb) b
+                let bw2 = Bits.addZeroesPrefix w2 (Bits.empty)
+                struct(bw1, bw2)
+            else
+                let wc = wb - w1
+                let bw1 = Bits.skip wc b
+                let bw2 = Bits.addZeroesPrefix (w2 - wc) (Bits.take wc b)
+                struct(bw1, bw2)
+
+        /// N1 N2 -- SUM CARRY
+        /// SUM preserves bit-width of N1
+        /// CARRY preserves bit-width of N2
+        let add (n1:Bits) (n2:Bits) : struct(Bits * Bits) =
+            let carrySum = Bits.ofI (Bits.toI n1 + Bits.toI n2)
+            splitWidths (Bits.length n1) (Bits.length n2) carrySum
+
+        /// N1 N2 -- PROD OVERFLOW
+        /// PROD preserves bit-width of N1
+        /// OVERFLOW preserves bit-width of N2
+        let mul (n1:Bits) (n2:Bits) : struct(Bits * Bits) =
+            let overflowProd = Bits.ofI (Bits.toI n1 * Bits.toI n2)
+            splitWidths (Bits.length n1) (Bits.length n2) overflowProd
+
+        /// N1 N2 -- DIFF | FAILURE.  
+        /// DIFF is (N1 - N2), preserving bit-width of N1.
+        /// FAILURE in case DIFF would be negative.
+        let sub (n1:Bits) (n2:Bits) : Bits option =
+            let iDiff = Bits.toI n1 - Bits.toI n2
+            if (iDiff.Sign < 0) then None else
+            let diff = Bits.ofI iDiff
+            let wDiff = Bits.length diff
+            let wN1 = Bits.length n1
+            assert (wN1 >= wDiff)
+            Some (Bits.addZeroesPrefix (wN1 - wDiff) diff)
+
+        /// DIVIDEND DIVISOR -- QUOTIENT REMAINDER | FAILURE
+        /// QUOTIENT preserves bit-width of DIVIDEND
+        /// REMAINDER preserves bit-width of DIVISOR
+        /// FAILURE in case of zero divisor
+        let div (dividend:Bits) (divisor:Bits) : struct(Bits * Bits) option =
+            let iDivisor = Bits.toI divisor
+            if(0 = iDivisor.Sign) then None else
+            let iDividend = Bits.toI dividend
+            let mutable iRemainder = Unchecked.defaultof<bigint> // assigned byref
+            let iQuotient = bigint.DivRem(iDividend, iDivisor, &iRemainder)
+            let quotient = Bits.ofI iQuotient
+            let remainder = Bits.ofI iRemainder
+            let wDividend = Bits.length dividend
+            let wDivisor = Bits.length divisor
+            let wQuotient = Bits.length quotient 
+            let wRemainder = Bits.length remainder
+            assert((wDividend >= wQuotient) && (wDivisor >= wRemainder))
+            let quotient' = Bits.addZeroesPrefix (wDividend - wQuotient) quotient
+            let remainder' = Bits.addZeroesPrefix (wDivisor - wRemainder) remainder
+            Some struct(quotient', remainder')
+
+    (*
+    module Interpreter =
+        /// Defines a simplistic interpreter for Glas programs.
+        /// Performance will be awful. Hopefully easy to verify, tho.
+
+        open Arithmetic
+        /// 
+
+        [<Struct>]
+        type RTE = 
+            { EffStack : Value list
+            ; DataStack : Value list 
+            } 
+
+        type Eff = RTE -> RTE option
+
+        let interpretOp (op:SymOp) (eff:Eff) (env:RTE) : RTE option =
+            match op with
+            | Copy ->
+            | Drop ->
+            | Swap ->
+            | Eq ->
+            | Fail ->
+            | Eff ->
+            | Get ->
+            | Put ->
+            | Del ->
+            | Pushl ->
+            | Popl ->
+            | Pushr ->
+            | Popr ->
+            | Join ->
+            | Split ->
+            | Len ->
+            | BJoin 
+            | BSplit 
+            | BLen 
+            | BNeg 
+            | BMax 
+            | BMin 
+            | BEq
+            | Add 
+            | Mul 
+            | Sub 
+            | Div
+
+
+        /// A reference interpreter function.
+        let rec interpret (p:Program) (eff:Eff) (env:RTE) : RTE option =
+            match p with
+            | Op op ->
+ 
+
+
+    // TODO: a compiler, of finally tagless interpreter that JIT can optimize easily.
+    //  ideally, also should eliminate runtime data plumbing, e.g. alloc refs instead.
+
+    *)

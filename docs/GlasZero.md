@@ -40,7 +40,7 @@ The g0 program syntax has built-in support for numbers, symbols, and strings.
         'word                   0x776f726400    (symbols for every valid word)
         "hello"                 (list of ascii bytes; forbids C0, DEL, and '"')
 
-It is feasible to develop a series of words such that `23 u8` is equivalent to `0x17`. Strings do not have escape characters but can similarly be post-processed by a subsequent word. There is currently no support for embedded records or lists, but those may be constructed programmatically via put and pushr.
+It is feasible to develop a series of words such that `23 u8` is equivalent to `0x17`. The g0 language compiler may evaluate such data statically. Strings do not have escape characters but can similarly be post-processed by a subsequent word. There is currently no support for embedded records or lists, but those may be constructed programmatically via put and pushr.
 
 ## Words
 
@@ -48,17 +48,17 @@ A word in g0 must match regex `[a-z]+('-'[a-z]+)*(0-9)*`.
 
 Within a program, a word is immediately compiled by replacing it with the definition. This results in a form of static scoping and linking. If there is no definition for a word, a warning should be logged and the word is replaced by 'fail' operator.
 
-## Default Definitions
-
-By default, a g0 program defines a word for each symbolic operator: copy, drop, swap, eq, fail, eff, get, put, del, pushl, popl, pushr, popr, join, split, len, bjoin, bsplit, blen, bneg, bmax, bmin, beq, add, mul, sub, div. The default behavior of these words is to compile to the eponymous operator. It is possible to shadow these words with an import or a new definition, but a warning may be logged.
-
 ## Keywords
 
-The g0 syntax has a few keywords to cover the structured operators in Glas programs. These words cannot be redefined.
+The g0 syntax has a large number of keywords: every symbol used in the definition of Glas program model (e.g. swap, dip, do, loop, seq) is a keyword even if unused by g0. We also reserve toplevel words: import, open, from, as, prog. Words for symbolic operators such as 'swap' will compile directly to the associated operator. Keywords cannot be defined as programs, and cannot be imported.
+
+Structured programs use the following formats:
 
         dip { Program }                                         (dip)
         while { Program } do { Program }                        (loop)
         try { Program } then { Program } else { Program }       (cond)
         with { Program } do { Program }                         (env)
 
-Sequences are implicit, e.g. `{ foo bar 42 baz }` becomes a sequence of four operations (modulo optimizations), and `{}` becomes the empty sequence, a NOP. 
+The g0 syntax doesn't support partial structure such as dropping the 'else' branch of a conditional.
+
+*Note:* If an 'open' module attempts to import a keyword, a warning should be logged.

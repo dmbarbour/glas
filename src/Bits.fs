@@ -278,52 +278,100 @@ module Bits =
     let inline private matchLen len b =
         matchHdLen (len % 64) (b.Head) && matchListLen (len / 64) (b.Tail)
 
+    let toByte (b : Bits) : byte =
+        let addBit n e = (n <<< 1) ||| (if e then 1uy else 0uy)
+        fold addBit 0uy b
+
     let (|Byte|_|) (b : Bits) : uint8 option =
         if not (matchLen 8 b) then None else
-        let addBit n e = (n <<< 1) ||| (if e then 1uy else 0uy)
-        fold addBit 0uy b |> Some
+        Some (toByte b)
 
     let ofU16 (n : uint16) : Bits =
         let inline cb ix acc = consByte (uint8 (n >>> (8 * ix))) acc
         empty |> cb 0 |> cb 1
+
+    let toU16 b =
+        let addBit n e = (n <<< 1) ||| (if e then 1us else 0us)
+        fold addBit 0us b
     
     let (|U16|_|) (b : Bits) : uint16 option =
         if not (matchLen 16 b) then None else
-        let addBit n e = (n <<< 1) ||| (if e then 1us else 0us)
-        fold addBit 0us b |> Some
+        Some (toU16 b)
 
     let ofU32 (n : uint32) : Bits =
         let inline cb ix acc = consByte (uint8 (n >>> (8 * ix))) acc
         empty |> cb 0 |> cb 1 |> cb 2 |> cb 3
 
+    let toU32 b = 
+        let addBit n e = (n <<< 1) ||| (if e then 1ul else 0ul)
+        fold addBit 0ul b 
+
     let (|U32|_|) (b : Bits) : uint32 option =
         if not (matchLen 32 b) then None else
-        let addBit n e = (n <<< 1) ||| (if e then 1ul else 0ul)
-        fold addBit 0ul b |> Some
+        Some (toU32 b)
 
     let ofU64 (n : uint64) : Bits =
         let inline cb ix acc = consByte (uint8 (n >>> (8 * ix))) acc
         empty |> cb 0 |> cb 1 |> cb 2 |> cb 3 |> cb 4 |> cb 5 |> cb 6 |> cb 7
 
+    let toU64 b = 
+        let addBit n e = (n <<< 1) ||| (if e then 1UL else 0UL)
+        fold addBit 0UL b
+
     let (|U64|_|) (b : Bits) : uint64 option =
         if not (matchLen 64 b) then None else
-        let addBit n e = (n <<< 1) ||| (if e then 1UL else 0UL)
-        fold addBit 0UL b |> Some
+        Some (toU64 b)
 
-    let rec private _trim_zero_prefix b =
-        if (isEmpty b) || (head b) then b else
-        _trim_zero_prefix (tail b)
+    /// drop all zeroes in the bitstring prefix.
+    let rec dropZeroesPrefix b =
+        if (isEmpty b || head b) then b else
+        dropZeroesPrefix (tail b)
 
     /// min-width representation of number
-    let ofNat64 n =
-        _trim_zero_prefix (ofU64 n) 
+    let inline ofNat64 n =
+        dropZeroesPrefix (ofU64 n) 
+
+    let inline toNat64 b = 
+        toU64 b
 
     /// convert up to 64 bits to a number
     let (|Nat64|_|) b =
         let len_ok = (List.isEmpty b.Tail) || ((1UL = b.Head) && (matchListLen 1 b.Tail))
         if not len_ok then None else
-        let addBit n e = (n <<< 1) ||| (if e then 1UL else 0UL)
-        fold addBit 0UL b |> Some
+        Some (toNat64 b)
+
+    /// add a count of zeroes to the bitstring prefix.
+    let rec addZeroesPrefix ct b =
+        if ct < 1 then b else
+        addZeroesPrefix (ct - 1) (cons false b)
+
+    /// convert bits to a bigint.
+    let toI (b0 : Bits) : bigint =
+        let bitLen0 = length b0
+        // use system-defined conversion for smaller numbers.
+        if 64 >= bitLen0 then bigint(toU64 b0) else
+        let byteLen = (7 + bitLen0) / 8
+        let alignmentBits = ((8 * byteLen) - bitLen0)
+        assert ((0 <= alignmentBits) && (alignmentBits < 8))
+        // extra zero at end of array forces a positive bigint 
+        let arr = Array.zeroCreate (1 + byteLen) 
+        let mutable b = addZeroesPrefix alignmentBits b0 
+        let mutable ix = byteLen
+        // little-endian (least significant byte to arr.[0])
+        while (ix > 0) do
+            ix <- ix - 1
+            arr.[ix] <- toByte (take 8 b)
+            b <- (skip 8 b)
+        bigint(arr) 
+
+    /// bigint view for pattern matching
+    let inline (|BigInt|) b =
+        BigInt (toI b)
+
+    /// convert non-negative bigint to min-width bits. 
+    let ofI (i : bigint) : Bits = 
+        if (i.Sign < 0) then invalidArg (nameof i) "require non-negative bigint" else
+        i.ToByteArray() |> Array.fold (fun b y -> consByte y b) (empty) |> dropZeroesPrefix
 
     /// lexicographic comparison
     let rec cmp x y =

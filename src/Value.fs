@@ -142,7 +142,6 @@ module Value =
     let inline private tryPairSpine v =
         if Bits.isEmpty v.Stem then v.Spine else None
 
-
     let pair a b =
         match tryPairSpine b with 
         | Some struct(l,s,e) -> 
@@ -354,11 +353,18 @@ module Value =
         let addElem r k v = record_insert (label k) v r
         List.fold2 addElem unit ks vs
 
+    /// Record with optional keys.
     let (|Record|) ks r =
         let lks = List.map label ks
         let vs = List.map (fun k -> record_lookup k r) lks
         let r' = List.fold (fun s k -> record_delete k s) r lks
         (vs,r')
+
+    /// Record containing all listed keys.
+    let (|FullRec|_|) ks r =
+        let (vs, r') = (|Record|) ks r
+        if List.exists Option.isNone vs then None else
+        Some (List.map Option.get vs, r')
 
     // edge is `01` for left, `10` for right. accum in reverse order
     let inline private _key_edge acc e =
