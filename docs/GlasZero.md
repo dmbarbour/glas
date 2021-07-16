@@ -11,8 +11,8 @@ The top-level of a g0 program consists of namespace management, i.e. imports and
         open foo
         from bar import baz, word as bar-word
 
-        # this is a line comment
-        prog word { Program }
+        ; this is a line comment
+        prog word [ Program ]
 
 A single 'open' is permitted to inherit words defined by a prior module. This may be followed by multiple imports, then by multiple definitions. Shadowing any explicitly imported or defined word will result in a warning.
 
@@ -50,15 +50,15 @@ Within a program, a word is immediately compiled by replacing it with the defini
 
 ## Keywords
 
-The g0 syntax has a large number of keywords: every symbol used in the definition of Glas program model (e.g. swap, dip, do, loop, seq) is a keyword even if unused by g0. We also reserve toplevel words: import, open, from, as, prog. Words for symbolic operators such as 'swap' will compile directly to the associated operator. Keywords cannot be defined as programs, and cannot be imported.
+The g0 syntax has keywords for every symbol in Glas programs (e.g. swap, dip, do, loop, seq), plus a few for namespace management (e.g. import, open, from, as). Explicitly attempting to define keywords will result in a parse failure. If an 'open' module's record would define keywords, a warning should be logged that those definitions are ignored.
 
-Structured programs use the following formats:
+For the basic symbolic operators like 'swap' or 'add', keywords compile to the program operator of the same name. Program structure uses a few specialized patterns:
 
-        dip { Program }                                         (dip)
-        while { Program } do { Program }                        (loop)
-        try { Program } then { Program } else { Program }       (cond)
-        with { Program } do { Program }                         (env)
+        dip [ Program ]                                         (dip)
+        while [ Program ] do [ Program ]                        (loop)
+        try [ Program ] then [ Program ] else [ Program ]       (cond)
+        with [ Program ] do [ Program ]                         (env)
 
-The g0 syntax doesn't support partial structure such as dropping the 'else' branch of a conditional.
+## Extensions
 
-*Note:* If an 'open' module attempts to import a keyword, a warning should be logged.
+A bootstrap syntax should not be casually extended with new features because doing so will inevitably leak into the bootstrap program, which complicates a fresh bootstrap from other languages. However, it is feasible to develop new language modules that preserve a similar Forth-like style while adding a variety of features suitable for staged computing, metaprogramming, static analysis, acceleration, etc..

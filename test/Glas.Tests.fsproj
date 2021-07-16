@@ -10,6 +10,7 @@
     <Compile Include="TestBits.fs" />
     <Compile Include="TestFTList.fs" />
     <Compile Include="TestVal.fs" />
+    <Compile Include="TestProg.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
 
