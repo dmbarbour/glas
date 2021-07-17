@@ -21,6 +21,24 @@ let doParse = Program.tryParse >> Option.get
 let opArray = Array.ofList Program.op_list
 let randomOp () = opArray.[rng.Next() % opArray.Length]
 
+// random program suitable for parse and print tests, but 
+// almost certainly invalid for interpretation.
+let rec randomProg d =
+    if (d < 1) then Op (randomOp ()) else
+    match rng.Next() % 10 with
+    | 0 -> Dip (randomProg (d - 1))
+    | 1 -> Data (Program.print (randomProg (d-1)))
+    | 2 -> 
+        let seqLen = randomRange 0 10
+        Seq [ for _ in 1 .. seqLen do yield randomProg (d - 1)]
+    | 3 -> Cond (Try=randomProg (d-1), Then=randomProg (d-1), Else=randomProg (d-1))
+    | 4 -> Loop (While=randomProg (d-1), Do=randomProg (d-1))
+    | 5 -> Env (With=randomProg (d-1), Do=randomProg (d-1))
+    | 6 -> Prog (Do=randomProg (d-1), Note=(Program.print <| randomProg (d-1)))
+    | 7 -> Note (Program.print (randomProg (d-1)))
+    | _ -> randomProg (d-1)
+
+
 // random programs probably have terrible arity semantics
 // so this is only useful for testing parse and print.
 //let rec randomProg d =
@@ -31,7 +49,7 @@ let randomOp () = opArray.[rng.Next() % opArray.Length]
 // Some ideas:
 //  fibonacci function
 //  greatest common denominator
-//  regex parsers
+//  a g0 parser...
 
 
 
@@ -45,6 +63,15 @@ let test_ppp =
                 let printOp = Program.print (Op op) 
                 Expect.equal opSym printOp "equal print"
                 Expect.equal (Op op) (doParse opSym) "equal parse"
+
+        testCase "print then parse" <| fun () ->
+            for _ in 1 .. 1000 do
+                let p0 = randomProg 6
+                let vp0 = Program.print p0
+                let p1 = doParse vp0
+                //printf "PROGRAM\n%A\n\n" p1
+                Expect.equal p1 p0 "equal programs after print and parse"
+
     ]
 
 [<Tests>]
@@ -58,10 +85,14 @@ let test_arith =
                 let n1 = randomBits w1
                 let n2 = randomBits w2
                 let struct(sum, carry) = Program.Arithmetic.add n1 n2
+                let struct(sum2, carry2) = Program.Arithmetic.add n2 n1
                 //printf "%A + %A => sum %A carry %A\n" (Bits.toI n1) (Bits.toI n2) (Bits.toI sum) (Bits.toI carry)
                 Expect.equal w1 (Bits.length sum) "preserve field size (sum)"
                 Expect.equal w2 (Bits.length carry) "preserve field size (carry)"
+                Expect.equal w2 (Bits.length sum2) "preserve field size (sum2)"
+                Expect.equal w1 (Bits.length carry2) "preserve field size (carry2)"
                 Expect.equal (Bits.toI (Bits.append carry sum)) (Bits.toI n1 + Bits.toI n2) "equal sum"
+                Expect.equal (Bits.append carry sum) (Bits.append carry2 sum2) "equal joins"
 
         testCase "bitstring multiplication" <| fun () ->
             for x in 1 .. 1000 do
@@ -70,10 +101,14 @@ let test_arith =
                 let n1 = randomBits w1
                 let n2 = randomBits w2
                 let struct(prod, overflow) = Program.Arithmetic.mul n1 n2
+                let struct(prod2, overflow2) = Program.Arithmetic.mul n2 n1
                 //printf "%A * %A => prod %A overflow %A\n" (Bits.toI n1) (Bits.toI n2) (Bits.toI prod) (Bits.toI overflow)
                 Expect.equal w1 (Bits.length prod) "preserve field size (prod)"
                 Expect.equal w2 (Bits.length overflow) "preserve field size (overflow)"
+                Expect.equal w2 (Bits.length prod2) "preserves field size (prod2)"
+                Expect.equal w1 (Bits.length overflow2) "Preserves field size (overflow2)"
                 Expect.equal (Bits.toI (Bits.append overflow prod)) (Bits.toI n1 * Bits.toI n2) "equal product"
+                Expect.equal (Bits.append overflow prod) (Bits.append overflow2 prod2) "equal joins"
 
         testCase "bitstring subtraction" <| fun () ->
             for x in 1 .. 1000 do

@@ -324,13 +324,14 @@ module Program =
             let remainder' = Bits.addZeroesPrefix (wDivisor - wRemainder) remainder
             Some struct(quotient', remainder')
 
-    (*
+    /// A minimal interpreter for the initial Glas program model.
+    /// This trades performance for simplicity.
     module Interpreter =
-        /// Defines a simplistic interpreter for Glas programs.
-        /// Performance will be awful. Hopefully easy to verify, tho.
 
-        open Arithmetic
-        /// 
+        /// At any given time step, we have a data stack, an effect handler stack, 
+        /// and a program continuation. The program continuation can include the 
+        /// 'dip' stack behavior. We also need to restore states for conditional
+        /// behavior upon failure.
 
         [<Struct>]
         type RTE = 
@@ -340,6 +341,7 @@ module Program =
 
         type Eff = RTE -> RTE option
 
+(*
         let interpretOp (op:SymOp) (eff:Eff) (env:RTE) : RTE option =
             match op with
             | Copy ->
@@ -376,9 +378,7 @@ module Program =
             match p with
             | Op op ->
  
-
+*)
 
     // TODO: a compiler, of finally tagless interpreter that JIT can optimize easily.
     //  ideally, also should eliminate runtime data plumbing, e.g. alloc refs instead.
-
-    *)
