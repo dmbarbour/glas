@@ -15,7 +15,7 @@ namespace Glas
 module FT = 
     /// to compute tree sizes across different element types.
     type ISized =
-        abstract member Size : int
+        abstract member Size : uint64
 
     let inline isize (v : 'V when 'V :> ISized) = 
         (v :> ISized).Size
@@ -26,7 +26,7 @@ module FT =
         val V: 'V
         new(v) = { V = v }
         interface ISized with
-            member _.Size = 1
+            member _.Size = 1UL
     
     type D<'V> =
         | D1 of 'V
@@ -36,7 +36,7 @@ module FT =
 
     module D =
 
-        let size (d : D<'V> when 'V :> ISized) : int =
+        let size (d : D<'V> when 'V :> ISized) : uint64 =
             match d with
             | D1 (d1) -> isize d1
             | D2 (d1,d2) -> isize d1 + isize d2
@@ -71,8 +71,8 @@ module FT =
                             | _ -> invalidArg (nameof l0) "too many elements for D"
         
     type B<'V> =
-        | B2 of size:int * b1:'V * b2:'V
-        | B3 of size:int * b1:'V * b2:'V * b3:'V
+        | B2 of size:uint64 * b1:'V * b2:'V
+        | B3 of size:uint64 * b1:'V * b2:'V * b3:'V
         interface ISized with
             member b.Size =
                 match b with
@@ -115,11 +115,11 @@ module FT =
     type T<'V when 'V :> ISized> =
         | Empty
         | Single of 'V
-        | Many of size:int * prefix:D<'V> * finger:T<B<'V>> * suffix:D<'V>
+        | Many of size:uint64 * prefix:D<'V> * finger:T<B<'V>> * suffix:D<'V>
         interface ISized with
             member t.Size =
                 match t with
-                | Empty -> 0
+                | Empty -> 0UL
                 | Single v -> isize v
                 | Many (size=sz) -> sz
 
@@ -224,7 +224,7 @@ module FT =
         let inline private _splitList n l = 
             _splitListAcc n (List.empty) l
 
-        let rec private _splitAt<'V when 'V :> ISized> (n : int) (t : T<'V>) : struct (T<'V> * 'V * T<'V>) =
+        let rec private _splitAt<'V when 'V :> ISized> (n : uint64) (t : T<'V>) : struct (T<'V> * 'V * T<'V>) =
             assert(n < isize t) // invariant
             match t with
             | Single v -> struct(Empty, v, Empty)
@@ -270,7 +270,7 @@ module FT =
             | Empty -> failwith "inner split on empty tree; should be impossible"
 
         /// Split tree based on index. 
-        let splitAt<'V when 'V :> ISized> (n : int) (t : T<'V>) : struct(T<'V> * T<'V>) =
+        let splitAt<'V when 'V :> ISized> (n : uint64) (t : T<'V>) : struct(T<'V> * T<'V>) =
             // ensure n < isize t for internal _splitAt
             if (n >= isize t) then struct(t, Empty) else
             let struct(l, x, r) = _splitAt n t
@@ -288,9 +288,9 @@ module FT =
             let struct(nRem, x) = _elemAtListRem n l
             struct(n - nRem, x)
 
-        let rec private _elemAt<'V when 'V :> ISized> (n : int) (t : T<'V>) : struct(int * 'V) =
+        let rec private _elemAt<'V when 'V :> ISized> (n : uint64) (t : T<'V>) : struct(uint64 * 'V) =
             match t with
-            | Single v -> struct(0,v)
+            | Single v -> struct(0UL,v)
             | Many (prefix=p; finger=f; suffix=s) ->
                 let pz = D.size p
                 let pfz = pz + isize f
@@ -307,8 +307,8 @@ module FT =
             | Empty -> failwith "inner elemAt on empty tree; should be impossible"
 
 
-        let elemAt<'V when 'V :> ISized> (n : int) (t : T<'V>) : 'V =
-            if (n < 0) || (n >= isize t) then invalidArg (nameof n) "index out of range" else
+        let elemAt<'V when 'V :> ISized> (n : uint64) (t : T<'V>) : 'V =
+            if (n >= isize t) then invalidArg (nameof n) "index out of range" else
             let struct(_, v) = _elemAt n t
             v
 
@@ -429,16 +429,18 @@ module FTList =
     let toArray (ftl : FTList<'a>) : 'a array =
         // we can directly allocate the array to a known size.
         let sz = length ftl
-        let arr = Array.zeroCreate sz
+        if (sz > uint64 System.Int32.MaxValue) then invalidArg (nameof ftl) "list too large" else
+        let arr = Array.zeroCreate (int sz)
         let mutable ix = 0
         let mutable t = toT ftl
-        while (ix < sz) do
+        while (ix < arr.Length) do
             match T.viewL t with
             | Some struct(e, t') ->
                 Array.set arr ix (e.V)
                 ix <- ix + 1
                 t <- t'
             | None ->  
+                // this shouldn't happen...
                 failwith "tree size or view is invalid"
         arr
 

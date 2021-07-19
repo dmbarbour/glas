@@ -97,7 +97,7 @@ type Value =
             | (r::rs') -> Value.Hash rs' h' r
             | [] -> h'
         | Some struct(l, s, e) ->
-            let h' = (hash v.Stem) |> Value.HMix h |> Value.HMix (2 + FTList.length s)
+            let h' = (hash v.Stem) |> Value.HMix h |> Value.HMix 1
             let rs' = (Value.OfSE s e)::rs
             Value.Hash rs' h' l
 
@@ -484,7 +484,11 @@ module Value =
 
     let tryBinary (v : Value) : uint8 array option =
         match v with 
-        | FTList l -> _tryBinary l (Array.zeroCreate (FTList.length l)) 0
+        | FTList l -> 
+            let len = FTList.length l
+            if len > uint64 System.Int32.MaxValue then None else
+            let arr = Array.zeroCreate (int len) 
+            _tryBinary l arr 0
         | _ -> None
 
     let inline (|Binary|_|) v = 

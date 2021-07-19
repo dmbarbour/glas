@@ -148,12 +148,12 @@ A record may have many labels, sharing prefixes. Non-branching path segments can
 
 A linked list has simple structure, but terrible performance for any use-case except a stack. To solve this, Glas provides a few dedicated operators for lists. This enables the runtime or compiler to transparently substitute a more efficient representation such as a [finger tree](https://en.wikipedia.org/wiki/Finger_tree).
 
-* **pushl** (V L -- V:L) - given value and list, add value to left (head) of list
-* **popl** (V:L -- V L) - given a non-empty list, split into head and tail. 
+* **pushl** (L V -- V:L) - given value and list, add value to left (head) of list
+* **popl** (V:L -- L V) - given a non-empty list, split into head and tail. 
 * **pushr** (L V -- L:V) - given value and list, add value to right of list
 * **popr** (L:V -- L V) - given non-empty list, split into last element and everything else
 * **join** (L1 L2 -- L1+L2) - appends list at top of data stack to the list below it
-* **split** (Lm+Ln |Lm| -- Lm Ln) - given number N and list of at least N elements, produce a pair of sub-lists such that join produces the original list, and the head portion has exactly N elements.
+* **split** (Lm+Ln |Lm| -- Lm Ln) - given number and list of at least that many elements, produce a pair of sub-lists such that join produces the original list, and the head portion has requested number of elements. Fails if this is not possible.
 * **len** (L -- |L|) - given list, return a number that represents length of list. Uses smallest encoding of number (i.e. no zeroes prefix).
 
 These operators assume a simplistic, Lisp-like representation of lists: `type List = () | (Value * List)`. That is, each list node has either no edges or two edges. In a non-empty list node, edge 0 refers to the head value and edge 1 to the remaining list.

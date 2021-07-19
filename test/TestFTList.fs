@@ -19,13 +19,13 @@ let randomList m n =
 // this variation is intended to ensure an irregular branch structure
 let randomFTList m n =
     let mutable ftl = FTList.empty
-    while (FTList.length ftl < n) do
+    while (int (FTList.length ftl) < n) do
         ftl <- FTList.append ftl (FTList.ofList (randomList 1 20))
         ftl <- FTList.append (FTList.ofList (randomList 1 20)) ftl
-        let shuffle = randomRange 0 (FTList.length ftl)
-        let (l,r) = FTList.splitAt shuffle ftl
+        let shuffle = randomRange 0 (int (FTList.length ftl))
+        let (l,r) = FTList.splitAt (uint64 shuffle) ftl
         ftl <- FTList.append r l
-    FTList.take (randomRange m n) ftl
+    FTList.take (uint64 (randomRange m n)) ftl
     
 
 [<Tests>]
@@ -52,12 +52,12 @@ let tests =
 
         testCase "length" <| fun () ->
             let l = List.map (fun i -> randomList i (2 * i)) [0; 5; 10; 20; 100; 200; 400; 800; 1600]
-            let lz = List.map (fun x -> List.length x) l
-            let ftlz = List.map (fun x -> FTList.length (FTList.ofList x)) l
+            let lz = List.map (List.length) l
+            let ftlz = List.map (FTList.ofList >> FTList.length >> int) l
             Expect.equal ftlz lz "equal list lengths"
 
             let f = randomFTList 2000 4000
-            Expect.equal (List.length (FTList.toList f)) (FTList.length f) "equal lengths irregular"
+            Expect.equal (List.length (FTList.toList f)) (int (FTList.length f)) "equal lengths irregular"
 
         testCase "split" <| fun () ->
             let len = 1000
@@ -66,7 +66,7 @@ let tests =
             for _ in 1 .. 100 do
                 let xz = randomRange 0 len 
                 let (ll, lr) = List.splitAt xz l
-                let (fl, fr) = FTList.splitAt xz f
+                let (fl, fr) = FTList.splitAt (uint64 xz) f
                 Expect.equal (FTList.toList fl) ll "left equal"
                 Expect.equal (FTList.toList fr) lr  "right equal"
 
@@ -100,7 +100,7 @@ let tests =
         testCase "compare" <| fun () ->
             let l = randomList 100 200
             let f1 = FTList.ofList l
-            let f2 = FTList.map (fun x -> x) f1
+            let f2 = FTList.map id f1
             let fx1 = FTList.ofList [-1]
             let fx2 = FTList.ofList [0]
             Expect.equal (FTList.compare f1 f2) 0 "eq compare"
@@ -113,7 +113,7 @@ let tests =
         testCase "index" <| fun () ->
             let fl = randomFTList 1000 2000
             let a = FTList.toArray fl
-            for ix in 0 .. (FTList.length fl - 1) do
-                Expect.equal (FTList.item ix fl) (Array.item ix a) "equal list item"
+            for ix in 0 .. (int (FTList.length fl) - 1) do
+                Expect.equal (FTList.item (uint64 ix) fl) (Array.item ix a) "equal list item"
 
     ]
