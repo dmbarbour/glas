@@ -508,19 +508,19 @@ module Program =
                 | None -> None
             | [] -> Some e
         and cond pTry pThen pElse e =
-            use tx = withTX (e.IO)
+            use tx = withTX (e.IO) // backtrack effects in pTry
             match interpret pTry e with
             | Some e' -> tx.Commit(); interpret pThen e'
             | None -> tx.Abort(); interpret pElse e
         and loop pWhile pDo e = 
-            use tx = withTX (e.IO)
+            use tx = withTX (e.IO) // backtrack effects in pWhile
             match interpret pWhile e with
             | Some e' -> 
                 tx.Commit(); 
                 match interpret pDo e' with
                 | Some ef -> loop pWhile pDo ef
-                | None -> None
-            | None -> tx.Abort(); Some e 
+                | None -> None // failure in main loop body is elevated.
+            | None -> tx.Abort(); Some e  // failure in loop condition ends loop.
         and env pWith pDo e = 
             match e.DS with
             | (v::ds) ->
