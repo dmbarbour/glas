@@ -115,7 +115,7 @@ let test_ops =
                     Expect.equal (eSwap.DS) [v2;v1] "swapped value"
 
             testCase "eq" <| fun () ->
-                for _ in 1 .. 1000 do
+                for _ in 1 .. 100 do
                     let v1 = randomBytes 6
                     let v2 = randomBytes 7
                     failEval (Op Eq) (dataStack [v1;v2]) 
@@ -181,10 +181,20 @@ let test_ops =
                         | _ -> failtest "popl has unexpected result structure"
                     | None -> Expect.equal l1 Value.unit "popl from empty list"
 
+                    // joins
                     let l12 = Value.ofFTList (FTList.append (Value.toFTList l1) (Value.toFTList l2)) 
                     let eJoin = doEval (Op Join) (dataStack [l2;l1]) 
                     Expect.equal (eJoin.DS) [l12] "equal joins"
 
+                    // splits
+                    let wl1 = FTList.length (Value.toFTList l1)
+                    let eSplit = doEval (Op Split) (dataStack [Value.nat wl1; l12])
+                    Expect.equal (eSplit.DS) [l2;l1] "split list into components"
+
+                    // lengths
+                    let eLen = doEval (Op Len) (dataStack [l1]) 
+                    Expect.equal (eLen.DS) [Value.nat wl1] "length computations"
+ 
 
         // bitstring ops
         // arithmetic ops
