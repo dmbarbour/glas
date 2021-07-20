@@ -88,6 +88,15 @@ let test_ppp =
 let dataStack (ds : Value list) : Interpreter.RTE  = 
     { DS = ds; ES = List.empty; IO = Effects.noEffects }
 
+let doEval p e = 
+    match Interpreter.interpret p e with
+    | Some e' -> e'
+    | None -> failtestf "eval unsuccessful for program %A" p
+
+let failEval p e =
+    match Interpreter.interpret p e with
+    | None -> () // pass - expected failure
+    | Some _ -> failtestf "eval unexpectedly successful for program %A stack %A" p (e.DS)
 
 [<Tests>]
 let test_ops = 
@@ -98,31 +107,20 @@ let test_ops =
                     let v1 = randomBytes 6
                     let v2 = randomBytes 7
                     let e0 = dataStack [v1;v2]
-                    match Interpreter.interpret (Op Copy) e0 with
-                    | Some e' -> Expect.equal e'.DS [v1;v1;v2] "copied value"
-                    | None -> failtest "copy failed"
-
-                    match Interpreter.interpret (Op Drop) e0 with
-                    | Some e' -> Expect.equal (e'.DS) [v2] "dropped value"
-                    | None -> failtest "drop failed"
-
-                    match Interpreter.interpret (Op Swap) e0 with
-                    | Some e' -> Expect.equal (e'.DS) [v2;v1] "swapped value"
-                    | None -> failtest "swap failed"
-
+                    let eCopy = doEval (Op Copy) e0
+                    Expect.equal (eCopy.DS) [v1;v1;v2] "copied value"
+                    let eDrop = doEval (Op Drop) e0 
+                    Expect.equal (eDrop.DS) [v2] "dropped value"
+                    let eSwap = doEval (Op Swap) e0
+                    Expect.equal (eSwap.DS) [v2;v1] "swapped value"
 
             testCase "eq" <| fun () ->
-                for _ in 1 .. 10 do
+                for _ in 1 .. 1000 do
                     let v1 = randomBytes 6
                     let v2 = randomBytes 7
-
-                    match Interpreter.interpret (Op Eq) (dataStack [v1;v2]) with
-                    | None -> () // pass
-                    | Some _ -> failtest "eq succeeded incorrectly"
-
-                    match Interpreter.interpret (Op Eq) (dataStack [v1;v1;v2]) with
-                    | Some e' -> Expect.equal (e'.DS) [v1;v1;v2] "eq passed"
-                    | None -> failtest "eq failed incorrectly"
+                    failEval (Op Eq) (dataStack [v1;v2]) 
+                    let e' = doEval (Op Eq) (dataStack [v1;v1;v2])
+                    Expect.equal (e'.DS) [v1;v1;v2] "equal stacks"
 
             testCase "record ops" <| fun () ->
                 for _ in 1 .. 1000 do
@@ -134,33 +132,60 @@ let test_ops =
                     let rwo = Value.record_delete k r0
 
                     // Get from record.
-                    match Interpreter.interpret (Op Get) (dataStack [Value.ofBits k; rwk] ) with
-                    | Some e' -> Expect.equal e'.DS [v] "expected value get"
-                    | None -> failtest "did not get value"
-
-                    match Interpreter.interpret (Op Get) (dataStack [Value.ofBits k; rwo]) with
-                    | None -> () // pass
-                    | Some _ -> failtest "get succeeds on field not in record"
+                    failEval (Op Get) (dataStack [Value.ofBits k; rwo])
+                    let eGet = doEval (Op Get) (dataStack [Value.ofBits k; rwk])
+                    Expect.equal (eGet.DS) [v] "equal get"
 
                     // Put into record.
-                    match Interpreter.interpret (Op Put) (dataStack [Value.ofBits k; v; rwk]) with
-                    | Some e' -> Expect.equal (e'.DS) [rwk] "equal put"
-                    | None -> failtest "failed to put"
-
-                    match Interpreter.interpret (Op Put) (dataStack [Value.ofBits k; v; rwo]) with
-                    | Some e' -> Expect.equal (e'.DS) [rwk] "equal put"
-                    | None -> failtest "failed to put"
+                    let ePut1 = doEval (Op Put) (dataStack [Value.ofBits k; v; rwk])
+                    let ePut2 = doEval (Op Put) (dataStack [Value.ofBits k; v; rwo])
+                    Expect.equal (ePut1.DS) [rwk] "equal put with key"
+                    Expect.equal (ePut2.DS) [rwk] "equal put without key"
 
                     // Delete from record.
-                    match Interpreter.interpret (Op Del) (dataStack [Value.ofBits k; rwk]) with
-                    | Some e' -> Expect.equal (e'.DS) [rwo] "equal delete"
-                    | None -> failtest "failed to delete"
+                    let eDel1 = doEval (Op Del) (dataStack [Value.ofBits k; rwk])
+                    let eDel2 = doEval (Op Del) (dataStack [Value.ofBits k; rwo])
+                    Expect.equal (eDel1.DS) [rwo] "equal delete label"
+                    Expect.equal (eDel2.DS) [rwo] "equal delete missing label"
 
-                    match Interpreter.interpret (Op Del) (dataStack [Value.ofBits k; rwo]) with
-                    | Some e' -> Expect.equal (e'.DS) [rwo] "equal delete"
-                    | None -> failtest "failed to delete"
+            testCase "list ops" <| fun () ->
+                for _ in 1 .. 10 do
+                    let l1 = randomBytes (randomRange 0 30)
+                    let l2 = randomBytes (randomRange 0 30)
 
-        // list ops
+                    // push left
+                    let ePushl = doEval (Op Pushl) (dataStack [l2;l1])
+                    let lPushl = FTList.cons l2 (Value.toFTList l1)
+                    Expect.equal (ePushl.DS) [Value.ofFTList lPushl] "match pushl 1"
+
+                    // push right
+                    let ePushr = doEval (Op Pushr) (dataStack [l2;l1]) 
+                    let lPushr = FTList.snoc (Value.toFTList l1) l2
+                    Expect.equal (ePushr.DS) [Value.ofFTList lPushr] "match pushr"
+
+                    // pop left
+                    match Interpreter.interpret (Op Popl) (dataStack [l1]) with
+                    | Some e' -> 
+                        match l1 with
+                        | Value.FTList (FTList.ViewL (v,l')) ->
+                            Expect.equal (e'.DS) [v;Value.ofFTList l'] "match popl"
+                        | _ -> failtest "popl has unexpected result structure"
+                    | None -> Expect.equal l1 Value.unit "popl from empty list"
+
+                    // pop right
+                    match Interpreter.interpret (Op Popr) (dataStack [l1]) with 
+                    | Some e' -> 
+                        match l1 with
+                        | Value.FTList (FTList.ViewR (l',v)) ->
+                            Expect.equal (e'.DS) [v;Value.ofFTList l'] "match popr"
+                        | _ -> failtest "popl has unexpected result structure"
+                    | None -> Expect.equal l1 Value.unit "popl from empty list"
+
+                    let l12 = Value.ofFTList (FTList.append (Value.toFTList l1) (Value.toFTList l2)) 
+                    let eJoin = doEval (Op Join) (dataStack [l2;l1]) 
+                    Expect.equal (eJoin.DS) [l12] "equal joins"
+
+
         // bitstring ops
         // arithmetic ops
         // control ops

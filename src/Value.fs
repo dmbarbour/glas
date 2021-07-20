@@ -56,16 +56,17 @@ type Value =
 
     static member private Eq rs x y =
         if (x.Stem <> y.Stem) then false else
-        if LanguagePrimitives.PhysicalEquality x.Spine y.Spine then true else
-        match x.Spine, y.Spine with
-        | Some struct(x',sx,ex), Some struct(y',sy,ey) ->
-            let rs' = struct(Value.OfSE sx ex, Value.OfSE sy ey) :: rs
-            Value.Eq rs' x' y'
-        | None, None -> 
+        if LanguagePrimitives.PhysicalEquality x.Spine y.Spine then
+            // this includes the None None case and fast-matches subtrees by ref 
             match rs with
             | (struct(x',y')::rs') -> Value.Eq rs' x' y'
             | [] -> true
-        | _ -> false
+        else
+            match x.Spine, y.Spine with
+            | Some struct(x',sx,ex), Some struct(y',sy,ey) ->
+                let rs' = struct(Value.OfSE sx ex, Value.OfSE sy ey) :: rs
+                Value.Eq rs' x' y'
+            | l,r -> assert (Option.isSome l <> Option.isSome r); false
 
     override x.Equals yobj =
         match yobj with

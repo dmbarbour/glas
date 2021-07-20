@@ -16,6 +16,12 @@ let randomRange m n =
 let randomList m n =
     mkRandomList (randomRange m n) (List.empty)
 
+let randomBytes len =
+    let arr = Array.zeroCreate len
+    for ix in 1 .. arr.Length do
+        arr.[ix - 1] <- byte (rng.Next())
+    ofBinary arr
+
 
 [<Tests>]
 let tests = 
@@ -214,7 +220,13 @@ let tests =
                ,Variant "fum" (U8 4uy)) -> ()
             | _ -> failwith "record match failed"
 
-
+        testCase "eq binaries" <| fun () ->
+            for _ in 1 .. 100 do
+                let a = randomBytes 6
+                let b = randomBytes 7
+                Expect.notEqual a b "bytes of different length a b"
+                Expect.equal a a "equal a a"
+ 
         testCase "toKey" <| fun () ->
             Expect.equal (toKey (pair unit (left unit))) (Bits.ofByte 0xC4uy) "pulu"
             Expect.equal (toKey (left (left (right unit)))) (Bits.ofByte 0x58uy) "llru"
