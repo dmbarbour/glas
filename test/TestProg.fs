@@ -123,7 +123,7 @@ let test_ops =
                     Expect.equal (e'.DS) [v1;v1;v2] "equal stacks"
 
             testCase "record ops" <| fun () ->
-                for _ in 1 .. 1000 do
+                for _ in 1 .. 100 do
                     let k = randomSym ()
                     let r0 = randomRecord ()
                     let v = randomBytes 6
@@ -149,7 +149,7 @@ let test_ops =
                     Expect.equal (eDel2.DS) [rwo] "equal delete missing label"
 
             testCase "list ops" <| fun () ->
-                for _ in 1 .. 10 do
+                for _ in 1 .. 100 do
                     let l1 = randomBytes (randomRange 0 30)
                     let l2 = randomBytes (randomRange 0 30)
 
@@ -195,9 +195,37 @@ let test_ops =
                     let eLen = doEval (Op Len) (dataStack [l1]) 
                     Expect.equal (eLen.DS) [Value.nat wl1] "length computations"
  
+            testCase "bitstring ops" <| fun () ->
+                // not sure how to test bitstring ops without reimplementing them...
+                for _ in 1 .. 1000 do
+                    let n = randomRange 0 100
+                    let a = randomBits n
+                    let b = randomBits n
 
-        // bitstring ops
+                    let e0 = dataStack [Value.ofBits b; Value.ofBits a]
+                    let eNeg = doEval (Op BNeg) e0
+                    Expect.equal (eNeg.DS) [Value.ofBits (Bits.bneg b); Value.ofBits a] "negated"
+
+                    let ab = Bits.append a b
+                    let eJoin = doEval (Op BJoin) e0
+                    Expect.equal (eJoin.DS) [Value.ofBits ab] "joined"
+
+                    let eLen = doEval (Op BLen) e0
+                    Expect.equal (eLen.DS) [Value.nat (uint64 n); Value.ofBits a] "length"
+
+                    let eSplit = doEval (Op BSplit) (dataStack [Value.nat (uint64 n); Value.ofBits ab])
+                    Expect.equal (eSplit.DS) [Value.ofBits b; Value.ofBits a] "split"
+
+                    let eMax = doEval (Op BMax) e0
+                    Expect.equal (eMax.DS) [Value.ofBits (Bits.bmax a b)] "max"
+
+                    let eMin = doEval (Op BMin) e0
+                    Expect.equal (eMin.DS) [Value.ofBits (Bits.bmin a b)] "min"
+
+                    let eBEq = doEval (Op BEq) e0
+                    Expect.equal (eBEq.DS) [Value.ofBits (Bits.beq a b)] "beq"
+
         // arithmetic ops
-        // control ops
+        // control ops (one case per?)
 
     ]
