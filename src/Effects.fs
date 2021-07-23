@@ -20,7 +20,6 @@ module Effects =
     /// RAII support for transactions, to ensure they're closed in case of exception.
     ///   USAGE:  use tx = withTX effHandler; ...; tx.Commit(); (or Abort)
     /// If not explicitly commited or aborted, is implicitly aborted upon Dispose.
-    [<Struct>]
     type OpenTX =
         val private TX : ITransactional
         val mutable private Closed : bool
@@ -30,10 +29,16 @@ module Effects =
         member private tx.Close() =
             if tx.Closed then invalidArg (nameof tx) "already committed or aborted" else
             tx.Closed <- true
-        member tx.Commit () = tx.Close(); tx.TX.Commit()
-        member tx.Abort () = tx.Close(); tx.TX.Abort()
+        member tx.Commit () = 
+            tx.Close()
+            tx.TX.Commit()
+        member tx.Abort () = 
+            tx.Close()
+            tx.TX.Abort()
         interface System.IDisposable with
-            member tx.Dispose() = if tx.Closed then () else tx.Abort()
+            member tx.Dispose() = 
+                if tx.Closed then () else 
+                tx.Abort()
 
     let inline withTX (hasTX : 'T when 'T :> ITransactional) = 
         new OpenTX (hasTX :> ITransactional)

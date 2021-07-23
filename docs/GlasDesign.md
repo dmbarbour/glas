@@ -106,7 +106,7 @@ The stack in Glas is really an intermediate data plumbing model. User syntax cou
 
 User syntax can extend the effective set of control operators, e.g. compiling a mutually recursive function group into a central loop. 
 
-Glas does not directly support higher-order programming, i.e. there is no built-in 'eval' operator. However, it is feasible to write and accelerate an 'eval' function, or to support higher-order program composition via staged metaprogramming with user-defined syntax.
+Glas does not directly support higher-order programming, i.e. there is no built-in 'eval' operator. However, it is feasible to write an 'eval' function. Glas systems can potentially accelerate eval, support JIT via memoization, but the short-term expectation is to leverage a slow eval via language modules that support staged metaprogramming. 
 
 ### Effects Handler
 

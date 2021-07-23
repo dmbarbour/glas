@@ -106,9 +106,10 @@ type ACV =
 // Any other input will cause the effect request to fail. Intended for testing.
 // (Note: a better logger would include aborted writes but distinguish them.)
 type EffLogger =
+    val private id : int
     val mutable private TXStack : List<FTList<Value>>
     val mutable private CurrLog : FTList<Value>
-    new() = { TXStack = []; CurrLog = FTList.empty }
+    new() = { id = rng.Next(); TXStack = []; CurrLog = FTList.empty }
 
     // check whether we're mid transaction
     member x.InTX with get() = 
@@ -128,15 +129,18 @@ type EffLogger =
             | _ -> None
     interface Effects.ITransactional with
         member x.Try () = 
+            //printf "try %d\n" x.id
             x.TXStack <- (x.CurrLog)::(x.TXStack)
             x.CurrLog <- FTList.empty
         member x.Commit () = 
+            //printf "commit %d\n" x.id
             match x.TXStack with
             | (tx::txs) ->
                 x.CurrLog <- FTList.append tx x.CurrLog
                 x.TXStack <- txs
             | _ -> invalidOp "committed while not in a transaction"
         member x.Abort () = 
+            //printf "abort %d\n" x.id
             match x.TXStack with
             | (tx::txs) ->
                 x.CurrLog <- tx
@@ -413,13 +417,50 @@ let test_ops =
                     let msg = randomBytes 10
                     let eff = EffLogger() 
                     let eLog = doEval pLogMsg { DS = [msg]; ES = []; IO = eff }
-                    Expect.isFalse (eff.InTX) "no spurious transactions"
+                    Expect.isFalse (eff.InTX) "completed transactions"
                     Expect.equal (FTList.toList eff.Outputs) [msg] "logged outputs"
                     Expect.equal (eLog.DS) [Value.unit] "eff return val"
 
-            // eff transactional behavior
+            testCase "transactional eff" <| fun () ->
+                let varSym s = Seq [Dip (Data Value.unit); Data (Value.symbol s); Op Put]
+                let tryOp p = Cond (Try=p, Then=nop, Else=nop)
+                let tryEff s = tryOp (Seq [varSym s; Op Eff])
+                let tryEff3 = Seq [tryEff "log"; Dip (tryEff "oops"); Dip (Dip (tryEff "log"))]
+                for _ in 1 .. 100 do
+                    let a = randomBytes 10
+                    let b = randomBytes 10
+                    let c = randomBytes 10
+                    let eff = EffLogger()
+                    let eLog = doEval tryEff3 { DS = [a;b;c]; ES = []; IO = eff }
+                    Expect.isFalse (eff.InTX) "completed transactions"
+                    Expect.equal (FTList.toList eff.Outputs) [a;c] "expected messages"
+                    Expect.equal (eLog.DS) [Value.unit; b; Value.unit] "expected results"
 
-            // eff within env
+            testCase "env" <| fun () ->
+                // behavior for 'env': 
+                //  increment an effects counter
+                //  rename "oops" effects to "log" and vice versa.
+                let pInc = Seq [Data (Value.nat 1UL); Op Add; Op Drop] // fixed-width increment
+                let varSym s = Seq [Dip (Data Value.unit); Data (Value.symbol s); Op Put]
+                let getSym s = Seq [Data (Value.symbol s); Op Get]
+                let pRN s1 s2 = Cond (Try = getSym s1, Then = varSym s2
+                               ,Else = Cond(Try = getSym s2, Then = varSym s1, Else = nop))
+                let withCRN s1 s2 p = Seq [ Data (Value.u8 0uy)
+                                    ; Env (With=Seq [ pInc; Dip (Seq [pRN s1 s2; Op Eff])] 
+                                          ,Do=p)]
+                let tryOp p = Cond (Try=p, Then=nop, Else=nop)
+                let tryEff s = tryOp (Seq [varSym s; Op Eff])
+                let tryEff3 = Seq [tryEff "log"; Dip (tryEff "oops"); Dip (Dip (tryEff "log"))]
+                let pTest = withCRN "log" "oops" tryEff3
+                for _ in 1 .. 100 do
+                    let a = randomBytes 10
+                    let b = randomBytes 10
+                    let c = randomBytes 10
+                    let eff = EffLogger()
+                    let eLog = doEval pTest { DS = [a;b;c]; ES = []; IO = eff }
+                    Expect.isFalse (eff.InTX) "completed transactions"
+                    Expect.equal (FTList.toList eff.Outputs) [b] "expected messages"
+                    Expect.equal (eLog.DS) [Value.u8 1uy; a; Value.unit; c] "expected results"
 
             testCase "prog and note" <| fun () ->
                 for _ in 1 .. 10 do
