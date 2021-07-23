@@ -98,6 +98,52 @@ let failEval p e =
     | None -> () // pass - expected failure
     | Some _ -> failtestf "eval unexpectedly successful for program %A stack %A" p (e.DS)
 
+type ACV = 
+    | Aborted of Value 
+    | Committed of Value
+
+// eff logger only accepts 'log:Value' effects and simply records values.
+// Any other input will cause the effect request to fail. Intended for testing.
+// (Note: a better logger would include aborted writes but distinguish them.)
+type EffLogger =
+    val mutable private TXStack : List<FTList<Value>>
+    val mutable private CurrLog : FTList<Value>
+    new() = { TXStack = []; CurrLog = FTList.empty }
+
+    // check whether we're mid transaction
+    member x.InTX with get() = 
+        not (List.isEmpty x.TXStack)
+
+    // complete list of outputs if fully committed
+    member x.Outputs with get() = 
+        let fn o s = FTList.append s o
+        List.fold (fun st vs -> FTList.append vs st) (x.CurrLog) (x.TXStack) 
+
+    interface Effects.IEffHandler with
+        member x.Eff v = 
+            match v with
+            | Value.Variant "log" vMsg ->
+                x.CurrLog <- FTList.snoc (x.CurrLog) vMsg
+                Some (Value.unit)
+            | _ -> None
+    interface Effects.ITransactional with
+        member x.Try () = 
+            x.TXStack <- (x.CurrLog)::(x.TXStack)
+            x.CurrLog <- FTList.empty
+        member x.Commit () = 
+            match x.TXStack with
+            | (tx::txs) ->
+                x.CurrLog <- FTList.append tx x.CurrLog
+                x.TXStack <- txs
+            | _ -> invalidOp "committed while not in a transaction"
+        member x.Abort () = 
+            match x.TXStack with
+            | (tx::txs) ->
+                x.CurrLog <- tx
+                x.TXStack <- txs
+            | _ -> invalidOp "aborted while not in a transaction" 
+
+
 [<Tests>]
 let test_ops = 
     // note: focusing on type-safe behaviors of programs
@@ -225,7 +271,169 @@ let test_ops =
                     let eBEq = doEval (Op BEq) e0
                     Expect.equal (eBEq.DS) [Value.ofBits (Bits.beq a b)] "beq"
 
-        // arithmetic ops
-        // control ops (one case per?)
+                    // ensure that ops properly fail if given bitstrings of non-equal lengths
+                    let c = randomBits (n + 1)
+                    let l = randomBytes 2
+                    let ebc = dataStack [Value.ofBits b; Value.ofBits c]
+                    failEval (Op BMax) ebc
+                    failEval (Op BMin) ebc
+                    failEval (Op BEq) ebc
 
+            testCase "arithmetic" <| fun () ->
+                for _ in 1 .. 1000 do
+                    let a = randomBits (5 * randomRange 0 20)
+                    let b = randomBits (5 * randomRange 0 20)
+
+                    // the expected results. We aren't testing Arithmetic module here.
+                    // mostly need to check that stack order is right.
+                    let struct(sum,carry) = Arithmetic.add a b
+                    let struct(prod,overflow) = Arithmetic.mul a b
+                    let subOpt = Arithmetic.sub a b
+                    let divOpt = Arithmetic.div a b
+
+                    let e0 = dataStack [Value.ofBits b; Value.ofBits a]
+                    let eAdd = doEval (Op Add) e0
+                    let eProd = doEval (Op Mul) e0
+                    let eSubOpt = Interpreter.interpret (Op Sub) e0
+                    let eDivOpt = Interpreter.interpret (Op Div) e0
+
+                    Expect.equal (eAdd.DS) [Value.ofBits carry; Value.ofBits sum] "eq add"
+                    Expect.equal (eProd.DS) [Value.ofBits overflow; Value.ofBits prod] "eq prod"
+                    match eSubOpt, subOpt with
+                    | Some eSub, Some diff -> 
+                        Expect.equal (eSub.DS) [Value.ofBits diff] "eq sub"
+                    | None, None -> 
+                        Expect.isLessThan (Bits.toI a) (Bits.toI b) "negative diff"
+                    | _, _ -> 
+                        failtest "inconsistent subtract success" 
+
+                    match eDivOpt, divOpt with
+                    | Some eDiv, Some struct(q,r) ->
+                        Expect.equal (eDiv.DS) [Value.ofBits r; Value.ofBits q] "eq div"
+                    | None, None -> 
+                        Expect.equal (Bits.toNat64 b) 0UL "div by zero"
+                    | _, _ -> 
+                        failtest "inconsistent div success"
+
+
+            testCase "data" <| fun () ->
+                for _ in 1 .. 1000 do
+                    let v = randomRecord ()
+                    let e' = doEval (Data v) (dataStack [])
+                    Expect.equal (e'.DS) [v] "eq data"
+
+            testCase "seq" <| fun () ->
+                let p = Seq [Op Copy; Data (Value.symbol "foo"); Op Get; 
+                             Op Swap; Data (Value.symbol "bar"); Op Get; 
+                             Op Mul; Op Swap; Op BJoin]
+                for _ in 1 .. 1000 do
+                    let a = randomBits (5 * randomRange 0 20)
+                    let b = randomBits (5 * randomRange 0 20)
+                    let r0 = Value.asRecord ["foo";"bar"] [Value.ofBits a; Value.ofBits b]
+                    let e' = doEval p (dataStack [r0])
+                    let struct(prod, overflow) = Arithmetic.mul a b
+                    Expect.equal (e'.DS) [Value.ofBits (Bits.append overflow prod)] "expected seq result"
+
+            testCase "dip" <| fun () ->
+                for _ in 1 .. 10 do
+                    let a = randomBytes 4
+                    let b = randomBytes 4
+                    let c = randomBytes 4
+                    let e0 = dataStack [c;b;a]
+                    let eDip = doEval (Dip (Op Swap)) e0
+                    Expect.equal (eDip.DS) [c;a;b] "dip swap"
+
+            testCase "cond" <| fun () ->
+                let abs = Cond (Try = Op Sub, Then = Seq [], Else = Seq [Op Swap; Op Sub])
+                for _ in 1 .. 1000 do
+                    let a = byte <| rng.Next ()
+                    let b = byte <| rng.Next ()
+                    let c = if (a > b) then (a - b) else (b - a)
+                    //printf "a=%d, b=%d, c=%d\n" a b c
+                    let eAbs = doEval abs (dataStack [Value.u8 b; Value.u8 a])
+                    Expect.equal (eAbs.DS) [Value.u8 c] "expected abs diff"
+
+
+            testCase "loop" <| fun () ->
+                // loop program: filter a list of bytes for range 32..126.
+                // this sort of behavior is quite awkward to express w/o dedicated syntax.
+
+                let pFilterMap pFN =
+                    Seq [Data Value.unit
+                        ;Loop (While = Dip (Op Popl)
+                              ,Do=Cond(Try=Dip pFN
+                                      ,Then=Seq[Op Swap; Op Pushr]
+                                      ,Else=Dip (Op Drop)))
+                        ;Dip (Op Drop)
+                        ]
+
+                // verify the filterMap loop has some expected behaviors
+                let lTestFM = randomBytes 10
+                let eAll = doEval (pFilterMap (Seq [])) (dataStack [lTestFM])
+                Expect.equal (eAll.DS) [lTestFM] "filter accepts everything"
+                let eNone = doEval (pFilterMap (Op Fail)) (dataStack [lTestFM])
+                Expect.equal (eNone.DS) [Value.unit] "filter accepts nothing"
+
+                let inRange lb ub = 
+                    Seq [Op Copy; Data (Value.u8 lb); Op Sub; Op Drop
+                        ;Cond(Try=Seq [Data (Value.u8 ub); Op Sub], Then=Op Fail, Else=Seq [])]
+                let pOkByte = inRange 32uy 127uy
+                let okByte b =
+                    match b with
+                    | Value.U8 n -> (32uy <= n) && (n <= 126uy)
+                    | _ -> false 
+                for x in 0uy .. 255uy do
+                    // check our byte predicate
+                    match Interpreter.interpret pOkByte (dataStack [Value.u8 x]) with
+                    | Some eP -> 
+                        //printfn "byte %d accepted\n" x 
+                        Expect.isTrue (okByte (Value.u8 x)) "accepted byte"
+                        Expect.equal (eP.DS) [Value.u8 x] "identity behavior"
+                    | None ->
+                        //printf "byte %d rejected\n" x
+                        Expect.isFalse (okByte (Value.u8 x)) "rejected byte"
+
+                let pLoop = pFilterMap pOkByte
+                for _ in 1 .. 100 do
+                    let l0 = randomBytes 100
+                    // our filtered list (via F#)
+                    let lF = l0 |> Value.toFTList 
+                                |> FTList.toList 
+                                |> List.filter okByte
+                                |> FTList.ofList 
+                                |> Value.ofFTList    
+                    let eLoop = doEval pLoop (dataStack [l0])
+                    Expect.equal (eLoop.DS) [lF] "equal filtered lists"
+
+            testCase "toplevel eff" <| fun () ->
+                let varSym s = Seq [Dip (Data Value.unit); Data (Value.symbol s); Op Put]
+                let pLogMsg = Seq [varSym "log"; Op Eff ]
+                failEval (Op Eff) { DS = [Value.symbol "oops"]; ES = List.empty; IO = new EffLogger() }
+                for _ in 1 .. 100 do
+                    let msg = randomBytes 10
+                    let eff = EffLogger() 
+                    let eLog = doEval pLogMsg { DS = [msg]; ES = []; IO = eff }
+                    Expect.isFalse (eff.InTX) "no spurious transactions"
+                    Expect.equal (FTList.toList eff.Outputs) [msg] "logged outputs"
+                    Expect.equal (eLog.DS) [Value.unit] "eff return val"
+
+            // eff transactional behavior
+
+            // eff within env
+
+            testCase "prog and note" <| fun () ->
+                for _ in 1 .. 10 do
+                    let a = randomBytes 4
+                    let b = randomBytes 3
+                    let e0 = dataStack [a;b]
+
+                    let eProg = doEval (Prog (Do=Op Swap, Note=randomRecord())) e0 
+                    Expect.equal (eProg.DS) [b;a] "prog"
+
+                    let eNote = doEval (Note (randomRecord())) e0
+                    Expect.equal (eNote.DS) [a;b] "note"
+
+(*
+    | Env of Do:Program * With:Program
+*)            
     ]

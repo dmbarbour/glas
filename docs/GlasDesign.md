@@ -81,7 +81,7 @@ The stack in Glas is really an intermediate data plumbing model. User syntax cou
  * **seq:\[\]** - empty sequence doubles as identity operator (nop)
 * **cond:(try:P, then:Q, else:R)** - run P; if P does not fail, run Q; if P fails, backtrack P then run R.
 * **loop:(while:P, do:Q)** - begin loop: run P; if P does not fail, run Q then repeat loop. If P fails, backtrack P then exit loop.
-* **eq** - compare top two values on stack. If they are equal, do nothing. Otherwise fail.
+* **eq** - compare top two values on stack. If equal, do nothing. Otherwise fail. This uses structural equality of values, not equality under an interpretation.
 * **fail** - always fail
 
         seq:[]              ∀S . S → S
@@ -104,7 +104,9 @@ The stack in Glas is really an intermediate data plumbing model. User syntax cou
         eq : ∀S,A,B . ((S * A) * B) → ((S * B) * B) | FAIL
         fail : ∀S . S → FAIL
 
-User syntax can extend the effective set of control operators, e.g. compiling a mutually recursive function group into a central loop. Also, although there is no 'eval' operator, it is quite feasible and useful to implement an eval subprogram.
+User syntax can extend the effective set of control operators, e.g. compiling a mutually recursive function group into a central loop. 
+
+Glas does not directly support higher-order programming, i.e. there is no built-in 'eval' operator. However, it is feasible to write and accelerate an 'eval' function, or to support higher-order program composition via staged metaprogramming with user-defined syntax.
 
 ### Effects Handler
 

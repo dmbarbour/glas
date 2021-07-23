@@ -22,8 +22,8 @@ let test_arith =
 
         testCase "bitstring addition" <| fun () ->
             for x in 1 .. 1000 do
-                let w1 = randomRange 0 100
-                let w2 = randomRange 0 100
+                let w1 = 5 * randomRange 0 20
+                let w2 = 5 * randomRange 0 20
                 let n1 = randomBits w1
                 let n2 = randomBits w2
                 let struct(sum, carry) = Arithmetic.add n1 n2
@@ -38,8 +38,8 @@ let test_arith =
 
         testCase "bitstring multiplication" <| fun () ->
             for x in 1 .. 1000 do
-                let w1 = randomRange 0 100
-                let w2 = randomRange 0 100
+                let w1 = 5 * randomRange 0 20
+                let w2 = 5 * randomRange 0 20
                 let n1 = randomBits w1
                 let n2 = randomBits w2
                 let struct(prod, overflow) = Arithmetic.mul n1 n2
@@ -54,8 +54,8 @@ let test_arith =
 
         testCase "bitstring subtraction" <| fun () ->
             for x in 1 .. 1000 do
-                let w1 = randomRange 0 100
-                let w2 = randomRange 0 100
+                let w1 = 5 * randomRange 0 20
+                let w2 = 5 * randomRange 0 20
                 let n1 = randomBits w1
                 let n2 = randomBits w2
                 let i1 = Bits.toI n1
@@ -77,8 +77,8 @@ let test_arith =
 
         testCase "bitstring division" <| fun () ->
             for x in 1 .. 1000 do 
-                let w1 = randomRange 0 100
-                let w2 = randomRange 0 100
+                let w1 = 5 * randomRange 0 20
+                let w2 = 5 * randomRange 0 20
                 let n1 = randomBits w1
                 let n2 = randomBits w2
                 let i1 = Bits.toI n1
