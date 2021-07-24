@@ -12,7 +12,12 @@
     <Compile Include="Arithmetic.fs" />
     <Compile Include="Effects.fs" />
     <Compile Include="Program.fs" />
+    <Compile Include="GlasZero.fs" />
     <Compile Include="Main.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="fparsec" Version="1.1.1" />
   </ItemGroup>
 
 </Project>

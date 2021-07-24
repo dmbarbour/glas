@@ -53,8 +53,9 @@ let rec randomProg d =
     | 4 -> Cond (Try=randomProg (d-1), Then=randomProg (d-1), Else=randomProg (d-1))
     | 5 -> Loop (While=randomProg (d-1), Do=randomProg (d-1))
     | 6 -> Env (With=randomProg (d-1), Do=randomProg (d-1))
-    | 7 -> Prog (Do=randomProg (d-1), Note=(randomRecord ()))
-    | 8 -> Note (randomRecord ())
+    | 7 ->
+        let notes = randomRecord () |> Value.record_delete (Value.label "do") 
+        Prog (Do=randomProg (d-1), Note=notes)
     | _ -> randomProg (d-1)
 
 
@@ -462,7 +463,7 @@ let test_ops =
                     Expect.equal (FTList.toList eff.Outputs) [b] "expected messages"
                     Expect.equal (eLog.DS) [Value.u8 1uy; a; Value.unit; c] "expected results"
 
-            testCase "prog and note" <| fun () ->
+            testCase "prog" <| fun () ->
                 for _ in 1 .. 10 do
                     let a = randomBytes 4
                     let b = randomBytes 3
@@ -471,8 +472,6 @@ let test_ops =
                     let eProg = doEval (Prog (Do=Op Swap, Note=randomRecord())) e0 
                     Expect.equal (eProg.DS) [b;a] "prog"
 
-                    let eNote = doEval (Note (randomRecord())) e0
-                    Expect.equal (eNote.DS) [a;b] "note"
 
 (*
     | Env of Do:Program * With:Program

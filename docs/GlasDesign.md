@@ -190,31 +190,15 @@ Glas encodes natural numbers into bitstrings assuming msb-to-lsb order. For exam
 
 Glas doesn't have built-in support for negative numbers, floating point, etc.. Extending arithmetic will benefit from *Acceleration*.
 
-### Annotation Operators
+### Annotations Operators
 
-Annotations support static analysis, performance, automated testing, safety, debugging, decompilation, and other external tooling. However, annotations should not be directly observable within a program's evaluation. They might be indirectly observable via reflection (e.g. performance is reflected in timing, and assertion failures might be visible via special log).
+Annotations support performance (acceleration, stowage, optimization), static analysis (types, assertions, assumptions, pre and post conditions), automated testing, debugging, decompilation, and other external tooling. However, annotations should not be directly observable within a program's evaluation. They might be indirectly observable via reflection (e.g. performance is reflected in timing, and assertion failures might be visible via special log).
 
-* **prog:(do:P, ...)** - runs P. Fields other than 'do' should be annotations about P. Potential annotations:
- * **name:Symbol** - an identifier for the region to support debugging (logging, profiling, etc.) based on external configuration. Implicitly hierarchical with containing prog name.
- * **stack:(in:\[Arg,Symbols\], out:\[Result,Symbols\])** - human-meaningful labels for stack effect. This can be leveraged for decompilation, debugging, arity checking, syntax bindings of keyword arguments and results, in-out parameters, etc..
- * **type:Type** - describe type of subprogram P.
- * **bref:B** - assert that program P has the same behavior as program B. In this case, the intention is usually that P is an optimized or refactored B.
- * **docs:Docs** - a record for arbitrary documentation, intended for a human or document generator. Might include text, icons, example usage, etc.. 
- * **memo:Hints** - remember outputs for given inputs for incremental computing. Options could include table sizes and other strategy.
- * **accel:Hints** - tell compiler or interpreter to replace P by an enhanced-performance implementation
+* **prog:(do:P, ...)** - runs program P. All fields other than 'do' are annotations. 
 
-* **note:(...)** - inline annotations for use with seq. Pseudo-operators on the tacit environment.
- * **stack:\[List, Of, Symbols\]** - human-meaningful labels for top few stack elements; rightmost is top of stack.
- * **type:Type** - describe assumptions about stack and state that should hold at this point in the program. 
- * **probe:Symbol** - explicit debug point for use with 'seq'. By default write a debug log with debug symbol, stack, state, and timing info. May be externally configurable with filters or assertions or for use as a breakpoint or checkpoint, depending on development environment.
- * **assert:Q** - assert that Q should succeed if run. Verify statically if feasible, otherwise check at runtime. Use backtracking to undo effects. Runtime assertion failures are uncatchable and directly halt the program.
- * **assume:Q** - as assert, but with greater emphasis on static verification. Unchecked or infrequently checked at runtime.
- * **stow** - hint to move top stack value to cheap, high-latency, content-addressed storage. Subject to runtime heuristics.
- * **test:T** - add automatic tests to your code; compiler may interpret per *Automated Testing*.
+The set of annotations is openly extensible and subject to de-facto standardization. If a Glas compiler or interpreter encounters any annotations it does not recognize, it can log a warning then ignore. 
 
-The set of annotations is openly extensible and subject to de-facto standardization. When a Glas compiler or interpreter encounters annotation labels it does not recognize, it should log a warning then ignore. 
-
-*Aside:* Assertions are expressive and convenient for quick and dirty checks, but are difficult to statically analyze in a systematic manner. In contrast, types are restrictive but designed to support systematic static analysis. Glas systems should usually favor types.
+The 'prog' header also serves as the variant for programs within a namespace. Namespaces are often modeled as a record whose elements include programs, types, data, macros, and other constructs that programmers might define for reuse.
 
 ## Glas Initial Syntax (g0)
 

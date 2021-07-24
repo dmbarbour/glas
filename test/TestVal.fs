@@ -219,6 +219,7 @@ let tests =
                ([Some (U8 1uy); Some (U8 2uy); Some (U8 3uy); None]
                ,Variant "fum" (U8 4uy)) -> ()
             | _ -> failwith "record match failed"
+            Expect.isTrue (isRecord v) "v is a labeled record"
 
         testCase "eq binaries" <| fun () ->
             for _ in 1 .. 100 do

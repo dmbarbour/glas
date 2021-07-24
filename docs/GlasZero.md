@@ -22,13 +22,11 @@ The output for a g0 program is a record of all defined words. There is no export
 
 ## Bootstrap 
 
-As a special case, the language-g0 module will go through a bootstrap process in Glas. The command-line implementation of g0 and language-g0 module's compile function may have some variation in use of optimizations, annotations, and even a support for language extensions. However, the language-g0 implementation is the final authority.
+As a special case, the language-g0 module will go through a bootstrap process in Glas. The command-line utility provides a naive implementation for a sufficient subset of g0. This is used to build the module language-g0 to a value of form `(compile:P0, ...)`. Program P0 is then used to rebuild language-g0, producing `(compile:P1, ...)`. P0 and P1 should have the same behavior, but they may be structurally different due to differences in optimizations, annotations, etc.. To resolve this, we use P1 to rebuild language-g0, producing `(compile:P2, ...)` then verify P1 and P2 are structurally equivalent.
 
-The bootstrap command-line utility provides a naive implementation for an adequate subset of g0. This should first be used to compile module language-g0 to a value of form `(compile:P0, ...)`. Program P0 is then used to rebuild language-g0, producing `(compile:P1, ...)`. Program P1 is then used to rebuild language-g0, producing `(compile:P2, ...)`. We then check that P1 and P2 are the same. If so, bootstrap of g0 is successful! 
+If bootstrap fails, we must debug both module language-g0 and the command-line tool. This bootstrap process requires that module language-g0 is carefully defined to achieve fixpoint after a single cycle. To simplify linking during bootstrap, the language-g0 module should be isolated to a folder with no outside module dependencies.
 
-If bootstrap of g0 fails, we must debug definition of language-g0 and the command-line tool. This bootstrap process requires that module language-g0 is carefully defined to achieve fixpoint after a single cycle, i.e. the behavior of P0 and P1 should be equivalent even though their program representations are not (i.e. due to variation in optimizations and annotations). To simplify bootstrap, the language-g0 module should be isolated to a folder, with no external module dependencies.
-
-The next step is to bootstrap the command-line utility. This requires modeling the application and compiler to the target architecture, then extracting the binary to an executable file. However, this task is outside the scope of this document.
+The next step is to bootstrap the command-line utility. This requires modeling the application and compiler to the target architecture, then extracting the binary to an executable file. This task is outside the scope of this document, but when completed allows us to escape the initial Glas command-line utility.
 
 ## Embedded Data
 
@@ -44,7 +42,7 @@ It is feasible to develop a series of words such that `23 u8` is equivalent to `
 
 ## Words
 
-A word in g0 must match regex `[a-z]+('-'[a-z]+)*(0-9)*`.
+A word in g0 currently must match regex `[a-z]+('-'[a-z]+)*(0-9)*`.
 
 Within a program, a word is immediately compiled by replacing it with the definition. This results in a form of static scoping and linking. If there is no definition for a word, a warning should be logged and the word is replaced by 'fail' operator.
 

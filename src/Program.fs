@@ -17,9 +17,9 @@ type SymOp =
 /// It is also suitable for transaction machine applications.
 /// 
 /// Note: Converting between F# and Glas program values complicates
-/// maintenance of structure sharing. To resolve this, I currently
-/// use a memo-cache for interning, but it isn't optimal due to lack
-/// of  
+/// maintenance of structure sharing. Within Glas, we'd resolve via
+/// stow and memo annotations. For F#, I have an ad-hoc partial model
+/// for this.
 type Program =
     | Op of SymOp
     | Dip of Program
@@ -29,7 +29,6 @@ type Program =
     | Loop of While:Program * Do:Program
     | Env of Do:Program * With:Program
     | Prog of Do:Program * Note:Value 
-    | Note of Value
 
 module Program =
     open Value
@@ -96,7 +95,6 @@ module Program =
                 struct([pDo; pWith], asRecord ["do"; "with"] >> variant "env")
             | Prog (Do=pDo; Note=vNote) ->
                 struct([pDo], fun vs -> variant "prog" (record_insert (label "do") (vs.[0]) vNote))
-            | Note vNote -> struct([], fun _ -> variant "note" vNote)
 
         // printer handles recursion and caching at the moment.
         // currently not tail-recursive.
@@ -182,7 +180,6 @@ module Program =
                 static_arity (Dip p)
             | _ -> None
         | Prog (Do=p) -> static_arity p
-        | Note _ -> Some struct(0,0)
     and static_seq_arity ps =
         _static_seq_arity 0 0 ps
     and private _static_seq_arity i o ps =
@@ -229,9 +226,8 @@ module Program =
                 Some struct(vs, fun ps -> Loop (While=ps.[0], Do=ps.[1]))
             | Variant "env" (FullRec ["do"; "with"] (vs, U)) ->
                 Some struct(vs, fun ps -> Env (Do=ps.[0], With=ps.[1]))
-            | Variant "prog" (FullRec ["do"] (vs, vNote)) ->
+            | Variant "prog" (FullRec ["do"] (vs, vNote)) when isRecord vNote ->
                 Some struct(vs, fun ps -> Prog (Do = ps.[0], Note = vNote))
-            | Variant "note" vNote -> Some struct([], fun _ -> Note vNote)
             | _ -> None // failed parse
 
         /// A simple parse function with cache support. 
@@ -540,7 +536,6 @@ module Program =
             | Loop (While=pWhile; Do=pDo) -> loop pWhile pDo e 
             | Env (With=pWith; Do=pDo) -> env pWith pDo e 
             | Prog (Do=p'; Note=_) -> interpret p' e 
-            | Note _ -> Some e
 
 
     // TODO: a compiler, of finally tagless interpreter that JIT can optimize easily.

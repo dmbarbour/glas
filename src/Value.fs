@@ -367,6 +367,48 @@ module Value =
         if List.exists Option.isNone vs then None else
         Some (List.map Option.get vs, r')
 
+    let rec private _isRecord rs xct b v =
+        if 8 = Bits.length b then
+            // we've matched a complete byte, now let's check if it's utf-8
+            let n = Bits.toByte (Bits.rev b)
+            if(xct > 0) then
+                // expecting bit pattern '10xx xxxx'
+                if((n &&& 0b11000000uy) = 0b10000000uy)
+                    then _isRecord rs (xct - 1) (Bits.empty) v
+                    else false 
+            else if(0uy = n) then
+                // valid label, no need to iterate further on v.
+                match rs with
+                | struct(xct', b', v')::rs' -> _isRecord rs' xct' b' v' 
+                | [] -> true // final label
+            else if((n &&& 0b10000000uy) = 0b00000000uy) then
+                _isRecord rs 0 (Bits.empty) v   // 1-byte utf-8
+            else if((n &&& 0b11100000uy) = 0b11000000uy) then
+                _isRecord rs 1 (Bits.empty) v   // 2-byte utf-8
+            else if((n &&& 0b11110000uy) = 0b11100000uy) then
+                _isRecord rs 2 (Bits.empty) v   // 3-byte utf-8
+            else if((n &&& 0b11111000uy) = 0b11110000uy) then
+                _isRecord rs 3 (Bits.empty) v   // 4-byte utf-8
+            else false
+        else 
+            match v with
+            | U -> false // label is not 8-bit aligned
+            | L v' -> _isRecord rs xct (Bits.cons false b) v'
+            | R v' -> _isRecord rs xct (Bits.cons true b) v'
+            | P (l,r) -> 
+                let rs' = struct(xct, Bits.cons true b, r)::rs
+                _isRecord rs' xct (Bits.cons false b) l
+
+    /// Check that a value is a record with null-terminated UTF-8 labels.
+    /// Note: the UTF-8 check allows overlong encodings, but is able to
+    /// discriminate random inputs from records.
+    let isRecord (v:Value) : bool =
+        if isUnit v then true else
+        _isRecord [] 0 (Bits.empty) v
+
+    /// Iterate through null-terminated labels in a record.
+    //let record_iter (r : Value) : (Bits * Value) seq
+
     // edge is `01` for left, `10` for right. accum in reverse order
     let inline private _key_edge acc e =
         if e 
