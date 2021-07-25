@@ -4,11 +4,11 @@
 
 Glas modules are typically represented by files and folders. Dependencies between Glas modules must be acyclic (i.e. a directed acyclic graph), and dependencies across folder boundaries are structurally restricted. Every module will deterministically compute a value. 
 
-To compute the value for a file `foo.ext`, the Glas system will compile the file binary according to a program defined in a module named `language-ext`. Although there is a special exception for bootstrapping, most syntax will be user-defined. The value of a folder is the value of a contained `public` file or subfolder, if it exists, otherwise a record with an element per successfully compiled module contained within the folder.
+To compute the value for a file `foo.ext`, the Glas system will compile the file binary according to a program defined in a module named `language-ext`. Although there is a special exception for bootstrapping, most syntax will be user-defined. The value of a folder is simply the value of its contained `public` file or subfolder.
 
-File extensions compose. For example, to compute the value for `foo.xyz.json` we first apply `language-json` to the file binary to compute an intermediate value, then apply `language-xyz` to that intermediate value. Thus, source input for language modules can be arbitrary Glas values. Relatedly, if a file has no extension, its value is the file binary. Folders also support language extensions, e.g. `foo.xyz/` will first compute the folder value then further compile this value via `language-xyz`.
+File extensions compose. For example, to compute the value for `foo.xyz.json` we first apply `language-json` to the file binary to compute an intermediate value, then apply `language-xyz` to that intermediate value. Thus, source input for language modules can be arbitrary Glas values. Relatedly, if a file has no extension, its value is the file binary. Folders also support language extensions, e.g. `foo.xyz/` will further compile the folder's value via `language-xyz`.
 
-Modules are identified by symbols such as `foo`, eliding representation details (file or folder and extensions). Search will first seek a local resource, then fall back to searching for a folder based on environment variable `GLAS_PATH`. It is feasible to extend the search path to include network package repositories. Files and folders whose names start with `.` are hidden from the Glas module system.
+Modules are identified by symbols such as `foo`. The language extensions are elided and not visible to the module client. Search will first seek a local resource then fall back to searching for a folder using environment variable `GLAS_PATH`. It is feasible to extend the search path to include network package repositories. Files and folders whose names start with `.` are hidden from the Glas module system.
 
 *Note:* Glas does not specify a package manager. I recommend a package manager designed for reproducible builds and sharing between similar builds, such as Nix or Guix. Distant future, I might develop something optimized for Glas.
 
@@ -192,7 +192,7 @@ Glas doesn't have built-in support for negative numbers, floating point, etc.. E
 
 ### Annotations Operators
 
-Annotations support performance (acceleration, stowage, optimization), static analysis (types, assertions, assumptions, pre and post conditions), automated testing, debugging, decompilation, and other external tooling. However, annotations should not be directly observable within a program's evaluation. They might be indirectly observable via reflection (e.g. performance is reflected in timing, and assertion failures might be visible via special log).
+Annotations support performance (acceleration, stowage, memoization, optimization), static analysis (types, preconditions, postconditions), automated testing, debugging (tracing, profiling, assertions, breakpoints), decompilation, and other external tooling. However, annotations should not be directly observable within a program's evaluation. They might be indirectly observable via reflection effects (e.g. performance is reflected in timing, and assertion failures or traces might be visible via special log).
 
 * **prog:(do:P, ...)** - runs program P. All fields other than 'do' are annotations. 
 
@@ -212,7 +212,7 @@ Language modules have a module name of form `language-*`. The value of a languag
 
 The compile program implements a function from source (e.g. file binary) to a compiled value on the stack. The compile program can also access other module values and generate some log outputs. Effects API:
 
-* **load:ModuleName** - Module names are typically encoded as a symbol such as `foo`, but mightl later be extended. Response is the result from compiling the module, or failure if the module's value cannot be computed.
+* **load:ModuleID** - Modules are currently identified by simple symbols such as `foo`, but there is some room for extension. Response from 'load' is the specified module's compiled value, or failure if this value cannot be computed.
 * **log:Message** - Response is unit. Arbitrary output message, useful for progress reports, debugging, code change proposals, etc.. 
 
 Load failure may occur due to missing modules, ambiguous file names, dependency cyles, failed compile, etc. The cause of failure is visible to the client module, but is reported in the development environment.
