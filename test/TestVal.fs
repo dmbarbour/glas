@@ -229,8 +229,8 @@ let tests =
 
         testCase "recordSeq" <| fun () ->
             for _ in 1 .. 100 do
-                let mutable m = Map.empty
-                let mutable v = unit
+                let mutable m = Map.empty // ground truth rep
+                let mutable v = unit // tested representation
                 for ix in 1uy .. 100uy do
                     let k = randomSym (randomRange 1 4)
                     m <- Map.add k ix m

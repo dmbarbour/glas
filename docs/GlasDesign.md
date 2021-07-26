@@ -261,7 +261,7 @@ Glas systems will support large data using content-addressed storage. A subtree 
 
 Glas programs can use annotations to guide use of stowage. Stowage may also be implicit during garbage collection. Use of stowage is not observable within the Glas program except indirectly via reflection on performance and use of space.
 
-*Note:* For [security reasons](https://tahoe-lafs.readthedocs.io/en/tahoe-lafs-1.12.1/convergence-secret.html), content-addressed binaries in a distributed system should include a cryptographic salt. This salt prevents global deduplication, but allows limited deduplication within a trusted group.
+*Note:* Deduplication is [security sensitive](https://tahoe-lafs.readthedocs.io/en/tahoe-lafs-1.12.1/convergence-secret.html). If we must secure the content, we will want to add a cryptographic salt before encryption.
 
 ### Partial Evaluation
 

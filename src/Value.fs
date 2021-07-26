@@ -404,22 +404,21 @@ module Value =
         if isUnit v then true else
         _isRecord [] 0 1 v
 
-    let rec private _recordBytes m b v =
-        // 'b' combines bit count (via high bit) and data (lower bits)
-        // thus 'b' is between 256 and 511 for a complete byte value.
-        if(b >= 256) then Map.add (uint8 (0xFF &&& b)) v m else
+    let rec private _recordBytes m ct b v =
+        if(8 = ct) then Map.add b v m else
         match v with
         | U -> m // incomplete byte. Just drop it.
-        | L v' -> _recordBytes m (b <<< 1) v'
-        | R v' -> _recordBytes m ((b <<< 1) ||| 1) v'
+        | L v' -> _recordBytes m (1+ct) (b <<< 1) v'
+        | R v' -> _recordBytes m (1+ct) ((b <<< 1) ||| 1uy) v'
         | P (lv,rv) -> // max 8 stack depth, so use direct recursion
-            let lm = _recordBytes m (b <<< 1) lv
-            _recordBytes lm ((b <<< 1) ||| 1) rv
+            let ct' = 1 + ct
+            let lm = _recordBytes m ct' (b <<< 1) lv
+            _recordBytes lm ct' ((b <<< 1) ||| 1uy) rv
 
     /// Obtain byte-aligned keys from a record. Drops any partial bytes. 
     /// This is a helper function to iterate symbolic keys in the record.
     let recordBytes (r:Value) : Map<uint8, Value> =
-        _recordBytes (Map.empty) 1 r
+        _recordBytes (Map.empty) 0 0uy r
 
     let rec private _seqSym ss  =
         match ss with
