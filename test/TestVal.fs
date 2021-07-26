@@ -22,7 +22,6 @@ let randomBytes len =
         arr.[ix - 1] <- byte (rng.Next())
     ofBinary arr
 
-
 [<Tests>]
 let tests = 
     testList "Glas values" [
@@ -220,6 +219,8 @@ let tests =
                ,Variant "fum" (U8 4uy)) -> ()
             | _ -> failwith "record match failed"
             Expect.isTrue (isRecord v) "v is a labeled record"
+
+        // TODO: tests for recordSeq, 
 
         testCase "eq binaries" <| fun () ->
             for _ in 1 .. 100 do

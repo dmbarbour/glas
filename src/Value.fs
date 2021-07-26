@@ -368,46 +368,78 @@ module Value =
         Some (List.map Option.get vs, r')
 
     let rec private _isRecord rs xct b v =
-        if 8 = Bits.length b then
-            // we've matched a complete byte, now let's check if it's utf-8
-            let n = Bits.toByte (Bits.rev b)
+        if ((b &&& 0x100) = 0x100) then
             if(xct > 0) then
                 // expecting bit pattern '10xx xxxx'
-                if((n &&& 0b11000000uy) = 0b10000000uy)
-                    then _isRecord rs (xct - 1) (Bits.empty) v
+                if((b &&& 0b11000000) = 0b10000000)
+                    then _isRecord rs (xct - 1) 1 v
                     else false 
-            else if(0uy = n) then
-                // valid label, no need to iterate further on v.
+            else if(b = 0x100) then
+                // null-terminated label.
                 match rs with
                 | struct(xct', b', v')::rs' -> _isRecord rs' xct' b' v' 
                 | [] -> true // final label
-            else if((n &&& 0b10000000uy) = 0b00000000uy) then
-                _isRecord rs 0 (Bits.empty) v   // 1-byte utf-8
-            else if((n &&& 0b11100000uy) = 0b11000000uy) then
-                _isRecord rs 1 (Bits.empty) v   // 2-byte utf-8
-            else if((n &&& 0b11110000uy) = 0b11100000uy) then
-                _isRecord rs 2 (Bits.empty) v   // 3-byte utf-8
-            else if((n &&& 0b11111000uy) = 0b11110000uy) then
-                _isRecord rs 3 (Bits.empty) v   // 4-byte utf-8
+            else if((b &&& 0b10000000) = 0b00000000) then
+                _isRecord rs 0 1 v   // 1-byte utf-8
+            else if((b &&& 0b11100000) = 0b11000000) then
+                _isRecord rs 1 1 v   // 2-byte utf-8
+            else if((b &&& 0b11110000) = 0b11100000) then
+                _isRecord rs 2 1 v   // 3-byte utf-8
+            else if((b &&& 0b11111000) = 0b11110000) then
+                _isRecord rs 3 1 v   // 4-byte utf-8
             else false
         else 
             match v with
             | U -> false // label is not 8-bit aligned
-            | L v' -> _isRecord rs xct (Bits.cons false b) v'
-            | R v' -> _isRecord rs xct (Bits.cons true b) v'
+            | L v' -> _isRecord rs xct (b <<< 1) v'
+            | R v' -> _isRecord rs xct ((b <<< 1) ||| 1) v'
             | P (l,r) -> 
-                let rs' = struct(xct, Bits.cons true b, r)::rs
-                _isRecord rs' xct (Bits.cons false b) l
+                let rs' = struct(xct, ((b <<< 1) ||| 1), r)::rs
+                _isRecord rs' xct (b <<< 1) l
 
     /// Check that a value is a record with null-terminated UTF-8 labels.
     /// Note: the UTF-8 check allows overlong encodings, but is able to
     /// discriminate random inputs from records.
     let isRecord (v:Value) : bool =
         if isUnit v then true else
-        _isRecord [] 0 (Bits.empty) v
+        _isRecord [] 0 1 v
 
-    /// Iterate through null-terminated labels in a record.
-    //let record_iter (r : Value) : (Bits * Value) seq
+    let rec private _recordBytes m b v =
+        // 'b' combines bit count (via high bit) and data (lower bits)
+        // thus 'b' is between 256 and 511 for a complete byte value.
+        if(b >= 256) then Map.add (uint8 (0xFF &&& b)) v m else
+        match v with
+        | U -> m // incomplete byte. Just drop it.
+        | L v' -> _recordBytes m (b <<< 1) v'
+        | R v' -> _recordBytes m ((b <<< 1) ||| 1) v'
+        | P (lv,rv) -> // max 8 stack depth, so use direct recursion
+            let lm = _recordBytes m (b <<< 1) lv
+            _recordBytes lm ((b <<< 1) ||| 1) rv
+
+    /// Obtain byte-aligned keys from a record. Drops any partial bytes. 
+    /// This is a helper function to iterate symbolic keys in the record.
+    let recordBytes (r:Value) : Map<uint8, Value> =
+        _recordBytes (Map.empty) 1 r
+
+    let rec private _seqSym ss  =
+        match ss with
+        | [] -> None
+        | struct(p, m)::ssRem ->
+            match Map.tryFindKey (fun _ _ -> true) m with
+            | None -> _seqSym ssRem // done with p
+            | Some 0uy -> // null terminator for key string
+                let ss' = struct(p, Map.remove 0uy m)::ssRem
+                let pb = p |> List.toArray |> Array.rev
+                let sym = System.Text.Encoding.UTF8.GetString(pb);
+                Some ((sym, Map.find 0uy m), ss')
+            | Some b -> 
+                let ss' = struct(b::p, recordBytes (Map.find b m))::
+                          struct(p, Map.remove b m)::ssRem
+                _seqSym ss'
+
+    /// Assuming value is a valid record, lazily return all key-value pairs.
+    let recordSeq (r:Value) : (string * Value) seq =
+        Seq.unfold _seqSym [struct(List.empty, recordBytes r)]
 
     // edge is `01` for left, `10` for right. accum in reverse order
     let inline private _key_edge acc e =

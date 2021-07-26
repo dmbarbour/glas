@@ -4,13 +4,13 @@
 
 Glas modules are typically represented by files and folders. Dependencies between Glas modules must be acyclic (i.e. a directed acyclic graph), and dependencies across folder boundaries are structurally restricted. Every module will deterministically compute a value. 
 
-To compute the value for a file `foo.ext`, the Glas system will compile the file binary according to a program defined in a module named `language-ext`. Although there is a special exception for bootstrapping, most syntax will be user-defined. The value of a folder is simply the value of its contained `public` file or subfolder.
+To compute the value for a file `foo.ext`, the Glas system will compile the file binary according to a program defined in a module named `language-ext`. Although there is a special exception for bootstrapping, most syntax will be user-defined. The value of a folder is the value of its contained `public` file.
 
-File extensions compose. For example, to compute the value for `foo.xyz.json` we first apply `language-json` to the file binary to compute an intermediate value, then apply `language-xyz` to that intermediate value. Thus, source input for language modules can be arbitrary Glas values. Relatedly, if a file has no extension, its value is the file binary. Folders also support language extensions, e.g. `foo.xyz/` will further compile the folder's value via `language-xyz`.
+File extensions compose. For example, to compute the value for `foo.xyz.json` we first apply `language-json` to the file binary to compute an intermediate value, then apply `language-xyz` to that intermediate value. Thus, source input for language modules can be arbitrary Glas values. Relatedly, if a file has no extension, its value is the file binary. Files and folders whose names start with `.` are hidden from the Glas module system.
 
-Modules are identified by symbols such as `foo`. The language extensions are elided and not visible to the module client. Search will first seek a local resource then fall back to searching for a folder using environment variable `GLAS_PATH`. It is feasible to extend the search path to include network package repositories. Files and folders whose names start with `.` are hidden from the Glas module system.
+In addition to local modules within a folder, a `GLAS_PATH` environment variable will support search for installed modules in the filesystem. It is feasible to further extend search to include network resources. 
 
-*Note:* Glas does not specify a package manager. I recommend a package manager designed for reproducible builds and sharing between similar builds, such as Nix or Guix. Distant future, I might develop something optimized for Glas.
+*Note:* Glas does not specify a package manager. I favor package managers suitable for community management and reproducible builds, such as Nix or Guix. Later, we might design a manager optimized for Glas.
 
 ## Data Model
 
@@ -212,10 +212,10 @@ Language modules have a module name of form `language-*`. The value of a languag
 
 The compile program implements a function from source (e.g. file binary) to a compiled value on the stack. The compile program can also access other module values and generate some log outputs. Effects API:
 
-* **load:ModuleID** - Modules are currently identified by simple symbols such as `foo`, but there is some room for extension. Response from 'load' is the specified module's compiled value, or failure if this value cannot be computed.
+* **load:ModuleID** - Modules are currently identified by UTF-8 strings such as `"foo"`. File extension is elided. We search for the named module locally then on `GLAS_PATH`. 
 * **log:Message** - Response is unit. Arbitrary output message, useful for progress reports, debugging, code change proposals, etc.. 
 
-Load failure may occur due to missing modules, ambiguous file names, dependency cyles, failed compile, etc. The cause of failure is visible to the client module, but is reported in the development environment.
+Load failure may occur due to missing modules, ambiguity, dependency cyles, failure by the compile program, etc. The compile program decides what to do after a load fails, e.g. fail the compile or continue with fallback. Cause of failure is not visible to the compile program but may implicitly be reported to the programmer.
 
 ### Streaming Binaries
 
