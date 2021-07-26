@@ -259,9 +259,9 @@ Glas systems will support large data using content-addressed storage. A subtree 
 * memoization over large trees can use hashes
 * value-level alignment simplifies control
 
-Glas programs have a 'stow' operator to guide use of stowage. However, modulo reflection effects, use of stowage is not observable within the program. Stowage can be deferred heuristically, e.g. waiting for memory pressure or potential GC of the stowed data.
+Glas programs can use annotations to guide use of stowage. Stowage may also be implicit during garbage collection. Use of stowage is not observable within the Glas program except indirectly via reflection on performance and use of space.
 
-*Note:* For [security reasons](https://tahoe-lafs.readthedocs.io/en/tahoe-lafs-1.12.1/convergence-secret.html), content-addressed binaries should include a cryptographic salt. This salt prevents global deduplication, but local deduplication can be supported by convergence secret.
+*Note:* For [security reasons](https://tahoe-lafs.readthedocs.io/en/tahoe-lafs-1.12.1/convergence-secret.html), content-addressed binaries in a distributed system should include a cryptographic salt. This salt prevents global deduplication, but allows limited deduplication within a trusted group.
 
 ### Partial Evaluation
 

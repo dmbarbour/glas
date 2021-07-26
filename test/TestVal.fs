@@ -22,6 +22,12 @@ let randomBytes len =
         arr.[ix - 1] <- byte (rng.Next())
     ofBinary arr
 
+let randomSym len =
+    let arr = Array.zeroCreate len
+    for ix in 1 .. arr.Length do
+        arr.[ix - 1] <- 0x61uy + byte (rng.Next() % 26)
+    System.Text.Encoding.UTF8.GetString(arr)
+
 [<Tests>]
 let tests = 
     testList "Glas values" [
@@ -220,7 +226,21 @@ let tests =
             | _ -> failwith "record match failed"
             Expect.isTrue (isRecord v) "v is a labeled record"
 
-        // TODO: tests for recordSeq, 
+
+        testCase "recordSeq" <| fun () ->
+            for _ in 1 .. 100 do
+                let mutable m = Map.empty
+                let mutable v = unit
+                for ix in 1uy .. 100uy do
+                    let k = randomSym (randomRange 1 4)
+                    m <- Map.add k ix m
+                    v <- record_insert (label k) (u8 ix) v
+                let convert kvp = 
+                    match kvp with
+                    | (k, U8 ix) -> (k,ix)
+                    | _ -> invalidArg (nameof kvp) "not a valid kvp"
+                //printf "kvps=%A\n" m
+                Expect.equal (v |> recordSeq |> Seq.map convert |> List.ofSeq) (Map.toList m) "equal maps"
 
         testCase "eq binaries" <| fun () ->
             for _ in 1 .. 100 do
