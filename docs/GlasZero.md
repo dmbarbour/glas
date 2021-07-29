@@ -30,7 +30,7 @@ The next step is to bootstrap the command-line utility. This requires modeling t
 
 ## Embedded Data
 
-The g0 program syntax has built-in support for numbers, symbols, and strings.
+The g0 program syntax has built-in support for numbers, symbols, and strings. 
 
         0b010111                (becomes identical bitstring)
         23                      0b10111         (the min-width representation)
@@ -38,11 +38,11 @@ The g0 program syntax has built-in support for numbers, symbols, and strings.
         'word                   0x776f726400    (symbols for every valid word)
         "hello"                 (list of ascii bytes; forbids C0, DEL, and '"')
 
-It is feasible to develop a series of words such that `23 u8` is equivalent to `0x17`. The g0 language compiler may evaluate such data statically. Strings do not have escape characters but can similarly be post-processed by a subsequent word. There is currently no support for embedded records or lists, but those may be constructed programmatically via put and pushr.
+The g0 syntax doesn't support structured data or string escapes, but it is possible to write programs that compose or manipulate data, and a compiler may optimize by static partial evaluation.
 
 ## Words
 
-A word in g0 currently must match regex `[a-z][a-z0-9]*('-'[a-z][a-z0-9]*)*`.
+A word in g0 currently must match regex `[a-z][a-z0-9]*('-'[a-z][a-z0-9]*)*`. 
 
 Within a program, a word is immediately compiled by replacing it with the definition. This results in a form of static scoping and linking. If there is no definition for a word, a warning should be logged and the word is replaced by 'fail' operator.
 
@@ -57,6 +57,13 @@ For the basic symbolic operators like 'swap' or 'add', keywords compile to the p
         try [ Program ] then [ Program ] else [ Program ]       (cond)
         with [ Program ] do [ Program ]                         (env)
 
+### Binary Extraction
+
+The g0 syntax can define streaming binaries, but cannot express precomputed binary data. The assumption is that the command line tool can extract a streaming binary by specifying an element of a record within a module. Binary extraction is necessary to complete the bootstrap process, producing an executable.
+
 ## Extensions
 
-A bootstrap syntax should not be casually extended with new features because doing so will inevitably leak into the bootstrap program, which complicates a fresh bootstrap from other languages. However, it is feasible to develop new language modules that preserve a similar Forth-like style while adding a variety of features suitable for staged computing, metaprogramming, static analysis, acceleration, etc..
+The g0 syntax should not be extended with anything that complicates the parser or compilation. The idea is to instead escape g0 by implementing language modules.
+
+I would like to develop more languages in Glas with a Forth-like syntax, albeit with much better support for staged higher order programmng, metaprogramming, type annotations, local variables, etc.. But we can also support lambda calculus, Kahn Process Networks, and many other program models.
+

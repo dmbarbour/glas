@@ -12,6 +12,7 @@
     <Compile Include="TestVal.fs" />
     <Compile Include="TestArith.fs" />
     <Compile Include="TestProg.fs" />
+    <Compile Include="TestGlasZero.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
 

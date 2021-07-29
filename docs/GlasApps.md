@@ -265,9 +265,7 @@ We can cover the needs of most applications with support for TCP and UDP protoco
 
 An Addr could be a 32-bit number (IPv4), a 128-bit number (IPv6), or a string such as "www.google.com" or "192.168.1.42". Similarly, a Port can be a 16-bit number or a string such as "ftp" that is externally associated with a port (cf. `/etc/services` in Linux). 
 
-Notes:
-
-To simplify the API, I'm not providing the addrinfo family of methods. In theory, we could implement this using network access to DNS servers and file access to DNS configurations (e.g. `/etc/resolv.conf`). In practice, I think most apps won't need lookup separate from connect.
+An API for DNS access would also be convenient, but its implementation isn't critical at this time. In theory, we could implement this using network access to DNS servers (potentially including a localhost DNS) and file access to DNS configurations (e.g. `/etc/resolv.conf`). But most apps won't need direct use of lookup services if we integrate it implicitly into the addressing.
 
 I've excluded the half-close TCP feature because too many routers disable this feature by applying a short timeout after half-close. A TCP connection should be closed when the full TCP interaction is complete.
 
@@ -296,24 +294,19 @@ HTTP requests must be modeled as asynchronous, but they're a lot simpler than we
 
 ### Procedural Programming
 
-Transaction machines have many nice features, but there is a common scenario where transactions are very awkward: request-response interactions with external services. The request must be committed before any response is generated, thus request and response must be separated into two transactions. This scenario aligns nicely with procedural programming.
+Request-response interactions with external services are awkward for transaction machines because request must be committed before a response is generated. However, this is essentially a problem of *expression* of programs. It is feasible to create a procedural program then interpret it one step at a time over multiple transactions. Then we only need to ensure that request and response aren't expressed as an atomic step.
 
-Transaction machines can evaluate procedural programs. Each transaction would interpret the procedure for a few steps then store the continuation for a future transaction as needed, such as when the next step would fail due to the current system state. For example, if a procedure's next step is to read an empty channel, we'll wait until it's non-empty. Support for transactional steps would support composite waits, e.g. continuing when data is available or a timeout is achieved.
+Transaction machines can evaluate procedural programs. Each transaction would interpret the procedure for one step then store the continuation for a future transaction. If the step would fail, the transaction also fails and the step implicitly waits for changes in the environment. For example, if a procedure's next step is to read a channel, we'll implicitly wait until the channel is non-empty. 
 
-A procedure would deadlock if written such that a request-response pattern is included within a transactional step. This could be avoided by user discipline, a well-designed syntax, or by a suitable safety analysis, e.g. using session types. 
+Support for transactional steps would support composite waits and atomic updates. This does introduce possible deadlock, e.g. if we include a request-response pattern within the transaction. But we can resist this issue with some discipline or session types.
 
-Conveniently, Glas programs can be used for procedural programming. We treat the top-level program as procedural outside of 'try' and 'while' clauses, which must use transactions for backtracking. Arbitrary subprograms could use an 'atomic' annotation for transactional evaluation, e.g. `prog:(atomic, do:P)`. In this case, if P fails, we may backtrack, save the continuation, retry later. Within a transaction, this annotation would do nothing.
+Conveniently, Glas programs can be applied for procedural programming. The top-level program is treated as non-atomic, but 'try' and 'while' clauses are atomic. A transactional step might be expressed as adding all  logic into the 'try' clause and having the 'else' clause simply be 'fail'.
 
-The main challenge for procedural programming is effective integration with live coding and reactive systems. It's difficult to correctly update a stateful continuation when the program is updated. But for short-lived procedural tasks this isn't a concern, and for long-lived procedural applications we can still use conventional methods to kill and restart apps. 
+The main challenge for procedural programming is effective integration with live coding and reactive systems. It's difficult to correctly update a stateful continuation when the associated program is updated. But this isn't a concern for all use-cases, and conventional process control (kill and restart) remains an option. 
 
 ### GUI
 
 Transaction machines are neutral towards retained vs. immediate mode graphical user interface APIs. Retained mode is more prevalent today, but immediate mode seems a better fit for my vision of live coding and reactive systems.
 
-A viable approach to immediate mode GUI: the application provides an 'imgui' method that the system implicitly evaluates at 30Hz (or other framerate) while a user is observing. The method will draw boxes, buttons, text, and graphical primitives. Incremental computing applies: a GUI element whose inputs do not change doesn't need to be recomputed. The 'fork' effect might be interpreted as partitioning the GUI into layers that may update independently.
-
-The imgui method also has access to the user model - clipboard, cookies, display resolution, preferences, authority, attention, etc.. While drawing interactive elements such as buttons, there can be immediate feedback for whether the user is pressing that button. Multiple users can concurrently interact with an app, and a single user might have multiple concurrent sessions and views.
-
-The specialized APIs design principle implies we should provide a retained mode API if that's what the underlying platform supports. An IMGUI API would be implemented as an adapter layer, above the platform but below the app. Support for IMGUI, thus, will depend on maturity of the Glas system.
-
+Most hosts are more likely to provide a retained-mode API. The motive is that retained-mode requires less communication when things are mostly standing still. But we could provide a retained-mode API as an abstraction layer above many retained-mode APIs. 
 

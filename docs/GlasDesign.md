@@ -32,19 +32,17 @@ To control memory resources, Glas systems may offload large subtrees to content-
 
 ## Binary Extraction
 
-A subset of Glas modules may define binary outputs. Common representations include a list of bytes or a program that writes a stream of binary fragments (see *Streaming Binaries* below). The Glas command-line tool will provide modes to extract common representations of binary data to file or stdout.  
+A subset of Glas modules may define binary outputs. A binary can be represented as data (a list of bytes) or as a program that writes a stream of binary fragments. The Glas command-line tool shall provide options to extract binaries to file or stdout. The extracted binary should represent an externally useful software artifact - e.g. music file, pdf document, executable. A tar or zip file can represent multi-file outputs. 
 
-An extracted binary should represent an externally useful software artifact - e.g. pdf, music file, an executable, a meme image, or a JavaScript program. To represent multi-file software artifacts, the binary can represent a tarball or zipfile which can be extracted by another tool.
+Instead of a command-line compiler, some Glas modules will compile values from other Glas modules into binaries, which are later extracted. The logic for producing an executable should primarily be represented within the Glas module system. To adapt executables for the system, it is feasible to depend on a `target` module that describes an OS and machine architecture.
 
-Compilation in Glas is based on binary extraction: a 'compile' is essentially a module that specifies the executable. It is feasible to target binaries for specific machines by having the compiler depend on a `target` module, which might specify the local machine or be overridden in `GLAS_PATH` for cross-compilation.
-
-An intriguing consequence is that compiled binaries remain accessible within the module system for further composition or automated testing.
+An intriguing consequence is that binaries remain accessible within the module system. Thus, other modules could further compose these binaries (e.g. to construct a virtual machine image) or interpret binary executables for automatic fuzz testing.
 
 ## Glas Programs
 
-Glas systems can support multiple program models, but a standard model is required for bootstrap of language modules. This program model is essentially an intermediate program representation for an abstract machine, focused on basic operation, composition, annotation, and simple interpretation. Many program features - such as named variables, keyword parameters, etc. - are left to the syntax layer. Performance is a significant long-term concern: it should be feasible to compile and accelerate language modules for expensive build-time computations.
+Glas defines a standard program model designed for staging, composition, and compilation of programs, while being easy to interpret. This model is used when defining language modules, streaming binaries, automated tests, and is suitable for transaction machine applications. However, it is possible to support many more program models within a mature Glas system.
 
-This section describes the standard program model. The only required static check for Glas programs is verifying that stack arity is static, i.e. branches are balanced and loops are stack-invariant. 
+Glas programs are stack-based. Valid Glas programs have static stack arity, i.e. branches are balanced and loops are stack-invariant. To detect errors ahead-of-time where feasible, other ad-hoc type safety analyses are recommended but not required. In general, Glas programs are responsible for verifying other Glas programs. 
 
 ### Stack Operators
 
@@ -219,14 +217,12 @@ Load failure may occur due to missing modules, ambiguity, dependency cyles, fail
 
 ### Streaming Binaries
 
-It is frequently convenient to represent large or computed binaries as programs that generate a stream of binary fragments. A viable representation is a zero-arity program (no input or output on data stack) with a 'write' effect for outputting binary fragments. Effects API:
+To defer computation, or to support very large values, we can express binary outputs as programs that write binary fragments. The program is zero-arity (no inputs, no outputs except via writes). Command line tools can interpret the program to generate the binary stream.
 
-* **write:Binary** - addend a binary (a list of bytes) to the generated output stream. Response is unit, or fails if argument is not valid binary.
+* **write:Binary** - addend binary data - a list of bytes - to the output stream. Response is unit, or fails if argument is not valid binary.
 * **log:Message** - Response is unit. Arbitrary output message, useful for progress reports or debugging.
 
-It is possible for a binary stream to fail after writing a few megabytes. Failure should be interpreted as a stream error, but exactly how this error is handled will depend on context.
-
-*Aside:* [The g0 syntax](GlasZero.md) does not have direct access to static evaluation, thus will rely on streaming binaries for extraction. 
+This program is not atomic outside of 'try' and 'while' clauses. We can begin processing our stream before it's full computed. Thus, the program may fail after writing a few megabytes of data. Exactly how this failure is reported and handled should be left to our client.
 
 ### Automated Testing
 

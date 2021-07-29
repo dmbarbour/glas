@@ -1,10 +1,16 @@
 namespace Glas
 
 /// This file implements the g0 (Glas Zero) bootstrap syntax. This implementation
-/// of g0 should be replaced by the language-g0 module when bootstrap completes. 
-/// I'm using FParsec to provide decent error messages without too much effort.
+/// of g0 should be replaced by a language-g0 module after bootstrap completes. 
+///
+/// The g0 language is not good for day to day use. There is no support for static 
+/// higher order programs or macros, thus list processing and parser combinators 
+/// are awkward to express. Embedded data is limited to bitstrings. Data plumbing
+/// is often inconvenient due to lack of variables.
 /// 
-/// Unlike most languages, g0 does not support embedded data other t
+/// The extreme simplicity of g0 is intentional. The many deficiencies of g0 can
+/// be resolved by defining better languages and implementing langage modules.
+///
 module Zero =
     type Word = string
     type ModuleName = Word
@@ -13,9 +19,9 @@ module Zero =
     /// However, we still preserve words at this layer.
     type Prog = ProgStep list
     and ProgStep =
-        | Call of Word    // word
+        | Call of Word  // word
         | Sym of Bits // 'word, 42, 0x2A, 0b101010, etc.
-        | Str of byte list // "hello, world!"
+        | Str of string // "hello, world!"
         | Env of With:Prog * Do:Prog
         | Loop of While:Prog * Do:Prog
         | Cond of Try:Prog * Then:Prog * Else:Prog
@@ -31,37 +37,40 @@ module Zero =
     type Def = Prog of Name: Word * Body: Prog
 
     [<Struct>]
-    type AST = 
+    type TopLevel = 
         { Open : ModuleName option
         ; From : ImportFrom list
         ; Defs : Def list
         }
 
     module Parser =
+        // I'm using FParsec to provide decent error messages without too much effort.
+
         open FParsec
         type P<'T> = Parser<'T,unit>
 
-        let isWordChar c = 
-            isAsciiLetter c || isDigit c || (c = '-')
-
         let lineComment : P<unit> =
-            pchar ';' >>. skipManyTill anyChar newline 
+            (pchar ';' <?> "`; line comment`") >>. skipManyTill anyChar newline 
 
         let ws : P<unit> =
-            spaces >>. skipMany (lineComment >>. spaces)
+            spaces >>. (skipMany (lineComment >>. spaces) <?> "spaces and comments")
 
-        let str s : P<unit> = 
-            pstring s >>. ws
+        let isBadWordSep c =
+            isAsciiLetter c || isDigit c || 
+            (c = '-') || (c = '\'') || (c = '"')
 
         let wsep : P<unit> =
-            nextCharSatisfiesNot isWordChar .>> ws
+            nextCharSatisfiesNot isBadWordSep .>> ws
+
+        let kwstr s : P<unit> = 
+            pstring s >>. wsep
 
         let parseWord : P<string> =
-            let frag = manySatisfy2 isAsciiLower (fun c -> isAsciiLower c || isDigit c)
-            (stringsSepBy1 frag (pstring "-")) <??> "word"
+            let frag = many1Satisfy2 isAsciiLower (fun c -> isAsciiLower c || isDigit c)
+            stringsSepBy1 frag (pstring "-") .>> wsep 
 
         let parseSymbol : P<Bits> =
-            (pchar '\'' >>. parseWord) <??> "symbol" |>> Value.label
+            pchar '\'' >>. parseWord |>> Value.label
 
         let hexN (cp : byte) : byte =
             if ((48uy <= cp) && (cp <= 57uy)) then (cp - 48uy) else
@@ -96,11 +105,69 @@ module Zero =
         let parseData : P<Bits> =
             parseBin <|> parseHex <|> parseSymbol <|> parseNat  
 
-        let parseProgBody : P<Prog> =
-            fail "todo: parse programs"
+        let isStrChar (c : char) : bool =
+            let cp = int c
+            (cp >= 32) && (cp <= 126) && (cp <> 34)
 
-        let progBlock : P<Prog> = 
-            between (str "[") (str "]") parseProgBody
+        let parseString : P<string> =
+            pchar '"' >>. manySatisfy isStrChar .>> pchar '"' .>> wsep
+
+        // FParsec's approach to recursive parser definitions is a little awkward.
+        let parseProgStep, parseProgStepRef = createParserForwardedToRef<ProgStep, unit>()
+
+        let parseProgBody = 
+            many parseProgStep
+
+        let parseProgBlock : P<Prog> = 
+            between (pchar '[' .>> ws) (pchar ']' .>> ws) parseProgBody
+
+        //dip [ Program ]  
+        let parseDip = parse {
+            do! kwstr "dip"
+            let! pDip = parseProgBlock
+            return Dip pDip
+        }
+
+        // while [ C ] do [ B ]
+        let parseLoop = parse {
+            do! kwstr "while"
+            let! pWhile = parseProgBlock
+            do! kwstr "do"
+            let! pDo = parseProgBlock
+            return Loop (While=pWhile, Do=pDo)
+        }
+
+        // try [ C ] then [ A ] else [ B ]
+        let parseCond = parse {
+            do! kwstr "try"
+            let! pTry = parseProgBlock
+            do! kwstr "then"
+            let! pThen = parseProgBlock
+            do! kwstr "else"
+            let! pElse = parseProgBlock
+            return Cond (Try=pTry, Then=pThen, Else=pElse)
+        }
+
+        // with [ H ] do [ P ]
+        let parseEnv = parse {
+            do! kwstr "with"
+            let! pWith = parseProgBlock
+            do! kwstr "do"
+            let! pDo = parseProgBlock
+            return Env (With=pWith, Do=pDo)
+        }
+
+        parseProgStepRef := 
+            choice [
+                parseData |>> Sym
+                parseString |>> Str
+                parseEnv
+                parseLoop
+                parseCond
+                parseDip
+                // NOTE: word is last to avoid conflict with with/while/try/dip keywords
+                parseWord |>> Call 
+            ]
 
         let startOfLine : Parser<unit,'a> =
             fun stream ->
@@ -108,37 +175,39 @@ module Zero =
                 Reply(Error, expected "start of line")
 
         let parseOpen : P<ModuleName> =
-            startOfLine >>. str "open" >>. parseWord
+            kwstr "open" >>. parseWord
 
         let parseImport : P<Import> =
-            parseWord .>>. (opt (str "as" >>. parseWord)) 
+            parseWord .>>. (opt (kwstr "as" >>. parseWord)) 
                 |>> fun (w,aw) -> Import(Word=w,As=aw)
 
         let parseFrom : P<ImportFrom> =
-            startOfLine >>. str "from" >>. parseWord .>>. (str "import" >>. sepBy1 parseImport (pchar ',')) 
+            kwstr "from" >>. parseWord .>>. (kwstr "import" >>. sepBy1 parseImport (pchar ',')) 
                 |>> fun (src,l) -> From (Src=src, Imports=l)
 
         let parseProgDef : P<Def> = 
-            str "prog" >>. parseWord .>>. progBlock 
+            kwstr "prog" >>. parseWord .>>. parseProgBlock 
                 |>> fun (w, p) -> Prog (Name=w, Body=p)
 
         let parseDef : P<Def> =
-            // only one definition type for now
+            // only one definition type for now.
+            // The g0 language is unlikely to add support for defining types, macros, etc.
             parseProgDef 
 
-        let parseTopLevel =
-            ws >>. opt parseOpen .>>. many parseFrom .>>. many parseDef .>> eof 
-                |>> fun ((optOpen, lFrom), lDefs) -> 
-                    { Open = optOpen; From = lFrom; Defs = lDefs } 
+        let parseTopLevel = parse {
+            do! ws
+            let! optOpen = opt (startOfLine >>. parseOpen)
+            let! lFrom = many (startOfLine >>. parseFrom)
+            let! lDefs = many (startOfLine >>. parseDef)
+            do! eof
+            return { Open = optOpen; From = lFrom; Defs = lDefs } 
+        }
 
     // after parsing g0, still need to validate:
     //  no duplicate imports or definitions (modulo open)
     //  no defining of the keywords
 
 
-
-
-    // current goal: parser for AST.
 
     /// The g0 syntax has a ton of reserved words.
     /// This includes all the basic ops.
