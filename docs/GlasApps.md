@@ -90,21 +90,19 @@ There are a lot of benefits to having applications allocate their own references
 
 This supports static allocation of references. The references can be descriptive and meaningful for debugging, reflection, and extension. Dynamic allocation of references is easily partitioned, reducing contention on a central allocator. There are no security risks related to potential forgery of system references.
 
-### State and Continuations
+### State
 
-In context of live coding, first-class functions are awkward because is unclear how software updates should propagate to stored functions. Defunctionalization of a program can represent continuations as data, but then we must consider the stability of this data across updates to code - e.g. if we add a variable, it might not be part of the stored continuation.
+Most applications require state. In context of transaction machines, it's preferable that state manipulation is fine-grained in an easily recognized way, such that concurrent transactions on different parts of state can avoid read-write conflicts.
 
-To solve this, we can explicitly model state machines and constrain the type of valid states we store between transactions. However, constructing and maintaining this central model of states can be an onerous chore. 
-
-Ideally, we can infer the valid set of states but also maintain stability by explicitly labeling continuation states. In Glas, this would require an alternative or extended program model, e.g. with manually labeled 'yield'.
+Additionally, state is external to the transaction, like a database. In context of live coding, a transaction machine's program may be updated at runtime, and we'll often need to update state for the new program. This may benefit from special attention to versioning and conversion of state resources.
 
 ### Specialized APIs
 
-For applications and their platforms, specialized effects APIs are better. A console app platform should have an API specialized for file and network access, while a web-app platform would focus on document object model and XMLHttpRequest. 
+An application primarily interacts with its host via algebraic effects. The application can indirectly interact with other applications via host-provided communications APIs. Communications could be based on channels, publish-subscribe, databuses, databases, tuple spaces, etc.. Transaction machines restrict synchronous communications but there are many workarounds.
 
-The application should have an effects API that is specific to the application's data and user interaction model, almost independent of the host. This simplifies model testing, analysis, protection of invariants, porting to different hosts, etc.
+However, a general API for communications is too difficult to integrate with existing systems and applications. It's much easier to integrate a specialized API that aligns tightly with the limitations of the target host. For example, an API based on XMLHttpRequest and DOM for a web app, or based on TCP connections and file streams for a console app.
 
-General APIs and frameworks should be used mostly for intermediate adapter layers between application and host.
+Given a specialized API, we can still develop an adapter framework exposing a more general API, e.g. a framework for a webserver might support generalized applets that don't directly interact with TCP.
 
 ## Common Effects
 
@@ -139,11 +137,11 @@ Applications need private memory to carry information across transactions. For c
  * **put:Value** - Modify memory so Value is subsequently associated with MemRef.
  * **swap:Value** - Combines get and put. 
  * **read:(count:N, exact?, tail?, peek?)** - take 1 to N elements from head of list, or fail if value in memory is not a list with at least one element. Elements read are removed from the list. Returns list of elements read. Options:
-  * *exact* - flag. if set, fail if would return fewer than N elements.
-  * *tail* - flag. if set, read from end of list instead of head.
-  * *peek* - flag. if set, do not remove the read elements from list.
- * **write:(data:\[List, Of, Values\], head?)** - join to tail of list in memory. Fails if item in memory is not a valid list. Options:
-  * *head* - flag. if set, join to head of list instead.
+  * *exact* - flag. if set, fail if would return fewer than N elements. Does nothing if count is 1.
+  * *tail* - flag. if set, read from tail of list instead of head.
+  * *peek* - flag. if set, do not remove elements read from list.
+ * **write:(data:\[List, Of, Values\], head?)** - addend data to tail of list in memory. Fails if element is not a valid list. Options:
+  * *head* - flag. if set, addend to head of list instead of tail.
  * **path:(on:Path, op:(del|MemOp))** - manipulate a record field or volume reached by following Path. The operator 'del' can erase the path from a record.
  * **elem:(at:Index, op:MemOp)** - manipulate a list element in-place at a zero-based index (range `[0,N)`). Fails if index is out of range.
 
@@ -164,18 +162,25 @@ Console applications minimally require access to:
 
 Log output may bind stderr by default.
 
-### Environment Variables and Command Line Arguments
+### Environment Variables
 
-Accessed by effect as implicit parameters:
+Environment variables can be viewed as an ad-hoc, restricted memory shared between host and application. The host may compute data on demand and impose restrictions on how variables are manipulated based on data types. Only the host may define new environment variables.
 
-* **cmd** - response is list of strings representing command-line arguments.
-* **env** - response is list of 'key=value' strings for environment variables.
+* **env:(on:EnvVar, op:MemOp)** - response depends on the target and operation. May fail. Possible EnvVars:
+ * *vars* - get/set an environment, a labeled record of strings.
+ * *cmd* - request command-line as a list of strings.
+ * *exit* - application halts after setting exit code and committing.
+ * *strace* - get the current stack trace, suitable for debugging
+ * *tty* - get succeeds for interactive console apps (via stdin/stdout). Value may describe console height and width.
+ * *signal* - read head (or write tail) for OS signals to this process.
+ * *user* - username for the current user
+ * *cwd* - working directory for relative filesystem paths
 
-There is no equivalent to 'setenv', but it is feasible to use the env/eff operator to override these values in context of a subprogram. Similarly, use of env/eff operators can control a subprogram's exposure to command line arguments.
+This API is an awkward fit for use cases where we might want to model multiple concurrent or asynchronous interactions, each with their own state. But it's adaptable for many use cases.
 
 ### Standard IO
 
-Standard input and output can be modeled as initially open file references, following convention. However, instead of integers, I propose to reserve symbols `stdin`, `stdout`, and `stderr` as file references.
+Standard input and output can be modeled as initially open file references, following convention. However, instead of integers, I propose to reserve `std:in`, `std:out`, and `std:err` as file references. In general, we might reserve `std:` prefix for system-defined references.
 
 ### Filesystem
 
@@ -187,7 +192,7 @@ Glas applications support a relatively direct translation of the conventional fi
   * *write* - erase current content of file or start a new file.
   * *append* - extend current content of file.
   * *create* - same as write, except fails if the file already exists.
-  * *delete* - removes a file. Use 'state' to observe progress.
+  * *delete* - removes a file. Use 'state' to observe progress and potential error.
  * **close:FileRef** - Delete the system object associated with this reference. FileRef is no longer in-use, and operations (except open) will fail.
  * **read:(from:FileRef, count:N, exact?)** - read 1 to N bytes, limited by available data, returned as a list. Fails if no bytes are available - see 'state' to diagnose. Option:
   * *exact* - flag. If set, fail if fewer than N bytes are available.
@@ -289,9 +294,21 @@ HTTP requests must be modeled as asynchronous, but they're a lot simpler than we
 
 ## Miscellaneous
 
+### Procedural Programming
+
+Transaction machines have many nice features, but there is a common scenario where transactions are very awkward: request-response interactions with external services. The request must be committed before any response is generated, thus request and response must be separated into two transactions. This scenario aligns nicely with procedural programming.
+
+Transaction machines can evaluate procedural programs. Each transaction would interpret the procedure for a few steps then store the continuation for a future transaction as needed, such as when the next step would fail due to the current system state. For example, if a procedure's next step is to read an empty channel, we'll wait until it's non-empty. Support for transactional steps would support composite waits, e.g. continuing when data is available or a timeout is achieved.
+
+A procedure would deadlock if written such that a request-response pattern is included within a transactional step. This could be avoided by user discipline, a well-designed syntax, or by a suitable safety analysis, e.g. using session types. 
+
+Conveniently, Glas programs can be used for procedural programming. We treat the top-level program as procedural outside of 'try' and 'while' clauses, which must use transactions for backtracking. Arbitrary subprograms could use an 'atomic' annotation for transactional evaluation, e.g. `prog:(atomic, do:P)`. In this case, if P fails, we may backtrack, save the continuation, retry later. Within a transaction, this annotation would do nothing.
+
+The main challenge for procedural programming is effective integration with live coding and reactive systems. It's difficult to correctly update a stateful continuation when the program is updated. But for short-lived procedural tasks this isn't a concern, and for long-lived procedural applications we can still use conventional methods to kill and restart apps. 
+
 ### GUI
 
-Transaction machines are neutral towards retained vs. immediate mode graphical user interface APIs. Retained mode is more prevalent today, but immediate mode seems a better fit for my vision of live coding and robust reactive systems.
+Transaction machines are neutral towards retained vs. immediate mode graphical user interface APIs. Retained mode is more prevalent today, but immediate mode seems a better fit for my vision of live coding and reactive systems.
 
 A viable approach to immediate mode GUI: the application provides an 'imgui' method that the system implicitly evaluates at 30Hz (or other framerate) while a user is observing. The method will draw boxes, buttons, text, and graphical primitives. Incremental computing applies: a GUI element whose inputs do not change doesn't need to be recomputed. The 'fork' effect might be interpreted as partitioning the GUI into layers that may update independently.
 
@@ -299,10 +316,4 @@ The imgui method also has access to the user model - clipboard, cookies, display
 
 The specialized APIs design principle implies we should provide a retained mode API if that's what the underlying platform supports. An IMGUI API would be implemented as an adapter layer, above the platform but below the app. Support for IMGUI, thus, will depend on maturity of the Glas system.
 
-### Procedural Programming
 
-Procedural programming is convenient for many use-cases because they can directly express synchronous request-response patterns. However, there is a cost: the implicit continuation or state of a procedure call has unstable type across program updates, and implicitly captures data and decisions that too easily become stale. This hinders implicit reactivity to changes in code or data dependencies. However, there are use-cases for which this tradeoff is worthwhile. 
-
-In context of transaction machines, we can separate a procedural program from runtime updates by interpreting a copy of the program. This way, a program update does not directly affect ongoing evaluations of the prior version. If we need update for long-running procedural apps, we must use conventional mechanisms such as explicitly saving state then loading into the new version.
-
-Although we lose reactivity and live coding, an underlying transaction machine would still provide a convenient foundation for process control and concurrency. The procedures could use transactional memory instead of mutexes, aborts instead of waits, support concurrent procedures above forking transactions.

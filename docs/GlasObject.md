@@ -2,7 +2,7 @@
 
 ## Status
 
-The core of Glas Object is feature-complete, but it hasn't been performance-tested yet and design of escapes still needs a lot of work.
+The core of Glas Object is feature-complete, but it hasn't been performance-tested yet and standardization of escapes still needs a lot of work.
 
 ## Overview
 
@@ -53,7 +53,7 @@ Three node type bits determine how the elements following a node are interpreted
  * 11 - inline left then inline right (left tree should be small!)
 * stem - 01b - lower bit is inline (1) vs. offset (0) for child.
 * leaf - 001 - terminates a tree.
-* escape - 000 - operator then inline node.
+* escape - 000 - varnat operator then inline node.
 
 Glas values can be encoded using just inline branch, stem, and leaf nodes. Offsets support structure sharing, indexing, and organization within the binary. Offsets are encoded as a varnat (see below) and are always positive, thus it's impossible to directly represent a cycle.
 
@@ -61,14 +61,14 @@ Escaped nodes are always parsed the same way: a varnat operator directly followe
 
 ### Varnat Encoding
 
-The varnat encoding favored by Glas Object uses a prefix `(1)*0` to encode the total number of bytes. For example:
+The varnat encoding favored by Glas Object uses a prefix `(1)*0` to encode the total number of bytes, reminiscent of UTF-8 but . For example:
 
         0xxxxxxx
         10xxxxxx xxxxxxxx
         110xxxxx xxxxxxxx xxxxxxxx
         1110xxxx xxxxxxxx xxxxxxxx xxxxxxxx
 
-This gives us 7 data bits per byte. To ensure a lexicographic order of numbers, overlong encodings aren't permitted. Glas varnats are usually interpreted to start at 1.
+This gives us 7 data bits per byte. To ensure a lexicographic order of numbers, overlong encodings aren't permitted. Glas Object varnats are interpreted to start at 1 (we don't use zeroes).
 
         00000000    1
         00000001    2
@@ -76,7 +76,7 @@ This gives us 7 data bits per byte. To ensure a lexicographic order of numbers, 
         ...
         01111111    128
 
-In practice, varnats are unlikely to use more than four bytes in Glas Objects. At some point in the range above a few megabytes, use of stowage becomes superior for scaling and structure sharing than use of big binaries. 
+In practice, varnats are unlikely to use more than four bytes in Glas Objects. At some point in the range above a few megabytes, use of stowage references becomes superior to using ever larger binaries.
 
 ### Escapes
 

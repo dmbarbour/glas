@@ -42,7 +42,7 @@ It is feasible to develop a series of words such that `23 u8` is equivalent to `
 
 ## Words
 
-A word in g0 currently must match regex `[a-z]+('-'[a-z]+)*(0-9)*`.
+A word in g0 currently must match regex `[a-z][a-z0-9]*('-'[a-z][a-z0-9]*)*`.
 
 Within a program, a word is immediately compiled by replacing it with the definition. This results in a form of static scoping and linking. If there is no definition for a word, a warning should be logged and the word is replaced by 'fail' operator.
 
