@@ -248,6 +248,13 @@ let tests =
                 let b = randomBytes 7
                 Expect.notEqual a b "bytes of different length a b"
                 Expect.equal a a "equal a a"
+
+        testCase "string round trip" <| fun () ->
+            for _ in 1 .. 100 do
+                let s = randomSym (randomRange 1 100)
+                let v = ofString s
+                let s' = toString v
+                Expect.equal s s' "equal strings"
  
         testCase "toKey" <| fun () ->
             Expect.equal (toKey (pair unit (left unit))) (Bits.ofByte 0xC4uy) "pulu"

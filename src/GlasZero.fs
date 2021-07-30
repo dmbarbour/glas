@@ -307,7 +307,7 @@ module Zero =
     /// then replace that word by 'fail'.  
     type NS = Value
 
-    /// Load and Log are supported by the abstract effects handler. 
+    /// Load and Log during compile supported by the abstract effects handler. 
     /// 
     /// This ensures that the g0 compiler is consistent with other language modules.
     /// It also simplifies bootstrap, since we can provide that via handler.

@@ -574,3 +574,25 @@ module Value =
         | _ -> invalidArg (nameof v) "value is not a binary"
 
 
+    // conversions to/from strings. Assumes UTF-8
+
+    let ofString (s : string) : Value =
+        ofBinary (System.Text.Encoding.UTF8.GetBytes(s))
+
+    let tryString (v : Value) : string option =
+        match v with
+        | Binary b ->
+            try 
+                System.Text.Encoding.UTF8.GetString(b) |> Some
+            with
+            | _ -> None
+        | _ -> None
+
+    let inline (|String|_|) v = 
+        tryString v
+    
+    let toString v =
+        match v with
+        | String s -> s
+        | _ -> invalidArg (nameof v) "value is not a string"
+
