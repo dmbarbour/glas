@@ -537,6 +537,9 @@ module Program =
             | Env (With=pWith; Do=pDo) -> env pWith pDo e 
             | Prog (Do=p'; Note=_) -> interpret p' e 
 
+    // An optimizing Program to Program compiler?
+    //
+    // We could improve performance, but might be better to defer optimizations
+    // until bootstrap is working, and fully write them within the Glas system.
 
-    // TODO: a compiler, of finally tagless interpreter that JIT can optimize easily.
-    //  ideally, also should eliminate runtime data plumbing, e.g. alloc refs instead.
+    // Compilers with register allocation etc. are a similar story. Defer for now.

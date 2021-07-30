@@ -198,16 +198,53 @@ module Zero =
             return { Open = optOpen; From = lFrom; Defs = lDefs } 
         }
 
-    // after parsing g0, still need to validate:
-    //  no duplicate imports or definitions (modulo open)
-    //  no defining of the keywords
+    let wordImported imp =
+        match imp with
+        | Import(As=Some w) -> w
+        | Import(Word=w) -> w 
 
+    let wordsFrom src = 
+        match src with
+        | From (Imports=imps) -> List.map wordImported imps
 
+    let wordDefined def =
+        match def with
+        | Prog (Name=w) -> w
 
-    /// The g0 syntax has a ton of reserved words.
+    /// Obtain a list of explicitly defined words from a g0 program.
+    /// A word defined twice will be listed twice.
+    let definedWords tlv =
+        let oldDefs = List.collect wordsFrom (tlv.From)
+        let newDefs = List.map wordDefined (tlv.Defs)
+        List.append oldDefs newDefs 
+
+    let rec private _wordsCalledBlock acc block =
+        List.fold _wordsCalledStep acc block
+    and private _wordsCalledStep acc step =
+        match step with
+        | Call w -> acc |> Set.add w
+        | Sym _ -> acc
+        | Str _ -> acc
+        | Env (With=pWith; Do=pDo) -> 
+            List.fold _wordsCalledBlock acc [pWith; pDo]
+        | Loop (While=pWhile; Do=pDo) ->
+            List.fold _wordsCalledBlock acc [pWhile; pDo]
+        | Cond (Try=pTry; Then=pThen; Else=pElse) ->
+            List.fold _wordsCalledBlock acc [pTry; pThen; pElse]
+        | Dip p -> _wordsCalledBlock acc p
+
+    /// Obtain a set of all words called from a program.
+    let wordsCalledFromProg (p : Prog) : Set<Word> =
+        _wordsCalledBlock (Set.empty) p 
+
+    let wordsCalledFromDef (d : Def) : Set<Word> =
+        match d with
+        | Prog (Body=p) -> wordsCalledFromProg p
+
+    /// The g0 syntax re a ton of reserved words.
     /// This includes all the basic ops.
     let reservedWords = 
-        [ "dip"; "data"; "seq"
+        [ "dip"
         ; "cond"; "try"; "then"; "else"
         ; "loop"; "while"; "do"
         ; "env"; "with"; "do"
@@ -218,15 +255,66 @@ module Zero =
         |> List.append (List.map Program.opStr Program.op_list) 
         |> Set.ofList
 
-    // During parse, we'll often import a few modules.
-    type LoadedModules = Map<string, Value>
+    let isReservedWord w =
+        Set.contains w reservedWords
 
+    type ShallowValidation = 
+        | DuplicateDefs of Word list
+        | ReservedDefs of Word list
+        | UsedBeforeDef of Word list
+        | LooksOkay 
 
+    let rec private _findDupWords acc l =
+        match l with
+        | (hd::l') ->
+            let acc' = if List.contains hd l' then (hd::acc) else acc
+            _findDupWords acc' l'
+        | [] -> acc
 
-    /// To detect cyclic dependencies, record which module we're loading.
-    type Loading = string list
+    let rec private _findUseBeforeDef acc defs =
+        match defs with
+        | (d::defs') when not (List.isEmpty defs') -> 
+            let calls = wordsCalledFromDef d  
+            let ubd = defs' |> List.map wordDefined 
+                            |> List.filter (fun w -> Set.contains w calls) 
+                            |> Set.ofList
+            _findUseBeforeDef (Set.union acc ubd) defs'
+        | _ -> acc
 
+    /// A shallow validation of a g0 program:
+    ///   - detects duplicate explicit imports/definitions  
+    ///   - detects if reserved words are imported or defined 
+    ///   - detects if defined word is is used before defined 
+    /// The g0 syntax doesn't support shadowing: each word must have a
+    /// constant meaning within a file. Additionally, within a file, a
+    /// word must be defined before it is used.
+    ///
+    /// Shallow validation will be performed by the compiler. If it fails,
+    /// compilation will also fail.
+    let shallowValidation tlv =
+        let lDefs = definedWords tlv
+        let lDups = _findDupWords [] lDefs
+        if not (List.isEmpty lDups) then DuplicateDefs lDups else
+        let lReserved = List.filter isReservedWord lDefs 
+        if not (List.isEmpty lReserved) then ReservedDefs lReserved else
+        let lUBD = Set.toList <| _findUseBeforeDef (Set.empty) (tlv.Defs)
+        if not (List.isEmpty lUBD) then UsedBeforeDef lUBD else
+        LooksOkay
 
-    /// A word is a string that re
+    /// The Namespace during compilation is represented by a dictionary, a record
+    /// of 'prog' and 'data' elements. Note that if an item is not 'prog' or 'data',
+    /// or if we reference an undefined word, the g0 compiler will raise a warning
+    /// then replace that word by 'fail'.  
+    type NS = Value
 
+    /// Load and Log are supported by the abstract effects handler. 
+    /// 
+    /// This ensures that the g0 compiler is consistent with other language modules.
+    /// It also simplifies bootstrap, since we can provide that via handler.
+    type LL = IEffHandler
 
+    /// compile g0 programs to Glas programs
+    /// This requires two additional inputs:
+    /// - The namespace of words defined so far.
+    /// - 
+    /// This primarily involves linking 

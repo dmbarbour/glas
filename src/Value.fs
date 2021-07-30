@@ -22,8 +22,8 @@ namespace Glas
 //
 // This representation still excludes support for Stowage or rope-like chunks for 
 // binaries, much less support for acceleration of matrix math and so on. However,
-// this should be adequate for bootstrap. I'd prefer to shove the more advanced 
-// value representation features to post-bootstrap.
+// this should be adequate for bootstrap, assuming dependencies fit within memory.
+// I'd prefer that advanced value representation features are post-bootstrap.
 
 [<Struct; CustomComparison; CustomEquality>]
 type Value = 
