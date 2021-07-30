@@ -121,16 +121,55 @@ module Glas.TestGlasZero
                 let p4 = [Cond(Try=[Call "foo"], Then=[Call "bar"], Else=[Call "baz"]); Call "qux"]
                 Expect.equal p4 (pp "try [foo] then [\nbar\n]\nelse [baz ;comment\n] qux ; more comments\n") "try then else"
 
-                failtest "tbd: env, loop"
-                // with/do
-                // while/do
+                let p5 = [Env(With=[Call "x"], Do=[Call "y"])]
+                Expect.equal p5 (pp "with [x] do [y]") "environment"
+
+                let p6 = [Loop(While=[Call "a"], Do=[Call "b"])]
+                Expect.equal p6 (pp "while[a]do[b]") "loop"
+
 
             testCase "imports" <| fun () -> 
-                failtest "tbd: imports"
+                let zpf = Parser.parseFrom
+                let pf s = doParse zpf s
+
+                let p1 = From (Src="a", Imports=[
+                            Import(Word="bar",As=Some "foo")
+                            Import(Word="qux",As=None)
+                            Import(Word="foo",As=Some "bar")
+                            Import(Word="baz",As=None)
+                            ]) 
+                Expect.equal p1 (pf "from a import bar as foo, qux, foo as bar, baz") "from module import words"
+                Expect.equal "abc" (doParse Parser.parseOpen "open abc") "parse open"
 
 
             testCase "toplevel" <| fun () ->
-                failtest "tbd: toplevel"
+                let p1 = String.concat "\n" [ 
+                    "open xyzzy ; inherit definitions"
+                    "from foo import a, b as c, d"
+                    "from bar import i as j, k"
+                    ""
+                    "prog baz [ ; defining baz"
+                    "  a c j h"
+                    "]"
+                ]
+                let fromFoo = From(Src="foo", Imports=[
+                    Import(Word="a", As=None)
+                    Import(Word="b", As=Some "c")
+                    Import(Word="d", As=None)
+                ])
+                let fromBar = From(Src="bar", Imports=[
+                    Import(Word="i",As=Some "j")
+                    Import(Word="k",As=None)
+                ])
+                let defBaz = Prog(Name="baz", Body=[
+                    Call "a"; Call "c"; Call "j"; Call "h"
+                ])
+                let p1act =
+                    { Open = Some "xyzzy"
+                      From = [fromFoo; fromBar]
+                      Defs = [defBaz]
+                    }
+                Expect.equal p1act (doParse Parser.parseTopLevel p1) "parse a program"
 
 
         ]

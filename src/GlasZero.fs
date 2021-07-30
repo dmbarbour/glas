@@ -169,11 +169,6 @@ module Zero =
                 parseWord |>> Call 
             ]
 
-        let startOfLine : Parser<unit,'a> =
-            fun stream ->
-                if (1L = stream.Column) then Reply(()) else
-                Reply(Error, expected "start of line")
-
         let parseOpen : P<ModuleName> =
             kwstr "open" >>. parseWord
 
@@ -182,7 +177,7 @@ module Zero =
                 |>> fun (w,aw) -> Import(Word=w,As=aw)
 
         let parseFrom : P<ImportFrom> =
-            kwstr "from" >>. parseWord .>>. (kwstr "import" >>. sepBy1 parseImport (pchar ',')) 
+            kwstr "from" >>. parseWord .>>. (kwstr "import" >>. sepBy1 parseImport (pchar ',' .>> ws)) 
                 |>> fun (src,l) -> From (Src=src, Imports=l)
 
         let parseProgDef : P<Def> = 
@@ -196,9 +191,9 @@ module Zero =
 
         let parseTopLevel = parse {
             do! ws
-            let! optOpen = opt (startOfLine >>. parseOpen)
-            let! lFrom = many (startOfLine >>. parseFrom)
-            let! lDefs = many (startOfLine >>. parseDef)
+            let! optOpen = opt parseOpen
+            let! lFrom = many parseFrom
+            let! lDefs = many parseDef
             do! eof
             return { Open = optOpen; From = lFrom; Defs = lDefs } 
         }
