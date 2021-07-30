@@ -16,19 +16,37 @@ In addition to local modules within a folder, a GLAS_PATH environment variable w
 
 Glas data is modeled as immutable binary trees. Each node may have up to two edges, uniquely labeled 0 and 1, to subtrees. A naive representation is:
 
-        type T = ((1+T) * (1+T))
+        type T0 = ((1+T0) * (1+T0))
+        // A tree is a node with two optional, distinct edges to subtrees.
 
-This supports algebraic products (both edges), sums (choice of one edge), and the unit value (no edges). However, Glas encourages use of labeled data structures instead of basic products and sums. Labels greatly improve extensibility and documentation of data.
+This trivially supports algebraic products (pairs with both edges), sums (choice of either edge), and the unit value (no edges). However, Glas encourages use of labeled data structures instead of basic products and sums. Labels greatly improve extensibility and documentation of data.
 
-Glas can encode labels or symbols using 'bitstrings', which are long sequences of nodes with only one edge. For example, symbol 'path' is represented by the bitstring `01110000 01100001 01110100 01101000 00000000`, which simply encodes 'path' in UTF-8 with a null-terminator. For labeled products, aka records, the labels form a [radix tree](https://en.wikipedia.org/wiki/Radix_tree), with the associated value following the null terminator. Labeled sums, aka variants, are essentially singleton records. To support this heavy use of labels, the representation of trees in Glas systems will usually compact bitstring sequences.
+Glas systems encode labels with 'bitstrings', which are long sequences of nodes with only one edge. The label is encoded into the bitstring using UTF-8 with a null terminator. For example, symbol 'path' is represented by the bitstring `01110000 01100001 01110100 01101000 00000000`. A 'symbol' is just the label by itself, but in general we can follow the null terminator with an arbitrary value. Because long bitstrings are very common in Glas systems, we compact bitstrings.
 
-Numbers are also encoded as bitstrings in msb to lsb order. Fixed-width numbers will literally be encoded as a bitstring of fixed width, e.g. `00010111` is an 8-bit representation of the number 23. There is no limit on the size of a number, nor for alignment to multiples of 8 bits, but performance of the implementation may degrade for large numbers.
+        type BitString = (space-optimized) Bool list
+        type T1 = BitString * (1 + (T1*T1))
+        // A tree is a bitstring that ends either in unit or a fork.
+        // T1 is equivalent to T0 but more efficient for bitstrings.
 
-Pairs are mostly used for lists. Lists are simply modeled as `type List a = (a * List a) | 1`, and are widely used for modeling sequential structure in Glas systems. For example, binaries are modeled as lists of bytes. To improve performance working with lists, Glas systems are expected to replace the simplistic linked-list representation with a [finger tree](https://en.wikipedia.org/wiki/Finger_tree) representation. Finger tree lists support constant-time access to both ends and logarithmic inner manipulations.
+Labeled products, aka records, are then represented by a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). Common label prefixes will overlap, and the associated value immediately follows the label's null terminator. Labeled sums, or variants, are essentially singleton records. 
 
-To control memory resources, Glas systems may offload large subtrees to content-addressed storage. I call this pattern *Stowage* (see below), and also has benefits for incremental computation and communication. 
+Glas systems usually encode natural numbers as bitstrings in MSB to LSB order. For example, the bitstring `10111` represents the number 23. In many cases, we'll favor fixed-width numeric representations, e.g. `00010111` encodes 23 as an 8-bit byte. The standard Glas program model only has operators for natural numbers, but we could also use bitstrings to encode floats and other numeric types. Intmaps, sparse arrays, hashtables, etc. can usefully be encoded as radix trees indexed by fixed-width numbers.
 
-*Note:* There is no built-in support for rational numbers, signed numbers, floating point numbers, complex numbers, matrix and vector math, and so on. However, it is feasible to extend Glas systems to support performance of more types via *Acceleration*.
+Bitstrings are only used for small things. Glas uses lists to encode general sequential structures. Logically, a list is `type List a = (a * List a) | 1`, i.e. a list is constructed of `(Head * Tail)` pairs and terminated with unit `()`. (This encoding is not an algebraic sum type.) However, performance of the direct list representation is awkward for many use-cases. Glas systems tend to use a [finger tree](https://en.wikipedia.org/wiki/Finger_tree) representation for lists, supporting efficient indexing, split, append, and access to both endpoints.
+
+        type T2 = BitString * (1 + (T2 * FingerTree<T2> * NonPairT2))
+        type NonPairT2 = 1 + (T2 + T2) // unit, left tree, or right tree.
+        // A tree is a bitstring that ends either in unit or a list-like structure 
+        // with at least two items. An actual list ends in unit, but the list-like
+        // structure might end in a node with a single edge.
+        //
+        // T2 is equivalent to T1 but more efficient for ad-hoc list manipulations. 
+
+Glas systems represent strings and binaries as lists of bytes, favoring the UTF-8 encoding for strings. It is feasible to further optimize via compact encoding of binary fragments (cf. [ropes](https://en.wikipedia.org/wiki/Rope_%28data_structure%29)). In general, Glas systems have much freedom to optimize representations so long as the details are abstracted. For example, records with a few statically known labels can be optimized to C-like structs at runtime. 
+
+To work with larger-than-memory data structures, Glas systems may offload subtrees to content-addressed storage, then lazily load data into memory as needed or anticipated. I call this pattern *Stowage*. In addition to serving as a virtual memory and large scale structure sharing compression layer for immutable data, stowage has benefits for incremental computation and communication.
+
+*Aside:* Data in Glas has a low probability of sharing representations by accident. The empty list, empty record, min-width zero, and unit do overlap (and not by accident). But probability of collision for non-empty lists, records, symbols, and numbers is very small. Tools could heuristically render Glas data and support human editing without much difficulty even without context of a known data type.
 
 ## Binary Extraction
 
@@ -196,11 +214,29 @@ Annotations support performance (acceleration, stowage, memoization, optimizatio
 
 The set of annotations is openly extensible and subject to de-facto standardization. If a Glas compiler or interpreter encounters any annotations it does not recognize, it can log a warning then ignore. 
 
-The 'prog' header also serves as the variant for programs within a namespace. Namespaces are often modeled as a record whose elements include programs, types, data, macros, and other constructs that programmers might define for reuse.
+The 'prog' header also serves as the primary variant for programs within a *Dictionary* value.
 
 ## Glas Initial Syntax (g0)
 
 Glas requires an initial syntax for bootstrap. To serve this role, I define [the g0 syntax](GlasZero.md). However, g0 is a rather simplistic language, with a Forth-like look and feel but lacking Forth's metaprogramming features. The intention is to simplify bootstrap implementation. A more sophisticated language modules (with support for local variables, recursive function groups, metaprogramming, etc.) should be developed for normal programming in Glas. 
+
+## Dictionaries and Definitions
+
+Most Glas modules should each compile to a dictionary that represents the namespace at end of file. This supports a convenient mode of program composition where we inherit a module then continue manipulating definitions.
+
+A dictionary is concretely a record of `identifier:Definition` pairs. The definition is an open variant whose header hints how the identifier should be applied. This allows client syntax to be more implicit. The definition type may include:
+
+* **prog:(do:GlasProgram, ...)** - a Glas program with potential annotations. 
+* **data:Value** - a raw data definition.
+* **type:TypeDescription** - define types for concise type annotations
+* **macro:MacroDef** - describe a macro for staged computing 
+* **dict:Dictionary** - for qualified imports (e.g. `import foo as f` and `f.bar`)
+
+The g0 language only accepts 'prog' and 'data', and may produce 'data' after partial evaluation and optimization of a program (i.e. `prog:do:data:Value => data:Value`). Other language modules may extend definitions to support type annotations, macros, hierarchical namespaces, and other features. Distinguishing macro vs. prog headers means we won't need a special syntax for macro calls. 
+
+Construction of Glas programs must statically link dependencies. The resulting programs do not depend on a namespace. But it is feasible to design other program models that would defer linking. 
+
+*Aside:* A related convention that I'd like to encourage is *single inheritance* of dictionaries. At most one unqualified import, e.g. represented as `open modulename`. All other identifiers must be explicitly imported or qualified. Single inheritance ensures the provenance of every identifier is unambiguous and invariant to change in dependencies. It also encourages development of aggregator modules for boiler-plate imports.
 
 ## Application Models
 
