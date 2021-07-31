@@ -18,15 +18,21 @@ A single 'open' is permitted to inherit words defined by a prior module. This ma
 
 The g0 namespace is flat, i.e. there is no support in g0 for qualified imports or dotted paths into a hierarchical namespace. Also, module names and words used within g0 are restricted by syntax: if a file or function has an awkward name, a g0 program cannot even refer to it. This is a non-issue for bootstrap because we control the dependencies.
 
-The output for a g0 program is a record of all defined words. There is no export control. Compiled program definitions in g0 will always have a 'prog' header, e.g. `prog:(do:CompiledProgram)`. This enables extension of namespaces to define data, types, macros, and other objects. Although g0 does not need this extension, it will simplify integration with other language modules.
+## Compiled Output
+
+The output for a g0 program is a dictionary of all defined words, including imported words. Most definitions will have `prog:(do:Program,...)` format, likely with no annotations. An optimizer might reduce some programs to `prog:do:data:Value` and rewrite to `data:Value`. Additionally, definitions of form `prog:do:fail` (after optimization) are equivalent to undefined words in g0, and may implicitly be erased from the output dictionary.
+
+The g0 compiler may optionally optimize or annotate programs. This may introduce some variability in structure with the bootstrap implementation, but it shouldn't affect program behavior.
 
 ## Bootstrap 
 
-As a special case, the language-g0 module will go through a bootstrap process in Glas. The command-line utility provides a naive implementation for a sufficient subset of g0. This is used to build the module language-g0 to a value of form `(compile:P0, ...)`. Program P0 is then used to rebuild language-g0, producing `(compile:P1, ...)`. P0 and P1 should have the same behavior, but they may be structurally different due to differences in optimizations, annotations, etc.. To resolve this, we use P1 to rebuild language-g0, producing `(compile:P2, ...)` then verify P1 and P2 are structurally equivalent.
+As a special case, the language-g0 module will go through a bootstrap process in Glas. The command-line utility provides a naive implementation for a sufficient subset of g0. This is used to build the module language-g0 to a value of form `(compile:P0, ...)`. Program P0 is then used to rebuild language-g0, producing `(compile:P1, ...)`. P0 and P1 should have the same behavior, but they may be structurally different due to differences in optimizations and annotations. To resolve this, we use P1 to rebuild language-g0, producing `(compile:P2, ...)` then verify P1 and P2 are structurally equivalent.
 
-If bootstrap fails, we must debug both module language-g0 and the command-line tool. This bootstrap process requires that module language-g0 is carefully defined to achieve fixpoint after a single cycle. To simplify linking during bootstrap, the language-g0 module should be isolated to a folder with no outside module dependencies.
+This bootstrap process requires that module language-g0 is carefully defined to achieve fixpoint after two cycles, verified by the third cycle. If P1 and P2 are structurally distinct, bootstrap fails and we should debug our definitions.
 
-The next step is to bootstrap the command-line utility. This requires modeling the application and compiler to the target architecture, then extracting the binary to an executable file. This task is outside the scope of this document, but when completed allows us to escape the initial Glas command-line utility.
+After bootstrap of g0, the next steps are to bootstrap the command-line application, then eventually support compilation of the app to a binary executable that we extract, fully divorcing from the initial implementation. However, these steps are outside the scope of this document.
+
+*Aside:* To confine bootstrap, it is preferable that the language-g0 module is isolated to a folder with no external module dependencies. 
 
 ## Embedded Data
 
@@ -59,7 +65,7 @@ For the basic symbolic operators like 'swap' or 'add', keywords compile to the p
 
 ### Binary Extraction
 
-The g0 syntax can define streaming binaries, but cannot express precomputed binary data. The assumption is that the command line tool can extract a streaming binary by specifying an element of a record within a module. Binary extraction is necessary to complete the bootstrap process, producing an executable.
+The g0 syntax defines programs, and only defines data as an optional optimization. Binaries intended for extraction must be represented as streaming binaries - programs that write binary fragments.
 
 ## Extensions
 

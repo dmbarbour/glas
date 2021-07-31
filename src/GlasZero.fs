@@ -301,20 +301,162 @@ module Zero =
         if not (List.isEmpty lUBD) then UsedBeforeDef lUBD else
         LooksOkay
 
-    /// The Namespace during compilation is represented by a dictionary, a record
-    /// of 'prog' and 'data' elements. Note that if an item is not 'prog' or 'data',
-    /// or if we reference an undefined word, the g0 compiler will raise a warning
-    /// then replace that word by 'fail'.  
-    type NS = Value
+    // The namespace during compilation is represented by a dictionary Value.
+    // The g0 language can understand 'prog' and 'data' definitions, and will
+    // treat other definitions same as undefined (equal to 'fail'). Load and
+    // log operations during compile are supported by abstract effects handler,
+    // same as they would be for a user-defined language module. Bootstrap is
+    // mostly about defining special effects handlers.
+    //
+    // No transactional effects are required in this use-case. But it is useful
+    // to track context for log messages, e.g. which file we're processing.
+    //
+    // The main options for compilation are:
+    //
+    // - directly build the Glas program model in F#. This requires parsing
+    //   programs from imported values.
+    // - build the Glas value that represents the program. We might parse the
+    //   final results only if we need to validate and run a program.
+    //
+    // The latter option is superior for performance, since it avoids a lot of
+    // rework. So it's the path I'll take here.
+    module Compile =
+        open Glas.Effects
 
-    /// Load and Log during compile supported by the abstract effects handler. 
-    /// 
-    /// This ensures that the g0 compiler is consistent with other language modules.
-    /// It also simplifies bootstrap, since we can provide that via handler.
-    type LL = IEffHandler
+        type Dict = Value
 
-    /// compile g0 programs to Glas programs
-    /// This requires two additional inputs:
-    /// - The namespace of words defined so far.
-    /// - 
-    /// This primarily involves linking 
+        // log and load
+        type LL = IEffHandler
+
+        let logMsg hdr msg =
+            Value.variant hdr (Value.ofString msg)
+
+        let info = "info"
+        let warn = "warn"
+        let error = "error"
+
+        // log:Msg effect - response should always be unit
+        let log (ll:LL) (msg:Value) : unit =
+            let r = ll.Eff(Value.variant "log" msg)
+            match r with
+            | Some Value.U -> ()
+            | _ -> failwithf "unexpected result when logging: %A" r
+
+        let load (ll:LL) (m:ModuleName) : Dict option  =
+            let r = ll.Eff(Value.variant "load" (Value.symbol m))
+            if Option.isNone r then
+                let msg = sprintf "failed to load module %s" m
+                log ll <| logMsg warn msg
+            r
+
+        let applyImport ll dSrc m dDst imp =
+            match imp with
+            | Import (Word=wSrc; As=asOpt) ->
+                let wDst = Option.defaultValue wSrc asOpt
+                match Value.record_lookup (Value.label wSrc) dSrc with
+                | Some v ->
+                    Value.record_insert (Value.label wDst) v dDst
+                | None ->
+                    let msg = sprintf "module %s does not export word %s" m wSrc
+                    log ll <| logMsg warn msg
+                    dDst
+
+        let applyFrom ll d0 f =
+            match f with
+            | From (Src=m; Imports=lImp) ->
+                match load ll m with
+                | Some dSrc -> List.fold (applyImport ll dSrc m) d0 lImp
+                | None -> d0
+
+        let okDefType v =
+            match v with
+            | Value.Variant "prog" _ -> true
+            | Value.Variant "data" _ -> true
+            | _ -> false
+
+        let linkCall d0 w =
+            match Value.record_lookup (Value.label w) d0 with
+            | Some v when okDefType v -> v 
+            | _ -> Value.symbol (Program.opStr Fail)
+
+        let rec linkProg (d0:Dict) (p:Prog) =
+            match p with
+            | [step] -> linkStep d0 step
+            | lSteps -> 
+                let lV = List.map (linkStep d0) lSteps
+                Value.variant "seq" (Value.ofFTList (FTList.ofList lV))
+        and linkStep d0 step =
+            match step with
+            | Call w -> linkCall d0 w
+            | Sym b -> Value.variant "data" (Value.ofBits b)
+            | Str s -> Value.variant "data" (Value.ofString s)
+            | Env (With=pWith; Do=pDo) ->
+                let lV = List.map (linkProg d0) [pWith; pDo]
+                Value.variant "env" (Value.asRecord ["with";"do"] lV)
+            | Loop (While=pWhile; Do=pDo) ->
+                let lV = List.map (linkProg d0) [pWhile; pDo]
+                Value.variant "loop" (Value.asRecord ["while";"do"] lV)
+            | Cond (Try=pTry; Then=pThen; Else=pElse) ->
+                let lV = List.map (linkProg d0) [pTry; pThen; pElse]
+                Value.variant "cond" (Value.asRecord ["try";"then";"else"] lV)
+            | Dip pDip ->
+                let vDip = linkProg d0 pDip
+                Value.variant "dip" vDip
+
+        let applyDef d0 def =
+            match def with
+            | Prog (Name=wDef; Body=pBody) ->
+                let vBody = linkProg d0 pBody
+                Value.record_insert (Value.label wDef) vBody d0
+
+        /// Obtain all definitions from imports. 
+        let importDefs (ll:LL) (tlv:TopLevel) : Dict =
+            let rm d w = Value.record_delete (Value.label w) d
+            // load the implicitly defined words from the opened module.
+            let dOpen = 
+                match tlv.Open with
+                | Some m -> 
+                    match load ll m with
+                    | Some d -> d
+                    | None -> Value.unit
+                | None -> Value.unit
+            // remove all explicitly defined words to resist shadowing.
+            let dTrim = List.fold rm dOpen (definedWords tlv)
+            // add all explicitly imported words.
+            List.fold (applyFrom ll) dTrim (tlv.From)
+
+        /// Warn for any undefined words that we actually call. The g0
+        /// language allows for undefined words, simply warns then uses
+        /// 'fail' in place of their definition. 
+        /// 
+        /// If a word is defined but is not 'prog' or 'data' we have the
+        /// same behavior, so a warning is also given in these cases.
+        let warnForTroublesomeWords (ll:LL) (d0:Value) (lDefs : Def list) =
+            let defWords = List.map wordDefined lDefs |> Set.ofList 
+            let calledWords = List.map wordsCalledFromDef lDefs |> Set.unionMany
+            for w in calledWords do
+                if Set.contains w defWords then () else
+                match Value.record_lookup (Value.label w) d0 with
+                | Some v ->
+                    if okDefType v then () else
+                    let msg = sprintf "calls to word %s fail: not a 'prog' or 'data'" w
+                    log ll <| logMsg warn msg
+                | None ->
+                    let msg = sprintf "calls to word %s fail: undefined" w
+                    log ll <| logMsg warn msg
+
+        /// The output for compiling a g0 program is the dictionary representing
+        /// the namespace available at the end of file. This compiler does not 
+        /// handle the parsing step or detection of load cycles.
+        let compileTLV (ll:LL) (tlv:TopLevel) : Value option =
+            log ll (logMsg info "shallow validation of g0 program")
+            match shallowValidation tlv with
+            | LooksOkay -> 
+                let d0 = importDefs ll tlv
+                warnForTroublesomeWords ll d0 (tlv.Defs)
+                Some <| List.fold applyDef d0 (tlv.Defs)
+            | issues -> 
+                let msg = sprintf "shallow validation error: %A" issues
+                log ll <| logMsg error msg
+                None
+
