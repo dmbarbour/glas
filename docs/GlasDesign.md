@@ -8,7 +8,7 @@ To compute the value for a file `foo.ext`, the Glas system will compile the file
 
 File extensions compose. For example, to compute the value for `foo.xyz.json` we first apply `language-json` to the file binary to compute an intermediate value, then apply `language-xyz` to that intermediate value. Thus, source input for language modules can be arbitrary Glas values. Relatedly, if a file has no extension, its value is the file binary. Files and folders whose names start with `.` are hidden from the Glas module system.
 
-In addition to local modules within a folder, a GLAS_PATH environment variable will support search for installed modules in the filesystem. GLAS_PATH should be a list of folders split by semicolons. It is feasible to further extend search to include network resources. 
+In addition to local modules within a folder, a GLAS_PATH environment variable will support search for installed modules in the filesystem. GLAS_PATH should be a list of folders split by semicolons (even on Linux). It is feasible to further extend search to include network resources. 
 
 *Note:* Glas does not specify a package manager. I favor package managers suitable for community management and reproducible builds, such as Nix or Guix. Later, we might design a manager optimized for Glas.
 

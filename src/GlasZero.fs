@@ -241,16 +241,10 @@ module Zero =
         match d with
         | Prog (Body=p) -> wordsCalledFromProg p
 
-    /// The g0 syntax re a ton of reserved words.
-    /// This includes all the basic ops.
+    /// Words that cannot be defined in g0.
     let reservedWords = 
-        [ "dip"
-        ; "cond"; "try"; "then"; "else"
-        ; "loop"; "while"; "do"
-        ; "env"; "with"; "do"
-        ; "prog"
-        // namespace
-        ; "from"; "open"; "import"; "as"
+        [ "dip"; "try"; "then"; "else"; "while"; "do"; "with"; "do"
+        ; "prog"; "from"; "open"; "import"; "as"
         ] 
         |> List.append (List.map Program.opStr Program.op_list) 
         |> Set.ofList
@@ -269,17 +263,18 @@ module Zero =
         | (hd::l') ->
             let acc' = if List.contains hd l' then (hd::acc) else acc
             _findDupWords acc' l'
-        | [] -> acc
+        | [] -> Set.ofList acc
 
     let rec private _findUseBeforeDef acc defs =
         match defs with
-        | (d::defs') when not (List.isEmpty defs') -> 
+        | (d::defs') -> 
             let calls = wordsCalledFromDef d  
-            let ubd = defs' |> List.map wordDefined 
+            // to catch recursive definitions, word being defined is also undefined.
+            let ubd = defs  |> List.map wordDefined 
                             |> List.filter (fun w -> Set.contains w calls) 
                             |> Set.ofList
             _findUseBeforeDef (Set.union acc ubd) defs'
-        | _ -> acc
+        | [] -> acc
 
     /// A shallow validation of a g0 program:
     ///   - detects duplicate explicit imports/definitions  
@@ -293,9 +288,9 @@ module Zero =
     /// compilation will also fail.
     let shallowValidation tlv =
         let lDefs = definedWords tlv
-        let lDups = _findDupWords [] lDefs
+        let lDups = _findDupWords [] lDefs |> Set.toList
         if not (List.isEmpty lDups) then DuplicateDefs lDups else
-        let lReserved = List.filter isReservedWord lDefs 
+        let lReserved = List.filter isReservedWord lDefs |> List.sort 
         if not (List.isEmpty lReserved) then ReservedDefs lReserved else
         let lUBD = Set.toList <| _findUseBeforeDef (Set.empty) (tlv.Defs)
         if not (List.isEmpty lUBD) then UsedBeforeDef lUBD else
@@ -323,63 +318,60 @@ module Zero =
     module Compile =
         open Glas.Effects
 
-        type Dict = Value
-
-        // log and load
-        type LL = IEffHandler
-
-        let logMsg hdr msg =
-            Value.variant hdr (Value.ofString msg)
-
-        let info = "info"
-        let warn = "warn"
-        let error = "error"
-
-        // log:Msg effect - response should always be unit
-        let log (ll:LL) (msg:Value) : unit =
-            let r = ll.Eff(Value.variant "log" msg)
-            match r with
-            | Some Value.U -> ()
-            | _ -> failwithf "unexpected result when logging: %A" r
-
-        let load (ll:LL) (m:ModuleName) : Dict option  =
+        let load (ll:IEffHandler) (m:ModuleName) : Value option =
             let r = ll.Eff(Value.variant "load" (Value.symbol m))
             if Option.isNone r then
-                let msg = sprintf "failed to load module %s" m
-                log ll <| logMsg warn msg
+                sprintf "failed to load module %s" m
+                    |> logMsg warn |> log ll
             r
 
-        let applyImport ll dSrc m dDst imp =
-            match imp with
-            | Import (Word=wSrc; As=asOpt) ->
-                let wDst = Option.defaultValue wSrc asOpt
-                match Value.record_lookup (Value.label wSrc) dSrc with
-                | Some v ->
-                    Value.record_insert (Value.label wDst) v dDst
-                | None ->
-                    let msg = sprintf "module %s does not export word %s" m wSrc
-                    log ll <| logMsg warn msg
-                    dDst
+        // open a module and also erase keywords from namespace.
+        let openModule ll m =
+            match load ll m with
+            | None -> Value.unit
+            | Some d0 ->
+                let mutable d = d0
+                for w in reservedWords do
+                    let wLbl = Value.label w
+                    match Value.record_lookup wLbl d with
+                    | None -> ()
+                    | Some _ ->
+                        d <- Value.record_delete wLbl d 
+                        sprintf "open %s: erasing reserved word '%s'" m w
+                            |> logMsg warn |> log ll
+                d
 
-        let applyFrom ll d0 f =
-            match f with
-            | From (Src=m; Imports=lImp) ->
-                match load ll m with
-                | Some dSrc -> List.fold (applyImport ll dSrc m) d0 lImp
-                | None -> d0
+        let applyFrom (ll:IEffHandler) (d0:Value) (From (Src=m; Imports=lImp)) = 
+            match load ll m with
+            | None -> d0 
+            | Some dSrc ->
+                let mutable d = d0
+                for Import (Word=wSrc; As=asOpt) in lImp do
+                    let wDst = Option.defaultValue wSrc asOpt
+                    match Value.record_lookup (Value.label wSrc) dSrc with
+                    | Some v -> 
+                        d <- Value.record_insert (Value.label wDst) v d
+                    | None ->
+                        sprintf "module %s does not export word '%s'" m wSrc 
+                            |> logMsg warn |> log ll
+                d
 
-        let okDefType v =
+        let isProgOrData v =
             match v with
             | Value.Variant "prog" _ -> true
             | Value.Variant "data" _ -> true
             | _ -> false
 
-        let linkCall d0 w =
-            match Value.record_lookup (Value.label w) d0 with
-            | Some v when okDefType v -> v 
-            | _ -> Value.symbol (Program.opStr Fail)
+        let private _primOps =
+            Set.ofList (List.map Program.opStr Program.op_list)
 
-        let rec linkProg (d0:Dict) (p:Prog) =
+        let linkCall d0 w =
+            if Set.contains w _primOps then Value.symbol w else
+            match Value.record_lookup (Value.label w) d0 with
+            | Some v when isProgOrData v -> v 
+            | _ -> Value.symbol "fail"
+
+        let rec linkProg (d0:Value) (p:Prog) =
             match p with
             | [step] -> linkStep d0 step
             | lSteps -> 
@@ -403,60 +395,76 @@ module Zero =
                 let vDip = linkProg d0 pDip
                 Value.variant "dip" vDip
 
-        let applyDef d0 def =
-            match def with
-            | Prog (Name=wDef; Body=pBody) ->
-                let vBody = linkProg d0 pBody
-                Value.record_insert (Value.label wDef) vBody d0
-
-        /// Obtain all definitions from imports. 
-        let importDefs (ll:LL) (tlv:TopLevel) : Dict =
-            let rm d w = Value.record_delete (Value.label w) d
-            // load the implicitly defined words from the opened module.
-            let dOpen = 
-                match tlv.Open with
-                | Some m -> 
-                    match load ll m with
-                    | Some d -> d
-                    | None -> Value.unit
-                | None -> Value.unit
-            // remove all explicitly defined words to resist shadowing.
-            let dTrim = List.fold rm dOpen (definedWords tlv)
-            // add all explicitly imported words.
-            List.fold (applyFrom ll) dTrim (tlv.From)
-
         /// Warn for any undefined words that we actually call. The g0
         /// language allows for undefined words, simply warns then uses
         /// 'fail' in place of their definition. 
         /// 
         /// If a word is defined but is not 'prog' or 'data' we have the
         /// same behavior, so a warning is also given in these cases.
-        let warnForTroublesomeWords (ll:LL) (d0:Value) (lDefs : Def list) =
+        /// We'll also warn for calls to reserved words defined via 'open'.
+        let warnForTroublesomeWords (ll:IEffHandler) (d0:Value) (lDefs : Def list) =
             let defWords = List.map wordDefined lDefs |> Set.ofList 
             let calledWords = List.map wordsCalledFromDef lDefs |> Set.unionMany
             for w in calledWords do
                 if Set.contains w defWords then () else
                 match Value.record_lookup (Value.label w) d0 with
                 | Some v ->
-                    if okDefType v then () else
-                    let msg = sprintf "calls to word %s fail: not a 'prog' or 'data'" w
-                    log ll <| logMsg warn msg
+                    if isProgOrData v then () else
+                    sprintf "calls to word %s fail: not a 'prog' or 'data' def" w
+                        |> logMsg warn |> log ll
                 | None ->
-                    let msg = sprintf "calls to word %s fail: undefined" w
-                    log ll <| logMsg warn msg
+                    sprintf "calls to word %s fail: undefined" w
+                        |> logMsg warn |> log ll
+
+
+        let private uncheckedCompileTLV (ll:IEffHandler) (tlv:TopLevel) : Value =
+            let mutable d = 
+                match tlv.Open with
+                | None -> Value.unit
+                | Some m -> openModule ll m
+            for f in tlv.From do
+                d <- applyFrom ll d f
+            warnForTroublesomeWords ll d (tlv.Defs)
+            for Prog (Name=w; Body=pBody) in tlv.Defs do
+                let vBody = linkProg d pBody
+                let vProg = Value.variant "prog" (Value.variant "do" vBody)
+                d <- Value.record_insert (Value.label w) vProg d
+            d
 
         /// The output for compiling a g0 program is the dictionary representing
         /// the namespace available at the end of file. This compiler does not 
-        /// handle the parsing step or detection of load cycles.
-        let compileTLV (ll:LL) (tlv:TopLevel) : Value option =
-            log ll (logMsg info "shallow validation of g0 program")
+        /// handle the parsing step or detection of load cycles, nor arity errors.
+        let compileTLV (ll:IEffHandler) (tlv:TopLevel) : Value option =
+            log ll (logMsg info "performing shallow validation of g0 program")
             match shallowValidation tlv with
             | LooksOkay -> 
-                let d0 = importDefs ll tlv
-                warnForTroublesomeWords ll d0 (tlv.Defs)
-                Some <| List.fold applyDef d0 (tlv.Defs)
+                Some <| uncheckedCompileTLV ll tlv
             | issues -> 
-                let msg = sprintf "shallow validation error: %A" issues
-                log ll <| logMsg error msg
+                sprintf "validation error: %A" issues |> logMsg error |> log ll
+                None
+
+        let compileString (ll:IEffHandler) (s:string) : Value option =
+            log ll (logMsg info "using built-in compile function for g0 string")
+            match FParsec.CharParsers.run Parser.parseTopLevel s with
+            | FParsec.CharParsers.Success (tlv, _, _) -> 
+                log ll (logMsg info "parse successful!")
+                compileTLV ll tlv
+            | FParsec.CharParsers.Failure (msg, _, _) ->
+                log ll (logMsg error (sprintf "parse error:\n%s" msg))
+                None
+
+        let compileFile (ll:IEffHandler) (fp:string) : Value option =
+            log ll (logMsg info (sprintf "using built-in compile function for g0 file: %s" fp))
+            let r = FParsec.CharParsers.runParserOnFile 
+                        Parser.parseTopLevel 
+                        () 
+                        fp 
+                        (System.Text.UTF8Encoding())
+            match r with
+            | FParsec.CharParsers.Success (tlv, _, _) ->
+                log ll (logMsg info ("parse successful!"))
+                compileTLV ll tlv
+            | FParsec.CharParsers.Failure (msg, _, _) ->
+                log ll (logMsg error (sprintf "parse error: \n%s" msg))
                 None
 

@@ -2,6 +2,7 @@ module Glas.TestGlasZero
     open Expecto
     open FParsec
     open Glas.Zero
+    open Glas.Effects
 
     let doParse p s =
         match run (p .>> eof) s with
@@ -25,6 +26,9 @@ module Glas.TestGlasZero
     let toB bitct n =
         _toBits (Bits.empty) bitct n
 
+
+    let imp w = Import(Word=w, As=None)
+    let impAs w a = Import(Word=w, As=Some a)
 
 
     [<Tests>]
@@ -132,12 +136,7 @@ module Glas.TestGlasZero
                 let zpf = Parser.parseFrom
                 let pf s = doParse zpf s
 
-                let p1 = From (Src="a", Imports=[
-                            Import(Word="bar",As=Some "foo")
-                            Import(Word="qux",As=None)
-                            Import(Word="foo",As=Some "bar")
-                            Import(Word="baz",As=None)
-                            ]) 
+                let p1 = From (Src="a", Imports=[impAs "bar" "foo"; imp "qux"; impAs "foo" "bar"; imp "baz" ])
                 Expect.equal p1 (pf "from a import bar as foo, qux, foo as bar, baz") "from module import words"
                 Expect.equal "abc" (doParse Parser.parseOpen "open abc") "parse open"
 
@@ -152,24 +151,99 @@ module Glas.TestGlasZero
                     "  a c j h"
                     "]"
                 ]
-                let fromFoo = From(Src="foo", Imports=[
-                    Import(Word="a", As=None)
-                    Import(Word="b", As=Some "c")
-                    Import(Word="d", As=None)
-                ])
-                let fromBar = From(Src="bar", Imports=[
-                    Import(Word="i",As=Some "j")
-                    Import(Word="k",As=None)
-                ])
-                let defBaz = Prog(Name="baz", Body=[
-                    Call "a"; Call "c"; Call "j"; Call "h"
-                ])
+                let fromFoo = From(Src="foo", Imports=[imp "a"; impAs "b" "c"; imp "d"])
+                let fromBar = From(Src="bar", Imports=[impAs "i" "j"; imp "k"])
+                let defBaz = Prog(Name="baz", Body=[Call "a"; Call "c"; Call "j"; Call "h"])
                 let p1act =
                     { Open = Some "xyzzy"
                       From = [fromFoo; fromBar]
                       Defs = [defBaz]
                     }
                 Expect.equal p1act (doParse Parser.parseTopLevel p1) "parse a program"
-
-
         ]
+
+    let pp = doParse Parser.parseTopLevel
+
+
+    // NOTE: it is difficult to directly check logs except whether they're empty or not.
+    // At most, we can check for 'stringContains' and various failure conditions.
+    // 
+    // todo: check logs via 'stringContains'. 
+
+    [<Tests>]
+    let testValidation = 
+        testList "validation" [
+            testCase "dup words" <| fun () ->
+                let p1 = pp <| String.concat "\n" [
+                    "open foo"
+                    "from a import b, c"
+                    "from d import e as b"
+                    "prog c [b e e]"
+                    ] 
+                Expect.equal (DuplicateDefs ["b";"c"]) (shallowValidation p1) "dup import and prog"
+
+            testCase "reserved words" <| fun () ->
+                // note that module names and rewritten words don't count.
+                let p1 = pp <| String.concat "\n" [
+                    "open copy"
+                    "from drop import swap, eq as fail"
+                    "from eff import get as put, del"
+                    "prog else []"
+                    ]
+                let kw = List.sort ["swap"; "fail"; "put"; "del"; "else"]
+                Expect.equal (ReservedDefs kw) (shallowValidation p1) "many reserved words defined"
+            
+            testCase "used before defined" <| fun () ->
+                let p1 = pp <| String.concat "\n" [
+                    "prog a [ b c ] "
+                    "prog b [ a c ] "
+                    "prog c [ a b ] "
+                    ]
+                Expect.equal (UsedBeforeDef ["b";"c"]) (shallowValidation p1) "using words in mutual cycle"
+
+                let p2 = pp "prog a [a b c]"
+                Expect.equal (UsedBeforeDef ["a"]) (shallowValidation p2) "recursive def"
+
+            testCase "looks okay" <| fun () ->
+                let p1 = pp ""
+                Expect.equal LooksOkay (shallowValidation p1) "empty program is okay"
+
+                let p2 = pp "open xyzzy"
+                Expect.equal LooksOkay (shallowValidation p2) "single open is okay"
+
+                let p3 = pp "from xyzzy import a, b, c, d, e as f, f as e,\n  h, i as j"
+                Expect.equal LooksOkay (shallowValidation p3) "import lists are okay"
+
+                let p4 = pp "prog foo [a b c]\nprog bar [d e f]" 
+                Expect.equal LooksOkay (shallowValidation p4) "progs are okay"
+        ]
+
+    // Test log and load.
+    //
+    // The input is a dictionary of fake modules. Output is an LL and a ref for 
+    let makeTestLL (m: Value) : (IEffHandler * FTList<Value> ref) =
+        let logOutRef = ref FTList.empty
+        let writeLogOutRef msg = logOutRef := FTList.snoc !logOutRef msg
+        let logEff = TXLogSupport(writeLogOutRef)
+        let loadEff = 
+            { new IEffHandler with
+                member __.Eff msg =
+                    match msg with
+                    | Value.Variant "load" (Value.Bits sym) ->
+                        Value.record_lookup sym m
+                    | _ -> None
+              interface ITransactional with
+                member __.Try () = ()
+                member __.Commit () = ()
+                member __.Abort () = ()
+            }
+        let ll = composeEff logEff loadEff
+        (ll, logOutRef)
+
+
+    // TODO:
+    // compile and evaluate a useful program
+    // perhaps a bignum gcd?
+
+    
+

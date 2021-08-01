@@ -70,6 +70,20 @@ module Effects =
             member __.Abort () = ()
         }
 
+    /// Apply effects to a, then fallback to b if a fails.
+    /// This can be used for lightweight routing of effects.
+    let composeEff (a : IEffHandler) (b : IEffHandler)  =
+        { new IEffHandler with
+            member __.Eff msg =
+                let aResult = a.Eff msg
+                if Option.isSome aResult then aResult else
+                b.Eff msg
+          interface ITransactional with
+            member __.Try () = try b.Try() finally a.Try() 
+            member __.Commit () = try a.Commit() finally b.Commit()  
+            member __.Abort () = try a.Abort() finally b.Abort()
+        }
+
     /// As wrapFail except we may change the `fail` label.
     let wrapFailTag lbl =
         let k = Value.label lbl
@@ -147,4 +161,27 @@ module Effects =
             member self.Try () = self.PushTX ()
             member self.Commit () = self.PopTX true
             member self.Abort () = self.PopTX false
+
+    /// Common log messages are of form `warn:(msg:"warning string")`.
+    /// The intention is that we could extend the message with metadata.
+    let logMsg hdr msg =
+        Value.variant hdr (Value.variant "msg" (Value.ofString msg))
+
+    // common log headers
+    let info = "info"
+    let warn = "warn"
+    let error = "error"
+    
+    // log:Msg effect. This sends the log message, ignores the result.
+    // Thus, support for logging is optional.
+    let log (ll:IEffHandler) (msg:Value) : unit =
+        ignore <| ll.Eff(Value.variant "log" msg)
+
+
+    /// Log Output to Console
+    ///
+    /// This is intended to be a good 'default' behavior for writing 
+    /// log outputs. Currently only recognizes info, warn, error strings
+    /// and 'fail' with a list of log messages. Console colors for each.
+    /// 
 

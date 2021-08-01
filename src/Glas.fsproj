@@ -12,8 +12,8 @@
     <Compile Include="Arithmetic.fs" />
     <Compile Include="Effects.fs" />
     <Compile Include="Program.fs" />
-    <Compile Include="FindModule.fs" />
     <Compile Include="GlasZero.fs" />
+    <Compile Include="LoadModule.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
 
