@@ -54,9 +54,9 @@ Within a program, a word is immediately compiled by replacing it with the defini
 
 ## Keywords
 
-The g0 syntax has keywords for every symbol in Glas programs (e.g. swap, dip, do, loop, seq), plus a few for namespace management (e.g. import, open, from, as). Explicitly attempting to define keywords will result in a parse failure. If an 'open' module's record would define keywords, a warning should be logged that those definitions are ignored.
+The g0 syntax has keywords for every basic operator in Glas programs (e.g. swap, copy) and also for namespace ops (import, open, from, as) and structural keywords (dip, while, do, try, then, else, with). Attempting to define keywords will result in compilation failure. Implicit imports of keywords via 'open' modules will be dropped with a warning.
 
-For the basic symbolic operators like 'swap' or 'add', keywords compile to the program operator of the same name. Program structure uses a few specialized patterns:
+For the basic symbolic operators like 'swap' or 'add', keywords compile to the program operator of the same name. Other keywords are simply left undefined. Program structure uses a few specialized patterns:
 
         dip [ Program ]                                         (dip)
         while [ Program ] do [ Program ]                        (loop)

@@ -294,15 +294,15 @@ HTTP requests must be modeled as asynchronous, but they're a lot simpler than we
 
 ### Procedural Programming
 
-Request-response interactions with external services are awkward for transaction machines because request must be committed before a response is generated. However, this is essentially a problem of *expression* of programs. It is feasible to create a procedural program then interpret it one step at a time over multiple transactions. Then we only need to ensure that request and response aren't expressed as an atomic step.
+Request-response interactions with external services must be split across two transactions, such that the request is committed before we wait on the response. It is convenient to express this behavior procedurally, then implicitly interpret the procedure across multiple transactions.
 
-Transaction machines can evaluate procedural programs. Each transaction would interpret the procedure for one step then store the continuation for a future transaction. If the step would fail, the transaction also fails and the step implicitly waits for changes in the environment. For example, if a procedure's next step is to read a channel, we'll implicitly wait until the channel is non-empty. 
+Fortunately, it is not difficult for transaction machines to evaluate procedural programs. They simply need to commit after each atomic step, storing the continuation for the next steps in addition to any results. If the step would fail due to external conditions (e.g. reading an empty channel) then the transaction machine may implicitly wait for those conditions to change. 
 
-Support for transactional steps would support composite waits and atomic updates. This does introduce possible deadlock, e.g. if we include a request-response pattern within the transaction. But we can resist this issue with some discipline or session types.
+Conveniently, we could extend our procedural program with transactional steps to provide a simple basis for concurrency and process control - mutexes, timeouts, semaphores, etc. can be composed and handled by small transactions.
 
-Conveniently, Glas programs can be applied for procedural programming. The top-level program is treated as non-atomic, but 'try' and 'while' clauses are atomic. A transactional step might be expressed as adding all  logic into the 'try' clause and having the 'else' clause simply be 'fail'.
+The main cost for procedural programming is that it hinders live coding and reactive systems. The program's continuation state captures a lot of historical information that becomes outdated. Of course, there are still conventional solutions for this such as kill and restart.
 
-The main challenge for procedural programming is effective integration with live coding and reactive systems. It's difficult to correctly update a stateful continuation when the associated program is updated. But this isn't a concern for all use-cases, and conventional process control (kill and restart) remains an option. 
+In any case, I'd prefer to build procedural programming above transactions. It's much nicer there.
 
 ### GUI
 
