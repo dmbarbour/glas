@@ -15,4 +15,5 @@ open System
 [<EntryPoint>]
 let main argv =
     printfn "Args=%A" argv
+    printfn "Env.Args=%A" (System.Environment.GetCommandLineArgs())
     0 // return an integer exit code

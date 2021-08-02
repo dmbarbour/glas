@@ -26,6 +26,7 @@ let randomRecord () =
         let k = randomSym () // 27 ops to select from
         let v = Value.ofBits (randomBits (randomRange 0 32))
         r <- Value.record_insert k v r
+    //printfn "%s" (Value.prettyPrint r) 
     r
 
 let randomBytes len =
@@ -472,8 +473,4 @@ let test_ops =
                     let eProg = doEval (Prog (Do=Op Swap, Note=randomRecord())) e0 
                     Expect.equal (eProg.DS) [b;a] "prog"
 
-
-(*
-    | Env of Do:Program * With:Program
-*)            
     ]

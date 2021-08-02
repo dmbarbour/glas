@@ -51,12 +51,15 @@ module FindModule =
         // Also, any request other than 'load' is forwarded to this handler.
         val private Eff : IEffHandler 
 
-        // The g0 compile function must be provided. This could be based on the
+        // A g0 compile function must be provided. This could be based on the
         // built-in g0 compileFile, or based on a bootstrap cycle. 
-        val private CompileG0 : IEffHandler -> FilePath -> Value option
+        val private CompileG0 : IEffHandler -> Value -> Value option
 
         // To resist cyclic dependencies, we'll track which files we're loading.
         // We'll also log which files we're loading to simplify things.
         val mutable private Loading : FilePath list
 
+        // To avoid rework, we'll cache files we've previously loaded. This
+        // includes caching failed efforts.
+        val mutable private Cache : Map<FilePath, Value option>
 

@@ -261,14 +261,39 @@ let tests =
             Expect.equal (toKey (left (left (right unit)))) (Bits.ofByte 0x58uy) "llru"
             Expect.equal (toKey (left (right (left unit)))) (Bits.ofByte 0x64uy) "lrlu"
             Expect.equal (toKey (right (pair unit unit))) (Bits.ofByte 0xB0uy) "rpuu"
-            Expect.equal (toKey (right (left (pair unit unit)))) (Bits.ofNat64 0x270UL) "lrpuu"
+            Expect.equal (toKey (right (left (pair unit unit)))) (Bits.ofNat64 0x270UL) "rlpuu"
         
         testCase "ofKey" <| fun () ->
             Expect.equal (pair unit (left unit)) (ofKey (Bits.ofByte 0xC4uy)) "pulu"
             Expect.equal (left (left (right unit))) (ofKey (Bits.ofByte 0x58uy)) "llru"
             Expect.equal (left (right (left unit))) (ofKey (Bits.ofByte 0x64uy)) "lrlu"
             Expect.equal (right (pair unit unit)) (ofKey (Bits.ofByte 0xB0uy)) "rpuu"
-            Expect.equal (right (left (pair unit unit))) (ofKey (Bits.ofNat64 0x270UL)) "lrpuu"
+            Expect.equal (right (left (pair unit unit))) (ofKey (Bits.ofNat64 0x270UL)) "rlpuu"
+
+        // testing the pretty printer...
+        testCase "escaploosion - printing strings" <| fun () ->
+            let s0 = "\n\"Hello, world!\"\a\n"
+            let v = ofString s0 
+            let spp = prettyPrint v
+            Expect.equal "\"\\n\\\"Hello, world!\\\"\\a\\n\"" spp "pretty printing ugly strings"
+
+        testCase "printing numbers" <| fun () ->
+            Expect.equal "23u8" (prettyPrint (u8 23uy)) "we cans prints the bytes"
+            Expect.equal "5432u16" (prettyPrint (u16 5432us)) "we cans prints our shorts"
+            Expect.equal "23u5" (prettyPrint (nat 23UL)) "printing nats"
+            Expect.equal "42u6" (prettyPrint (nat 42UL)) "printing more nats"
+
+        testCase "printing basic pairs and sums data" <| fun () ->
+            Expect.equal "P((), 0u1)" (prettyPrint (pair unit (left unit))) "pulu"
+            Expect.equal "R[()]" (prettyPrint (right (pair unit unit))) "rpuu"
+            Expect.equal "RLP((), 1u1)" (prettyPrint (right (left (pair unit (right unit))))) "rlpuru"
+
+        testCase "printing symbols" <| fun () ->
+            Expect.equal "foo:()" (prettyPrint (symbol "foo")) "foo"
+
+        testCase "printing lists" <| fun () -> 
+            Expect.equal "[1u8, 2u8, 254u8, 255u8]" (prettyPrint (ofBinary [|1uy;2uy;254uy;255uy|])) "binary"
+            Expect.equal "\"Ok\"" (prettyPrint (ofBinary [|byte 'O'; byte 'k'|])) "strings"
 
     ]
 

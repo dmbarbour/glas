@@ -162,21 +162,31 @@ module Effects =
             member self.Commit () = self.PopTX true
             member self.Abort () = self.PopTX false
 
-    /// Common log messages are of form `warn:(msg:"warning string")`.
-    /// The intention is that we could extend the message with metadata.
-    let logMsg hdr msg =
-        Value.variant hdr (Value.variant "msg" (Value.ofString msg))
+    /// The most common log event is a text message, intended for humans.
+    /// In addition to the message, we'll often want some context such as
+    /// importance level and stack traces. So, I currently use the schema:
+    /// 
+    ///   text:(lv:warn, msg:"something happened")
+    ///
+    /// This design is intended for extensibility of text with new context
+    /// and of log events with new variants.
+    let logText lv msg =
+        Value.variant "text" <| Value.asRecord ["lv"; "msg"] [Value.symbol lv; Value.ofString msg]
 
-    // common log headers
+    // common log levels
     let info = "info"
     let warn = "warn"
     let error = "error"
     
     // log:Msg effect. This sends the log message, ignores the result.
-    // Thus, support for logging is optional.
+    // Thus, IEffHandler support for logging is optional.
     let log (ll:IEffHandler) (msg:Value) : unit =
         ignore <| ll.Eff(Value.variant "log" msg)
 
+
+    let logInfo ll msg = log ll (logText info msg)
+    let logWarn ll msg = log ll (logText warn msg)
+    let logError ll msg = log ll (logText error msg)
 
     /// Log Output to Console
     ///

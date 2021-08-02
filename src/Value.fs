@@ -367,78 +367,6 @@ module Value =
         if List.exists Option.isNone vs then None else
         Some (List.map Option.get vs, r')
 
-    let rec private _isRecord rs xct b v =
-        if ((b &&& 0x100) = 0x100) then
-            if(xct > 0) then
-                // expecting bit pattern '10xx xxxx'
-                if((b &&& 0b11000000) = 0b10000000)
-                    then _isRecord rs (xct - 1) 1 v
-                    else false 
-            else if(b = 0x100) then
-                // null-terminated label.
-                match rs with
-                | struct(xct', b', v')::rs' -> _isRecord rs' xct' b' v' 
-                | [] -> true // final label
-            else if((b &&& 0b10000000) = 0b00000000) then
-                _isRecord rs 0 1 v   // 1-byte utf-8
-            else if((b &&& 0b11100000) = 0b11000000) then
-                _isRecord rs 1 1 v   // 2-byte utf-8
-            else if((b &&& 0b11110000) = 0b11100000) then
-                _isRecord rs 2 1 v   // 3-byte utf-8
-            else if((b &&& 0b11111000) = 0b11110000) then
-                _isRecord rs 3 1 v   // 4-byte utf-8
-            else false
-        else 
-            match v with
-            | U -> false // label is not 8-bit aligned
-            | L v' -> _isRecord rs xct (b <<< 1) v'
-            | R v' -> _isRecord rs xct ((b <<< 1) ||| 1) v'
-            | P (l,r) -> 
-                let rs' = struct(xct, ((b <<< 1) ||| 1), r)::rs
-                _isRecord rs' xct (b <<< 1) l
-
-    /// Check that a value is a record with null-terminated UTF-8 labels.
-    /// Note: the UTF-8 check allows overlong encodings, but is able to
-    /// discriminate random inputs from records.
-    let isRecord (v:Value) : bool =
-        if isUnit v then true else
-        _isRecord [] 0 1 v
-
-    let rec private _recordBytes m ct b v =
-        if(8 = ct) then Map.add b v m else
-        match v with
-        | U -> m // incomplete byte. Just drop it.
-        | L v' -> _recordBytes m (1+ct) (b <<< 1) v'
-        | R v' -> _recordBytes m (1+ct) ((b <<< 1) ||| 1uy) v'
-        | P (lv,rv) -> // max 8 stack depth, so use direct recursion
-            let ct' = 1 + ct
-            let lm = _recordBytes m ct' (b <<< 1) lv
-            _recordBytes lm ct' ((b <<< 1) ||| 1uy) rv
-
-    /// Obtain byte-aligned keys from a record. Drops any partial bytes. 
-    /// This is a helper function to iterate symbolic keys in the record.
-    let recordBytes (r:Value) : Map<uint8, Value> =
-        _recordBytes (Map.empty) 0 0uy r
-
-    let rec private _seqSym ss  =
-        match ss with
-        | [] -> None
-        | struct(p, m)::ssRem ->
-            match Map.tryFindKey (fun _ _ -> true) m with
-            | None -> _seqSym ssRem // done with p
-            | Some 0uy -> // null terminator for key string
-                let ss' = struct(p, Map.remove 0uy m)::ssRem
-                let pb = p |> List.toArray |> Array.rev
-                let sym = System.Text.Encoding.UTF8.GetString(pb);
-                Some ((sym, Map.find 0uy m), ss')
-            | Some b -> 
-                let ss' = struct(b::p, recordBytes (Map.find b m))::
-                          struct(p, Map.remove b m)::ssRem
-                _seqSym ss'
-
-    /// Assuming value is a valid record, lazily return all key-value pairs.
-    let recordSeq (r:Value) : (string * Value) seq =
-        Seq.unfold _seqSym [struct(List.empty, recordBytes r)]
 
     // edge is `01` for left, `10` for right. accum in reverse order
     let inline private _key_edge acc e =
@@ -458,6 +386,7 @@ module Value =
             let br' = (_ofSE s e)::br
             let bi' = (Bits.cons true (Bits.cons true bi_stem)) // branch
             _key_val bi' br' v'
+
 
     /// Translate value to bitstrings with unique prefix property, suitable
     /// for use as a record key. 
@@ -583,7 +512,8 @@ module Value =
         match v with
         | Binary b ->
             try 
-                System.Text.Encoding.UTF8.GetString(b) |> Some
+                let enc = System.Text.UTF8Encoding(false,true)
+                enc.GetString(b) |> Some
             with
             | _ -> None
         | _ -> None
@@ -596,3 +526,178 @@ module Value =
         | String s -> s
         | _ -> invalidArg (nameof v) "value is not a string"
 
+
+    let rec private _isRecord rs xct b v =
+        if ((b &&& 0x100) = 0x100) then
+            if(xct > 0) then
+                // expecting bit pattern '10xx xxxx'
+                if((b &&& 0b11000000) = 0b10000000)
+                    then _isRecord rs (xct - 1) 1 v
+                    else false 
+            else if(b = 0x100) then
+                // null-terminated label.
+                match rs with
+                | struct(xct', b', v')::rs' -> _isRecord rs' xct' b' v' 
+                | [] -> true // final label
+            else if((b &&& 0b10000000) = 0b00000000) then
+                // exclude ASCII control characters
+                let c = byte b
+                if ((c < 32uy) || (c > 126uy)) then false else
+                _isRecord rs 0 1 v   // 1-byte utf-8
+            else if((b &&& 0b11100000) = 0b11000000) then
+                _isRecord rs 1 1 v   // 2-byte utf-8
+            else if((b &&& 0b11110000) = 0b11100000) then
+                _isRecord rs 2 1 v   // 3-byte utf-8
+            else if((b &&& 0b11111000) = 0b11110000) then
+                _isRecord rs 3 1 v   // 4-byte utf-8
+            else false
+        else 
+            match v with
+            | U -> false // label is not 8-bit aligned
+            | L v' -> _isRecord rs xct (b <<< 1) v'
+            | R v' -> _isRecord rs xct ((b <<< 1) ||| 1) v'
+            | P (l,r) -> 
+                let rs' = struct(xct, ((b <<< 1) ||| 1), r)::rs
+                _isRecord rs' xct (b <<< 1) l
+
+    /// Check that a value is a record with null-terminated UTF-8 labels.
+    /// Rejects the empty symbol and C0 or DEL characters. I'm wondering
+    /// if I should restrict the symbols to UTF-8 identifiers.
+    ///
+    /// Note: the UTF-8 check currently allows overlong encodings. This is
+    /// not ideal, but the extra logic isn't too important for a bootstrap
+    /// implementation.
+    let isRecord (v:Value) : bool =
+        if isUnit v then true else
+        if Option.isSome (record_lookup (Bits.ofByte 0uy) v) then false else
+        _isRecord [] 0 1 v
+
+    let rec private _recordBytes m ct b v =
+        if(8 = ct) then Map.add b v m else
+        match v with
+        | U -> m // incomplete byte. Just drop it.
+        | L v' -> _recordBytes m (1+ct) (b <<< 1) v'
+        | R v' -> _recordBytes m (1+ct) ((b <<< 1) ||| 1uy) v'
+        | P (lv,rv) -> // max 8 stack depth, so use direct recursion
+            let ct' = 1 + ct
+            let lm = _recordBytes m ct' (b <<< 1) lv
+            _recordBytes lm ct' ((b <<< 1) ||| 1uy) rv
+
+    /// Obtain byte-aligned keys from a record. Drops any partial bytes. 
+    /// This is a helper function to iterate symbolic keys in the record.
+    let recordBytes (r:Value) : Map<uint8, Value> =
+        _recordBytes (Map.empty) 0 0uy r
+
+    let rec private _seqSym ss  =
+        match ss with
+        | [] -> None
+        | struct(p, m)::ssRem ->
+            match Map.tryFindKey (fun _ _ -> true) m with
+            | None -> _seqSym ssRem // done with p
+            | Some 0uy -> // null terminator for key string
+                let ss' = struct(p, Map.remove 0uy m)::ssRem
+                let pb = p |> List.toArray |> Array.rev
+                let sym = System.Text.Encoding.UTF8.GetString(pb);
+                Some ((sym, Map.find 0uy m), ss')
+            | Some b -> 
+                let ss' = struct(b::p, recordBytes (Map.find b m))::
+                          struct(p, Map.remove b m)::ssRem
+                _seqSym ss'
+
+
+    let inline private _toHex n =
+        if (n < 10) 
+            then char (int '0' + n) 
+            else char (int 'A' + (n - 10))
+
+    // roll my own string escape for pretty-printing strings 
+    let private _escape (s0 : string) : string =
+        let sb = System.Text.StringBuilder()
+        for c in s0 do
+            match c with
+            | '\\' -> ignore <| sb.Append("\\\\")
+            | '"'  -> ignore <| sb.Append("\\\"")
+            | '\x7F' -> ignore <| sb.Append("\\x7F")
+            | _ when (int c >= 32) -> ignore <| sb.Append(c)
+            | '\n' -> ignore <| sb.Append("\\n")
+            | '\r' -> ignore <| sb.Append("\\r")
+            | '\t' -> ignore <| sb.Append("\\t")
+            | '\a' -> ignore <| sb.Append("\\a")
+            | '\b' -> ignore <| sb.Append("\\b")
+            | '\f' -> ignore <| sb.Append("\\f")
+            | '\v' -> ignore <| sb.Append("\\v")
+            | _ -> 
+                ignore <| sb.Append("\\x")
+                            .Append(_toHex ((0xF0 &&& int c) >>> 4))
+                            .Append(_toHex ((0x0F &&& int c) >>> 0))
+        sb.ToString()
+
+    /// Assuming value is a valid record, lazily return all key-value pairs.
+    let recordSeq (r:Value) : (string * Value) seq =
+        Seq.unfold _seqSym [struct(List.empty, recordBytes r)]
+
+
+    let rec private _ppV (v:Value) : string seq = 
+        seq {
+            match v with
+            | U -> yield "()"
+            | _ when isRecord v ->
+                let kvSeq = recordSeq v
+                if Seq.isEmpty (Seq.tail kvSeq) then
+                    // variant or symbol (a singleton record)
+                    yield! _ppKV (Seq.head kvSeq)
+                else
+                    yield "("
+                    yield! _ppKV (Seq.head kvSeq)
+                    yield! kvSeq |> Seq.tail |> Seq.collect (fun kv -> seq { yield ", "; yield! _ppKV kv})
+                    yield ")"
+            | String s ->
+                yield "\""
+                yield _escape s
+                yield "\""
+            | FTList l ->
+                yield "["
+                match l with
+                | FTList.ViewL (v0, l') ->
+                    yield! _ppV v0
+                    yield! FTList.toSeq l' |> Seq.collect (fun v -> seq { yield ", "; yield! _ppV v})
+                | _ -> ()
+                yield "]"
+            | Bits b ->
+                let blen = Bits.length b
+                yield (Bits.toI b).ToString()
+                yield "u"
+                yield blen.ToString()
+            | L v ->
+                yield "L"
+                yield! _ppV v
+            | R v ->
+                yield "R"
+                yield! _ppV v
+            | P (a,b) ->
+                yield "P("
+                yield! _ppV a
+                yield ", "
+                yield! _ppV b
+                yield ")"
+        }
+    and private _ppKV (k:string,v:Value) : string seq = 
+        seq {
+            yield k
+            yield ":"
+            yield! _ppV v
+        }
+
+    /// (dubiously) Pretty Printing of Values.
+    ///
+    /// Heuristic Priorities:
+    ///   - unit
+    ///   - records/variants/symbols
+    ///   - strings and lists of values
+    ///   - numbers/bitstrings
+    ///   - pairs and sums.
+    ///
+    /// I should probably restrict size of what I write, but it's low
+    /// priority for now. This is mostly for debugging.
+    let prettyPrint (v:Value) : string =
+        _ppV v |> String.concat "" 

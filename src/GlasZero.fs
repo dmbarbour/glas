@@ -2,30 +2,35 @@ namespace Glas
 
 /// This file implements the g0 (Glas Zero) bootstrap syntax. This implementation
 /// of g0 should be replaced by a language-g0 module after bootstrap completes. 
-///
-/// The g0 language is not good for day to day use. There is no support for static 
-/// higher order programs or macros, thus list processing and parser combinators 
-/// are awkward to express. Embedded data is limited to bitstrings. Data plumbing
-/// is often inconvenient due to lack of variables.
 /// 
-/// The extreme simplicity of g0 is intentional. The many deficiencies of g0 can
-/// be resolved by defining better languages and implementing langage modules.
+/// The g0 syntax is essentially the same as the Glas program model, except it has
+/// lightweight support for linking definitions across modules, and less support 
+/// for embedding structured data. The latter is mitigated by partial evaluation:
+/// we can define a program that builds a value.
+///
+/// The g0 syntax is not intended for day to day use. Most significantly, there is
+/// no support for staged higher order meta-programming, so it would be awkward to
+/// express parser combinators or list processing. The lack of local variables for
+/// data plumbing is also inconvenient. 
+///
+/// The intention is that users should develop new language modules to provide nice
+/// features, and just use g0 as a starting point to define other language modules.
 ///
 module Zero =
     type Word = string
     type ModuleName = Word
 
-    /// AST for Zero is very close to Glas program model. 
-    /// However, we still preserve words at this layer.
+    /// AST for g0 programs.
+    /// Words are not linked in this representation. Comments are dropped.
     type Prog = ProgStep list
     and ProgStep =
         | Call of Word  // word
-        | Sym of Bits // 'word, 42, 0x2A, 0b101010, etc.
+        | Sym of Bits // 'word, 42, 0x2A, 0b101010
         | Str of string // "hello, world!"
-        | Env of With:Prog * Do:Prog
-        | Loop of While:Prog * Do:Prog
-        | Cond of Try:Prog * Then:Prog * Else:Prog
-        | Dip of Prog
+        | Env of With:Prog * Do:Prog        // with [H] do [P]
+        | Loop of While:Prog * Do:Prog      // while [C] do [P]
+        | Cond of Try:Prog * Then:Prog * Else:Prog  // try [C] then [A] else [B]
+        | Dip of Prog   // dip [P]
 
     [<Struct>]
     type Import = Import of Word:Word * As: Word option
@@ -36,6 +41,7 @@ module Zero =
     [<Struct>]
     type Def = Prog of Name: Word * Body: Prog
 
+    /// AST for g0 toplevel.
     [<Struct>]
     type TopLevel = 
         { Open : ModuleName option
@@ -321,8 +327,7 @@ module Zero =
         let load (ll:IEffHandler) (m:ModuleName) : Value option =
             let r = ll.Eff(Value.variant "load" (Value.symbol m))
             if Option.isNone r then
-                sprintf "failed to load module %s" m
-                    |> logMsg warn |> log ll
+                logWarn ll (sprintf "failed to load module %s" m)
             r
 
         // open a module and also erase keywords from namespace.
@@ -337,8 +342,7 @@ module Zero =
                     | None -> ()
                     | Some _ ->
                         d <- Value.record_delete wLbl d 
-                        sprintf "open %s: erasing reserved word '%s'" m w
-                            |> logMsg warn |> log ll
+                        logWarn ll (sprintf "open %s: erasing reserved word '%s'" m w)
                 d
 
         let applyFrom (ll:IEffHandler) (d0:Value) (From (Src=m; Imports=lImp)) = 
@@ -352,24 +356,23 @@ module Zero =
                     | Some v -> 
                         d <- Value.record_insert (Value.label wDst) v d
                     | None ->
-                        sprintf "module %s does not export word '%s'" m wSrc 
-                            |> logMsg warn |> log ll
+                        d <- Value.record_delete (Value.label wDst) d
+                        logWarn ll (sprintf "module %s does not define word '%s'" m wSrc)
                 d
-
-        let isProgOrData v =
-            match v with
-            | Value.Variant "prog" _ -> true
-            | Value.Variant "data" _ -> true
-            | _ -> false
 
         let private _primOps =
             Set.ofList (List.map Program.opStr Program.op_list)
 
-        let linkCall d0 w =
-            if Set.contains w _primOps then Value.symbol w else
-            match Value.record_lookup (Value.label w) d0 with
-            | Some v when isProgOrData v -> v 
-            | _ -> Value.symbol "fail"
+        let tryLinkCall d0 w =
+            if Set.contains w _primOps then Some (Value.symbol w) else
+            let r = Value.record_lookup (Value.label w) d0
+            match r with
+            | Some (Value.Variant "prog" p) ->
+                match p with
+                | Value.Variant "do" pBody -> Some pBody // flatten `prog:do:P => P`
+                | _ -> r // preserve annotations
+            | Some (Value.Variant "data" _) -> r
+            | _ -> None
 
         let rec linkProg (d0:Value) (p:Prog) =
             match p with
@@ -379,7 +382,10 @@ module Zero =
                 Value.variant "seq" (Value.ofFTList (FTList.ofList lV))
         and linkStep d0 step =
             match step with
-            | Call w -> linkCall d0 w
+            | Call w ->
+                match tryLinkCall d0 w with
+                | Some def -> def
+                | None -> Value.symbol "fail" 
             | Sym b -> Value.variant "data" (Value.ofBits b)
             | Str s -> Value.variant "data" (Value.ofString s)
             | Env (With=pWith; Do=pDo) ->
@@ -395,28 +401,6 @@ module Zero =
                 let vDip = linkProg d0 pDip
                 Value.variant "dip" vDip
 
-        /// Warn for any undefined words that we actually call. The g0
-        /// language allows for undefined words, simply warns then uses
-        /// 'fail' in place of their definition. 
-        /// 
-        /// If a word is defined but is not 'prog' or 'data' we have the
-        /// same behavior, so a warning is also given in these cases.
-        /// We'll also warn for calls to reserved words defined via 'open'.
-        let warnForTroublesomeWords (ll:IEffHandler) (d0:Value) (lDefs : Def list) =
-            let defWords = List.map wordDefined lDefs |> Set.ofList 
-            let calledWords = List.map wordsCalledFromDef lDefs |> Set.unionMany
-            for w in calledWords do
-                if Set.contains w defWords then () else
-                match Value.record_lookup (Value.label w) d0 with
-                | Some v ->
-                    if isProgOrData v then () else
-                    sprintf "calls to word %s fail: not a 'prog' or 'data' def" w
-                        |> logMsg warn |> log ll
-                | None ->
-                    sprintf "calls to word %s fail: undefined" w
-                        |> logMsg warn |> log ll
-
-
         let private uncheckedCompileTLV (ll:IEffHandler) (tlv:TopLevel) : Value =
             let mutable d = 
                 match tlv.Open with
@@ -424,7 +408,6 @@ module Zero =
                 | Some m -> openModule ll m
             for f in tlv.From do
                 d <- applyFrom ll d f
-            warnForTroublesomeWords ll d (tlv.Defs)
             for Prog (Name=w; Body=pBody) in tlv.Defs do
                 let vBody = linkProg d pBody
                 let vProg = Value.variant "prog" (Value.variant "do" vBody)
@@ -435,36 +418,40 @@ module Zero =
         /// the namespace available at the end of file. This compiler does not 
         /// handle the parsing step or detection of load cycles, nor arity errors.
         let compileTLV (ll:IEffHandler) (tlv:TopLevel) : Value option =
-            log ll (logMsg info "performing shallow validation of g0 program")
+            logInfo ll "performing shallow validation of g0 program"
             match shallowValidation tlv with
             | LooksOkay -> 
-                Some <| uncheckedCompileTLV ll tlv
+                let d = uncheckedCompileTLV ll tlv
+                let lUndef = 
+                        List.map wordsCalledFromDef (tlv.Defs) 
+                            |> Set.unionMany
+                            |> Set.filter (tryLinkCall d >> Option.isNone)
+                            |> Set.toList
+                if not (List.isEmpty lUndef) then
+                    logWarn ll (sprintf "undefined words in use: %A" lUndef)
+                Some d
             | issues -> 
-                sprintf "validation error: %A" issues |> logMsg error |> log ll
+                logError ll (sprintf "validation error: %A" issues)
                 None
 
         let compileString (ll:IEffHandler) (s:string) : Value option =
-            log ll (logMsg info "using built-in compile function for g0 string")
+            logInfo ll "using built-in g0 compile function for string"
             match FParsec.CharParsers.run Parser.parseTopLevel s with
             | FParsec.CharParsers.Success (tlv, _, _) -> 
-                log ll (logMsg info "parse successful!")
+                logInfo ll "parse successful!"
                 compileTLV ll tlv
             | FParsec.CharParsers.Failure (msg, _, _) ->
-                log ll (logMsg error (sprintf "parse error:\n%s" msg))
+                logError ll (sprintf "parse error:\n%s" msg)
                 None
 
-        let compileFile (ll:IEffHandler) (fp:string) : Value option =
-            log ll (logMsg info (sprintf "using built-in compile function for g0 file: %s" fp))
-            let r = FParsec.CharParsers.runParserOnFile 
-                        Parser.parseTopLevel 
-                        () 
-                        fp 
-                        (System.Text.UTF8Encoding())
-            match r with
-            | FParsec.CharParsers.Success (tlv, _, _) ->
-                log ll (logMsg info ("parse successful!"))
-                compileTLV ll tlv
-            | FParsec.CharParsers.Failure (msg, _, _) ->
-                log ll (logMsg error (sprintf "parse error: \n%s" msg))
+        /// Glas systems normally compile values to values. The input value
+        /// will represent the file binary in most cases binary  In this case,
+        /// we'll convert a value back to a string before compiling.
+        let compileValue (ll:IEffHandler) (v:Value) : Value option =
+            match v with
+            | Value.String s -> compileString ll s
+            | _ ->
+                logError ll "input to g0 compiler is not a UTF-8 binary."
                 None
+
 
