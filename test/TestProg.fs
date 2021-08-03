@@ -170,9 +170,9 @@ let test_ops =
                 for _ in 1 .. 100 do
                     let v1 = randomBytes 6
                     let v2 = randomBytes 7
-                    failEval (Op Eq) (dataStack [v1;v2]) 
+                    failEval (Op Eq) (dataStack [v1;v2;v2]) 
                     let e' = doEval (Op Eq) (dataStack [v1;v1;v2])
-                    Expect.equal (e'.DS) [v1;v1;v2] "equal stacks"
+                    Expect.equal (e'.DS) [v1;v1;v2] "equal values on top of stack"
 
             testCase "record ops" <| fun () ->
                 for _ in 1 .. 100 do

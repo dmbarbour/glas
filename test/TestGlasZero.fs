@@ -272,15 +272,14 @@ module Glas.TestGlasZero
         "; exercise every import type"
         "open util"
         "from nmath import modn as mod, eralz"
+        "prog neq-zero [0 neq drop]"
         "; define gcd via Euclidean algorithm"
-        "prog gcd [while [0 neq] do [drop swap dip [copy] mod] drop eralz]"
+        "prog gcd [eralz while [neq-zero] do [copy dip [swap] mod] drop eralz]"
         ]
-
-
 
     [<Tests>]
     let testCompile =
-        testCase "gcd" <| fun () ->
+        testCase "gcd and its dependencies" <| fun () ->
             let getfn m w =
                 match Value.record_lookup (Value.label w) m with
                 | None -> failtestf "unable to find word %s" w
@@ -299,14 +298,30 @@ module Glas.TestGlasZero
             let eEralz = doEval pEralz (dataStack [Value.u64 12345UL])
             Expect.equal (eEralz.DS) [Value.nat 12345UL] "erase zero-bits prefix"
 
+            // test modn
+            let pModn = getfn mnmath "modn"
+            Expect.equal (Program.static_arity pModn) (Some struct(2,1)) "arity modn"
+            let eModn1 = doEval pModn (dataStack [Value.u64 1071UL; Value.u32 462u])
+            Expect.equal (eModn1.DS) [Value.nat 462UL] "mod1"
+            let eModn1 = doEval pModn (dataStack [Value.u32 462u; Value.u64 1071UL])
+            Expect.equal (eModn1.DS) [Value.nat 147UL] "mod2"
+
             // provide nmath and util to compilation of gcd module
             let ll1 = testLoadEff (Value.asRecord ["nmath"; "util"] [mnmath; mutil])
             let mgcd = doCompile ll1 gcd
 
+            // test neq-zero
+            let pNEQZ = getfn mgcd "neq-zero"
+            Expect.equal (Program.static_arity pNEQZ) (Some struct(1,1)) "arity neq-zero"
+            let eNEQ1 = doEval pNEQZ (dataStack [Value.u8 0uy]) 
+            Expect.equal (eNEQ1.DS) [Value.u8 0uy] "8-bit zero is not equal to 0-bit zero (unit)"
+            Expect.isNone (Program.Interpreter.interpret pNEQZ (dataStack [Value.nat 0UL])) 
+                            "neq-zero on unit"
+
             // test gcd 
             let pGCD = getfn mgcd "gcd"
             Expect.equal (Program.static_arity pGCD) (Some struct(2,1)) "arity gcd"
-            let eGCD = doEval pGCD (dataStack [Value.u32 259u; Value.u64 111UL])
-            Expect.equal (eGCD.DS) [Value.nat 37UL] "gcd computed"
+            let eGCD = doEval pGCD (dataStack [Value.u32 462u; Value.u64 1071UL])
+            Expect.equal (eGCD.DS) [Value.nat 21UL] "gcd computed "
 
 
