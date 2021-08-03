@@ -604,6 +604,10 @@ module Value =
                           struct(p, Map.remove b m)::ssRem
                 _seqSym ss'
 
+    /// Assuming value is a valid record, lazily return all key-value pairs.
+    let recordSeq (r:Value) : (string * Value) seq =
+        Seq.unfold _seqSym [struct(List.empty, recordBytes r)]
+
 
     let inline private _toHex n =
         if (n < 10) 
@@ -631,10 +635,6 @@ module Value =
                             .Append(_toHex ((0xF0 &&& int c) >>> 4))
                             .Append(_toHex ((0x0F &&& int c) >>> 0))
         sb.ToString()
-
-    /// Assuming value is a valid record, lazily return all key-value pairs.
-    let recordSeq (r:Value) : (string * Value) seq =
-        Seq.unfold _seqSym [struct(List.empty, recordBytes r)]
 
 
     let rec private _ppV (v:Value) : string seq = 
@@ -699,5 +699,10 @@ module Value =
     ///
     /// I should probably restrict size of what I write, but it's low
     /// priority for now. This is mostly for debugging.
+    /// 
+    /// A precise pretty printer should use a type description as an
+    /// additional value input. This one is more heuristic, but is ok
+    /// for most problems. The main issue is that some numbers might 
+    /// render as symbols by accident.
     let prettyPrint (v:Value) : string =
         _ppV v |> String.concat "" 
