@@ -279,7 +279,6 @@ let test_ops =
 
                     // ensure that ops properly fail if given bitstrings of non-equal lengths
                     let c = randomBits (n + 1)
-                    let l = randomBytes 2
                     let ebc = dataStack [Value.ofBits b; Value.ofBits c]
                     failEval (Op BMax) ebc
                     failEval (Op BMin) ebc
