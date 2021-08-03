@@ -295,6 +295,7 @@ module Glas.TestGlasZero
 
             // test eralz
             let pEralz = getfn mnmath "eralz"
+            Expect.equal (Program.static_arity pEralz) (Some struct(1,1)) "arity eralz"
             let eEralz = doEval pEralz (dataStack [Value.u64 12345UL])
             Expect.equal (eEralz.DS) [Value.nat 12345UL] "erase zero-bits prefix"
 
@@ -304,6 +305,7 @@ module Glas.TestGlasZero
 
             // test gcd 
             let pGCD = getfn mgcd "gcd"
+            Expect.equal (Program.static_arity pGCD) (Some struct(2,1)) "arity gcd"
             let eGCD = doEval pGCD (dataStack [Value.u32 259u; Value.u64 111UL])
             Expect.equal (eGCD.DS) [Value.nat 37UL] "gcd computed"
 
