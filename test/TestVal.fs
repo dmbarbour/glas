@@ -272,14 +272,14 @@ let tests =
 
         // testing the pretty printer...
         testCase "escaploosion - printing strings" <| fun () ->
-            let s0 = "\n\"Hello, world!\"\a\n"
+            let s0 = "\n\"Hello, world!\"\a\t\v\r\x1b\x7f"
             let v = ofString s0 
             let spp = prettyPrint v
-            Expect.equal "\"\\n\\\"Hello, world!\\\"\\a\\n\"" spp "pretty printing ugly strings"
+            Expect.equal "\"\\n\\\"Hello, world!\\\"\\a\\t\\v\\r\\x1B\\x7F\"" spp "pretty printing ugly strings"
 
         testCase "printing numbers" <| fun () ->
-            Expect.equal "23u8" (prettyPrint (u8 23uy)) "we cans prints the bytes"
-            Expect.equal "5432u16" (prettyPrint (u16 5432us)) "we cans prints our shorts"
+            Expect.equal "23u8" (prettyPrint (u8 23uy)) "print bytes"
+            Expect.equal "5432u16" (prettyPrint (u16 5432us)) "print shorts"
             Expect.equal "23u5" (prettyPrint (nat 23UL)) "printing nats"
             Expect.equal "42u6" (prettyPrint (nat 42UL)) "printing more nats"
 
@@ -288,12 +288,18 @@ let tests =
             Expect.equal "R[()]" (prettyPrint (right (pair unit unit))) "rpuu"
             Expect.equal "RLP((), 1u1)" (prettyPrint (right (left (pair unit (right unit))))) "rlpuru"
 
-        testCase "printing symbols" <| fun () ->
+        testCase "printing variants" <| fun () ->
             Expect.equal "foo:()" (prettyPrint (symbol "foo")) "foo"
+            Expect.equal "text:msg:\"hello, world!\"" (prettyPrint (variant "text" (variant "msg" (ofString "hello, world!")))) "text"
 
         testCase "printing lists" <| fun () -> 
             Expect.equal "[1u8, 2u8, 254u8, 255u8]" (prettyPrint (ofBinary [|1uy;2uy;254uy;255uy|])) "binary"
             Expect.equal "\"Ok\"" (prettyPrint (ofBinary [|byte 'O'; byte 'k'|])) "strings"
+
+        testCase "printing records" <| fun () ->
+            let v = asRecord ["foo"; "bar"; "baz"; "qux"; "gort"] (List.map (byte >> u8) [1 .. 5])
+            let ppv = "(bar:2u8, baz:3u8, foo:1u8, gort:5u8, qux:4u8)"
+            Expect.equal ppv (prettyPrint v) "record"
 
     ]
 
