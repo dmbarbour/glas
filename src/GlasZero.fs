@@ -434,8 +434,8 @@ module Zero =
                 logError ll (sprintf "validation error: %A" issues)
                 None
 
-        let compileString (ll:IEffHandler) (s:string) : Value option =
-            logInfo ll "using built-in g0 compile function for string"
+        let compile (ll:IEffHandler) (s:string) : Value option =
+            logInfo ll "using built-in g0 compile function"
             match FParsec.CharParsers.run Parser.parseTopLevel s with
             | FParsec.CharParsers.Success (tlv, _, _) -> 
                 logInfo ll "parse successful!"
@@ -443,15 +443,4 @@ module Zero =
             | FParsec.CharParsers.Failure (msg, _, _) ->
                 logError ll (sprintf "parse error:\n%s" msg)
                 None
-
-        /// Glas systems normally compile values to values. The input value
-        /// will represent the file binary in most cases binary  In this case,
-        /// we'll convert a value back to a string before compiling.
-        let compileValue (ll:IEffHandler) (v:Value) : Value option =
-            match v with
-            | Value.String s -> compileString ll s
-            | _ ->
-                logError ll "input to g0 compiler is not a UTF-8 binary."
-                None
-
 

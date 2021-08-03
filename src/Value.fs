@@ -354,6 +354,10 @@ module Value =
         let addElem r k v = record_insert (label k) v r
         List.fold2 addElem unit ks vs
 
+    let ofMap (m:Map<string,Value>) : Value =
+        let addElem r k v = record_insert (label k) v r
+        Map.fold addElem unit m
+
     /// Record with optional keys.
     let (|Record|) ks r =
         let lks = List.map label ks
@@ -540,9 +544,6 @@ module Value =
                 | struct(xct', b', v')::rs' -> _isRecord rs' xct' b' v' 
                 | [] -> true // final label
             else if((b &&& 0b10000000) = 0b00000000) then
-                // exclude ASCII control characters
-                let c = byte b
-                if ((c < 32uy) || (c > 126uy)) then false else
                 _isRecord rs 0 1 v   // 1-byte utf-8
             else if((b &&& 0b11100000) = 0b11000000) then
                 _isRecord rs 1 1 v   // 2-byte utf-8
@@ -641,6 +642,8 @@ module Value =
         seq {
             match v with
             | U -> yield "()"
+            | U8 0uy -> 
+                yield "0u8"
             | _ when isRecord v ->
                 let kvSeq = recordSeq v
                 if Seq.isEmpty (Seq.tail kvSeq) then

@@ -93,6 +93,8 @@ module Glas.TestGlasZero
                 failParse zps "\""
                 failParse zps "\"\n\""
                 failParse zps "\"\t\""
+
+                // I might later support UTF-8 in general, but not now.
                 failParse zps "\"→\""
 
             testCase "programs" <| fun () ->
@@ -115,6 +117,11 @@ module Glas.TestGlasZero
                 Expect.equal p2 (pp "dip [  ]") "dip nop 1"
                 Expect.equal p2 (pp "dip \r\r\r\r[ \r\n\t ]") "dip nop 1"
 
+                failParse zpp "[]"
+                failParse zpp "dip ["
+                failParse zpp "dip ]"
+                failParse zpp "dip []]"
+
                 let p3 = [Dip[Call "foo"]]
                 Expect.equal p3 (pp "dip[foo]") "dip foo 1"
                 Expect.equal p3 (pp "dip [foo]") "dip foo 2"
@@ -125,11 +132,19 @@ module Glas.TestGlasZero
                 let p4 = [Cond(Try=[Call "foo"], Then=[Call "bar"], Else=[Call "baz"]); Call "qux"]
                 Expect.equal p4 (pp "try [foo] then [\nbar\n]\nelse [baz ;comment\n] qux ; more comments\n") "try then else"
 
+                // for now, partial conditionals shouldn't parse.
+                failParse zpp "try [] then []"
+                failParse zpp "try [] else []"
+                failParse zpp "try []"
+
                 let p5 = [Env(With=[Call "x"], Do=[Call "y"])]
                 Expect.equal p5 (pp "with [x] do [y]") "environment"
+                failParse zpp "with []"
 
                 let p6 = [Loop(While=[Call "a"], Do=[Call "b"])]
                 Expect.equal p6 (pp "while[a]do[b]") "loop"
+                failParse zpp "while []"
+                failParse zpp "do []"
 
 
             testCase "imports" <| fun () -> 
@@ -164,12 +179,6 @@ module Glas.TestGlasZero
 
     let pp = doParse Parser.parseTopLevel
 
-
-    // NOTE: it is difficult to directly check logs except whether they're empty or not.
-    // At most, we can check for 'stringContains' and various failure conditions.
-    // 
-    // todo: check logs via 'stringContains'. 
-
     [<Tests>]
     let testValidation = 
         testList "validation" [
@@ -180,7 +189,7 @@ module Glas.TestGlasZero
                     "from d import e as b"
                     "prog c [b e e]"
                     ] 
-                Expect.equal (DuplicateDefs ["b";"c"]) (shallowValidation p1) "dup import and prog"
+                Expect.equal (shallowValidation p1) (DuplicateDefs ["b";"c"]) "dup import and prog"
 
             testCase "reserved words" <| fun () ->
                 // note that module names and rewritten words don't count.
@@ -191,7 +200,7 @@ module Glas.TestGlasZero
                     "prog else []"
                     ]
                 let kw = List.sort ["swap"; "fail"; "put"; "del"; "else"]
-                Expect.equal (ReservedDefs kw) (shallowValidation p1) "many reserved words defined"
+                Expect.equal (shallowValidation p1) (ReservedDefs kw) "many reserved words defined"
             
             testCase "used before defined" <| fun () ->
                 let p1 = pp <| String.concat "\n" [
@@ -199,51 +208,103 @@ module Glas.TestGlasZero
                     "prog b [ a c ] "
                     "prog c [ a b ] "
                     ]
-                Expect.equal (UsedBeforeDef ["b";"c"]) (shallowValidation p1) "using words in mutual cycle"
+                Expect.equal (shallowValidation p1) (UsedBeforeDef ["b";"c"]) "using words in mutual cycle"
 
                 let p2 = pp "prog a [a b c]"
-                Expect.equal (UsedBeforeDef ["a"]) (shallowValidation p2) "recursive def"
+                Expect.equal (shallowValidation p2) (UsedBeforeDef ["a"]) "recursive def"
 
             testCase "looks okay" <| fun () ->
                 let p1 = pp ""
-                Expect.equal LooksOkay (shallowValidation p1) "empty program is okay"
+                Expect.equal (shallowValidation p1) LooksOkay "empty program is okay"
 
                 let p2 = pp "open xyzzy"
-                Expect.equal LooksOkay (shallowValidation p2) "single open is okay"
+                Expect.equal (shallowValidation p2) LooksOkay "single open is okay"
 
                 let p3 = pp "from xyzzy import a, b, c, d, e as f, f as e,\n  h, i as j"
-                Expect.equal LooksOkay (shallowValidation p3) "import lists are okay"
+                Expect.equal (shallowValidation p3) LooksOkay "import lists are okay"
 
                 let p4 = pp "prog foo [a b c]\nprog bar [d e f]" 
-                Expect.equal LooksOkay (shallowValidation p4) "progs are okay"
+                Expect.equal (shallowValidation p4) LooksOkay "progs are okay"
         ]
 
-    // Test log and load.
-    //
-    // The input is a dictionary of fake modules. Output is an LL and a ref for 
-    let makeTestLL (m: Value) : (IEffHandler * FTList<Value> ref) =
-        let logOutRef = ref FTList.empty
-        let writeLogOutRef msg = logOutRef := FTList.snoc !logOutRef msg
-        let logEff = TXLogSupport(writeLogOutRef)
-        let loadEff = 
-            { new IEffHandler with
-                member __.Eff msg =
-                    match msg with
-                    | Value.Variant "load" (Value.Bits sym) ->
-                        Value.record_lookup sym m
-                    | _ -> None
-              interface ITransactional with
-                member __.Try () = ()
-                member __.Commit () = ()
-                member __.Abort () = ()
-            }
-        let ll = composeEff logEff loadEff
-        (ll, logOutRef)
+    // Simple effects handler to test loading of modules.
+    // Note that we aren't testing the log function, since
+    // the logging behavior isn't very well specified.
+    let testLoadEff (d:Value) : IEffHandler =
+        { new IEffHandler with
+            member __.Eff msg =
+                match msg with
+                | Value.Variant "load" (Value.Bits k) ->
+                    Value.record_lookup k d
+                | _ -> None
+          interface ITransactional with
+            member __.Try () = ()
+            member __.Commit () = ()
+            member __.Abort () = ()
+        }
+
+    let doCompile ll s = 
+        match Compile.compile ll s with
+        | Some r -> r
+        | None ->
+            failtest "expected to compile successfully"
+
+    let dataStack (ds : Value list) : Program.Interpreter.RTE  = 
+        { DS = ds; ES = List.empty; IO = noEffects }
+
+    let doEval p e = 
+        match Program.Interpreter.interpret p e with
+        | Some e' -> e'
+        | None -> failtestf "eval unsuccessful for program %A" p
+
+    let nmath = String.concat "\n" [
+        "; eralz - erase leading zeroes"
+        "prog eralz [while [0b0 get] do []]"
+        "; operations for bignum math "
+        "prog modn [div dip [drop] eralz]"
+        ]
+
+    let util = String.concat "\n" [
+        "prog neq [try [eq] then [fail] else []]"
+        ]
+
+    let gcd = String.concat "\n" [
+        "; exercise every import type"
+        "open util"
+        "from nmath import modn as mod, eralz"
+        "; define gcd via Euclidean algorithm"
+        "prog gcd [while [0 neq] do [drop swap dip [copy] mod] drop eralz]"
+        ]
 
 
-    // TODO:
-    // compile and evaluate a useful program
-    // perhaps a bignum gcd?
 
-    
+    [<Tests>]
+    let testCompile =
+        testCase "gcd" <| fun () ->
+            let getfn m w =
+                match Value.record_lookup (Value.label w) m with
+                | None -> failtestf "unable to find word %s" w
+                | Some v ->
+                    match Program.tryParse v with
+                    | None -> failtestf "unable to parse def for word %s" w
+                    | Some p -> p
+
+            let ll0 = testLoadEff (Value.unit) 
+            let mnmath = doCompile ll0 nmath
+            let mutil = doCompile ll0 util
+
+            // test eralz
+            let pEralz = getfn mnmath "eralz"
+            let eEralz = doEval pEralz (dataStack [Value.u64 12345UL])
+            Expect.equal (eEralz.DS) [Value.nat 12345UL] "erase zero-bits prefix"
+
+            // provide nmath and util to compilation of gcd module
+            let ll1 = testLoadEff (Value.asRecord ["nmath"; "util"] [mnmath; mutil])
+            let mgcd = doCompile ll1 gcd
+
+            // test gcd 
+            let pGCD = getfn mgcd "gcd"
+            let eGCD = doEval pGCD (dataStack [Value.u32 259u; Value.u64 111UL])
+            Expect.equal (eGCD.DS) [Value.nat 37UL] "gcd computed"
+
 

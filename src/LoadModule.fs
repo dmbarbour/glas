@@ -46,17 +46,18 @@ module FindModule =
         let paths = envPath.Split(';', StringSplitOptions.None) |> List.ofArray
         search paths
 
-    type ModuleLoader =
+    type Loader =
         // ModuleLoader assumes another effects handler is available for logging.
         // Also, any request other than 'load' is forwarded to this handler.
         val private Eff : IEffHandler 
 
-        // A g0 compile function must be provided. This could be based on the
-        // built-in g0 compileFile, or based on a bootstrap cycle. 
-        val private CompileG0 : IEffHandler -> Value -> Value option
+        // A g0 compile function must be provided. This could be the 'compile' 
+        // defined in GlasZero module, or based on the compiled language-g0 
+        // module to support bootstrap. We assume g0 requires a string input.
+        val private CompileG0 : IEffHandler -> string -> Value option
 
         // To resist cyclic dependencies, we'll track which files we're loading.
-        // We'll also log which files we're loading to simplify things.
+        // These files are also tracked.
         val mutable private Loading : FilePath list
 
         // To avoid rework, we'll cache files we've previously loaded. This
