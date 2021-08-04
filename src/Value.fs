@@ -267,9 +267,10 @@ module Value =
     let inline (|Stem|_|) (p : Bits) (v : Value) : Value option =
         tryMatchStem p v
 
-    /// Prefixed with a string label.
+    /// Prefixed with a specific string label.
     let inline (|Variant|_|) (s : string) (v : Value) : Value option =
         tryMatchStem (label s) v
+
 
     let rec private accumSharedPrefixLoop acc a b =
         let halt = Bits.isEmpty a || Bits.isEmpty b || (Bits.head a <> Bits.head b)
@@ -609,6 +610,21 @@ module Value =
     let recordSeq (r:Value) : (string * Value) seq =
         Seq.unfold _seqSym [struct(List.empty, recordBytes r)]
 
+    /// Match a record as a map of strings.
+    let tryRecord v =
+        if not (isRecord v) then None else
+        Some (Map.ofSeq (recordSeq v))
+
+    /// Match record as a map.
+    let (|RecordMap|_|) v =
+        tryRecord v
+
+    /// Match any variant, returning label and value.
+    let (|AnyVariant|_|) v =
+        match v with
+        | RecordMap m when (1 = Map.count m) ->
+            Map.toList m |> List.head |> Some
+        | _ -> None
 
     let inline private _toHex n =
         if (n < 10) 

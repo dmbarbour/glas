@@ -1,4 +1,3 @@
-open System
 
 // What commands should be supported?
 //
@@ -14,6 +13,17 @@ open System
 
 [<EntryPoint>]
 let main argv =
+    // just some bullshit for testing a few things
+    let fgc0 = System.Console.ForegroundColor
+    for fgc in System.ConsoleColor.GetValues() do
+        System.Console.ForegroundColor <- fgc
+        printfn "Color is %A" fgc 
+    System.Console.ForegroundColor <- fgc0
+
     printfn "Args=%A" argv
     printfn "Env.Args=%A" (System.Environment.GetCommandLineArgs())
+    printfn "Console.IsOutputRedirected=%A" (System.Console.IsOutputRedirected)
+    printfn "Console.IsErrorRedirected=%A" (System.Console.IsErrorRedirected)
+    printfn "Console.IsInputRedirected=%A" (System.Console.IsInputRedirected)
     0 // return an integer exit code
+

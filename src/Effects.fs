@@ -188,10 +188,34 @@ module Effects =
     let logWarn ll msg = log ll (logText warn msg)
     let logError ll msg = log ll (logText error msg)
 
-    /// Log Output to Console
-    ///
-    /// This is intended to be a good 'default' behavior for writing 
-    /// log outputs. Currently only recognizes info, warn, error strings
-    /// and 'fail' with a list of log messages. Console colors for each.
-    /// 
+
+    let private selectColor v =
+        match v with
+        | Value.Variant "text" (Value.FullRec ["lv"] ([lv],_)) ->
+            match lv with
+            | Value.Variant "info" _ -> System.ConsoleColor.DarkGreen
+            | Value.Variant "warn" _ -> System.ConsoleColor.DarkYellow
+            | Value.Variant "error" _ -> System.ConsoleColor.DarkRed
+            | _ -> 
+                // randomly associate color with non-standard level
+                match (hash lv) % 6 with
+                | 0 -> System.ConsoleColor.Magenta
+                | 1 -> System.ConsoleColor.Cyan
+                | 2 -> System.ConsoleColor.Green
+                | 3 -> System.ConsoleColor.DarkBlue
+                | 4 -> System.ConsoleColor.Blue
+                | _ -> System.ConsoleColor.DarkCyan
+        | Value.Variant "fail" _ ->  System.ConsoleColor.DarkMagenta
+        | _ -> System.ConsoleColor.Blue
+
+    /// Log Output to Console StdErr (with color!)
+    /// (Does not use color if redirected elsewhere.)
+    let consoleErrLogOut (vMsg:Value) : unit =
+        let cFG0 = System.Console.ForegroundColor
+        if not System.Console.IsErrorRedirected then
+            System.Console.ForegroundColor <- selectColor vMsg
+        try 
+            System.Console.Error.WriteLine(Value.prettyPrint vMsg)
+        finally
+            System.Console.ForegroundColor <- cFG0
 
