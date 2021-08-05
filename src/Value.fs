@@ -654,11 +654,13 @@ module Value =
         sb.ToString()
 
 
-    let rec private _ppV (v:Value) : string seq = 
+    let rec private _ppV (bSep:bool) (v:Value) : string seq = 
         seq {
             match v with
             | U -> yield "()"
             | U8 0uy -> 
+                if bSep then
+                    yield " "
                 yield "0u8"
             | _ when isRecord v ->
                 let kvSeq = recordSeq v
@@ -678,33 +680,36 @@ module Value =
                 yield "["
                 match l with
                 | FTList.ViewL (v0, l') ->
-                    yield! _ppV v0
-                    yield! FTList.toSeq l' |> Seq.collect (fun v -> seq { yield ", "; yield! _ppV v})
+                    yield! _ppV false v0
+                    yield! FTList.toSeq l' |> Seq.collect (fun v -> seq { yield ", "; yield! _ppV false v})
                 | _ -> ()
                 yield "]"
             | Bits b ->
+                if bSep then
+                    yield " "
                 let blen = Bits.length b
                 yield (Bits.toI b).ToString()
                 yield "u"
                 yield blen.ToString()
             | L v ->
                 yield "L"
-                yield! _ppV v
+                yield! _ppV true v
             | R v ->
                 yield "R"
-                yield! _ppV v
+                yield! _ppV true v
             | P (a,b) ->
                 yield "P("
-                yield! _ppV a
+                yield! _ppV false a
                 yield ", "
-                yield! _ppV b
+                yield! _ppV false b
                 yield ")"
         }
     and private _ppKV (k:string,v:Value) : string seq = 
         seq {
             yield k
-            yield ":"
-            yield! _ppV v
+            if not (isUnit v) then
+                yield ":"
+                yield! _ppV false v
         }
 
     /// (dubiously) Pretty Printing of Values.
@@ -724,4 +729,4 @@ module Value =
     /// for most problems. The main issue is that some numbers might 
     /// render as symbols by accident.
     let prettyPrint (v:Value) : string =
-        _ppV v |> String.concat "" 
+        _ppV false v |> String.concat "" 

@@ -231,12 +231,16 @@ module Glas.TestGlasZero
     // Note that we aren't testing the log function, since
     // the logging behavior isn't very well specified.
     let testLoadEff (d:Value) : IEffHandler =
+        let logging = false
+        let logger = 
+            if logging then consoleLogger false 
+                       else noEffects 
         { new IEffHandler with
             member __.Eff msg =
                 match msg with
                 | Value.Variant "load" (Value.Bits k) ->
                     Value.record_lookup k d
-                | _ -> None
+                | _ -> logger.Eff msg
           interface ITransactional with
             member __.Try () = ()
             member __.Commit () = ()

@@ -289,7 +289,7 @@ let tests =
             Expect.equal "RLP((), 1u1)" (prettyPrint (right (left (pair unit (right unit))))) "rlpuru"
 
         testCase "printing variants" <| fun () ->
-            Expect.equal "foo:()" (prettyPrint (symbol "foo")) "foo"
+            Expect.equal "foo" (prettyPrint (symbol "foo")) "foo"
             Expect.equal "text:msg:\"hello, world!\"" (prettyPrint (variant "text" (variant "msg" (ofString "hello, world!")))) "text"
 
         testCase "printing lists" <| fun () -> 

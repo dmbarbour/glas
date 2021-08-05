@@ -63,90 +63,93 @@ module LoadModule =
         // them.
         val mutable private Loading : FilePath list
 
-        // When cycles are detected, record them. We cannot do much with them
-        // at the moment, but perhaps later. 
-        val mutable private Cycles : Set<FilePath list>
-
         // To avoid unnecessary rework, cache values for modules we've already
         // loaded. Ideally, we'd support a persistent cache, but that can be
         // deferred until after bootstrap.
         val mutable private Cache : Map<FilePath, Value option>
+
+        // We'll also cache valid language module compile functions to reduce
+        // rework a little. Here 'valid' just means it parses and passes the
+        // 1--1 static arity check.
+        val mutable private CompilerCache : Map<FilePath, Program option>
 
         new (g0,eff0) =
             { NonLoadEff = eff0
             ; CompileG0 = g0
             ; Loading = []
             ; Cache = Map.empty  
-            ; Cycles = Set.empty
+            ; CompilerCache = Map.empty
             }
 
-        /// Obtain the 'compile' program associated with a file suffix.
-        member ll.LoadCompileFunction fileSuffix : Program option =
-            if String.IsNullOrEmpty fileSuffix then None else
-            let langMod = "language-" + fileSuffix
-            match ll.LoadModule langMod with
+        member private ll.CompileCompiler fp langMod = 
+            match ll.LoadFile fp with
             | Some (Value.FullRec ["compile"] ([vCompile], _)) ->
                 match vCompile with
                 | Program.Program pCompile ->
                     match Program.static_arity pCompile with
                     | Some struct(1,1) ->
-                        // success! everything else is different errors. 
-                        Some pCompile
+                        Some pCompile // success!
                     | Some struct(a,b) -> 
-                        logError ll (sprintf "module %s.compile has bad arity %d--%d" langMod a b)
+                        logError ll (sprintf "%s compile has incorrect static arity %d--%d (expecting 1--1)" langMod a b)
                         None
                     | None -> 
-                        logError ll (sprintf "module %s.compile fails static arity check" langMod)
+                        logError ll (sprintf "%s compile fails static arity check" langMod)
                         None
                 | _ -> 
-                    logError ll (sprintf "module %s.compile is not a Glas program" langMod)
+                    logError ll (sprintf "%s compile is not a Glas program" langMod)
                     None
             | Some _ ->
-                logError ll (sprintf "module %s.compile does not exist" langMod)
+                logError ll (sprintf "module %s does not define 'compile'" langMod)
                 None
             | None ->
-                logError ll (sprintf "module %s does not exist" langMod)
+                logError ll (sprintf "module %s could not be loaded" langMod)
                 None
 
+        member private ll.GetCompiler (fileSuffix : string) : Program option =
+            if String.IsNullOrEmpty(fileSuffix) then None else
+            let langMod = "language-" + fileSuffix
+            match ll.FindModule langMod with
+            | None -> None
+            | Some fp ->
+                match Map.tryFind fp ll.CompilerCache with
+                | Some result -> result
+                | None -> 
+                    let result = ll.CompileCompiler fp langMod
+                    ll.CompilerCache <- Map.add fp result ll.CompilerCache
+                    result
 
-        member private ll.Compile (langs : string list) (v0 : Value) : Value option = 
-            match langs with
-            | [] -> Some v0
-            | ("g0"::langs') ->
+        member private ll.Compile fileSuffix (v0 : Value) : Value option = 
+            match fileSuffix with
+            | "g0" ->
                 match v0 with
-                | Value.String s ->
-                    match ll.CompileG0 (ll :> IEffHandler) s with
-                    | Some v' -> ll.Compile langs' v'
-                    | None -> None
+                | Value.String s -> ll.CompileG0 (ll :> IEffHandler) s
                 | _ ->
-                    logError ll (sprintf "input to g0 is not a string: %A" v0)
+                    logError ll "input to g0 compiler is not a string"
                     None
-            | (lang::langs') ->
-                match ll.LoadCompileFunction lang with
+            | _ ->
+                match ll.GetCompiler fileSuffix with
                 | Some p ->
                     let e0 : Program.Interpreter.RTE = { DS = [v0]; ES = []; IO = (ll :> IEffHandler) }
                     match Program.Interpreter.interpret p e0 with
-                    | Some e' -> ll.Compile langs' (e'.DS.[0])
-                    | None -> None
-                | None ->
-                    // assuming the interpreter outputs suitable log messages
-                    None
+                    | Some e' -> Some (e'.DS.[0])
+                    | None -> None // interpreter may output error messages.
+                | None -> None // GetCompiler emits reason to log
 
         member private ll.LoadFileBasic (fp : FilePath) : Value option =
-            // attempt to read the file. Need to deal with permissions errors, etc..
-            try 
-                let langs = Path.GetFileName(fp).Split('.') |> Array.toList |> List.tail |> List.rev
-                let bytes = File.ReadAllBytes(fp)
-                let result = ll.Compile langs (Value.ofBinary bytes)
-                if Option.isNone result then
-                    logError ll (sprintf "compilation failed for file %s" fp)
-                result
-            with 
-            | e -> 
-                logError ll (sprintf "exception while loading file %s: %A" fp e)
-                None
+            let appLang fileSuffix vOpt =
+                match vOpt with
+                | Some v -> ll.Compile fileSuffix v
+                | None -> None
+            let langs = Path.GetFileName(fp).Split('.') |> Array.toList |> List.tail
+            let v0 = 
+                try fp |> File.ReadAllBytes |> Value.ofBinary |> Some
+                with 
+                | e -> 
+                    logError ll (sprintf "exception while loading file %s:  %A" fp e)
+                    None
+            List.foldBack appLang langs v0
 
-        // Wraps the basic load file activity with caching, cycle detection.
+        /// Load a specified file as a module.
         member ll.LoadFile (fp : FilePath) : Value option =
             match Map.tryFind fp (ll.Cache) with
             | Some r -> // cache
@@ -154,7 +157,6 @@ module LoadModule =
                 r
             | None when List.contains fp (ll.Loading) -> 
                 let cycle = List.rev <| fp :: List.takeWhile ((<>) fp) ll.Loading
-                ll.Cycles <- Set.add cycle ll.Cycles
                 logError ll (sprintf "dependency cycle detected! %A" cycle)
                 None
             | None ->
@@ -167,8 +169,8 @@ module LoadModule =
                 finally
                     ll.Loading <- ld0
 
-        /// Load a module
-        member ll.LoadModule (m : ModuleName) : Value option =
+        /// Find a module.
+        member ll.FindModule m : FilePath option = 
             let localDir =  
                 match ll.Loading with
                 | [] -> Directory.GetCurrentDirectory()
@@ -180,15 +182,19 @@ module LoadModule =
                 None
             | [fp] ->
                 logInfo ll (sprintf "loading module %s from file %s" m fp) 
-                ll.LoadFile fp
+                Some fp
             | ps ->
                 logError ll (sprintf "module %s is ambiguous; found %A" m ps)
                 None
 
+        /// Load a module
+        member ll.LoadModule (m : ModuleName) : Value option =
+            match ll.FindModule m with
+            | None -> None
+            | Some fp -> ll.LoadFile fp
 
         interface IEffHandler with
             // Handle 'load' effects. Forward everything else.
-            // Might later add an association from files to log messages.
             member ll.Eff v =
                 match v with
                 | Value.Variant "load" vLoad ->
@@ -198,9 +204,9 @@ module LoadModule =
                     | _ -> None
                 | _ -> ll.NonLoadEff.Eff v 
         interface ITransactional with
-            // Loader assumes external modules are constant. The cache is thus
-            // valid across transaction boundaries. But we do pass transactions
-            // to the NonLoadEff.
+            // Loader assumes external modules are constant during its lifespan.
+            // The cache is thus valid across transaction boundaries. But we do
+            // pass transactions onwards to the logger or other effects.
             member ll.Try () = 
                 ll.NonLoadEff.Try ()
             member ll.Commit () = 
