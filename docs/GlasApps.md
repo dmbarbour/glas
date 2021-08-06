@@ -110,11 +110,11 @@ Most effects are performed indirectly via channels. But we still need an env/eff
 
 ### Concurrency
 
-Task-based concurrency is based on repeating transactions that perform fair, stable, non-deterministic choice. With support from runtime and compiler, this can be optimized into replication, with each replica taking a different choice. Effects API:
+For isolated transactions, a non-deterministic choice is equivalent to taking both paths then committing one. For repeating transactions, this becomes equivalent to repeating both paths, and can be optimized by replicating the application for each path. Effects API:
 
 * **fork** - response is non-deterministic unit or failure. 
 
-Fork reduces to fair random choice when used in an unstable or non-repeating context. Or if further replication is not supported, e.g. due to quotas.
+Fork reduces to fair random choice when used in an unstable or non-repeating context. If replication is not supported, e.g. due to quota limits, a warning should be logged and fork reduces to fair random choice.
 
 ### Timing
 
@@ -151,6 +151,14 @@ Memory will be managed manually. Assigning unit to a MemRef can release memory r
 
 *Aside:* Iteration and browsing of memory deserves some future attention. A suitable API for this might be closer to an event stream 'watching' for certain memory events, with options to report a compatible history.
 
+### Logging
+
+Almost any application model will benefit from a simple logging mechanism to support debugging, observability of computations, etc..
+
+* **log:Message** - Response is unit. Arbitrary output message, useful for progress reports or debugging.
+
+Unlike most effects, log outputs will be observable to a debugger even if part of an aborted subtransaction. However, it should be obvious which messages are from aborted sub-transaction. Some log messages may have special meaning to an environment, e.g. supporting progress bars or implicitly including a snapshot of a call stack.
+
 ## Console Applications
 
 Console applications minimally require access to:
@@ -167,9 +175,9 @@ Log output may bind stderr by default.
 Environment variables can be viewed as an ad-hoc, restricted memory shared between host and application. The host may compute data on demand and impose restrictions on how variables are manipulated based on data types. Only the host may define new environment variables.
 
 * **env:(on:EnvVar, op:MemOp)** - response depends on the target and operation. May fail. Possible EnvVars:
- * *vars* - get/set an environment, a labeled record of strings.
+ * *vars* - a record of environment variables with string values
  * *cmd* - request command-line as a list of strings.
- * *exit* - application halts after setting exit code and committing.
+ * *exit* - put-only; application halts after setting exit code and committing.
  * *strace* - get the current stack trace, suitable for debugging
  * *tty* - get succeeds for interactive console apps (via stdin/stdout). Value may describe console height and width.
  * *signal* - read head (or write tail) for OS signals to this process.
@@ -181,6 +189,8 @@ This API is an awkward fit for use cases where we might want to model multiple c
 ### Standard IO
 
 Standard input and output can be modeled as initially open file references, following convention. However, instead of integers, I propose to reserve `std:in`, `std:out`, and `std:err` as file references. In general, we might reserve `std:` prefix for system-defined references.
+
+The `std:err` reference may be unavailable, implicitly used for logging.
 
 ### Filesystem
 

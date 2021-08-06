@@ -256,11 +256,9 @@ module Program =
         tryParse v
 
 
-    /// A lightweight interpreter for the Glas program model. Trades performance
-    /// for simplicity of the implementation. Not recommended for long-term use,
-    /// but suitable as a reference or bootstrap implementation.
-    /// 
-    /// This interpreter does not assume the program is arity safe or type safe.
+    /// A lightweight, direct-style interpreter for the Glas program model.
+    /// Perhaps useful as a reference, and for getting started. However, this
+    /// is really awkward for incremental computing, stack traces, etc.. 
     module Interpreter =
         open Effects
 
@@ -537,9 +535,38 @@ module Program =
             | Env (With=pWith; Do=pDo) -> env pWith pDo e 
             | Prog (Do=p'; Note=_) -> interpret p' e 
 
-    // An optimizing Program to Program compiler?
-    //
-    // We could improve performance, but might be better to defer optimizations
-    // until bootstrap is working, and fully write them within the Glas system.
 
-    // Compilers with register allocation etc. are a similar story. Defer for now.
+    (* incomplete, and I might defer this effort to post-bootstrap.
+    
+    /// A continuation-passing free-monadic interpreter is more flexible 
+    /// for which sorts of effects we can express. Uses defunctionalized 
+    /// continuation, which is also convenient for debugging purposes.
+    /// 
+    /// Note: this is currently incomplete. I've 
+    module CPI =
+
+        /// Our continuation, at any given step. This does not include the
+        /// data stack or effect handler stacks. 
+        type CC = 
+            | Halt                              // program is done
+            | Run of Program * CC               // evaluate a program, then continue
+            | PushEnv of Program * CC           // to restore effects stack
+            | PopEnv of CC                      // to escape effects stack
+            | SeqCC of CC * CC                  // for flexible composition
+
+        /// We'll interpret the program until we hit a stopping point. 
+        /// Effects stack will be captured in continuations, and the
+        /// data stack is returned separately.
+        type Yield =
+            | Done                  // program exited successfully
+            | Fail of CC            // stopped on failure. Remaining program is listed.
+            | Eff of CC             // stopped for external effects
+            | Try of CC * CC * CC   // begin a hierarchical transaction.
+
+        type EffStack = (struct(Value * Program)) list
+        type DataStack = Value list
+
+
+        //let interpret (cc:CC) : 
+        
+    *)

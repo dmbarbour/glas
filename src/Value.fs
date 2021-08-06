@@ -654,17 +654,19 @@ module Value =
         sb.ToString()
 
 
-    let rec private _ppV (bSep:bool) (v:Value) : string seq = 
+    let rec private _ppV (bLRSep:bool) (v:Value) : string seq = 
         seq {
             match v with
             | U -> yield "()"
             | U8 0uy -> 
-                if bSep then
+                if bLRSep then
                     yield " "
                 yield "0u8"
             | _ when isRecord v ->
                 let kvSeq = recordSeq v
                 if Seq.isEmpty (Seq.tail kvSeq) then
+                    if bLRSep then
+                        yield " "
                     // variant or symbol (a singleton record)
                     yield! _ppKV (Seq.head kvSeq)
                 else
@@ -673,6 +675,8 @@ module Value =
                     yield! kvSeq |> Seq.tail |> Seq.collect (fun kv -> seq { yield ", "; yield! _ppKV kv})
                     yield ")"
             | String s ->
+                if bLRSep then
+                    yield " "
                 yield "\""
                 yield _escape s
                 yield "\""
@@ -685,7 +689,7 @@ module Value =
                 | _ -> ()
                 yield "]"
             | Bits b ->
-                if bSep then
+                if bLRSep then
                     yield " "
                 let blen = Bits.length b
                 yield (Bits.toI b).ToString()
@@ -722,7 +726,8 @@ module Value =
     ///   - pairs and sums.
     ///
     /// I should probably restrict size of what I write, but it's low
-    /// priority for now. This is mostly for debugging.
+    /// priority for now. This is mostly for debugging and initial log
+    /// outputs.
     /// 
     /// A precise pretty printer should use a type description as an
     /// additional value input. This one is more heuristic, but is ok

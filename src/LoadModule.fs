@@ -81,7 +81,7 @@ module LoadModule =
             ; CompilerCache = Map.empty
             }
 
-        member private ll.CompileCompiler fp langMod = 
+        member ll.CompileCompiler fp langMod = 
             match ll.LoadFile fp with
             | Some (Value.FullRec ["compile"] ([vCompile], _)) ->
                 match vCompile with
@@ -119,14 +119,14 @@ module LoadModule =
                     result
 
         member private ll.Compile fileSuffix (v0 : Value) : Value option = 
-            match fileSuffix with
-            | "g0" ->
+            if "g0" = fileSuffix then
                 match v0 with
-                | Value.String s -> ll.CompileG0 (ll :> IEffHandler) s
+                | Value.String s -> 
+                    ll.CompileG0 (ll :> IEffHandler) s
                 | _ ->
                     logError ll "input to g0 compiler is not a string"
                     None
-            | _ ->
+            else
                 match ll.GetCompiler fileSuffix with
                 | Some p ->
                     let e0 : Program.Interpreter.RTE = { DS = [v0]; ES = []; IO = (ll :> IEffHandler) }
@@ -152,7 +152,7 @@ module LoadModule =
         /// Load a specified file as a module.
         member ll.LoadFile (fp : FilePath) : Value option =
             match Map.tryFind fp (ll.Cache) with
-            | Some r -> // cache
+            | Some r -> // use cached value 
                 logInfo ll (sprintf "using cached result for file %s" fp)
                 r
             | None when List.contains fp (ll.Loading) -> 
@@ -214,3 +214,55 @@ module LoadModule =
             member ll.Abort () = 
                 ll.NonLoadEff.Abort ()
 
+
+    /// Loader without bootstrapping. Simply use the built-in g0.
+    let nonBootStrapLoader (nle : IEffHandler) : Loader =
+        Loader(Zero.Compile.compile, nle)
+
+
+    let private _findG0 ll =
+        // only bootstrap from GLAS_PATH.
+        match findModuleInPathList "language-g0" (readGlasPath()) with
+        | [fp] -> Some fp
+        | [] -> 
+            logError ll "bootstrap failed: language-g0 not found on GLAS_PATH"
+            None
+        | ambList ->
+            logError ll (sprintf "bootstrap failed: language-g0 ambiguous: %A" ambList)
+            None
+
+    let private _compileG0 (p : Program) (ll : IEffHandler) (s : string) : Value option =
+        let e0 : Program.Interpreter.RTE = { DS = [Value.ofString s]; ES = []; IO = ll } 
+        match Program.Interpreter.interpret p e0 with
+        | None -> None
+        | Some e' -> 
+            match e'.DS with
+            | [r] -> Some r
+            | _ -> None
+
+    /// Attempt to bootstrap the g0 language, then use the language-g0
+    /// module for the loader.
+    let tryBootStrapLoader (nle : IEffHandler) : Loader option = 
+        match _findG0 nle with
+        | None -> None
+        | Some fp ->
+            logInfo nle (sprintf "bootstrap: language-g0 found at %s" fp)
+            let ll0 = nonBootStrapLoader nle
+            match ll0.CompileCompiler fp "language-g0" with
+            | None -> None
+            | Some p0 ->
+                logInfo nle "bootstrap: language-g0 compiled using built-in g0"
+                let ll1 = Loader(_compileG0 p0, nle)
+                match ll1.CompileCompiler fp "language-g0" with
+                | None -> None 
+                | Some p1 -> 
+                    logInfo nle "bootstrap: language-g0 compiled using language-g0"
+                    let ll2 = Loader(_compileG0 p1, nle)
+                    match ll2.CompileCompiler fp "language-g0" with
+                    | None -> None
+                    | Some p2 when (p1 <> p2) ->
+                        logError nle "bootstrap failed: language-g0 does not exactly rebuild"
+                        None
+                    | Some _ ->
+                        logInfo nle "bootstrap success! language-g0 is verified fixpoint"
+                        Some ll2 

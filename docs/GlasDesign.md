@@ -4,13 +4,13 @@
 
 Glas modules are typically represented by files and folders. Dependencies between Glas modules must be acyclic (i.e. a directed acyclic graph), and dependencies across folder boundaries are structurally restricted. Every module will deterministically compute a value. 
 
-To compute the value for a file `foo.ext`, the Glas system will compile the file binary according to a program defined in a module named `language-ext`. Although there is a special exception for bootstrapping, most syntax will be user-defined. The value of a folder is the value of its contained `public` file.
+To compute the value for a file `foo.ext`, the Glas system will compile the file binary using a program defined in module `language-ext`. Most syntax is user-defined in the module system excepting [g0](GlasZero.md) for bootstrapping. File extensions compose. For example, to compute the value for `foo.xyz.json` we first apply `language-json` to compute an intermediate value, then apply `language-xyz` to compute the value of the `foo` module. If a file has no extension, its value is the file binary. Files and folders whose names start with `.` are hidden from the Glas module system.
 
-File extensions compose. For example, to compute the value for `foo.xyz.json` we first apply `language-json` to the file binary to compute an intermediate value, then apply `language-xyz` to that intermediate value. Thus, source input for language modules can be arbitrary Glas values. Relatedly, if a file has no extension, its value is the file binary. Files and folders whose names start with `.` are hidden from the Glas module system.
+To compute the value for a folder `foo/`, we use the value of its contained `public` file. Folders are implicit boundaries for dependencies: a file can only reference other modules (files or subfolders) within the same folder, or reference global modules.
 
-In addition to local modules within a folder, a GLAS_PATH environment variable will support search for installed modules in the filesystem. GLAS_PATH should be a list of folders split by semicolons (even on Linux). It is feasible to further extend search to include network resources. 
+Global modules are found using the GLAS_PATH environment variable, whose value should be a list of folders separated by semicolons. If there is no local module with a given name, we'll search for the first matching module on GLAS_PATH. It's best that all modules on GLAS_PATH are subfolders. Later, we might extend module search to a configurable distribution on the network.
 
-*Note:* Glas does not specify a package manager. I favor package managers suitable for community management and reproducible builds, such as Nix or Guix. Later, we might design a manager optimized for Glas.
+*Note:* Glas does not specify a package manager. We can start with Nix or Guix, then later develop something more specialized. 
 
 ## Data Model
 
@@ -50,15 +50,17 @@ To work with larger-than-memory data structures, Glas systems may offload subtre
 
 ## Binary Extraction
 
-A subset of Glas modules may define binary outputs. A binary can be represented as data (a list of bytes) or as a program that writes a stream of binary fragments. The Glas command-line tool shall provide options to extract binaries to file or stdout. The extracted binary should represent an externally useful software artifact - e.g. music file, pdf document, executable. A tar or zip file can represent multi-file outputs. 
+The Glas command-line tool shall provide a simple option to print module system values as binaries to file or stdout. This is concretely expressed by command-line arguments `print Value with Printer`, where `Value` and `Printer` both have the form `modulename(.symbol)*` allowing access into labeled records and lists. The printer's value must represent a valid *Data Printer* function (see below). If a printer is unspecified, we implicitly use `std.print`. 
 
-Instead of a command-line compiler, some Glas modules will compile values from other Glas modules into binaries, which are later extracted. The logic for producing an executable should primarily be represented within the Glas module system. To adapt executables for the system, it is feasible to depend on a `target` module that describes an OS and machine architecture.
+Printers can extract externally useful binaries from the module system. For example, we could 'print' a document, streaming music, or an executable binary. Multi-file outputs can be represented indirectly by printing a tar or zip file. Printing values is also useful for REPL-style development and debugging of the module system. 
 
-An intriguing consequence is that binaries remain accessible within the module system. Thus, other modules could further compose these binaries (e.g. to construct a virtual machine image) or interpret binary executables for automatic fuzz testing.
+In Glas systems, extraction of binary executables replaces the conventional command-line compiler tools. To adapt executables for a host system, it is feasible to depend on a `target` module that describes OS and machine architecture. This target could feasibly be adjusted for cross-compilation via tweaking GLAS_PATH.
+
+A consequence of this design is that the compiler logic is fully accessible within the module system. All binaries that artifacts that can be constructed externally can be constructed internally within the module system.
 
 ## Glas Programs
 
-Glas defines a standard program model designed for staging, composition, and compilation of programs, while being easy to interpret. This model is used when defining language modules, streaming binaries, automated tests, and is suitable for transaction machine applications. However, it is possible to support many more program models within a mature Glas system.
+Glas defines a standard program model designed for staging, composition, and compilation of programs, while being easy to interpret. This model is used when defining language modules, streaming binaries, automated tests, and is suitable for transaction machine applications. However, it is possible to support many other program models within a mature Glas system via binary extraction or acceleration.
 
 Glas programs are stack-based. Valid Glas programs have static stack arity, i.e. branches are balanced and loops are stack-invariant. To detect errors ahead-of-time where feasible, other ad-hoc type safety analyses are recommended but not required. In general, Glas programs are responsible for verifying other Glas programs. 
 
@@ -158,7 +160,7 @@ Record operators:
 
 * **get** ((label:V|R) label -- V) - given label and record, extract value from record. Fails if label is not in record.
 * **put** ((label?_|R) V label -- (label:V|R)) - given a label, value, and record, create new record that is almost the same except with value on label.
-* **del** ((label?_|R) label -- R) - given label and record, create new record with label removed modulo prefix sharing with other paths in record. 
+* **del** ((label?_|R) label -- R) - given label and record, create new record with label fully removed modulo prefix sharing with other paths in record. 
 
 A record may have many labels, sharing prefixes. Non-branching path segments can be compactly encoded to reduce the number of pointers. It is feasible for a compiler to optimize records with statically known labels like a C struct. A variant is a singleton record. 
 
@@ -193,7 +195,9 @@ Bitwise operators:
 * **bmin** - bitwise 'and' of two bitstrings of equal length
 * **beq** - bitwise equivalence of two bitstrings of equal length, i.e. 1 where bits match, 0 otherwise. (Negation of 'xor'.)
 
-Bitstring operators fail if assumed conditions are not met, i.e. not a bitstring or not of equal length.
+Bitstring operators fail if assumed conditions are not met, i.e. not a bitstring or not of equal length. Unlike lists, the assumption for bitstrings is that they are relatively small and Glas systems should optimize for compact or fixed-width encodings instead of efficient access to both ends of a large bitstring.
+
+*Aside:* We probably don't need bitwise ops; they're essentially extensions of the arithmetic ops.
 
 ### Arithmetic Operators
 
@@ -240,6 +244,8 @@ Construction of Glas programs must statically link dependencies. The resulting p
 
 ## Application Models
 
+We can model various apps with Glas programs by controlling input, output, and effect types.
+
 ### Language Modules
 
 Language modules have a module name of form `language-*`. The value of a language module should be a record of form `(compile:Program, ...)`. Aside from 'compile', the record for a language module may define other ad-hoc properties - documentation, linter, decompiler, language server app, REPL mode, etc..
@@ -251,33 +257,33 @@ The compile program implements a function from source (e.g. file binary) to a co
 
 Load failure may occur due to missing modules, ambiguity, dependency cyles, failure by the compile program, etc. The compile program decides what to do after a load fails, e.g. fail the compile or continue with fallback. Cause of failure is not visible to the compile program but may implicitly be reported to the programmer.
 
-### Streaming Binaries
+### Data Printer 
 
-To defer computation, or to support very large values, we can express binary outputs as programs that write binary fragments. The program is zero-arity (no inputs, no outputs except via writes). Command line tools can interpret the program to generate the binary stream.
+The command-line tool will support serialization of module system values to binary. A data printer is an arity 1--0 function with an effect to write binary data fragments. Additionally, the printer may output log messages. In common use, binary data is written to stdout and log messages are written to stderr.
 
 * **write:Binary** - addend binary data - a list of bytes - to the output stream. Response is unit, or fails if argument is not valid binary.
 * **log:Message** - Response is unit. Arbitrary output message, useful for progress reports or debugging.
 
-This program is not atomic outside of 'try' and 'while' clauses. We can begin processing our stream before it's full computed. Thus, the program may fail after writing a few megabytes of data. Exactly how this failure is reported and handled should be left to our client.
+Printers are usually not interpreted atomically at the top level. It's possible to write several megabytes before a program fails. A failure will usually be reported by exit code. Of course, we could write within a `try` clause whenever we want atomicity. 
 
 ### Automated Testing
 
-For lightweight automatic testing, Glas systems will support a convention where modules with name `test-*` should produce a record containing `(test:Program, ...)`. The test program should be zero-arity (no input or output on data stack) and use a 'fork' effect for fuzzing of input. Effects API:
+For lightweight automatic testing, Glas systems will support a convention where files whose names start with  `test` should produce a records containing `(test:Program, ...)`. The test program should be zero-arity (no input or output on data stack). Effects API:
 
 * **fork** - response is unit or failure, non-deterministically.
 * **log:Message** - Response is unit. Arbitrary output message to simplify debugging.
 
-The only input to the test program is the sequence of 'fork' outcomes. Fork inputs can be used to select independent sub-tests or randomize test parameters. Backtracking and incremental computing of tests with a similar 'fork' prefix is feasible, allowing implicit sharing of test setup overheads while maintaining logical independence. A good test system may heuristically explore the input space to improve coverage or statically analyze the test program to search for inputs leading to potential failure conditions. 
+Test input is the implicit sequence of 'fork' choices. This sequence could be provided for replay. Forks can select sub-tests, randomize parameters, or simulate race conditions. Test outputs are pass/fail of the program and log messages. A test fails if the program fails. The log is intended for human observers.
 
-The primary output from a test is success or failure. If the test terminates without failing, it is considered a success even if the log includes error or warning messages. The log is a secondary output, intended for humans or the integrated development environment.
+A sufficiently advanced test system may use constraint solvers or heuristic methods to search for forks that improve code coverage or lead to failure. Ideally, tests are designed such that we can incrementally compute based on a common prefix of fork choices.
 
-*Aside:* Including test modules within a package system could provide a good measure of the health of the system.
+*Aside:* To maintain the health of the Glas ecosystem, shared modules should usually include tests. These tests should run apps in simulated environments, fuzz test functions, and perform ad-hoc static checks. A live programming environment could automatically run related tests as we update the program. 
 
 ### User Applications
 
-Due to backtracking conditional behavior, Glas programs are a good fit for the *transaction machine* model of applications. Of course, it is feasible to design alternative program models as a basis for user applications. But transaction machines are an excellent fit for my long-term vision of live coding and reactive systems. I'm developing this idea in the [Glas Apps](GlasApps.md) document. 
+With backtracking conditionals, Glas programs are a good fit transaction machines. Transaction machines have many benefits and are an excellent fit for my long-term vision of live coding and reactive systems. User apps will usually be zero-arity transactions that depend on side-effects for IO. The top-level loop is implicit. I'm developing this idea in the [Glas Apps](GlasApps.md) document. 
 
-A Glas command-line utility should provide a lightweight interpreter or JIT for console apps that does not rely on full binary extraction.
+A Glas command-line utility might provide a method to run console applications without extracting a binary executable.
 
 ## Performance
 
@@ -368,5 +374,3 @@ Because search in context of Glas modules will be deterministic, we cannot rely 
 ### Provenance Tracking
 
 I'm very interested in potential for automatic provenance tracking, i.e. such that we can robustly trace a value to its contributing sources. However, I still don't have a good idea about how to best approach this across multiple layers of language modules and metaprogramming. One idea is to keep some source metadata with every bit that can be traced back to its few 'best' sources. This seems very expensive, but viable.
-
-
