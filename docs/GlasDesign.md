@@ -268,22 +268,22 @@ Printers are usually not interpreted atomically at the top level. It's possible 
 
 ### Automated Testing
 
-For lightweight automatic testing, Glas systems will support a convention where files whose names start with  `test` should produce a records containing `(test:Program, ...)`. The test program should be zero-arity (no input or output on data stack). Effects API:
+For lightweight automatic testing, Glas systems will support a convention where files whose names start with  `test` should produce a records containing `(test:Program, ...)`. The test program should be zero-arity (no input or output via data stack). Instead of stack input, the test uses 'fork' effects for selection of subtests, simulation of race conditions, and randomization of test parameters. The primary output is pass/fail of the test, but logging can support debugging. Effects API:
 
-* **fork** - response is unit or failure, non-deterministically.
+* **fork:Count** - response is a non-deterministic bitstring of Count bits.
 * **log:Message** - Response is unit. Arbitrary output message to simplify debugging.
 
-Test input is the implicit sequence of 'fork' choices. This sequence could be provided for replay. Forks can select sub-tests, randomize parameters, or simulate race conditions. Test outputs are pass/fail of the program and log messages. A test fails if the program fails. The log is intended for human observers.
+Fork effects are subject to backtracking, i.e. if a 'try' clause forks then fails, a subsequent fork will read the same bits. Concretely, fork reads bits from an implicit input stream. In context of testing, fork is not necessarily fair or random: an advanced test system may use constraint solvers or heuristic methods to select fork outcomes that will improve code coverage or lead to test failure. 
 
-A sufficiently advanced test system may use constraint solvers or heuristic methods to search for forks that improve code coverage or lead to failure. Ideally, tests are designed such that we can incrementally compute based on a common prefix of fork choices.
+A significant benefit of using 'fork' effects is that we potentially can incrementally compute for a common prefix of fork choices. This allows setup costs to be shared across many subtests.
 
-*Aside:* To maintain the health of the Glas ecosystem, shared modules should usually include tests. These tests should run apps in simulated environments, fuzz test functions, and perform ad-hoc static checks. A live programming environment could automatically run related tests as we update the program. 
+*Aside:* To measure and protect the health of the Glas ecosystem, most shared modules should include tests. 
 
 ### User Applications
 
-With backtracking conditionals, Glas programs are a good fit transaction machines. Transaction machines have many benefits and are an excellent fit for my long-term vision of live coding and reactive systems. User apps will usually be zero-arity transactions that depend on side-effects for IO. The top-level loop is implicit. I'm developing this idea in the [Glas Apps](GlasApps.md) document. 
+With backtracking conditionals, Glas programs are a good fit transaction machines, i.e. where an application is represented by a transaction that the system will run repeatedly. Transaction machines have many benefits and are an excellent fit for my long-term vision of live coding and reactive systems. I'm developing this idea in the [Glas Apps](GlasApps.md) document. 
 
-A Glas command-line utility might provide a method to run console applications without extracting a binary executable.
+The Glas command-line tool should provide an option to run a console application without requiring full compilation and binary extraction. Whether this uses an interpreter or JIT compiler would be left to the tool.
 
 ## Performance
 

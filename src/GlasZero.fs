@@ -73,7 +73,7 @@ module Zero =
 
         let parseWord : P<string> =
             let frag = many1Satisfy2 isAsciiLower (fun c -> isAsciiLower c || isDigit c)
-            stringsSepBy1 frag (pstring "-") .>> wsep 
+            (stringsSepBy1 frag (pstring "-") .>> wsep) <?> "word"
 
         let parseSymbol : P<Bits> =
             pchar '\'' >>. parseWord |>> Value.label
@@ -418,7 +418,7 @@ module Zero =
         /// the namespace available at the end of file. This compiler does not 
         /// handle the parsing step or detection of load cycles, nor arity errors.
         let compileTLV (ll:IEffHandler) (tlv:TopLevel) : Value option =
-            logInfo ll "performing shallow validation of g0 program"
+            //logInfo ll "performing shallow validation of g0 program"
             match shallowValidation tlv with
             | LooksOkay -> 
                 let d = uncheckedCompileTLV ll tlv
@@ -435,12 +435,12 @@ module Zero =
                 None
 
         let compile (ll:IEffHandler) (s:string) : Value option =
-            logInfo ll "using built-in g0 compile function"
+            //logInfo ll "using built-in g0 compile function"
             match FParsec.CharParsers.run Parser.parseTopLevel s with
             | FParsec.CharParsers.Success (tlv, _, _) -> 
-                logInfo ll "parse successful!"
+                //logInfo ll "parse successful!"
                 compileTLV ll tlv
             | FParsec.CharParsers.Failure (msg, _, _) ->
-                logError ll (sprintf "parse error:\n%s" msg)
+                logError ll (sprintf "built-in g0 parse error:\n%s" msg)
                 None
 

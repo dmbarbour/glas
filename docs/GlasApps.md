@@ -110,11 +110,13 @@ Most effects are performed indirectly via channels. But we still need an env/eff
 
 ### Concurrency
 
-For isolated transactions, a non-deterministic choice is equivalent to taking both paths then committing one. For repeating transactions, this becomes equivalent to repeating both paths, and can be optimized by replicating the application for each path. Effects API:
+For isolated transactions, a non-deterministic choice is equivalent to taking both paths then committing one. For repeating transactions, this becomes equivalent to replicating the transaction and repeating for every choice. Replication, together with incremental computing, enables non-deterministic choice to support task-based concurrency. Effects API:
 
-* **fork** - response is non-deterministic unit or failure. 
+* **fork:Count** - response is a non-deterministic bitstring of length Count.
 
-Fork reduces to fair random choice when used in an unstable or non-repeating context. If replication is not supported, e.g. due to quota limits, a warning should be logged and fork reduces to fair random choice.
+Fork effects are subject to backtracking, i.e. if a 'try' clause forks then fails, a subsequent fork will read the same bits. Concretely, fork reads bits from an implicit input stream. In context of incremental computing, we can replicate the transaction to cover stable prefixes of fork choices. Unstable forks should use fair, random choice.
+
+In practice, the number of replicas a system can host is limited by resources. If resource limitations for replication are reached, a warning should be logged, and further forks will be unstable. 
 
 ### Timing
 

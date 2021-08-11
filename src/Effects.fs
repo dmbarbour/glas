@@ -116,19 +116,19 @@ module Effects =
     /// At the top-level, a function can be provided to receive the 
     /// logged messages when they become available.
     type TXLogSupport =
-        val private WrappedEff : IEffHandler
+        val private WriteLog : Value -> unit
         val private WrapFail : FTList<Value> -> FTList<Value>
         val mutable private TXStack : FTList<Value> list
 
         /// Set the committed output destination. 
         /// Wrap aborted messages with `fail:MessageList`.
-        new (wrapEff) = 
-            { WrappedEff = wrapEff; WrapFail = wrapFail; TXStack = [] }
+        new (out) = 
+            { WriteLog = out; WrapFail = wrapFail; TXStack = [] }
 
         /// Set the commited output destination and the rewrite
         /// function for handling aborted aborted messages. 
-        new (wrapEff, rewriteF) = 
-            { WrappedEff = wrapEff; WrapFail = rewriteF; TXStack = [] }
+        new (out, rewriteF) = 
+            { WriteLog = out; WrapFail = rewriteF; TXStack = [] }
 
         member self.Log(msg : Value) : unit =
             match self.TXStack with
@@ -136,7 +136,7 @@ module Effects =
                 self.TXStack <- (FTList.snoc tx0 msg)::txs
             | [] -> 
                 // not in a transaction, forward to wrapped eff
-                ignore <| self.WrappedEff.Eff (Value.variant "log" msg)
+                self.WriteLog msg
 
         member self.PushTX () : unit = 
             self.TXStack <- (FTList.empty) :: self.TXStack
@@ -152,7 +152,7 @@ module Effects =
                 | [] -> // commit to output
                     self.TXStack <- List.empty
                     for msg in FTList.toSeq tx0' do
-                        ignore <| self.WrappedEff.Eff (Value.variant "log" msg)
+                        self.WriteLog msg
 
         interface IEffHandler with
             member self.Eff v =
@@ -160,17 +160,11 @@ module Effects =
                 | Value.Variant "log" msg -> 
                     self.Log(msg)
                     Some Value.unit
-                | _ -> self.WrappedEff.Eff v
+                | _ -> None
         interface ITransactional with
-            member self.Try () = 
-                self.PushTX ()
-                self.WrappedEff.Try ()
-            member self.Commit () = 
-                try self.WrappedEff.Commit()
-                finally self.PopTX true
-            member self.Abort () =
-                try self.WrappedEff.Abort() 
-                finally self.PopTX false
+            member self.Try () = self.PushTX ()
+            member self.Commit () = self.PopTX true
+            member self.Abort () = self.PopTX false
 
     /// The most common log event is a text message, intended for humans.
     /// In addition to the message, we'll often want some context such as
@@ -220,29 +214,26 @@ module Effects =
 
     /// Log Output to Console StdErr (with color!)
     /// (Does not use color if redirected elsewhere.)
-    let consoleLogOut (bErrLog) (vMsg:Value) : unit =
+    let consoleErrLogOut (vMsg:Value) : unit =
         let cFG0 = System.Console.ForegroundColor
         if not System.Console.IsErrorRedirected then
             System.Console.ForegroundColor <- selectColor vMsg
         try 
             let sMsg = Value.prettyPrint vMsg
-            if bErrLog
-                then System.Console.Error.WriteLine(sMsg)
-                else System.Console.WriteLine(sMsg)
+            System.Console.Error.WriteLine(sMsg)
         finally
             System.Console.ForegroundColor <- cFG0
 
-    let consoleLogger (bErrLog : bool) : IEffHandler =
-        { new IEffHandler with
-            member __.Eff vEff =
-                match vEff with
-                | Value.Variant "log" vMsg -> 
-                    consoleLogOut bErrLog vMsg
-                    Some Value.unit
-                | _ -> None
-          interface ITransactional with
-            member __.Try () = ()
-            member __.Commit () = ()
-            member __.Abort () = ()
-        } |> TXLogSupport :> IEffHandler
+    let consoleErrLogger () : IEffHandler =
+        TXLogSupport(consoleErrLogOut) :> IEffHandler
+
+
+    // TODO:
+    //   Transactional Stream Reader/Writer 
+    //   (useful for file or network IO, fork input)
+    //
+    //   Transactional Memory
+
+
+
 
