@@ -233,7 +233,7 @@ module Glas.TestGlasZero
     let testLoadEff (d:Value) : IEffHandler =
         let logging = false
         let logger = 
-            if logging then consoleLogger false 
+            if logging then consoleErrLogger () 
                        else noEffects 
         { new IEffHandler with
             member __.Eff msg =
