@@ -239,6 +239,9 @@ module Value =
     let inline (|Nat|_|) v =
         if isBits v then Bits.(|Nat64|_|) v.Stem else None
 
+    let inline (|I|_|) v =
+        if isBits v then Some (Bits.toI v.Stem) else None
+
     // factored from 'label' and 'variant'
     let private consLabel (s : string) (b : Bits) : Bits =
         let strbytes = System.Text.Encoding.UTF8.GetBytes(s)

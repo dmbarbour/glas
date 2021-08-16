@@ -112,35 +112,98 @@ module Program =
         let (v, _) = Printer.print (Map.empty) p
         v
 
-    let opArity (op : SymOp) : struct(int * int) =
+    type StackArity =
+        | Static of int * int
+        | Failure // arity of subprogram that always Fails
+        | Dynamic // arity of inconsistent subprogram
+
+    let op_arity (op : SymOp) : StackArity =
         match op with 
-        | Copy -> struct(1,2)
-        | Drop -> struct(1,0)
-        | Swap -> struct(2,2)
-        | Eq -> struct(2,2)
-        | Fail -> struct(0,0)
-        | Eff -> struct(1,1) // assumes handler is 2-2.
-        | Get -> struct(2,1)
-        | Put -> struct(3,1)
-        | Del -> struct(2,1)
-        | Pushl -> struct(2,1)
-        | Popl -> struct(1,2)
-        | Pushr -> struct(2,1)
-        | Popr -> struct(1,2)
-        | Join -> struct(2,1)
-        | Split -> struct(1,2)
-        | Len -> struct(1,1)
-        | BJoin -> struct(2,1)
-        | BSplit -> struct(1,2)
-        | BLen -> struct(1,1)
-        | BNeg -> struct(1,1)
-        | BMax -> struct(2,1)
-        | BMin -> struct(2,1)
-        | BEq -> struct(2,1)
-        | Add -> struct(2,2)
-        | Mul -> struct(2,2)
-        | Sub -> struct(2,1)
-        | Div -> struct(2,2)
+        | Copy -> Static(1,2)
+        | Drop -> Static(1,0)
+        | Swap -> Static(2,2)
+        | Eq -> Static(2,2)
+        | Fail -> Failure
+        | Eff -> Static(1,1) // assumes handler is 2-2.
+        | Get -> Static(2,1)
+        | Put -> Static(3,1)
+        | Del -> Static(2,1)
+        | Pushl -> Static(2,1)
+        | Popl -> Static(1,2)
+        | Pushr -> Static(2,1)
+        | Popr -> Static(1,2)
+        | Join -> Static(2,1)
+        | Split -> Static(1,2)
+        | Len -> Static(1,1)
+        | BJoin -> Static(2,1)
+        | BSplit -> Static(1,2)
+        | BLen -> Static(1,1)
+        | BNeg -> Static(1,1)
+        | BMax -> Static(2,1)
+        | BMin -> Static(2,1)
+        | BEq -> Static(2,1)
+        | Add -> Static(2,2)
+        | Mul -> Static(2,2)
+        | Sub -> Static(2,1)
+        | Div -> Static(2,2)
+
+
+    let rec stack_arity (p : Program) : StackArity =
+        match p with
+        | Op (op) -> op_arity op
+        | Dip p ->
+            match stack_arity p with
+            | Static (a,b) -> Static (a+1, b+1)
+            | Failure -> Failure
+            | Dynamic -> Dynamic
+        | Data _ -> Static(0,1)
+        | Seq ps -> stack_arity_seq ps
+        | Cond (Try=c; Then=a; Else=b) ->
+            let l = stack_arity_seq [c;a]
+            let r = stack_arity b
+            match l,r with
+            | Static (li,lo), Static(ri,ro) when ((li - lo) = (ri - ro)) ->
+                if (li > ri) then l else r
+            | Failure, Static (ri, ro) -> 
+                match stack_arity c with
+                | Failure -> r
+                | Static (ci, _) ->
+                    let d = (max ci ri) - ri
+                    Static (ri + d, ro + d)
+                | Dynamic -> Dynamic
+            | _, Failure -> l
+            | _, _ -> Dynamic
+        | Loop (While=c; Do=a) ->
+            // seq:[c,a] must be stack invariant.
+            match stack_arity_seq [c;a] with
+            | Static (i,o) when (i = o) -> Static(i,o)
+            | Failure -> 
+                match stack_arity c with
+                | Failure -> Static(0,0)
+                | _ -> Dynamic
+            | _ -> Dynamic
+        | Env (Do=p; With=e) -> 
+            // constraining bootstrap eff handlers to be 2-2 including state.
+            // i.e. forall S . ((S * Request) * St) -> ((S * Response) * St)
+            match stack_arity e with
+            | Static(i,o) when ((i = o) && (2 >= i)) -> 
+                stack_arity (Dip p)
+            | _ -> Dynamic
+        | Prog (Do=p) -> stack_arity p
+    and stack_arity_seq ps =
+        _stack_arity_seq 0 0 ps
+    and private _stack_arity_seq i o ps =
+        match ps with
+        | [] -> Static(i,o)
+        | (p::ps') ->
+            match stack_arity p with
+            | Static (a,b) -> 
+                let d = max 0 (a - o) 
+                let i' = i + d
+                let o' = o + d + (b - a) 
+                _stack_arity_seq i' o' ps'
+            | ar -> ar
+
 
     /// Compute static stack arity, i.e. number of stack inputs and outputs,
     /// if this value can be computed. This requires effect handlers have a
@@ -148,51 +211,12 @@ module Program =
     ///
     /// Ignores annotations.
     ///
-    /// TODO: consider error message when arity fails.
-    let rec static_arity (p : Program) : struct(int * int) option =
-        match p with
-        | Op (op) -> Some (opArity op)
-        | Dip p ->
-            match static_arity p with
-            | Some struct(a,b) -> Some struct(a+1, b+1)
-            | None -> None
-        | Data _ -> Some struct(0,1)
-        | Seq ps -> static_seq_arity ps
-        | Cond (Try=c; Then=a; Else=b) ->
-            // seq:[c,a] and b must have same stack balance. 
-            let l = static_seq_arity [c;a]
-            let r = static_arity b
-            match l,r with
-            | Some struct(li, lo), Some struct(ri, ro) when ((li - lo) = (ri - ro)) ->
-                if (li > ri) then l else r
-            | _, _ -> None
-        | Loop (While=c; Do=a) ->
-            // seq:[c,a] must be stack invariant.
-            let s = static_seq_arity [c;a]
-            match s with
-            | Some struct (i,o) when (i = o) -> s
-            | _ -> None
-        | Env (Do=p; With=e) -> 
-            // constraining bootstrap eff handlers to be 2-2 including state.
-            // i.e. forall S . ((S * Request) * St) -> ((S * Response) * St)
-            match static_arity e with
-            | Some struct(i,o) when ((i = o) && (2 >= i)) -> 
-                static_arity (Dip p)
-            | _ -> None
-        | Prog (Do=p) -> static_arity p
-    and static_seq_arity ps =
-        _static_seq_arity 0 0 ps
-    and private _static_seq_arity i o ps =
-        match ps with
-        | [] -> Some struct(i,o)
-        | (p::ps') ->
-            match static_arity p with
-            | None -> None
-            | Some struct(a,b) ->
-                let d = max 0 (a - o) 
-                let i' = i + d
-                let o' = o + d + (b - a) 
-                _static_seq_arity i' o' ps'
+    /// Currently does not compute arity for programs that contain 'fail'. This
+    /// may need to be corrected later, but shouldn't be critical pre-bootstrap.
+    let static_arity (p : Program) : struct(int * int) option =
+        match stack_arity p with
+        | Static (a,b) -> Some struct(a,b) 
+        | _ -> None
 
     module Parser =
         // memo-cache to support structure sharing

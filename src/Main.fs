@@ -207,7 +207,7 @@ let getProgram (ll : Loader) (ai,ao) (vstr : string) : Program option =
     match getValue ll vstr with
     | Some (Program.Program p) -> 
         match Program.static_arity p with
-        | Some struct(i,o) when (ai = i) && (ao = o) ->
+        | Some struct(i,o) when ((i - o) = (ai - ao)) && (ai >= i) ->
             Some p
         | Some struct(i,o) ->
             logError ll (sprintf "program %s has arity %d--%d; expecting %d--%d" vstr i o ai ao)
@@ -285,6 +285,10 @@ let run (p:string) : int =
 
 [<EntryPoint>]
 let main argv =
+    //use stdin = System.Console.OpenStandardInput()
+    //stdin.ReadTimeout <- 1000
+    //printfn "Console Timeouts: %A" (System.Console.OpenStandardInput().CanTimeout)
+
     match Array.toList argv with
     | [ "print"; v ] -> print v "std.print"
     | [ "print"; v ; "with"; p ] -> print v p

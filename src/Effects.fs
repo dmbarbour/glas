@@ -1,6 +1,8 @@
 namespace Glas
 
 module Effects = 
+    open System.Threading.Tasks
+
     /// Support for hierarchical transactions. This mostly applies to the external
     /// effects handler in context of Glas programs.
     type ITransactional = 
@@ -197,18 +199,21 @@ module Effects =
         match v with
         | Value.Variant "text" (Value.FullRec ["lv"] ([lv],_)) ->
             match lv with
-            | Value.Variant "info" _ -> System.ConsoleColor.DarkGreen
-            | Value.Variant "warn" _ -> System.ConsoleColor.DarkYellow
-            | Value.Variant "error" _ -> System.ConsoleColor.DarkRed
+            | Value.Variant "info" _ -> System.ConsoleColor.Green
+            | Value.Variant "warn" _ -> System.ConsoleColor.Yellow
+            | Value.Variant "error" _ -> System.ConsoleColor.Red
             | _ -> 
                 // randomly associate color with non-standard level
-                match (hash lv) % 6 with
+                // but keep it stable per level
+                match (hash lv) % 8 with
                 | 0 -> System.ConsoleColor.Magenta
                 | 1 -> System.ConsoleColor.Cyan
-                | 2 -> System.ConsoleColor.Green
+                | 2 -> System.ConsoleColor.DarkGreen
                 | 3 -> System.ConsoleColor.DarkBlue
                 | 4 -> System.ConsoleColor.Blue
-                | _ -> System.ConsoleColor.DarkCyan
+                | 5 -> System.ConsoleColor.DarkCyan
+                | 6 -> System.ConsoleColor.DarkYellow
+                | _ -> System.ConsoleColor.DarkRed
         | Value.Variant "fail" _ ->  System.ConsoleColor.DarkMagenta
         | _ -> System.ConsoleColor.Blue
 
@@ -227,12 +232,146 @@ module Effects =
     let consoleErrLogger () : IEffHandler =
         TXLogSupport(consoleErrLogOut) :> IEffHandler
 
+    // what I want for background reading of streams:
+    // - reading is demand-driven, e.g. to support pushback.
+    // - read one byte at a time, don't try to read 1000 bytes
+    //   then get stuck waiting because we might retry for 100.
+    // - transactions can detect when they've observed the 
+    //   current end of stream and stop reading any further.
 
-    // TODO:
-    //   Transactional Stream Reader/Writer 
-    //   (useful for file or network IO, fork input)
-    //
-    //   Transactional Memory
+    /// Transactional Stream (Wrapper)
+    /// 
+    /// Adds backtracking support to a dotnet Stream. Within a transaction, 
+    /// writes are deferred and reads are tracked. 
+    ///
+    /// Known issues: 
+    /// 
+    /// If a transaction asks for a large read, e.g. 1000 bytes, then aborts
+    /// because not enough data is available, the next operations will still
+    /// be stuck waiting for all 1000 bytes even if the next read attempts 
+    /// for 100 bytes. 
+    ///
+    /// Also, performance is likely less than optimal due to using the large
+    /// FTList overheads instead of compact arrays.
+    type TXStream =
+        // The stream being wrapped.
+        val private Stream : System.IO.Stream
+
+        // Bytes read by prior, aborted transactions are put back into
+        // the ReadBuffer for future reads.
+        val mutable private ReadBuffer : FTList<byte>
+
+        // The stack of hierarchical transactions. Each transaction records 
+        // bytes (written, read). 
+        val mutable private TXStack : struct(FTList<byte> * FTList<byte>) list
+
+        // A potential pending read operation, in case a prior read has timed out
+        // or returned a partial result.
+        val mutable private PendingRead : Task<FTList<byte>> option
+
+        new(stream) =
+            { Stream = stream
+            ; ReadBuffer = FTList.empty
+            ; TXStack = []
+            ; PendingRead = None
+            }
+
+        member private self.AwaitPendingRead(wait_millis : int) : unit =
+            match self.PendingRead with
+            | Some task when task.Wait(wait_millis) ->
+                self.PendingRead <- None
+                self.ReadBuffer <- FTList.append (self.ReadBuffer) (task.Result)
+            | _ -> ()
+
+        member private self.SetPartialRead() : unit =
+            // in case of a partial read, if there is no pending read we can
+            // add a fake one to represent the partial read. This prevents 
+            // further reads within the current transaction.
+            if Option.isNone self.PendingRead then
+                self.PendingRead <- Some (Task.FromResult (FTList.empty))
+
+        member private self.TakeReadBuffer() =
+            let result = self.ReadBuffer
+            self.ReadBuffer <- FTList.empty
+            result
+
+        member private self.PartialRead(amt : uint64, wait_millis : int) : FTList<byte> =
+            if List.isEmpty self.TXStack then
+                // outside of a transaction, we can continue pending reads.
+                self.AwaitPendingRead(wait_millis) 
+
+            if (FTList.length self.ReadBuffer >= amt) then
+                // sufficient data from prior aborted reads
+                let (result,rem) = FTList.splitAt amt (self.ReadBuffer)
+                self.ReadBuffer <- rem
+                result
+            elif (Option.isSome self.PendingRead) then
+                // pending read, thus cannot start a new read
+                self.TakeReadBuffer()
+            else 
+                // start a new read task.
+                let rdAmt = amt - FTList.length self.ReadBuffer
+                let readTask = 
+                    async {
+                        let arr = Array.zeroCreate (int rdAmt)
+                        let rdCt = self.Stream.Read(arr,0,arr.Length)
+                        let bytes = if (arr.Length = rdCt) then arr else Array.take rdCt arr
+                        return bytes |> FTList.ofArray
+                    } |> Async.StartAsTask 
+                self.PendingRead <- Some readTask
+                self.AwaitPendingRead(wait_millis)
+                self.TakeReadBuffer()
+
+        member self.Read(amt : int, ?wait_millis : int) : byte[] =
+            if (amt < 0) then invalidArg (nameof amt) "read amt must be >= 0" else
+            let millis = defaultArg wait_millis 10
+            let bytesRead = self.PartialRead(uint64 amt, millis)
+            if (FTList.length bytesRead < uint64 amt) then
+                self.SetPartialRead() 
+            match self.TXStack with
+            | struct(wl,rl)::txs ->
+                let rl' = FTList.append rl bytesRead
+                self.TXStack <- struct(wl,rl')::txs
+            | _ -> ()
+            FTList.toArray bytesRead
+            
+
+        member self.Write(data : byte []) : unit =
+            if not self.Stream.CanWrite then invalidOp "stream does not permit writes" else
+            match self.TXStack with
+            | struct(wl,rd)::txs ->
+                let wl' = FTList.append wl (FTList.ofArray data)
+                self.TXStack <- struct(wl',rd)::txs
+            | [] -> // non-transactional write
+                self.Stream.Write(data, 0, data.Length)
+
+        interface ITransactional with
+            member self.Try () =
+                if List.isEmpty self.TXStack then
+                    self.AwaitPendingRead(10)  // try to finish reads prior to transaction
+                self.TXStack <- struct(FTList.empty, FTList.empty) :: self.TXStack
+            member self.Commit () =
+                match self.TXStack with
+                | struct(w0,r0)::struct(ws,rs)::txs ->
+                    // join hierarchical transaction
+                    let ws' = FTList.append ws w0
+                    let rs' = FTList.append rs r0
+                    self.TXStack <- struct(ws',rs')::txs
+                | [struct(wl,_)] ->
+                    // commit transaction
+                    self.TXStack <- []
+                    let arr = FTList.toArray wl
+                    self.Stream.Write(arr,0,arr.Length)
+                | [] -> invalidOp "cannot commit, no active transaction."
+            member self.Abort () = 
+                match self.TXStack with
+                | struct(_, r0)::txs ->
+                    // putback reads performed by this transaction.
+                    self.TXStack <- txs
+                    self.ReadBuffer <- FTList.append r0 (self.ReadBuffer)
+                | [] -> invalidOp "cannot abort, no active transaction."
+
+
 
 
 
