@@ -1,0 +1,14 @@
+
+prog unit [0]
+prog empty-record [unit]
+prog variant [dip[dip[empty-record]] put]
+prog eq1 [eq drop]
+prog drop-unit [unit eq1 drop]
+
+prog write-str [ 'write variant eff drop-unit ]
+prog write-str-line [ 0x0A pushr write-str ]
+
+prog log-text-lv [ dip ['msg variant] 'lv put 'text variant 'log variant eff drop-unit]
+prog log-info [ 'info log-text-lv ]
+prog log-warn [ 'warn log-text-lv ]
+prog log-error [ 'error log-text-lv ]

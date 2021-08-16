@@ -1,0 +1,12 @@
+
+prog empty-list [0]
+prog empty-record [0]
+
+prog bytes-to-symbol [
+    0b00000000
+    
+]
+
+prog symbol-to-bytes [
+
+]

@@ -1,0 +1,3 @@
+prog unit [0]
+prog eq1 [eq drop]
+prog drop-unit [unit eq1 drop]

@@ -1,0 +1,10 @@
+open util
+
+
+prog print [ 
+    "todo: implement print" log-warn
+    'value variant 'log variant eff
+    drop-unit
+    "hello world" write-str-line 
+    ]
+

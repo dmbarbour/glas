@@ -1,0 +1,24 @@
+
+open util
+
+prog erase-leading-zeroes [ while [ 0b0 get ] do [] ]
+prog drop-zero [ erase-leading-zeroes drop-unit ]
+prog add-leading-zeroes [
+    while [1 sub] do [dip[
+        0b0 swap bjoin
+    ]]
+    drop-zero
+]
+
+prog nat-add [ add swap bjoin erase-leading-zeroes ]
+prog nat-mul [ mul swap bjoin erase-leading-zeroes ]
+prog nat-div [ div dip [ erase-leading-zeroes ] erase-leading-zeroes ]
+prog nat-sub [ sub erase-leading-zeroes ]
+
+prog nat-width [ dip [ copy blen ] swap sub add-leading-zeroes ]
+
+prog u8 [8 nat-width]
+prog u16 [16 nat-width]
+prog u32 [32 nat-width]
+prog u64 [64 nat-width]
+
