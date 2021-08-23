@@ -1,12 +1,20 @@
 
-prog empty-list [0]
-prog empty-record [0]
+prog unit [0]
+prog drop-unit [unit eq]
 
-prog bytes-to-symbol [
-    0b00000000
-    
+prog empty-list [unit]
+prog empty-record [unit]
+prog empty-bitstring [unit]
+
+; Binary BitString -- BitString
+prog concat-bits-onto [swap while [popr] do [swap dip [swap bjoin]]]
+
+; BitString - List<Bytes>
+prog bits-to-bytes [
+    empty-list swap
+    while [8 bsplit] do [dip[pushr]]
+    drop-unit
 ]
 
-prog symbol-to-bytes [
-
-]
+prog bytes-to-symbol [ 0x00 concat-bits-onto ]
+prog symbol-to-bytes [ bits-to-bytes popr 0x00 eq1 drop ]

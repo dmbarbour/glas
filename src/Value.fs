@@ -266,13 +266,13 @@ module Value =
         let struct(p', stem') = dropSharedPrefix p (v.Stem)
         if Bits.isEmpty p' then Some { v with Stem = stem' } else None
 
-    /// Attempt to match bitstring prefix with value. This corr
+    /// Attempt to match bitstring prefix with value. 
     let inline (|Stem|_|) (p : Bits) (v : Value) : Value option =
         tryMatchStem p v
 
     /// Prefixed with a specific string label.
-    let inline (|Variant|_|) (s : string) (v : Value) : Value option =
-        tryMatchStem (label s) v
+    let inline (|Variant|_|) (s : string) : Value -> Value option =
+        tryMatchStem (label s)
 
 
     let rec private accumSharedPrefixLoop acc a b =
@@ -661,10 +661,6 @@ module Value =
         seq {
             match v with
             | U -> yield "()"
-            | U8 0uy -> 
-                if bLRSep then
-                    yield " "
-                yield "0u8"
             | _ when isRecord v ->
                 let kvSeq = recordSeq v
                 if Seq.isEmpty (Seq.tail kvSeq) then
@@ -696,8 +692,10 @@ module Value =
                     yield " "
                 let blen = Bits.length b
                 yield (Bits.toI b).ToString()
-                yield "u"
-                yield blen.ToString()
+                if not (Bits.head b) then
+                    // report width only if larger than number 
+                    yield "u"
+                    yield blen.ToString()
             | L v ->
                 yield "L"
                 yield! _ppV true v
@@ -705,9 +703,9 @@ module Value =
                 yield "R"
                 yield! _ppV true v
             | P (a,b) ->
-                yield "P("
+                yield "("
                 yield! _ppV false a
-                yield ", "
+                yield " . "
                 yield! _ppV false b
                 yield ")"
         }
@@ -738,3 +736,20 @@ module Value =
     /// render as symbols by accident.
     let prettyPrint (v:Value) : string =
         _ppV false v |> String.concat "" 
+
+
+    // TODO:
+
+    // Dictionary Compression Pretty-Printing.
+    // 
+    // For larger values, it would be useful to present the value as a 
+    // dictionary where shared structure (beyond a threshold size) is 
+    // presented using a generated dictionary. 
+    //
+    // This is low priority for now, but might become relevant when I'm
+    // debugging large values. It's also feasible to solve this within
+    // Glas, e.g. as part of `std.print`. Might be better to defer.
+    // 
+    // A related option is to represent a large value as a program that
+    // would reproduce the value. Obviously we could write `data:Value`,
+    // but we could use compression mechanisms on the value.

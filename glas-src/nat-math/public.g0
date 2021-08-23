@@ -15,7 +15,8 @@ prog nat-mul [ mul swap bjoin erase-leading-zeroes ]
 prog nat-div [ div dip [ erase-leading-zeroes ] erase-leading-zeroes ]
 prog nat-sub [ sub erase-leading-zeroes ]
 
-prog nat-width [ dip [ copy blen ] swap sub add-leading-zeroes ]
+prog nat-width [ erase-leading-zeroes dip [ copy blen ] swap sub add-leading-zeroes ]
+
 
 prog u8 [8 nat-width]
 prog u16 [16 nat-width]

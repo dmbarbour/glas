@@ -10,15 +10,17 @@
 // then fail. The idea is to ensure all printer logic is in the
 // module system. 
 //
-// Additionally, we might support automated testing. 
+// If we want to evaluate before printing, that can be done by
+// print Program with EvaluatingPrinter. 
 //
-//   test
+// Lightweight checks:
+// 
+//   arity Program
+//
+// Additionally, we might support basic automated testing. 
+//
 //   test TestProgram
-//   fuzz TestProgram
-//
-// The 'fuzz' option allows external control of branching via stdin.
-// However, it only runs the program once. The 'test' options use
-// an internal search. 
+//   test
 //
 // This CLI will also support running simple console applications.
 //
@@ -45,19 +47,27 @@ let printMsg = String.concat "\n" [
     "print Value"
     ""
     "A Printer is a Glas Program, arity 1--0, that uses 'write' effects to"
-    "output streaming data, and 'log' effects for debugging. The Value may"
-    "have any type, though print may fail in case of runtime type errors."
-    "If a printer is not specified, we'll try 'std.print'."
+    "output streaming data, and 'log' effects for debugging. A Printer can"
+    "fail after partial output if applied to the wrong type of Value."
     ""
-    "If everything works out, we'll print binary data to stdout and halt when"
-    "finished. If the program fails after printing some data, we'll use an error"
-    "exit code."
+    "If a printer is not specified, we'll try 'std.print'. It is feasible to"
+    "define printers that evaluate program arguments, or typecheck the value"
+    "then print the type. Thus, print provides a basis for lightweight REPL."
     ""
-    "Use shell commands to redirect stdout to file."
+    "Programmers can use shell commands to redirect stdout to a file."
     ""
     "Value or Printer are specified as values. See 'help value'."
     ""
     ]
+
+let arityMsg = String.concat "\n" [
+    "arity Program"
+    ""
+    "Print a description of the program's arity, e.g. `1 0`, as computed within"
+    "this command-line tool. This also checks if the input is a valid Program"
+    "structurally."
+    ]
+
 
 let valueMsg = String.concat "\n" [
     "module(.label|[index])*"
@@ -66,37 +76,26 @@ let valueMsg = String.concat "\n" [
     "Using `.label` indexes a record, and `[3]` indexes a list, starting at `[0]`."
     "The value for the requested module is loaded then accessed by index."
     ""
-    "This command line doesn't provide a method to specify a program as an"
-    "argument. Any value must first be represented in a file."
+    "Currently, there is no support for providing a program without writing it into"
+    "a file first."
     ""
     "Values are used as part of other commands. See `help`."
     ]
 
 let testMsg = String.concat "\n" [
-    "fuzz TestProgram"
     "test TestProgram"
-    "test"
     ""
-    "A TestProgram is a Glas program, arity 0--0, using a random data effect"
-    "for input to support sub-test selection, simulate race conditions, and"
-    "generate random parameters. Outputs are pass/fail and log messages."
+    "A TestProgram is a Glas program, arity 0--0, that uses a 'fork' effect for"
+    "non-deterministic choice to support selection of subtests, randomization of" 
+    "parameters, simulation of race conditions. Also, it can support incremental" 
+    "computing of tests with the same fork prefixes."
     ""
-    "Use of 'fuzz' allows fork inputs to be provided via stdin. This can be"
-    "useful for repeating tests or to externalize the heuristics. Each byte"
-    "is read msb to lsb, with 0 bit as failure. For example, if first byte"
-    "is 0b00010111 then fork will fail-fail-fail-pass-fail-pass-pass-pass,"
-    "then read the next byte from stdin."
-    ""
-    "Use of 'test' leaves the random fork input to the command line utility."
-    "The initial implementation will simply randomize the fork input, but it"
-    "is feasible to search the input space with analysis or heuristics." 
-    ""
-    "If a test program is not specified for 'test', we'll implicitly search"
-    "all files in the current directory whose names start with 'test' for an"
-    "element labeled '.test'. This can test multiple files at once."
+    "Ideally, fork input would be selected based on analysis or heuristics to search" 
+    "for failing tests. However, the simplistic implementation currently in use is"
+    "pseudo-random input. This is unsuitable for many use-cases. A single test is run"
+    "with random input before returning."
     ""
     "See `help value` for specifying the TestProgram."
-    ""
     ]
 
 let runMsg = String.concat "\n" [
@@ -117,15 +116,13 @@ let helpMsg = String.concat "\n" [
     "Primary methods:"
     "    print Value"
     "    print Value with Printer"
-    "    test"
+    "    arity Program"
     "    test TestProgram"
-    "    fuzz TestProgram"
     "    run AppProgram"
-    "    help (print|test|run|value)"
+    "    help (print|arity|test|run|value)"
     ""
     "The performance and completeness of this implementation is not great. The"
     "intention is to bootstrap the command line then print a new executable."
-    ""
     ]
 
 let EXIT_OK = 0
@@ -136,7 +133,10 @@ let help (cmd : string list) : int =
     | ("print"::_) ->
         System.Console.WriteLine(printMsg)
         EXIT_OK
-    | ("test"::_) | ("fuzz" ::_) -> 
+    | ("arity"::_) ->
+        System.Console.WriteLine(arityMsg)
+        EXIT_OK
+    | ("test"::_) -> 
         System.Console.WriteLine(testMsg)
         EXIT_OK
     | ("run"::_) ->
@@ -230,6 +230,7 @@ let getLoader (logger:IEffHandler) =
 
 let print (vstr:string) (pstr:string) : int =
     let logger = consoleErrLogger ()
+    logInfo logger (sprintf "print %s with %s" vstr pstr) 
     let loader = getLoader logger
     let printer = Printing.printStdout ()
     let ioEff = composeEff printer logger
@@ -244,43 +245,58 @@ let print (vstr:string) (pstr:string) : int =
             log logger (Value.variant "value" v)
             EXIT_FAIL
         | Some p ->
-            logInfo logger (sprintf "print %s with %s - start" vstr pstr) 
             let e0 : Program.Interpreter.RTE = { DS = [v]; ES = []; IO = ioEff }
             match Program.Interpreter.interpret p e0 with
             | Some _ -> 
-                logInfo logger (sprintf "print %s with %s - done" vstr pstr)
+                //logInfo logger (sprintf "print %s with %s - done" vstr pstr)
                 EXIT_OK
             | None ->
                 logInfo logger (sprintf "print %s with %s - aborted in failure" vstr pstr)
                 log logger (Value.variant "value" v)
                 EXIT_FAIL
 
-let testCommon (lTests) : int =
+let arity (pstr:string) : int =
     let logger = consoleErrLogger ()
+    logInfo logger (sprintf "arity %s" pstr) 
     let loader = getLoader logger
-    let loadTest tstr = 
-        match getProgram loader (0,0) tstr with
-        | None -> None
-        | Some p -> 
-            logInfo logger (sprintf "loading test %s" tstr)
-            Some (tstr,p)
-    let lpTests = List.collect (loadTest >> Option.toList) lTests 
-    EXIT_FAIL
+    match getValue loader pstr with
+    | Some (Program.Program p) -> 
+        match Program.stack_arity p with
+        | Program.Static(a,b) ->
+            printfn "%d -- %d" a b
+            EXIT_OK
+        | Program.Dynamic ->
+            logError logger (sprintf "program %s has variable stack arity" pstr)
+            EXIT_FAIL
+        | Program.Failure ->
+            logError logger (sprintf "program %s always fails, has any stack arity" pstr)
+            EXIT_FAIL
+    | Some _ -> 
+        logError logger (sprintf "value %s does not parse as a valid program" pstr)
+        EXIT_FAIL
+    | None ->
+        // reason for failure is already logged. 
+        EXIT_FAIL
 
-let testDir () : int =
-    Testing.findTestModulesInFolder "./" 
-        |> List.map (fun m -> m + ".test")
-        |> testCommon
+let test (pstr:string) : int =
+    let logger = consoleErrLogger ()
+    logInfo logger (sprintf "test %s" pstr)
+    let loader = getLoader logger
+    match getProgram loader (0,0) pstr with
+    | None -> 
+        // cause of failure should already be logged.
+        EXIT_FAIL
+    | Some p -> 
+        logError logger "TODO: Finish test impl"
+        EXIT_FAIL
+        //let forkEff = 
 
-let test (p:string) : int =
-    testCommon [p]
-
-let fuzz (p:string) : int =
-    EXIT_FAIL
 
 let run (p:string) : int =
     let logger = consoleErrLogger ()
-    let loader = getLoader logger
+    logInfo logger (sprintf "run %s" p)
+    logError logger "run not yet implemented"
+    //let loader = getLoader logger
     EXIT_FAIL
 
 [<EntryPoint>]
@@ -292,9 +308,8 @@ let main argv =
     match Array.toList argv with
     | [ "print"; v ] -> print v "std.print"
     | [ "print"; v ; "with"; p ] -> print v p
-    | [ "test" ] -> testDir ()
+    | [ "arity"; p ] -> arity p
     | [ "test"; p ] -> test p
-    | [ "fuzz"; p ] -> fuzz p
     | [ "run"; p ] -> run p
     | ("help"::cmd) -> help cmd
     | args ->

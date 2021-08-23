@@ -99,7 +99,7 @@ The stack in Glas is really an intermediate data plumbing model. User syntax cou
  * **seq:\[\]** - empty sequence doubles as identity operator (nop)
 * **cond:(try:P, then:Q, else:R)** - run P; if P does not fail, run Q; if P fails, backtrack P then run R.
 * **loop:(while:P, do:Q)** - begin loop: run P; if P does not fail, run Q then repeat loop. If P fails, backtrack P then exit loop.
-* **eq** - compare top two values on stack. If equal, do nothing. Otherwise fail. This uses structural equality of values, not equality under an interpretation.
+* **eq** - Structural equality of values. Takes top two items from data stack. If they are identical, continue (with those items removed from stack), otherwise fail.
 * **fail** - always fail
 
         seq:[]              ∀S . S → S
@@ -273,9 +273,9 @@ For lightweight automatic testing, Glas systems will support a convention where 
 * **fork:Count** - response is a non-deterministic bitstring of Count bits.
 * **log:Message** - Response is unit. Arbitrary output message to simplify debugging.
 
-Fork effects are subject to backtracking, i.e. if a 'try' clause forks then fails, a subsequent fork will read the same bits. Concretely, fork reads bits from an implicit input stream. In context of testing, fork is not necessarily fair or random: an advanced test system may use constraint solvers or heuristic methods to select fork outcomes that will improve code coverage or lead to test failure. 
+Fork reads bits from an implicit input stream. Relevantly, if a program forks within 'try' then backtracks, a subsequent fork should re-read the same bits. However, fork input is not necessarily fair or random. A good test system can use constraint solvers or heuristics to select fork outcomes that improve code coverage or lead to test failure.
 
-A significant benefit of using 'fork' effects is that we potentially can incrementally compute for a common prefix of fork choices. This allows setup costs to be shared across many subtests.
+A significant benefit of using 'fork' effects is that we potentially can incrementally compute for a common prefix of fork choices. This allows setup costs to be shared across many subtests. A disadvantage is that this does require an advanced test system to effectively leverage. During early development, tests may need to avoid using fork for subtest selection.
 
 *Aside:* To measure and protect the health of the Glas ecosystem, most shared modules should include tests. 
 

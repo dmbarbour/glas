@@ -246,7 +246,7 @@ module LoadModule =
         match _findG0 nle with
         | None -> None
         | Some fp ->
-            logInfo nle (sprintf "bootstrap: language-g0 found at %s" fp)
+            //logInfo nle (sprintf "bootstrap: language-g0 found at %s" fp)
             let ll0 = nonBootStrapLoader nle
             match ll0.CompileCompiler fp "language-g0" with
             | None -> None

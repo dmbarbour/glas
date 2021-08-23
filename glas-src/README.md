@@ -1,3 +1,5 @@
 # Glas Modules
 
-This folder stores the initial global' Glas modules for bootstrap development. It should be listed in the GLAS_PATH environment variable for easy access. When Glas is more widely distributed, this folder may be deprecated.
+This folder contains Glas modules for bootstrap development. It should be added to the GLAS_PATH environment variable for convenient access. 
+
+When Glas is more widely distributed, this bootstrap may be deprecated.

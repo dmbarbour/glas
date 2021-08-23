@@ -1,10 +1,16 @@
 open util
 
+; required functions:
+;  - identify records, lists, unit, pairs, numbers.
+;  - obtain list of symbols for record or variant.
+;  - convert symbols to strings.
+;  - is-record
+;  - 
+
 
 prog print [ 
     "todo: implement print" log-warn
-    'value variant 'log variant eff
-    drop-unit
+    'value variant log-eff
     "hello world" write-str-line 
     ]
 

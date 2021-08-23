@@ -63,13 +63,9 @@ For the basic symbolic operators like 'swap' or 'add', keywords compile to the p
         try [ Program ] then [ Program ] else [ Program ]       (cond)
         with [ Program ] do [ Program ]                         (env)
 
-### Binary Extraction
-
-The g0 syntax defines programs, and only defines data as an optional optimization. Binaries intended for extraction must be represented as streaming binaries - programs that write binary fragments.
-
 ## Extensions
 
-The g0 syntax should not be extended with anything that complicates the parser or compilation. The idea is to instead escape g0 by implementing language modules.
+The g0 syntax should not be extended with anything that complicates the parser or compilation. The idea is to instead escape g0 by implementing new language modules.
 
-I would like to develop more languages in Glas with a Forth-like syntax, albeit with much better support for staged higher order programmng, metaprogramming, type annotations, local variables, etc.. But we can also support lambda calculus, Kahn Process Networks, and many other program models.
+Higher-order programming, staged metaprogramming, type annotations, local variables, structured data, etc. can be supported given a suitable language module after we've bootstrapped g0. It is also feasible to also support lambda calculus, Lafont interaction nets, Kahn Process Networks, and various other program models via evaluation and acceleration.
 

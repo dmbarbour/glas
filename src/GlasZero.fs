@@ -411,6 +411,8 @@ module Zero =
             for Prog (Name=w; Body=pBody) in tlv.Defs do
                 let vBody = linkProg d pBody
                 let vProg = Value.variant "prog" (Value.variant "do" vBody)
+                // TODO: consider optimizing the program. 
+                // Could leave this to language-g0 bootstrap. Depends on performance.
                 d <- Value.record_insert (Value.label w) vProg d
             d
 

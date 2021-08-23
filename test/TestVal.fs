@@ -280,20 +280,20 @@ let tests =
         testCase "printing numbers" <| fun () ->
             Expect.equal "23u8" (prettyPrint (u8 23uy)) "print bytes"
             Expect.equal "5432u16" (prettyPrint (u16 5432us)) "print shorts"
-            Expect.equal "23u5" (prettyPrint (nat 23UL)) "printing nats"
-            Expect.equal "42u6" (prettyPrint (nat 42UL)) "printing more nats"
+            Expect.equal "23" (prettyPrint (nat 23UL)) "printing nats"
+            Expect.equal "42" (prettyPrint (nat 42UL)) "printing more nats"
 
         testCase "printing basic pairs and sums data" <| fun () ->
-            Expect.equal "P((), 0u1)" (prettyPrint (pair unit (left unit))) "pulu"
+            Expect.equal "(() . 0u1)" (prettyPrint (pair unit (left unit))) "pulu"
             Expect.equal "R[()]" (prettyPrint (right (pair unit unit))) "rpuu"
-            Expect.equal "RLP((), 1u1)" (prettyPrint (right (left (pair unit (right unit))))) "rlpuru"
+            Expect.equal "RL(() . 1)" (prettyPrint (right (left (pair unit (right unit))))) "rlpuru"
 
         testCase "printing variants" <| fun () ->
             Expect.equal "foo" (prettyPrint (symbol "foo")) "foo"
             Expect.equal "text:msg:\"hello, world!\"" (prettyPrint (variant "text" (variant "msg" (ofString "hello, world!")))) "text"
 
         testCase "printing lists" <| fun () -> 
-            Expect.equal "[1u8, 2u8, 254u8, 255u8]" (prettyPrint (ofBinary [|1uy;2uy;254uy;255uy|])) "binary"
+            Expect.equal "[1u8, 2u8, 127u8, 128, 254, 255]" (prettyPrint (ofBinary [|1uy;2uy;127uy;128uy;254uy;255uy|])) "binary"
             Expect.equal "\"Ok\"" (prettyPrint (ofBinary [|byte 'O'; byte 'k'|])) "strings"
 
         testCase "printing records" <| fun () ->

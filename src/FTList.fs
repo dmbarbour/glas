@@ -307,9 +307,10 @@ module FT =
             | Empty -> failwith "inner elemAt on empty tree; should be impossible"
 
 
-        let elemAt<'V when 'V :> ISized> (n : uint64) (t : T<'V>) : 'V =
+        let elemAt (n : uint64) (t : T<Atom<'V>>) : Atom<'V> =
             if (n >= isize t) then invalidArg (nameof n) "index out of range" else
-            let struct(_, v) = _elemAt n t
+            let struct(nSkipped, v) = _elemAt n t
+            assert(nSkipped = n)
             v
 
         let rec eqAtoms (l : T<Atom<'a>>) (r : T<Atom<'a>>) = 

@@ -122,7 +122,7 @@ module Program =
         | Copy -> Static(1,2)
         | Drop -> Static(1,0)
         | Swap -> Static(2,2)
-        | Eq -> Static(2,2)
+        | Eq -> Static(2,0)
         | Fail -> Failure
         | Eff -> Static(1,1) // assumes handler is 2-2.
         | Get -> Static(2,1)
@@ -311,7 +311,7 @@ module Program =
 
         let inline eq e = 
             match e.DS with 
-            | x::y::_ when (x = y) -> Some e
+            | x::y::ds when (x = y) -> Some { e with DS = ds }
             | _ -> None
 
         let inline get e = 
@@ -560,37 +560,5 @@ module Program =
             | Prog (Do=p'; Note=_) -> interpret p' e 
 
 
-    (* incomplete, and I might defer this effort to post-bootstrap.
-    
-    /// A continuation-passing free-monadic interpreter is more flexible 
-    /// for which sorts of effects we can express. Uses defunctionalized 
-    /// continuation, which is also convenient for debugging purposes.
-    /// 
-    /// Note: this is currently incomplete. I've 
-    module CPI =
-
-        /// Our continuation, at any given step. This does not include the
-        /// data stack or effect handler stacks. 
-        type CC = 
-            | Halt                              // program is done
-            | Run of Program * CC               // evaluate a program, then continue
-            | PushEnv of Program * CC           // to restore effects stack
-            | PopEnv of CC                      // to escape effects stack
-            | SeqCC of CC * CC                  // for flexible composition
-
-        /// We'll interpret the program until we hit a stopping point. 
-        /// Effects stack will be captured in continuations, and the
-        /// data stack is returned separately.
-        type Yield =
-            | Done                  // program exited successfully
-            | Fail of CC            // stopped on failure. Remaining program is listed.
-            | Eff of CC             // stopped for external effects
-            | Try of CC * CC * CC   // begin a hierarchical transaction.
-
-        type EffStack = (struct(Value * Program)) list
-        type DataStack = Value list
-
-
-        //let interpret (cc:CC) : 
-        
-    *)
+    // Low priority: optimizer, continuations-based interpreter
+    // 
