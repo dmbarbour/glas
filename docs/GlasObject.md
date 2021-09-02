@@ -1,44 +1,69 @@
 # Glas Object
 
-## Status
-
-The core of Glas Object is feature-complete, but it hasn't been performance-tested yet and standardization of escapes still needs a lot of work.
-
 ## Overview
 
-Glas Object, or 'glob', is a data format for representing Glas data within files or binaries. Glob is intended for use together with content-addressed storage (which I call 'stowage') to support structure sharing at a larger scale. 
+Glas Object, aka 'glob', will be a standard data format for representing Glas data in files, binaries, and stream processing. Glob will also support content-addressed storage for structure sharing at large scales. 
 
-A naive encoding of a Glas value is a bitstream representing a tree traversal, e.g. 00 leaf, 01 right, 10 left, 11 branch left then right. However, this encoding is not good with respect to various desiderata:
+Desiderata:
 
-* indexing - avoid scan of large structures for element lookup
+* indexing - avoid scan of large structures for components
 * sharing - reuse common subtrees, locally and globally
-* lists - support the finger-tree representation
-* tables - options for column-structured data encodings 
-* binaries - embedding of large and structured binary data
-* annotations - mix metadata such as provenance within data
+* streaming - monotonically grow partial lists and trees
+* lists - use finger-tree representation for large lists 
+* binaries - efficient embedding of binary data and texts
 * extension - clear mechanism to introduce new features
-* laziness - options for deferred procedural generation
-* modules - adequate as a bootstrap language module
-* memory - adequate for direct use by interpreter
 
-Glas Object should be efficient and also support these desiderata to a reasonable degree.
+## Design Observations
 
-## Proposed Representation
+### Streaming is Partial Data
 
-The current proposal is an 8-bit byte-aligned representation where the most common node header is represented by a `"pppppnnn"` format: five bits to encode path prefix and three bits to encode node type.
+The basic requirements for streaming data are monotonicity and forward-only references. This ensures we can process partial data as it becomes available, and also forget data that has been received and processed. For Glas Object, we must also prevent representation of cyclic data. 
+
+A viable approach to streaming is to model the top-level of Glas Object as a sequence of definitions where each definition fills a named hole that is referenced in prior definitions. Unlike conventional dictionaries, we immediately forget the definition and recycle the name for future use. 
+
+*Note:* Forward references can support limited structure sharing within a group of updates, but reuse of values will depend more heavily on content-addressed storage.
+
+### Indexing of Streams
+
+Holes are not filled in any particular order, and we cannot provide an immediate offset to where the hole is filled. However, it is feasible to independently index definitions within the Glas Object binary so we aren't repeatedly scanning definitions. Optionally, each definition header could also include a size field so we can efficiently skip to the next header.
+
+### Naming of Holes
+
+It is reasonable to name holes by simple natural numbers (0, 1, 2, ...). The Glob stream will initially define hole 0 to specify the stream's value. In case of content-addressed storage, a referenced Glob binary might have its own holes. These must be incremented to an unused part of the namespace. 
+
+*Aside:* Use of content-addressed storage with holes can essentially model templated data.
+
+## Varnat Encoding
+
+The varnat encoding used within Glas Object uses a unary prefix `(1)*0` to encode the total number of bytes, followed by 7 data bits per byte. For example:
+
+        0xxxxxxx
+        10xxxxxx xxxxxxxx
+        110xxxxx xxxxxxxx xxxxxxxx
+        1110xxxx xxxxxxxx xxxxxxxx xxxxxxxx
+
+Numbers will normally use the shortest encoding possible. 
+
+These numbers can identify holes, represent sizes, etc.
+
+## Data Representation
+
+The current proposal is a byte-aligned representation where the common node header is represented by a `"pppppnnn"` format: five bits to encode path prefix and three bits to encode node type.
 
 ### Path Prefix
 
-Five path prefix bits encode a sequence of zero to four non-branching edges preceding a node:
+Five path prefix bits encode a sequence of zero to four non-branching edges preceding the node. 
 
-* 1zyxw - four edge path prefix `wxyz`, 
-* 01zyx - three edge path prefix `xyz`
-* 001zy - two edge prefix prefix `yz`
-* 0001z - one edge path prefix `z`
+* 1abcd - four edge path prefix 
+* 01abc - three edge path prefix
+* 001ab - two edge prefix prefix
+* 0001a - one edge path prefix 
 * 00001 - no path prefix
 * 00000 - extended path prefix 
 
-Integrated path prefix bits are useful for short paths with many branches, but has 50% efficiency maximum. The extended path prefix can encode large, non-branching paths at near 100% efficiency. An extended path prefix immediately follows a node (before child nodes) and is encoded as a varnat (see below) followed by that number of bytes.
+Integrated path prefix bits are useful for short paths with many branches, but is inefficient for large bitstrings. The extended path prefix is suitable for long non-branching bitstrings. 
+
+An extended path prefix immediately follows a node (before child nodes) and is encoded as a varnat (see below) followed by that number of bytes.
 
 Glas Object can support binary data by including escape nodes (see node types) to interpret large bitstrings as binary lists or other unboxed structures. Escape nodes can also potentially support reuse of common prefixes, e.g. interpreting a record trie from a paired list of labels and list of values.
 
@@ -58,25 +83,6 @@ Three node type bits determine how the elements following a node are interpreted
 Glas values can be encoded using just inline branch, stem, and leaf nodes. Offsets support structure sharing, indexing, and organization within the binary. Offsets are encoded as a varnat (see below) and are always positive, thus it's impossible to directly represent a cycle.
 
 Escaped nodes are always parsed the same way: a varnat operator directly followed by the inline argument node. The operator indicates how to interpret the argument. For example, an escape might interpret an argument as a stowage or module reference, logically replacing the escape node by the referent's value.
-
-### Varnat Encoding
-
-The varnat encoding favored by Glas Object uses a prefix `(1)*0` to encode the total number of bytes, reminiscent of UTF-8 but . For example:
-
-        0xxxxxxx
-        10xxxxxx xxxxxxxx
-        110xxxxx xxxxxxxx xxxxxxxx
-        1110xxxx xxxxxxxx xxxxxxxx xxxxxxxx
-
-This gives us 7 data bits per byte. To ensure a lexicographic order of numbers, overlong encodings aren't permitted. Glas Object varnats are interpreted to start at 1 (we don't use zeroes).
-
-        00000000    1
-        00000001    2
-        00000010    3
-        ...
-        01111111    128
-
-In practice, varnats are unlikely to use more than four bytes in Glas Objects. At some point in the range above a few megabytes, use of stowage references becomes superior to using ever larger binaries.
 
 ### Escapes
 

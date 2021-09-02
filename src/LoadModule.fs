@@ -87,13 +87,10 @@ module LoadModule =
                 match vCompile with
                 | Program.Program pCompile ->
                     match Program.static_arity pCompile with
-                    | Some struct(1,1) ->
+                    | Some (a,b) when ((1 >= a) && ((1 - 1) = (a - b))) ->
                         Some pCompile // success!
-                    | Some struct(a,b) -> 
-                        logError ll (sprintf "%s compile has incorrect static arity %d--%d (expecting 1--1)" langMod a b)
-                        None
-                    | None -> 
-                        logError ll (sprintf "%s compile fails static arity check" langMod)
+                    | _ -> 
+                        logError ll (sprintf "%s compile fails static arity check (expecting 1--1)" langMod)
                         None
                 | _ -> 
                     logError ll (sprintf "%s compile is not a Glas program" langMod)

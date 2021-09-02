@@ -147,7 +147,7 @@ Applications need private memory to carry information across transactions. For c
  * **path:(on:Path, op:(del|MemOp))** - manipulate a record field or volume reached by following Path. The operator 'del' can erase the path from a record.
  * **elem:(at:Index, op:MemOp)** - manipulate a list element in-place at a zero-based index (range `[0,N)`). Fails if index is out of range.
 
-Get and put are a sufficient pair of operators. Other operators are opportunities for optimizations such as fine-grained conflict analysis for concurrent computation. It is feasible to use read and write to effectively simulate channels using memory.
+Get and put are a sufficient pair of operators. Other operators are opportunities for optimization such as fine-grained conflict analysis to improve concurrency.
 
 Memory will be managed manually. Assigning unit to a MemRef can release memory resources. To recover storage resources, an application should explicitly delete associations that it no longer requires. Garbage collection is feasible with application methods to report roots and trace or dispose of data, but won't be fully automated unless we have a program model that can implicitly construct these methods.
 
@@ -159,7 +159,9 @@ Almost any application model will benefit from a simple logging mechanism to sup
 
 * **log:Message** - Response is unit. Arbitrary output message, useful for progress reports or debugging.
 
-Unlike most effects, log outputs will be observable to a debugger even if part of an aborted subtransaction. However, it should be obvious which messages are from aborted sub-transaction. Some log messages may have special meaning to an environment, e.g. supporting progress bars or implicitly including a snapshot of a call stack.
+In context of transaction machines, each valid transaction's log messages are logically independent and terminating. With incremental computing we'll often have a stable prefix of log messages, and an unstable suffix. This suggests log messages shouldn't be presented as a stream, but rather a window allows scrubbing the log over time. 
+
+Even if a transaction or subprogram is aborted, it can be useful to observe log messages printed before abort. The environment might indicate these using a distinct color or wrapper.
 
 ## Console Applications
 
@@ -174,10 +176,11 @@ Log output may bind stderr by default.
 
 ### Environment Variables
 
-Environment variables can be viewed as an ad-hoc, restricted memory shared between host and application. The host may compute data on demand and impose restrictions on how variables are manipulated based on data types. Only the host may define new environment variables.
+Environment variables can provide a flexible shared-memory interface between an application and its host. In some cases, the host might compute requested fields on demand, or process updates immediately. Some variables may be read-only, or restrict which sorts of reads or writes or data types are permitted.
 
 * **env:(on:EnvVar, op:MemOp)** - response depends on the target and operation. May fail. Possible EnvVars:
- * *vars* - a record of environment variables with string values
+ * *var:String* - an environment variable with a string name and value
+ * *vars* - read-only list of defined 'var' names
  * *cmd* - request command-line as a list of strings.
  * *exit* - put-only; application halts after setting exit code and committing.
  * *strace* - get the current stack trace, suitable for debugging
@@ -186,13 +189,11 @@ Environment variables can be viewed as an ad-hoc, restricted memory shared betwe
  * *user* - username for the current user
  * *cwd* - working directory for relative filesystem paths
 
-This API is an awkward fit for use cases where we might want to model multiple concurrent or asynchronous interactions, each with their own state. But it's adaptable for many use cases.
+Environment variables are not suitable for all interactions, but are convenient where they work.
 
 ### Standard IO
 
-Standard input and output can be modeled as initially open file references, following convention. However, instead of integers, I propose to reserve `std:in`, `std:out`, and `std:err` as file references. In general, we might reserve `std:` prefix for system-defined references.
-
-The `std:err` reference may be unavailable, implicitly used for logging.
+Standard input and output can be modeled as initially open file references, following convention. However, instead of integers, I propose to reserve `std:in` and `std:out` as file references, and to reserve the `std:` reference prefix for the system in general. Access to `std:err` reference may be unavailable, implicitly used for log output. 
 
 ### Filesystem
 
@@ -222,7 +223,7 @@ Glas applications support a relatively direct translation of the conventional fi
   * *create* - creates a new directory. Use 'state' to observe progress.
   * *delete* - remove an empty directory. Use 'state' to observe progress.
  * **close:DirRef** - Delete the associated system object. DirRef is no longer in-use, and operations (except open) will fail. 
- * **read:DirRef** - Read an entry from the directory table. An entry is a record of form `(name:String, type:(dir | file | ...), ...)` allowing ad-hoc extension with attributes or new types. An implementation may ignore types except for 'dir' and 'file', and must ignore the "." and ".." references. Fails if no entry can be read, see 'state' for reason. 
+ * **read:DirRef** - Read an entry from the directory table. An entry is a record of form `(name:String, type:(dir | file | ...), ...)` allowing ad-hoc extension with attributes or new types. The "." and ".." entries will be hidden from this read operation. Fails if no entry can be read, see 'state' for reason. 
  * **move:(from:DirRef, to:DirRef)** - rename a reference. Fails if 'to' ref already in use, or 'from' ref is unused. Returns unit. After move, the roles of these references is reversed.
  * **state:DirRef** - Return a representation of the state of the associated system object. 
   * *init* - state immediately after 'open' until processed.

@@ -228,19 +228,27 @@ Glas requires an initial syntax for bootstrap. To serve this role, I define [the
 
 Most Glas modules should each compile to a dictionary that represents the namespace at end of file. This supports a convenient mode of program composition where we inherit a module then continue manipulating definitions.
 
-A dictionary is concretely a record of `identifier:Definition` pairs. The definition is an open variant whose header hints how the identifier should be applied. This allows client syntax to be more implicit. The definition type may include:
+A dictionary is concretely a record of `identifier:Definition` pairs. The definition should be from an open variant whose header hints how the identifier should be applied in context of another program. This enables user syntax to be more implicit. The definition types used by g0 are:
 
 * **prog:(do:GlasProgram, ...)** - a Glas program with potential annotations. 
-* **data:Value** - a raw data definition.
-* **type:TypeDescription** - define types for concise type annotations
-* **macro:MacroDef** - describe a macro for staged computing 
-* **dict:Dictionary** - for qualified imports (e.g. `import foo as f` and `f.bar`)
+* **data:Value** - a raw data definition, or programs that reduce to data.
+* **macro:MacroDef** - describe a macro program for staged computing 
 
-The g0 language only accepts 'prog' and 'data', and may produce 'data' after partial evaluation and optimization of a program (i.e. `prog:do:data:Value => data:Value`). Other language modules may extend definitions to support type annotations, macros, hierarchical namespaces, and other features. Distinguishing macro vs. prog headers means we won't need a special syntax for macro calls. 
-
-Construction of Glas programs must statically link dependencies. The resulting programs do not depend on a namespace. But it is feasible to design other program models that would defer linking. 
+Definitions types used by g0 are precompiled and do not contain references to other dictionary words. However, this is not an essential constraint. Other languages might favor late binding or other dynamic behavior. The set of definition types is subject to ad-hoc extension and de-facto standardization as we develop new language modules. For example, in context of suitable languages, we might extend dictionaries to define types, rewrite rules, process networks, concurrent constraint metaprogramming models, and so on. 
 
 *Aside:* A related convention that I'd like to encourage is *single inheritance* of dictionaries. At most one unqualified import, e.g. represented as `open modulename`. All other identifiers must be explicitly imported or qualified. Single inheritance ensures the provenance of every identifier is unambiguous and invariant to change in dependencies. It also encourages development of aggregator modules for boiler-plate imports.
+
+## Logging Conventions
+
+Almost every application model will support a **log:Message** effect to support debugging. In general, we'll often want the ability to filter which messages we're seeing based on task, level, role, etc.. These properties are mostly independent of content. Instead of a variant type, log messages will normally use a record of ad-hoc fields, with de-facto standardization. For example:
+
+        (lv:warn, role:debug, text:"English message")
+
+This allows gradual and ad-hoc structured extension to log messages without breaking existing routes or filters. It becomes feasible for a log message to have both a brief text description and an interactive object or applet.
+
+Efficient logging will require support for structure sharing within the log storage. 
+
+We could log an object or interactive app while still including some text and still preserving the existing log message routing mechanisms. 
 
 ## Application Models
 
@@ -268,16 +276,12 @@ Printers are usually not interpreted atomically at the top level. It's possible 
 
 ### Automated Testing
 
-For lightweight automatic testing, Glas systems will support a convention where files whose names start with  `test` should produce a records containing `(test:Program, ...)`. The test program should be zero-arity (no input or output via data stack). Instead of stack input, the test uses 'fork' effects for selection of subtests, simulation of race conditions, and randomization of test parameters. The primary output is pass/fail of the test, but logging can support debugging. Effects API:
+Language modules can support ad-hoc deterministic testing, such as static assertions and unit tests. It is even feasible to simulate non-determinism. However, for more robust testing it can be useful to expose non-determinism to an external test system. Effects API:
 
-* **fork:Count** - response is a non-deterministic bitstring of Count bits.
-* **log:Message** - Response is unit. Arbitrary output message to simplify debugging.
+* **log:Message** - output arbitrary message to log for debugging purposes.
+* **fork:Count** - read and return a random bitstring of Count bit length.
 
-Fork reads bits from an implicit input stream. Relevantly, if a program forks within 'try' then backtracks, a subsequent fork should re-read the same bits. However, fork input is not necessarily fair or random. A good test system can use constraint solvers or heuristics to select fork outcomes that improve code coverage or lead to test failure.
-
-A significant benefit of using 'fork' effects is that we potentially can incrementally compute for a common prefix of fork choices. This allows setup costs to be shared across many subtests. A disadvantage is that this does require an advanced test system to effectively leverage. During early development, tests may need to avoid using fork for subtest selection.
-
-*Aside:* To measure and protect the health of the Glas ecosystem, most shared modules should include tests. 
+Exposing non-determinism with 'fork' supports incremental computing with backtracking or use of static analysis and heuristics to focus on cases that have a chance of failing. Glas system tooling should be able to compile modules whose names start with `test` to obtain a zero-arity `(test:Program, ...)` that is evaluated with access to 'fork'. 
 
 ### User Applications
 

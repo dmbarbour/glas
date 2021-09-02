@@ -232,34 +232,23 @@ module Effects =
     let consoleErrLogger () : IEffHandler =
         TXLogSupport(consoleErrLogOut) :> IEffHandler
 
-    // what I want for background reading of streams:
-    // - reading is demand-driven, e.g. to support pushback.
-    // - read one byte at a time, don't try to read 1000 bytes
-    //   then get stuck waiting because we might retry for 100.
-    // - transactions can detect when they've observed the 
-    //   current end of stream and stop reading any further.
 
+    (*
     /// Transactional Stream (Wrapper)
     /// 
     /// Adds backtracking support to a dotnet Stream. Within a transaction, 
-    /// writes are deferred and reads are tracked. 
-    ///
-    /// Known issues: 
-    /// 
-    /// If a transaction asks for a large read, e.g. 1000 bytes, then aborts
-    /// because not enough data is available, the next operations will still
-    /// be stuck waiting for all 1000 bytes even if the next read attempts 
-    /// for 100 bytes. 
-    ///
-    /// Also, performance is likely less than optimal due to using the large
-    /// FTList overheads instead of compact arrays.
+    /// writes are deferred and reads are recorded for undo. Reads are 
     type TXStream =
         // The stream being wrapped.
         val private Stream : System.IO.Stream
 
-        // Bytes read by prior, aborted transactions are put back into
-        // the ReadBuffer for future reads.
+        // Bytes available for read due to prior, aborted transactions are
+        // put back into the ReadBuffer for future reads.
         val mutable private ReadBuffer : FTList<byte>
+
+        // Bytes currently being read by a background task are stored into
+        // an intermediate buffer. 
+        val mutable private BGReadBuffer : FTList<byte>
 
         // The stack of hierarchical transactions. Each transaction records 
         // bytes (written, read). 
@@ -371,7 +360,7 @@ module Effects =
                     self.ReadBuffer <- FTList.append r0 (self.ReadBuffer)
                 | [] -> invalidOp "cannot abort, no active transaction."
 
-
+    *)
 
 
 

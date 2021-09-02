@@ -20,7 +20,9 @@
 // Additionally, we might support basic automated testing. 
 //
 //   test TestProgram
-//   test
+//
+// I'm uncertain about how to provide fork inputs to the test. I
+// could try to use stdin, or an extra command-line parameter.
 //
 // This CLI will also support running simple console applications.
 //
@@ -63,9 +65,8 @@ let printMsg = String.concat "\n" [
 let arityMsg = String.concat "\n" [
     "arity Program"
     ""
-    "Print a description of the program's arity, e.g. `1 0`, as computed within"
-    "this command-line tool. This also checks if the input is a valid Program"
-    "structurally."
+    "Print a description of the program's arity, e.g. `1 -- 0`."
+    "This also checks if the input is a valid Glas program."
     ]
 
 
@@ -86,14 +87,9 @@ let testMsg = String.concat "\n" [
     "test TestProgram"
     ""
     "A TestProgram is a Glas program, arity 0--0, that uses a 'fork' effect for"
-    "non-deterministic choice to support selection of subtests, randomization of" 
-    "parameters, simulation of race conditions. Also, it can support incremental" 
-    "computing of tests with the same fork prefixes."
-    ""
-    "Ideally, fork input would be selected based on analysis or heuristics to search" 
-    "for failing tests. However, the simplistic implementation currently in use is"
-    "pseudo-random input. This is unsuitable for many use-cases. A single test is run"
-    "with random input before returning."
+    "non-deterministic choice to support randomization. At the moment, it is "
+    "better to use internal assertions within modules. But if tools mature, the"
+    "use of non-deterministic choice would become a search for failing inputs." 
     ""
     "See `help value` for specifying the TestProgram."
     ]
@@ -118,6 +114,7 @@ let helpMsg = String.concat "\n" [
     "    print Value with Printer"
     "    arity Program"
     "    test TestProgram"
+    //"    test TestProgram fork Pattern"
     "    run AppProgram"
     "    help (print|arity|test|run|value)"
     ""
@@ -287,10 +284,15 @@ let test (pstr:string) : int =
         // cause of failure should already be logged.
         EXIT_FAIL
     | Some p -> 
-        logError logger "TODO: Finish test impl"
-        EXIT_FAIL
-        //let forkEff = 
-
+        let io = composeEff (Testing.ForkEff()) logger
+        let e0 : Program.Interpreter.RTE = { DS = []; ES = []; IO = io }
+        match Program.Interpreter.interpret p e0 with
+        | Some _ ->
+            logInfo logger (sprintf "test %s passed" pstr)
+            EXIT_OK
+        | None ->
+            logError logger (sprintf "test %s FAILED" pstr)
+            EXIT_FAIL
 
 let run (p:string) : int =
     let logger = consoleErrLogger ()

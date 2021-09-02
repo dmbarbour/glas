@@ -1,10 +1,9 @@
 
-prog parse-alpha
 
 
 ; Binary -- WordFragment Binary | FAILURE
 prog parse-word-fragment [
-    
+
 ]
 
 ;
