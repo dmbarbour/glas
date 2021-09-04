@@ -100,7 +100,7 @@ Conveniently, macros also eliminate the need for built-in definitions. For examp
         macro try-then-else ...
         ...
 
-Macros are statically evaluated by the g0 language module's compile program and at least have access to log and load effects. The compiler may handle additional effects internally, e.g. to manage quotas, disable a warning, enable an experimental optimization, or even to apply a compiler's internal optimizer to an arbitrary program value.
+Macros are statically evaluated by the g0 language module's compile program and at least have access to log and load effects. The compiler may handle additional effects, e.g. to manage quotas, disable a warning, enable an experimental optimization, or apply the compiler's built-in optimizer to a program value.
 
 ## Local Variables
 
@@ -131,7 +131,7 @@ The first pass is to eliminate variables. This pass runs right-to-left and appli
 
 The second pass performs linking and partial evaluation. This pass runs left-to-right. Each word is linked and applied to partial data. Failed application of any macro call will cause module compilation to fail. To solve interaction of local vars and macros, this pass must specially rewrite `V [F] curry => [V F]` or `V [F] dip => F V` prior to linking and partially evaluating `F`. 
 
-After the second pass, we have a Glas program. We can immediately apply the Glas program optimizer to ensure block program values are optimized by default. Of course, programmers may manually optimize blocks via developing an optimizer function, or a compiler could expose its own optimizer function via macro effect (e.g. **optimize:Program**). Manual optimization is useful when we start manually composing program values.
+After the second pass, we have a Glas program. We can immediately apply the Glas program optimizer to ensure block program values are optimized by default.
 
 *Note:* A g0 compiler is free to impose quotas for how much static evaluation is performed, e.g. we might limit the number of times a loop is processed during partial evaluation. Quotas could be controlled via compile-time macro effects to explicitly increase the quota where needed.
 

@@ -292,7 +292,7 @@ module ProgVal =
 
     /// A lightweight, direct-style interpreter for the Glas program model.
     /// Perhaps useful as a reference, and for getting started. However, this
-    /// is really awkward for incremental computing, stack traces, etc.. 
+    /// is really awkward for incremental computing, stack traces, quotas, etc..
     module Interpreter =
         open Effects
 
@@ -492,35 +492,39 @@ module ProgVal =
                         Some { e with DS = (response::ds) }
                     | None -> None
                 | [] -> None
-        and interpretOp (op:SymOp) (e:RTE) : RTE option =
-            match op with
-            | Copy -> copy e
-            | Drop -> drop e 
-            | Swap -> swap e
-            | Eq -> eq e
-            | Fail -> None
-            | Eff -> eff e 
-            | Get -> get e
-            | Put -> put e 
-            | Del -> del e
-            | Pushl -> pushl e
-            | Popl -> popl e
-            | Pushr -> pushr e
-            | Popr -> popr e
-            | Join -> join e
-            | Split -> split e
-            | Len -> len e 
-            | BJoin -> bjoin e
-            | BSplit -> bsplit e
-            | BLen -> blen e 
-            | BNeg -> bneg e 
-            | BMax -> bmax e
-            | BMin -> bmin e
-            | BEq -> beq e
-            | Add -> add e
-            | Mul -> mul e
-            | Sub -> sub e 
-            | Div -> div e 
+        and interpretOpMap =
+            [ (lCopy, copy)
+            ; (lDrop, drop)
+            ; (lSwap, swap)
+            ; (lEq, eq)
+            ; (lFail, fun _ -> None)
+            ; (lEff, eff)
+            ; (lGet, get)
+            ; (lPut, put)
+            ; (lDel, del)
+            ; (lPushl, pushl)
+            ; (lPopl, popl)
+            ; (lPushr, pushr)
+            ; (lPopr, popr)
+            ; (lJoin, join)
+            ; (lSplit, split)
+            ; (lLen, len)
+            ; (lBJoin, bjoin)
+            ; (lBSplit, bsplit)
+            ; (lBLen, blen)
+            ; (lBNeg, bneg)
+            ; (lBMax, bmax)
+            ; (lBMin, bmin)
+            ; (lBEq, beq)
+            ; (lAdd, add)
+            ; (lMul, mul)
+            ; (lSub, sub)
+            ; (lDiv, div)
+            ] |> Map.ofList
+        and interpretOp (op:Bits) (e:RTE) : RTE option =
+            match Map.tryFind op interpretOpMap with
+            | Some fn -> fn e
+            | None -> None
         and dip p e = 
             match e.DS with
             | (x::ds) -> 
@@ -530,11 +534,11 @@ module ProgVal =
             | [] -> None
         and seq s e =
             match s with
-            | (p :: s') ->
+            | FTList.ViewL (p, s') ->
                 match interpret p e with
                 | Some e' -> seq s' e'
                 | None -> None
-            | [] -> Some e
+            | _ -> Some e
         and cond pTry pThen pElse e =
             use tx = withTX (e.IO) // backtrack effects in pTry
             match interpret pTry e with
@@ -563,12 +567,12 @@ module ProgVal =
             | Op op -> interpretOp op e 
             | Dip p' -> dip p' e 
             | Data v -> data v e
-            | Seq s -> seq s e
-            | Cond (Try=pTry; Then=pThen; Else=pElse) -> cond pTry pThen pElse e
-            | Loop (While=pWhile; Do=pDo) -> loop pWhile pDo e 
-            | Env (With=pWith; Do=pDo) -> env pWith pDo e 
-            | Prog (Do=p'; Note=_) -> interpret p' e 
+            | PSeq s -> seq s e
+            | Cond (pTry, pThen, pElse) -> cond pTry pThen pElse e
+            | Loop (pWhile, pDo) -> loop pWhile pDo e 
+            | Env (pWith, pDo) -> env pWith pDo e 
+            | Prog (_, p') -> interpret p' e 
+            | _ -> None
 
-*)
     // Low priority: optimizer, continuations-based interpreter
     // 
