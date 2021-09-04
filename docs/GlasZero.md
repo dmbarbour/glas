@@ -1,6 +1,6 @@
 # The g0 Syntax
 
-The g0 syntax is a lightweight layer above the Glas program model, similar to a Forth, and is intended to serve a bootstrap role in the Glas system. Associated file extension is `.g0`. 
+The g0 syntax is a lightweight layer above the Glas program model, similar to a Forth or Scheme, and is intended to serve a bootstrap role in the Glas system. Associated file extension is `.g0`. 
 
 The g0 syntax has limited support for staged metaprogramming, local variables for convenient data plumbing, and assumptions/assertions as a simple basis for tests and types. However, the intention is that g0 is a transitory syntax and that users will develop more sophisticated language modules after bootstrap.
 
@@ -27,11 +27,11 @@ There is no direct support for export control. Indirectly, a folder may contain 
 
 ## Programs 
 
-Programs are expressed as a sequence of words and embedded data between square brackets, generally separated by spaces (though square brackets are also okay separators). All programs in g0 must have static arity; some, such as data, must have a specific static arity.
+Programs are expressed as a sequence of words and data between square brackets. All programs in g0 must have static arity; some, such as data, must have a specific static arity.
 
 The g0 compiler will opportunistically partially evaluate programs while compiling them. This includes embedded program blocks. However, after compilation of individual programs, the g0 compiler will not further optimize them.
 
-### Words
+## Words
 
 A word in g0 must match regex:
 
@@ -44,7 +44,7 @@ In case of error, a warning should be logged then the word is replaced by 'fail'
 
 *Aside:* Shadowing of words should be discouraged. If encountered, a warning should be logged.
 
-### Embedded Data
+## Data
 
 The g0 program syntax has built-in support for numbers, symbols, strings, and programs as values. 
 
@@ -54,15 +54,28 @@ The g0 program syntax has built-in support for numbers, symbols, strings, and pr
         0x17                    0b00010111      (always multiple of four bits)
         'word                   0x776f726400    (symbols for every valid word)
         "hello"                 (list of ascii bytes; forbid C0, DEL, and '"')
-        [Program]               program on the data stack, for metaprogramming
+        [Program]               program 'block' on data stack; use with macros
 
-The value `0` or `0u0` is the empty bitstring, which also corresponds to the empty list, empty record, and 'unit' value for Glas programs. 
+The value `0` (or `0u0` or `""`) is the empty bitstring. 
 
-The g0 syntax doesn't support structured data or string escapes, but it is possible to write programs that compose or manipulate data, and a compiler may optimize by static partial evaluation.
+Aside from program blocks, the g0 syntax does not directly support structured data. Programmers should define words as needed for comfortable construction and composition of complex values. For example, multi-line text might be expressed as a list that we concatenate, and large lists could be supported via a few words:
+
+        list-begin
+        li "Anatomy Class"
+        li "  by Betsy Franco"
+        li ""
+        li "The chair has"
+        li "arms."
+        li "The clock,"
+        li "a face."
+        li "..."
+        list-end unlines
+
+Use of list-begin etc. together with a dict-begin could cover most variable-size embedded data in g0. For a short list of static size where values fit neatly on one line, we might favor `1 2 3 list3`. Of course, if a data structure is verbose or awkward to express in g0, programmers should consider developing a language module that makes expression more concise and convenient.
 
 ## Assertions
 
-Assertions provide a lightweight basis for unit tests. Assertions are evaluated with 0 inputs. If evaluation fails, the assertion fails and the entire g0 module is considered to fail compilation (i.e. loading the module will fail). Evaluation of assertions has access to language module effects (log and load), so it's feasible for internal 'log' messages to clarify issues.
+Assertions provide a lightweight basis for unit tests. Assertions are evaluated with 0 inputs. If evaluation fails, the assertion fails and the entire g0 module is considered to fail compilation (i.e. loading the module will fail). Evaluation of assertions has access to language module effects (log and load), plus any compiler-provided effects (e.g. quota control)
 
 ## Prog Definitions
 
@@ -70,13 +83,13 @@ A 'prog' definition is a program with any static arity. Programs will be partial
 
 ## Data Definitions
 
-A 'data' definition is specified by a program with 0--1 arity. This program is evaluated with access to language-module log and load effects.
+A 'data' definition is specified by a program with 0--1 static arity. This program is evaluated statically, similar to a macro or assertion. The computed value becomes the defined data.
 
 ## Macro Definitions
 
-A 'macro' entry is bound to a program that is evaluated statically using partially evaluated inputs from the caller. The top stack output from a macro should be a program, which is then inlined into the caller. A macro may have more than one stack output, but only the top item is treated specially. 
+A 'macro' is a program that is statically evaluated using partially evaluated input. The primary motive for macros is to support higher order programming and metaprogramming (within the staging limitation), e.g. so we can express list processing, parser combinators, or abstract common loops. The top stack output from a macro call should be a program, which is then applied inline. 
 
-The purpose of macros is to provide a basis for static higher order programming, e.g. to support list processing and parser combinators. They can support metaprogramming in general. Macros also provide a simple basis to avoid built-in definitions. For example, we can define the Glas program primitive operators using a few macros and progs:
+Conveniently, macros also eliminate the need for built-in definitions. For example, we can define all the Glas program primitive operators using macros and progs:
 
         macro apply []
         prog swap ['swap apply]
@@ -87,38 +100,11 @@ The purpose of macros is to provide a basis for static higher order programming,
         macro try-then-else ...
         ...
 
-If the g0 compiler fails to statically compute parameters to a macro, or if macro evaluation fails, these are logged as errors in the g0 module. Usefully, programmers can use macros to make explicit some assumptions about partial evaluation:
-
-        ; A -- [A]
-        prog quote [0 swap 'data put]
-
-        ; [P1] [P2] -- [P1 P2]
-        prog compose [0 swap pushl swap pushl 0 swap 'seq put]
-
-        ; A [B] -- [A B]
-        prog curry [[quote] dip compose]
-
-        macro static-data [[] curry]
-        macro static-data2 [[] curry curry]
-        macro static-data3 [[] curry curry curry] 
-        ...
-
-Macros also have access to language-module log and load effects at compile-time. For example, we could support static logging of messages and loading of arbitrary module values.
-
-        macro static-load [0 swap 'load put eff quote]
-        macro static-error ...
-        macro static-warn ...
-        macro static-info ...
-
-These features make g0 much more useful for static debugging. It is also feasible to support static typechecks and user-defined optimizations as macros.
-
-The intended use-case for macros is static higher-order programming to support list processing and parser combinators.
-
-*Aside:* Feature interaction between macros and local variables is awkward and complicated. I'm dropping local vars in favor of macros. 
+Macros are statically evaluated by the g0 language module's compile program and at least have access to log and load effects. The compiler may handle additional effects internally, e.g. to manage quotas, disable a warning, enable an experimental optimization, or even to apply a compiler's internal optimizer to an arbitrary program value.
 
 ## Local Variables
 
-Local variables within a program are sometimes more convenient than manual manipulation of the stack using dip, drop, copy, swap. This is especially true for larger, more complicated programs, or if writing a closure that deeply embeds a variable. Local variables can support lambda-like expressions as `[\x y . E]` or let-like expressions as `[Expr1 \x . Expr2]`, with 'x' capturing the intermediate result from Expr1. This can be implemented by rewriting the subprogram that introduces the variable.
+Local variables in a program are often more convenient than manual stack manipulation using dip, drop, copy, swap. This is especially true for larger programs. Local variables support lambda-like expressions as `[\x y. E]` and let-like expressions as `[E1 \x. E2]`. Local variables can be implemented by rewriting the subprogram that introduces the variable.
 
     \x y z. E => \z. \y. \x. E
     \w. E | E introduces no vars => T(w,E)
@@ -129,16 +115,31 @@ Local variables within a program are sometimes more convenient than manual manip
         | only F contains w => T(w,F) G
         | only G contains w => [F] dip T(w,G)
         | otherwise => copy [T(w,F)] dip T(w,G)
+    where 
+        copy : A -- A A
+        drop : A --
+        dip : A [F] -- F A
+        curry : A [F] -- [A F]
 
-In context of macros, we'll also need a compilation strategy such that static 'curry' or 'dip' in the parent program can be performed *before* we attempt to evaluate macros within a subprogram. 
+Local variables complicate compilation in context of macros where we must specially handle static variables. Refactoring is hindered by entanglement between macros and static variables.
 
-## No Keywords!
+## Compilation Strategy for Programs
 
-The g0 language has no keywords. As described earlier, macros fulfill this role. 
+The intial AST for g0 programs is a simple list of 'var:word', 'call:word', 'block:G0', and 'data:Value' operators. 
+
+The first pass is to eliminate variables. This pass runs right-to-left and applies hierarchically to blocks. It eliminates 'var' elements from the AST, but introduces 'drop', 'dip', 'curry', and 'copy' operators.
+
+The second pass performs linking and partial evaluation. This pass runs left-to-right. Each word is linked and applied to partial data. Failed application of any macro call will cause module compilation to fail. To solve interaction of local vars and macros, this pass must specially rewrite `V [F] curry => [V F]` or `V [F] dip => F V` prior to linking and partially evaluating `F`. 
+
+After the second pass, we have a Glas program. We can immediately apply the Glas program optimizer to ensure block program values are optimized by default. Of course, programmers may manually optimize blocks via developing an optimizer function, or a compiler could expose its own optimizer function via macro effect (e.g. **optimize:Program**). Manual optimization is useful when we start manually composing program values.
+
+*Note:* A g0 compiler is free to impose quotas for how much static evaluation is performed, e.g. we might limit the number of times a loop is processed during partial evaluation. Quotas could be controlled via compile-time macro effects to explicitly increase the quota where needed.
 
 ## Bootstrap 
 
-As a special case, the language-g0 module will go through a bootstrap process in Glas. The command-line utility provides a naive implementation for a sufficient subset of g0. This is used to build the module language-g0 to a value of form `(compile:P0, ...)`. Program P0 is then used to rebuild language-g0, producing `(compile:P1, ...)`. P0 and P1 should have the same behavior but will often be structurally different due to differences in optimizations or annotations. To resolve this, we use P1 to rebuild language-g0, producing `(compile:P2, ...)` then verify P1 and P2 are structurally equivalent.
+Unlike most language modules, g0 is bootstrapped. All other language modules can use g0 as a foundation. 
+
+An initial implementation of g0 provided by the command-line utility. This is then used to build the module language-g0 to a value of form `(compile:P0, ...)`. Program P0 is then used to rebuild language-g0, producing `(compile:P1, ...)`. P0 and P1 should have the same behavior but will often be structurally different due to differences in optimizations or annotations. To resolve this, we use P1 to rebuild language-g0, producing `(compile:P2, ...)` then verify P1 and P2 are structurally equivalent.
 
 This bootstrap process requires that module language-g0 is carefully defined to achieve fixpoint in just one cycle, verified by the second compilation. If P1 and P2 are structurally distinct, bootstrap fails and we should debug our definitions.
 

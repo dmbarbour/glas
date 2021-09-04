@@ -276,7 +276,7 @@ Printers are usually not interpreted atomically at the top level. It's possible 
 
 ### Automated Testing
 
-Language modules can support ad-hoc deterministic testing, such as static assertions and unit tests. It is even feasible to simulate non-determinism. However, for more robust testing it can be useful to expose non-determinism to an external test system. Effects API:
+Language modules implicitly support ad-hoc deterministic testing, such as static assertions and unit tests. It is feasible to simulate non-determinism. However, for robust testing of general simulations, it is useful to expose non-deterministic choice to the test system. Effects API:
 
 * **log:Message** - output arbitrary message to log for debugging purposes.
 * **fork:Count** - read and return a random bitstring of Count bit length.

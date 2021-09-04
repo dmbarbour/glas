@@ -12,7 +12,7 @@
     <Compile Include="Arithmetic.fs" />
     <Compile Include="Effects.fs" />
     <Compile Include="Program.fs" />
-    <!-- <Compile Include="ProgVal.fs" /> -->
+    <Compile Include="ProgVal.fs" />
     <Compile Include="GlasZero.fs" />
     <Compile Include="LoadModule.fs" />
     <Compile Include="Printing.fs" />

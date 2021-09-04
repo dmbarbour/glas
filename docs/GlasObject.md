@@ -29,7 +29,7 @@ Holes are not filled in any particular order, and we cannot provide an immediate
 
 ### Naming of Holes
 
-It is reasonable to name holes by simple natural numbers (0, 1, 2, ...). The Glob stream will initially define hole 0 to specify the stream's value. In case of content-addressed storage, a referenced Glob binary might have its own holes. These must be incremented to an unused part of the namespace. 
+It is reasonable to name holes by simple natural numbers (0, 1, 2, ...). The Glob stream can specify hole 0 as the top-level value. In case of content-addressed storage, a referenced Glob binary might have its own holes. These must be incremented to an unused part of the namespace. 
 
 *Aside:* Use of content-addressed storage with holes can essentially model templated data.
 

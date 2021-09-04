@@ -21,7 +21,7 @@ module Zero =
     type ModuleName = Word
 
     /// AST for g0 programs.
-    /// Words are not linked in this representation. Comments are dropped.
+    /// Comments are dropped. Words are not linked yet.
     type Prog = ProgStep list
     and ProgStep =
         | Call of Word  // word

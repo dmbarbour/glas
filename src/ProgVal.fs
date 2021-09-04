@@ -1,284 +1,294 @@
 namespace Glas
 
-/// all program operators that consist of a single symbol
-type SymOp =
-    | Copy | Drop | Swap
-    | Eq | Fail
-    | Eff
-    | Get | Put | Del
-    | Pushl | Popl | Pushr | Popr | Join | Split | Len
-    | BJoin | BSplit | BLen | BNeg | BMax | BMin | BEq
-    | Add | Mul | Sub | Div
-
-/// The Glas standard program model.
-///
-/// Glas systems can support more than one program model, but we 
-/// need a base case for defining language modules and bootstrap.
-/// It is also suitable for transaction machine applications.
-/// 
-/// Note: Converting between F# and Glas program values complicates
-/// maintenance of structure sharing. Within Glas, we'd resolve via
-/// stow and memo annotations. For F#, I have an ad-hoc partial model
-/// for this.
-type Program =
-    | Op of SymOp
-    | Dip of Program
-    | Data of Value
-    | Seq of Program list
-    | Cond of Try:Program * Then:Program * Else:Program
-    | Loop of While:Program * Do:Program
-    | Env of Do:Program * With:Program
-    | Prog of Do:Program * Note:Value 
-
-module Program =
+/// Represents a program as a value end-to-end. This avoids the issues from 
+/// converting between value and program, which will simplify structure 
+/// sharing.
+module ProgVal =
     open Value
+    type Program = Value
 
-    let nop = Seq []
+    // basic operators
+    let lCopy = label "copy"
+    let lDrop = label "drop"
+    let lSwap = label "swap"
+    let lEq = label "eq"
+    let lFail = label "fail"
+    let lEff = label "eff"
+    let lGet = label "get"
+    let lPut = label "put"
+    let lDel = label "del"
+    let lPushl = label "pushl"
+    let lPopl = label "popl"
+    let lPushr = label "pushr"
+    let lPopr = label "popr"
+    let lJoin = label "join"
+    let lSplit = label "split"
+    let lLen = label "len"
+    let lBJoin = label "bjoin"
+    let lBSplit = label "bsplit"
+    let lBLen = label "blen"
+    let lBNeg = label "bneg"
+    let lBMax = label "bmax"
+    let lBMin = label "bmin"
+    let lBEq = label "beq"
+    let lAdd = label "add"
+    let lMul = label "mul"
+    let lSub = label "sub"
+    let lDiv = label "div"
 
-    let op_list = [ Copy; Drop; Swap
-                  ; Eq; Fail
-                  ; Eff
-                  ; Get; Put; Del
-                  ; Pushl; Popl; Pushr; Popr; Join; Split; Len
-                  ; BJoin; BSplit; BLen; BNeg; BMax; BMin; BEq
-                  ; Add; Mul; Sub; Div]
+    let symOpsList = 
+        [ lCopy; lSwap; lDrop
+        ; lEq; lFail
+        ; lEff
+        ; lGet; lPut; lDel
+        ; lPushl; lPopl; lPushr; lPopr; lJoin; lSplit; lLen
+        ; lBJoin; lBSplit; lBLen; lBNeg; lBMax; lBMin; lBEq
+        ; lAdd; lMul; lSub; lDiv
+        ]
 
-    let opStr (op : SymOp) : string =
-        match op with
-        | Copy -> "copy"
-        | Drop -> "drop"
-        | Swap -> "swap"
-        | Eq -> "eq"
-        | Fail -> "fail"
-        | Eff -> "eff"
-        | Get -> "get"
-        | Put -> "put"
-        | Del -> "del"
-        | Pushl -> "pushl"
-        | Popl -> "popl"
-        | Pushr -> "pushr"
-        | Popr -> "popr"
-        | Join -> "join"
-        | Split -> "split"
-        | Len -> "len"
-        | BJoin -> "bjoin"
-        | BSplit -> "bsplit"
-        | BLen -> "blen"
-        | BNeg -> "bneg"
-        | BMax -> "bmax"
-        | BMin -> "bmin"
-        | BEq -> "beq"
-        | Add -> "add"
-        | Mul -> "mul"
-        | Sub -> "sub"
-        | Div -> "div"
+    let symOpsRec =
+        List.fold (fun r op -> record_insert op unit r) unit symOpsList
 
-    module Printer =
-        // continuation for a printer
-        type K = Value list -> Value
+    let (|Op|_|) v =
+        match v with
+        | Bits b ->
+            match record_lookup b symOpsRec with
+            | Some U -> Some b
+            | _ -> None
+        | _ -> None
 
-        // for round-trip structure sharing, intern common subtrees. 
-        type C = Map<Program,Value> 
+    // structured subprograms
+    let lDip = label "dip"
+    let lData = label "data"
+    let lSeq = label "seq"
+    let lCond = label "cond"
+    let lTry = label "try"
+    let lThen = label "then"
+    let lElse = label "else"
+    let lLoop = label "loop"
+    let lWhile = label "while"
+    let lDo = label "do"
+    let lEnv = label "env"
+    let lWith = label "with"
+    let lProg = label "prog"
 
-        // to separate op handling from caching and recursion details...
-        let split (p : Program) : struct(Program list * K) =
-            match p with
-            | Op op -> struct([], fun _ -> symbol (opStr op))
-            | Dip pDip -> struct([pDip], asRecord ["dip"])
-            | Data v -> struct([], fun _ -> variant "data" v)
-            | Seq ps -> struct(ps, FTList.ofList >> Value.ofFTList >> variant "seq")
-            | Cond (Try=pTry; Then=pThen; Else=pElse) ->
-                struct([pTry; pThen; pElse], asRecord ["try"; "then"; "else"] >> variant "cond")
-            | Loop (While=pWhile; Do=pDo) ->
-                struct([pWhile; pDo], asRecord ["while"; "do"] >> variant "loop")
-            | Env (Do=pDo; With=pWith) ->
-                struct([pDo; pWith], asRecord ["do"; "with"] >> variant "env")
-            | Prog (Do=pDo; Note=vNote) ->
-                struct([pDo], fun vs -> variant "prog" (record_insert (label "do") (vs.[0]) vNote))
+    let lv l v =  
+        { v with Stem = Bits.append l (v.Stem) }
 
-        // printer handles recursion and caching at the moment.
-        // currently not tail-recursive.
-        let rec print (c0:C) (p:Program) : (Value * C) =
-            match Map.tryFind p c0 with
-            | Some v -> (v, c0)
-            | None ->
-                let struct(ps, k) = split p
-                let (vs, c') = List.mapFold print c0 ps
-                let v = k vs
-                (v, Map.add p v c')
+    let Nop = lv lSeq unit
 
-    /// Print program to value. 
-    let print (p : Program) : Value =
-        let (v, _) = Printer.print (Map.empty) p
-        v
+    let Dip v = lv lDip v
+    let inline (|Dip|_|) v =
+        match v with
+        | Stem lDip p -> Some p
+        | _ -> None
 
+    let Data v = lv lData v
+    let inline (|Data|_|) v =
+        match v with
+        | Stem lData vData -> Some vData
+        | _ -> None
+    
+    // adding 'P' prefix to avoid conflict with F# Seq
+    let PSeq lV = lv lSeq (ofFTList lV)
+    let inline (|PSeq|_|) v =
+        match v with
+        | Stem lSeq (FTList lV) -> Some lV
+        | _ -> None
+
+    let private record_insert_unless_nop lbl v r =
+        if v = Nop 
+            then record_delete lbl r 
+            else record_insert lbl v r
+
+    let Cond (pTry, pThen, pElse) =
+        unit |> record_insert lTry pTry
+             |> record_insert_unless_nop lThen pThen
+             |> record_insert_unless_nop lElse pElse
+             |> lv lCond
+    let inline (|Cond|_|) v =
+        match v with
+        | Stem lCond (RecL [lTry; lThen; lElse] ([Some pTry; optThen; optElse], U)) ->
+            let pThen = Option.defaultValue Nop optThen
+            let pElse = Option.defaultValue Nop optElse
+            Some (pTry, pThen, pElse)
+        | _ -> None
+
+
+
+    let Loop (pWhile, pDo) =
+        unit |> record_insert lWhile pWhile
+             |> record_insert_unless_nop lDo pDo
+             |> lv lLoop
+    let inline (|Loop|_|) v =
+        match v with
+        | Stem lLoop (RecL [lWhile;lDo] ([Some pWhile; optDo], U)) ->
+            let pDo = Option.defaultValue Nop optDo 
+            Some (pWhile, pDo)
+        | _ -> None
+
+    let Env (pWith, pDo) =
+        unit |> record_insert lWith pWith
+             |> record_insert lDo pDo
+             |> lv lEnv
+
+    let inline (|Env|_|) v =
+        match v with
+        | Stem lEnv (RecL [lWith; lDo] ([Some pWith; Some pDo], U)) ->
+            Some (pWith, pDo)
+        | _ -> None
+
+    let Prog (vAnno, pDo) =
+        vAnno |> record_insert_unless_nop lDo pDo
+              |> lv lProg
+
+    let inline (|Prog|_|) v =
+        match v with
+        | Stem lProg (RecL [lDo] ([optDo], vAnno)) ->
+            let pDo = Option.defaultValue Nop optDo
+            Some (vAnno, pDo)
+        | _ -> None
+
+    /// Return a sequence of program component values that are invalid programs.
+    let rec invalidProgramComponents v =
+        seq {
+            match v with
+            | Op _ -> 
+                ()
+            | Dip p -> 
+                yield! invalidProgramComponents p
+            | Data _ -> 
+                ()
+            | PSeq lP -> 
+                yield! lP |> FTList.toSeq |> Seq.collect invalidProgramComponents
+            | Cond (pTry, pThen, pElse) ->
+                yield! invalidProgramComponents pTry
+                yield! invalidProgramComponents pThen
+                yield! invalidProgramComponents pElse
+            | Loop (pWhile, pDo) ->
+                yield! invalidProgramComponents pWhile
+                yield! invalidProgramComponents pDo
+            | Env (pWith, pDo) ->
+                yield! invalidProgramComponents pWith
+                yield! invalidProgramComponents pDo
+            | Prog (_, pDo) ->
+                yield! invalidProgramComponents pDo
+            | _ -> 
+                yield v
+        }
+
+    /// Return whether the program has a valid AST. This does not check
+    /// for valid static arity or other properties.
+    let rec isValidProgramAST v =
+        Seq.isEmpty (invalidProgramComponents v)
+        
     type StackArity =
-        | Static of int * int
+        | Arity of int * int
         | Failure // arity of subprogram that always Fails
         | Dynamic // arity of inconsistent subprogram
 
-    let op_arity (op : SymOp) : StackArity =
-        match op with 
-        | Copy -> Static(1,2)
-        | Drop -> Static(1,0)
-        | Swap -> Static(2,2)
-        | Eq -> Static(2,0)
-        | Fail -> Failure
-        | Eff -> Static(1,1) // assumes handler is 2-2.
-        | Get -> Static(2,1)
-        | Put -> Static(3,1)
-        | Del -> Static(2,1)
-        | Pushl -> Static(2,1)
-        | Popl -> Static(1,2)
-        | Pushr -> Static(2,1)
-        | Popr -> Static(1,2)
-        | Join -> Static(2,1)
-        | Split -> Static(2,2)
-        | Len -> Static(1,1)
-        | BJoin -> Static(2,1)
-        | BSplit -> Static(2,2)
-        | BLen -> Static(1,1)
-        | BNeg -> Static(1,1)
-        | BMax -> Static(2,1)
-        | BMin -> Static(2,1)
-        | BEq -> Static(2,1)
-        | Add -> Static(2,2)
-        | Mul -> Static(2,2)
-        | Sub -> Static(2,1)
-        | Div -> Static(2,2)
+    let private opArityMap =
+        [ (lCopy, Arity(1,2))
+        ; (lSwap, Arity(2,2))
+        ; (lDrop, Arity(1,0))
+        ; (lEq, Arity(2,0))
+        ; (lFail, Failure)
+        ; (lEff, Arity(1,1))
+        ; (lGet, Arity(2,1))
+        ; (lPut, Arity(3,1))
+        ; (lDel, Arity(2,1))
+        ; (lPushl, Arity(2,1))
+        ; (lPopl, Arity(1,2))
+        ; (lPushr, Arity(2,1))
+        ; (lPopr, Arity(1,2))
+        ; (lJoin, Arity(2,1))
+        ; (lSplit, Arity(2,2))
+        ; (lLen, Arity(1,1))
+        ; (lBJoin, Arity(2,1))
+        ; (lBSplit, Arity(2,2))
+        ; (lBLen, Arity(1,1))
+        ; (lBNeg, Arity(1,1))
+        ; (lBMax, Arity(2,1))
+        ; (lBMin, Arity(2,1))
+        ; (lBEq, Arity(2,1))
+        ; (lAdd, Arity(2,2))
+        ; (lMul, Arity(2,2))
+        ; (lSub, Arity(2,1))
+        ; (lDiv, Arity(2,2))
+        ] |> Map.ofList
 
-
-    let rec stack_arity (p : Program) : StackArity =
-        match p with
-        | Op (op) -> op_arity op
+    let rec stack_arity p =
+        match p with 
+        | Op op ->
+            match Map.tryFind op opArityMap with
+            | Some arity -> arity
+            | None -> failwithf "missing op %s in arity map" (prettyPrint p)
         | Dip p ->
             match stack_arity p with
-            | Static (a,b) -> Static (a+1, b+1)
+            | Arity (a,b) -> Arity (a+1, b+1)
             | Failure -> Failure
             | Dynamic -> Dynamic
-        | Data _ -> Static(0,1)
-        | Seq ps -> stack_arity_seq ps
-        | Cond (Try=c; Then=a; Else=b) ->
+        | Data _ -> Arity(0,1)
+        | PSeq lP  -> stack_arity_seq (FTList.toList lP)
+        | Cond (c, a, b) ->
             let l = stack_arity_seq [c;a]
             let r = stack_arity b
             match l,r with
-            | Static (li,lo), Static(ri,ro) when ((li - lo) = (ri - ro)) ->
+            | Arity (li,lo), Arity(ri,ro) when ((li - lo) = (ri - ro)) ->
                 if (li > ri) then l else r
-            | Failure, Static (ri, ro) -> 
+            | Failure, Arity (ri, ro) -> 
                 match stack_arity c with
                 | Failure -> r
-                | Static (ci, _) ->
+                | Arity (ci, _) ->
                     let d = (max ci ri) - ri
-                    Static (ri + d, ro + d)
+                    Arity (ri + d, ro + d)
                 | Dynamic -> Dynamic
             | _, Failure -> l
             | _, _ -> Dynamic
-        | Loop (While=c; Do=a) ->
+        | Loop (c, a) ->
             // seq:[c,a] must be stack invariant.
             match stack_arity_seq [c;a] with
-            | Static (i,o) when (i = o) -> Static(i,o)
+            | Arity (i,o) when (i = o) -> Arity(i,o)
             | Failure -> 
                 match stack_arity c with
-                | Failure -> Static(0,0)
+                | Failure -> Arity(0,0)
                 | _ -> Dynamic
             | _ -> Dynamic
-        | Env (Do=p; With=e) -> 
+        | Env (e, p) -> 
             // constraining bootstrap eff handlers to be 2-2 including state.
             // i.e. forall S . ((S * Request) * St) -> ((S * Response) * St)
             match stack_arity e with
-            | Static(i,o) when ((i = o) && (2 >= i)) -> 
+            | Arity(i,o) when ((i = o) && (2 >= i)) -> 
                 stack_arity (Dip p)
             | _ -> Dynamic
-        | Prog (Do=p) -> stack_arity p
+        | Prog (_, p) -> stack_arity p
+        | _ ->
+            // not a valid program. 
+            Failure
+
     and stack_arity_seq ps =
         _stack_arity_seq 0 0 ps
     and private _stack_arity_seq i o ps =
         match ps with
-        | [] -> Static(i,o)
+        | [] -> Arity(i,o)
         | (p::ps') ->
             match stack_arity p with
-            | Static (a,b) -> 
+            | Arity (a,b) -> 
                 let d = max 0 (a - o) 
                 let i' = i + d
                 let o' = o + d + (b - a) 
                 _stack_arity_seq i' o' ps'
             | ar -> ar
 
-
-    /// Compute static stack arity, i.e. number of stack inputs and outputs,
-    /// if this value can be computed. This requires effect handlers have a
-    /// static arity of 2--2 including the handler state (1--1 from 'Eff' call).
-    ///
-    /// Ignores annotations.
-    ///
-    /// Currently does not compute arity for programs that contain 'fail'. This
-    /// may need to be corrected later, but shouldn't be critical pre-bootstrap.
-    let static_arity (p : Program) : struct(int * int) option =
+    // vestigial
+    let static_arity p =
         match stack_arity p with
-        | Static (a,b) -> Some struct(a,b) 
+        | Arity (a,b) -> Some struct(a,b) 
         | _ -> None
 
-    module Parser =
-        // memo-cache to support structure sharing
-        type C = Map<Value, Program>
-
-        // when all components parse, build composite.
-        type K = Program list -> Program
-
-        let private _opMap =
-            let ins m op = Map.add (label (opStr op)) op m
-            List.fold ins (Map.empty) op_list
-
-        /// Parse SymOp from value.
-        let (|ParseOp|_|) v = 
-            match v with 
-            | Bits b -> Map.tryFind b _opMap
-            | _ -> None
-
-        /// Returns a list of component values to parse into programs, and a
-        /// continuation function to combine the component programs. Separates
-        /// parse logic from cache and recursion logic.
-        let parseShallow (v : Value) : (struct(Value list * K)) option =
-            match v with
-            | ParseOp op -> Some struct([], fun _ -> Op op)
-            | Variant "dip" vDip -> Some struct([vDip], List.head >> Dip)
-            | Variant "data" vData -> Some struct([], fun _ -> Data vData)
-            | Variant "seq" (FTList vs) -> Some struct(FTList.toList vs, Seq)
-            | Variant "cond" (FullRec ["try";"then";"else"] (vs, U)) -> 
-                Some struct(vs, fun ps -> Cond (Try=ps.[0], Then=ps.[1], Else=ps.[2]))
-            | Variant "loop" (FullRec ["while"; "do"] (vs, U)) ->
-                Some struct(vs, fun ps -> Loop (While=ps.[0], Do=ps.[1]))
-            | Variant "env" (FullRec ["do"; "with"] (vs, U)) ->
-                Some struct(vs, fun ps -> Env (Do=ps.[0], With=ps.[1]))
-            | Variant "prog" (FullRec ["do"] (vs, vNote)) when isRecord vNote ->
-                Some struct(vs, fun ps -> Prog (Do = ps.[0], Note = vNote))
-            | _ -> None // failed parse
-
-        /// A simple parse function with cache support. 
-        /// (Non-struct output type to work with List.mapFold)
-        let rec parse (c0:C) (v:Value) : ((Program option) * C) =
-            let fromCache = Map.tryFind v c0
-            if Option.isSome fromCache then (fromCache, c0) else
-            match parseShallow v with
-            | None -> (None, c0) 
-            | Some (vs, k) -> 
-                let (psOpts, c') = List.mapFold parse c0 vs
-                if List.exists Option.isNone psOpts then (None, c') else
-                let pParsed = k (List.map Option.get psOpts)
-                (Some pParsed, Map.add v pParsed c')
-
-        // TODO: Write parser function for diagnosis of parse errors.
-        // This is relatively low priority compared to similar for g0.
-
-    /// Attempt to parse a value into a program.
-    let tryParse (v : Value) : Program option =
-        let (pParsed, _) = Parser.parse (Map.empty) v
-        pParsed
-
-    /// Use program parser with F# pattern matching.
-    let inline (|Program|_|) v = 
-        tryParse v
-
+    // TODO:
+    //  - rewrite program for continuation-passing style
+    //  - or compile a program into a composition of F# functions for JIT
 
     /// A lightweight, direct-style interpreter for the Glas program model.
     /// Perhaps useful as a reference, and for getting started. However, this
@@ -289,9 +299,9 @@ module Program =
         /// The interpreter's runtime environment. 
         [<Struct>]
         type RTE =
-            { DS : Value list                       //< data stack
-            ; ES : struct(Value * Program) list     //< env/eff stack
-            ; IO : IEffHandler                      //< top-level effect
+            { DS : Value list                     //< data stack
+            ; ES : struct(Value * Program) list   //< env/eff stack
+            ; IO : IEffHandler                    //< top-level effect
             }
 
         let inline copy e = 
@@ -559,6 +569,6 @@ module Program =
             | Env (With=pWith; Do=pDo) -> env pWith pDo e 
             | Prog (Do=p'; Note=_) -> interpret p' e 
 
-
+*)
     // Low priority: optimizer, continuations-based interpreter
     // 

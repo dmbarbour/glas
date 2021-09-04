@@ -168,16 +168,15 @@ module Effects =
             member self.Commit () = self.PopTX true
             member self.Abort () = self.PopTX false
 
-    /// The most common log event is a text message, intended for humans.
-    /// In addition to the message, we'll often want some context such as
-    /// importance level and stack traces. So, I currently use the schema:
+    /// The convention for log messages is an ad-hoc record where fields
+    /// are useful for routing, filtering, etc. and ad-hoc standardized.
     /// 
-    ///   text:(lv:warn, msg:"something happened")
+    ///   (lv:warn, text:"something happened")
     ///
     /// This design is intended for extensibility of text with new context
     /// and of log events with new variants.
     let logText lv msg =
-        Value.variant "text" <| Value.asRecord ["lv"; "msg"] [Value.symbol lv; Value.ofString msg]
+        Value.asRecord ["lv"; "text"] [Value.symbol lv; Value.ofString msg]
 
     // common log levels
     let info = "info"

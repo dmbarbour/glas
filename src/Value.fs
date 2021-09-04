@@ -362,12 +362,14 @@ module Value =
         let addElem r k v = record_insert (label k) v r
         Map.fold addElem unit m
 
-    /// Record with optional keys.
-    let (|Record|) ks r =
-        let lks = List.map label ks
+    let (|RecL|) lks r = 
         let vs = List.map (fun k -> record_lookup k r) lks
         let r' = List.fold (fun s k -> record_delete k s) r lks
         (vs,r')
+
+    /// Record with optional keys.
+    let inline (|Record|) ks =
+        (|RecL|) (List.map label ks)
 
     /// Record containing all listed keys.
     let (|FullRec|_|) ks r =
