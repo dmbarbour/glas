@@ -596,5 +596,12 @@ module ProgVal =
             | Prog (_, p') -> interpret p' e 
             | _ -> None
 
-    // Low priority: optimizer, continuations-based interpreter
-    // 
+    type ProgramFunction = Effects.IEffHandler -> Value list -> Value list option
+
+    let interpret (p : Program) : ProgramFunction =
+        fun eff s0 ->  
+            let e0 : Interpreter.RTE = { DS = s0; ES = []; IO = eff }
+            match Interpreter.interpret p e0 with
+            | Some e' -> Some (e'.DS)
+            | None -> None
+
