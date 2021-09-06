@@ -8,47 +8,49 @@ module ProgVal =
     type Program = Value
 
     // basic operators
-    let lCopy = label "copy"
-    let lDrop = label "drop"
-    let lSwap = label "swap"
-    let lEq = label "eq"
-    let lFail = label "fail"
-    let lEff = label "eff"
-    let lGet = label "get"
-    let lPut = label "put"
-    let lDel = label "del"
-    let lPushl = label "pushl"
-    let lPopl = label "popl"
-    let lPushr = label "pushr"
-    let lPopr = label "popr"
-    let lJoin = label "join"
-    let lSplit = label "split"
-    let lLen = label "len"
-    let lBJoin = label "bjoin"
-    let lBSplit = label "bsplit"
-    let lBLen = label "blen"
-    let lBNeg = label "bneg"
-    let lBMax = label "bmax"
-    let lBMin = label "bmin"
-    let lBEq = label "beq"
-    let lAdd = label "add"
-    let lMul = label "mul"
-    let lSub = label "sub"
-    let lDiv = label "div"
+    let Copy = label "copy"
+    let Drop = label "drop"
+    let Swap = label "swap"
+    let Eq = label "eq"
+    let Fail = label "fail"
+    let Eff = label "eff"
+    let Get = label "get"
+    let Put = label "put"
+    let Del = label "del"
+    let Pushl = label "pushl"
+    let Popl = label "popl"
+    let Pushr = label "pushr"
+    let Popr = label "popr"
+    let Join = label "join"
+    let Split = label "split"
+    let Len = label "len"
+    let BJoin = label "bjoin"
+    let BSplit = label "bsplit"
+    let BLen = label "blen"
+    let BNeg = label "bneg"
+    let BMax = label "bmax"
+    let BMin = label "bmin"
+    let BEq = label "beq"
+    let Add = label "add"
+    let Mul = label "mul"
+    let Sub = label "sub"
+    let Div = label "div"
 
     let symOpsList = 
-        [ lCopy; lSwap; lDrop
-        ; lEq; lFail
-        ; lEff
-        ; lGet; lPut; lDel
-        ; lPushl; lPopl; lPushr; lPopr; lJoin; lSplit; lLen
-        ; lBJoin; lBSplit; lBLen; lBNeg; lBMax; lBMin; lBEq
-        ; lAdd; lMul; lSub; lDiv
+        [ Copy; Swap; Drop
+        ; Eq; Fail
+        ; Eff
+        ; Get; Put; Del
+        ; Pushl; Popl; Pushr; Popr; Join; Split; Len
+        ; BJoin; BSplit; BLen; BNeg; BMax; BMin; BEq
+        ; Add; Mul; Sub; Div
         ]
 
     let symOpsRec =
         List.fold (fun r op -> record_insert op unit r) unit symOpsList
 
+    let inline Op b =
+        Value.ofBits b
     let (|Op|_|) v =
         match v with
         | Bits b ->
@@ -188,33 +190,33 @@ module ProgVal =
         | Dynamic // arity of inconsistent subprogram
 
     let private opArityMap =
-        [ (lCopy, Arity(1,2))
-        ; (lSwap, Arity(2,2))
-        ; (lDrop, Arity(1,0))
-        ; (lEq, Arity(2,0))
-        ; (lFail, Failure)
-        ; (lEff, Arity(1,1))
-        ; (lGet, Arity(2,1))
-        ; (lPut, Arity(3,1))
-        ; (lDel, Arity(2,1))
-        ; (lPushl, Arity(2,1))
-        ; (lPopl, Arity(1,2))
-        ; (lPushr, Arity(2,1))
-        ; (lPopr, Arity(1,2))
-        ; (lJoin, Arity(2,1))
-        ; (lSplit, Arity(2,2))
-        ; (lLen, Arity(1,1))
-        ; (lBJoin, Arity(2,1))
-        ; (lBSplit, Arity(2,2))
-        ; (lBLen, Arity(1,1))
-        ; (lBNeg, Arity(1,1))
-        ; (lBMax, Arity(2,1))
-        ; (lBMin, Arity(2,1))
-        ; (lBEq, Arity(2,1))
-        ; (lAdd, Arity(2,2))
-        ; (lMul, Arity(2,2))
-        ; (lSub, Arity(2,1))
-        ; (lDiv, Arity(2,2))
+        [ (Copy, Arity(1,2))
+        ; (Swap, Arity(2,2))
+        ; (Drop, Arity(1,0))
+        ; (Eq, Arity(2,0))
+        ; (Fail, Failure)
+        ; (Eff, Arity(1,1))
+        ; (Get, Arity(2,1))
+        ; (Put, Arity(3,1))
+        ; (Del, Arity(2,1))
+        ; (Pushl, Arity(2,1))
+        ; (Popl, Arity(1,2))
+        ; (Pushr, Arity(2,1))
+        ; (Popr, Arity(1,2))
+        ; (Join, Arity(2,1))
+        ; (Split, Arity(2,2))
+        ; (Len, Arity(1,1))
+        ; (BJoin, Arity(2,1))
+        ; (BSplit, Arity(2,2))
+        ; (BLen, Arity(1,1))
+        ; (BNeg, Arity(1,1))
+        ; (BMax, Arity(2,1))
+        ; (BMin, Arity(2,1))
+        ; (BEq, Arity(2,1))
+        ; (Add, Arity(2,2))
+        ; (Mul, Arity(2,2))
+        ; (Sub, Arity(2,1))
+        ; (Div, Arity(2,2))
         ] |> Map.ofList
 
     let rec stack_arity p =
@@ -285,6 +287,26 @@ module ProgVal =
         match stack_arity p with
         | Arity (a,b) -> Some struct(a,b) 
         | _ -> None
+
+    // Desired Interpreter:
+    //  defunctionalized continuation passing
+    //  finally tagless with stack memory allocation
+    //  support for quotas
+    //  avoid try/commit/abort effects based on escape analysis
+    //
+    // I currently have a direct style interpreter, but it's
+    // not very useful for incremental computing or performance.
+    // I think finally tagless could be over 15x faster.
+
+    //module InterpreterCPS =
+        // A continuation is essentially a cursor into the program.
+        // Relevantly, we must track:
+        //   continuation, data stack, failure stack, effect stack
+        //   continuation op for commit
+        //   continuation op for restoring env
+        //   continuation op for popping env
+
+
 
     // TODO:
     //  - rewrite program for continuation-passing style
@@ -493,38 +515,38 @@ module ProgVal =
                     | None -> None
                 | [] -> None
         and interpretOpMap =
-            [ (lCopy, copy)
-            ; (lDrop, drop)
-            ; (lSwap, swap)
-            ; (lEq, eq)
-            ; (lFail, fun _ -> None)
-            ; (lEff, eff)
-            ; (lGet, get)
-            ; (lPut, put)
-            ; (lDel, del)
-            ; (lPushl, pushl)
-            ; (lPopl, popl)
-            ; (lPushr, pushr)
-            ; (lPopr, popr)
-            ; (lJoin, join)
-            ; (lSplit, split)
-            ; (lLen, len)
-            ; (lBJoin, bjoin)
-            ; (lBSplit, bsplit)
-            ; (lBLen, blen)
-            ; (lBNeg, bneg)
-            ; (lBMax, bmax)
-            ; (lBMin, bmin)
-            ; (lBEq, beq)
-            ; (lAdd, add)
-            ; (lMul, mul)
-            ; (lSub, sub)
-            ; (lDiv, div)
+            [ (Copy, copy)
+            ; (Drop, drop)
+            ; (Swap, swap)
+            ; (Eq, eq)
+            ; (Fail, fun _ -> None)
+            ; (Eff, eff)
+            ; (Get, get)
+            ; (Put, put)
+            ; (Del, del)
+            ; (Pushl, pushl)
+            ; (Popl, popl)
+            ; (Pushr, pushr)
+            ; (Popr, popr)
+            ; (Join, join)
+            ; (Split, split)
+            ; (Len, len)
+            ; (BJoin, bjoin)
+            ; (BSplit, bsplit)
+            ; (BLen, blen)
+            ; (BNeg, bneg)
+            ; (BMax, bmax)
+            ; (BMin, bmin)
+            ; (BEq, beq)
+            ; (Add, add)
+            ; (Mul, mul)
+            ; (Sub, sub)
+            ; (Div, div)
             ] |> Map.ofList
         and interpretOp (op:Bits) (e:RTE) : RTE option =
             match Map.tryFind op interpretOpMap with
             | Some fn -> fn e
-            | None -> None
+            | None -> failwithf "unhandled op %s" (prettyPrint (ofBits op))
         and dip p e = 
             match e.DS with
             | (x::ds) -> 

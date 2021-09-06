@@ -17,9 +17,8 @@ type SymOp =
 /// It is also suitable for transaction machine applications.
 /// 
 /// Note: Converting between F# and Glas program values complicates
-/// maintenance of structure sharing. Within Glas, we'd resolve via
-/// stow and memo annotations. For F#, I have an ad-hoc partial model
-/// for this.
+/// maintenance of structure sharing. I'm deprecating this module
+/// in favor of ProgVal, though I'm not quite there yet.
 type Program =
     | Op of SymOp
     | Dip of Program

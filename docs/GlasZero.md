@@ -131,7 +131,7 @@ The first pass is to eliminate variables. This pass runs right-to-left and appli
 
 The second pass performs linking and partial evaluation. This pass runs left-to-right. Each word is linked and applied to partial data. Failed application of any macro call will cause module compilation to fail. To solve interaction of local vars and macros, this pass must specially rewrite `V [F] curry => [V F]` or `V [F] dip => F V` prior to linking and partially evaluating `F`. 
 
-After the second pass, we have a Glas program. We can immediately apply the Glas program optimizer to ensure block program values are optimized by default.
+After the second pass, we have a Glas program. We should immediately apply the Glas program optimizer to ensure block program values are optimized by default. Programmers can also manually optimize program values, e.g. during composition and construction, but it's convenient if they can assume large components are already optimized.
 
 *Note:* A g0 compiler is free to impose quotas for how much static evaluation is performed, e.g. we might limit the number of times a loop is processed during partial evaluation. Quotas could be controlled via compile-time macro effects to explicitly increase the quota where needed.
 

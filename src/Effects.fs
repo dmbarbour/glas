@@ -196,7 +196,7 @@ module Effects =
 
     let private selectColor v =
         match v with
-        | Value.Variant "text" (Value.FullRec ["lv"] ([lv],_)) ->
+        | Value.FullRec ["lv"] ([lv],_) ->
             match lv with
             | Value.Variant "info" _ -> System.ConsoleColor.Green
             | Value.Variant "warn" _ -> System.ConsoleColor.Yellow
@@ -217,11 +217,9 @@ module Effects =
         | _ -> System.ConsoleColor.Blue
 
     /// Log Output to Console StdErr (with color!)
-    /// (Does not use color if redirected elsewhere.)
     let consoleErrLogOut (vMsg:Value) : unit =
         let cFG0 = System.Console.ForegroundColor
-        if not System.Console.IsErrorRedirected then
-            System.Console.ForegroundColor <- selectColor vMsg
+        System.Console.ForegroundColor <- selectColor vMsg
         try 
             let sMsg = Value.prettyPrint vMsg
             System.Console.Error.WriteLine(sMsg)

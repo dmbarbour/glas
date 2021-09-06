@@ -11,6 +11,7 @@ module LoadModule =
     open System
     open System.IO
     open Glas.Effects
+    open ProgVal
 
     // type aliases for documentation
     type FolderPath = string
@@ -84,16 +85,11 @@ module LoadModule =
         member ll.CompileCompiler fp langMod = 
             match ll.LoadFile fp with
             | Some (Value.FullRec ["compile"] ([vCompile], _)) ->
-                match vCompile with
-                | Program.Program pCompile ->
-                    match Program.static_arity pCompile with
-                    | Some (a,b) when ((1 >= a) && ((1 - 1) = (a - b))) ->
-                        Some pCompile // success!
-                    | _ -> 
-                        logError ll (sprintf "%s compile fails static arity check (expecting 1--1)" langMod)
-                        None
+                match static_arity vCompile with
+                | Some (1,1) ->
+                    Some vCompile // success!
                 | _ -> 
-                    logError ll (sprintf "%s compile is not a Glas program" langMod)
+                    logError ll (sprintf "%s compile fails arity check (expecting 1--1)" langMod)
                     None
             | Some _ ->
                 logError ll (sprintf "module %s does not define 'compile'" langMod)
@@ -126,8 +122,8 @@ module LoadModule =
             else
                 match ll.GetCompiler fileSuffix with
                 | Some p ->
-                    let e0 : Program.Interpreter.RTE = { DS = [v0]; ES = []; IO = (ll :> IEffHandler) }
-                    match Program.Interpreter.interpret p e0 with
+                    let e0 : Interpreter.RTE = { DS = [v0]; ES = []; IO = (ll :> IEffHandler) }
+                    match Interpreter.interpret p e0 with
                     | Some e' -> Some (e'.DS.[0])
                     | None -> None // interpreter may output error messages.
                 | None -> None // GetCompiler emits reason to log
@@ -229,8 +225,8 @@ module LoadModule =
             None
 
     let private _compileG0 (p : Program) (ll : IEffHandler) (s : string) : Value option =
-        let e0 : Program.Interpreter.RTE = { DS = [Value.ofString s]; ES = []; IO = ll } 
-        match Program.Interpreter.interpret p e0 with
+        let e0 : Interpreter.RTE = { DS = [Value.ofString s]; ES = []; IO = ll } 
+        match Interpreter.interpret p e0 with
         | None -> None
         | Some e' -> 
             match e'.DS with

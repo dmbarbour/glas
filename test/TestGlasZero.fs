@@ -191,17 +191,6 @@ module Glas.TestGlasZero
                     ] 
                 Expect.equal (shallowValidation p1) (DuplicateDefs ["b";"c"]) "dup import and prog"
 
-            testCase "reserved words" <| fun () ->
-                // note that module names and rewritten words don't count.
-                let p1 = pp <| String.concat "\n" [
-                    "open copy"
-                    "from drop import swap, eq as fail"
-                    "from eff import get as put, del"
-                    "prog else []"
-                    ]
-                let kw = List.sort ["swap"; "fail"; "put"; "del"; "else"]
-                Expect.equal (shallowValidation p1) (ReservedDefs kw) "many reserved words defined"
-            
             testCase "used before defined" <| fun () ->
                 let p1 = pp <| String.concat "\n" [
                     "prog a [ b c ] "
@@ -253,11 +242,11 @@ module Glas.TestGlasZero
         | None ->
             failtest "expected to compile successfully"
 
-    let dataStack (ds : Value list) : Program.Interpreter.RTE  = 
+    let dataStack (ds : Value list) : ProgVal.Interpreter.RTE  = 
         { DS = ds; ES = List.empty; IO = noEffects }
 
     let doEval p e = 
-        match Program.Interpreter.interpret p e with
+        match ProgVal.Interpreter.interpret p e with
         | Some e' -> e'
         | None -> failtestf "eval unsuccessful for program %A" p
 
@@ -287,10 +276,8 @@ module Glas.TestGlasZero
             let getfn m w =
                 match Value.record_lookup (Value.label w) m with
                 | None -> failtestf "unable to find word %s" w
-                | Some v ->
-                    match Program.tryParse v with
-                    | None -> failtestf "unable to parse def for word %s" w
-                    | Some p -> p
+                | Some v when ProgVal.isValidProgramAST v -> v
+                | Some _ -> failtestf "unable to parse program for word %s" w
 
             let ll0 = testLoadEff (Value.unit) 
             let mnmath = doCompile ll0 nmath
@@ -298,13 +285,13 @@ module Glas.TestGlasZero
 
             // test eralz
             let pEralz = getfn mnmath "eralz"
-            Expect.equal (Program.static_arity pEralz) (Some struct(1,1)) "arity eralz"
+            Expect.equal (ProgVal.static_arity pEralz) (Some struct(1,1)) "arity eralz"
             let eEralz = doEval pEralz (dataStack [Value.u64 12345UL])
             Expect.equal (eEralz.DS) [Value.nat 12345UL] "erase zero-bits prefix"
 
             // test modn
             let pModn = getfn mnmath "modn"
-            Expect.equal (Program.static_arity pModn) (Some struct(2,1)) "arity modn"
+            Expect.equal (ProgVal.static_arity pModn) (Some struct(2,1)) "arity modn"
             let eModn1 = doEval pModn (dataStack [Value.u64 1071UL; Value.u32 462u])
             Expect.equal (eModn1.DS) [Value.nat 462UL] "mod1"
             let eModn1 = doEval pModn (dataStack [Value.u32 462u; Value.u64 1071UL])
@@ -316,15 +303,15 @@ module Glas.TestGlasZero
 
             // test neq-zero
             let pNEQZ = getfn mgcd "neq-zero"
-            Expect.equal (Program.static_arity pNEQZ) (Some struct(1,1)) "arity neq-zero"
+            Expect.equal (ProgVal.static_arity pNEQZ) (Some struct(1,1)) "arity neq-zero"
             let eNEQ1 = doEval pNEQZ (dataStack [Value.u8 0uy]) 
             Expect.equal (eNEQ1.DS) [Value.u8 0uy] "8-bit zero is not equal to 0-bit zero (unit)"
-            Expect.isNone (Program.Interpreter.interpret pNEQZ (dataStack [Value.nat 0UL])) 
+            Expect.isNone (ProgVal.Interpreter.interpret pNEQZ (dataStack [Value.nat 0UL])) 
                             "neq-zero on unit"
 
             // test gcd 
             let pGCD = getfn mgcd "gcd"
-            Expect.equal (Program.static_arity pGCD) (Some struct(2,1)) "arity gcd"
+            Expect.equal (ProgVal.static_arity pGCD) (Some struct(2,1)) "arity gcd"
             let eGCD = doEval pGCD (dataStack [Value.u32 462u; Value.u64 1071UL])
             Expect.equal (eGCD.DS) [Value.nat 21UL] "gcd computed "
 

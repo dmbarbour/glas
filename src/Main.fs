@@ -42,6 +42,7 @@
 open Glas
 open Glas.Effects
 open Glas.LoadModule
+open Glas.ProgVal
 open FParsec
 
 let printMsg = String.concat "\n" [
@@ -202,19 +203,19 @@ let getValue (ll:Loader) (vstr : string): Value option =
 
 let getProgram (ll : Loader) (ai,ao) (vstr : string) : Program option =
     match getValue ll vstr with
-    | Some (Program.Program p) -> 
-        match Program.static_arity p with
+    | Some p -> 
+        match static_arity p with
         | Some struct(i,o) when ((i - o) = (ai - ao)) && (ai >= i) ->
             Some p
         | Some struct(i,o) ->
             logError ll (sprintf "program %s has arity %d--%d; expecting %d--%d" vstr i o ai ao)
             None
-        | None ->
+        | None when isValidProgramAST p ->
             logError ll (sprintf "program %s does not have static arity" vstr)
             None
-    | Some _ -> 
-        logError ll (sprintf "value %s is not a valid program" vstr)
-        None
+        | None ->
+            logError ll (sprintf "value %s does not have AST of a Glas program" vstr)
+            None
     | None ->
         // reason for failure is already logged. 
         None
@@ -242,8 +243,8 @@ let print (vstr:string) (pstr:string) : int =
             log logger (Value.variant "value" v)
             EXIT_FAIL
         | Some p ->
-            let e0 : Program.Interpreter.RTE = { DS = [v]; ES = []; IO = ioEff }
-            match Program.Interpreter.interpret p e0 with
+            let e0 : Interpreter.RTE = { DS = [v]; ES = []; IO = ioEff }
+            match Interpreter.interpret p e0 with
             | Some _ -> 
                 //logInfo logger (sprintf "print %s with %s - done" vstr pstr)
                 EXIT_OK
@@ -257,19 +258,19 @@ let arity (pstr:string) : int =
     logInfo logger (sprintf "arity %s" pstr) 
     let loader = getLoader logger
     match getValue loader pstr with
-    | Some (Program.Program p) -> 
-        match Program.stack_arity p with
-        | Program.Static(a,b) ->
+    | Some p when isValidProgramAST p -> 
+        match stack_arity p with
+        | Arity(a,b) ->
             printfn "%d -- %d" a b
             EXIT_OK
-        | Program.Dynamic ->
+        | Dynamic ->
             logError logger (sprintf "program %s has variable stack arity" pstr)
             EXIT_FAIL
-        | Program.Failure ->
+        | ProgVal.Failure ->
             logError logger (sprintf "program %s always fails, has any stack arity" pstr)
             EXIT_FAIL
     | Some _ -> 
-        logError logger (sprintf "value %s does not parse as a valid program" pstr)
+        logError logger (sprintf "value %s does not appear to be a program" pstr)
         EXIT_FAIL
     | None ->
         // reason for failure is already logged. 
@@ -285,8 +286,8 @@ let test (pstr:string) : int =
         EXIT_FAIL
     | Some p -> 
         let io = composeEff (Testing.ForkEff()) logger
-        let e0 : Program.Interpreter.RTE = { DS = []; ES = []; IO = io }
-        match Program.Interpreter.interpret p e0 with
+        let e0 : Interpreter.RTE = { DS = []; ES = []; IO = io }
+        match Interpreter.interpret p e0 with
         | Some _ ->
             logInfo logger (sprintf "test %s passed" pstr)
             EXIT_OK

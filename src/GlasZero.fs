@@ -1,20 +1,20 @@
 namespace Glas
 
-/// This file implements the g0 (Glas Zero) bootstrap syntax. This implementation
-/// of g0 should be replaced by a language-g0 module after bootstrap completes. 
+/// This file implements the g0 (Glas Zero) bootstrap parser and compiler. 
+/// This implementation of g0 should be replaced by a language-g0 module
+/// 'compile' program after bootstrap completes. 
 /// 
-/// The g0 syntax is essentially the same as the Glas program model, except it has
-/// lightweight support for linking definitions across modules, and less support 
-/// for embedding structured data. The latter is mitigated by partial evaluation:
-/// we can define a program that builds a value.
+/// The g0 language is similar to a Forth. A program is a sequence of words
+/// and data, which are applied to manipulate a data stack. Features include
+/// access to macros for metaprogramming, importing definitions from modules,
+/// and defining local variables for data plumbing within a program.
 ///
-/// The g0 syntax is not intended for day to day use. Most significantly, there is
-/// no support for staged higher order meta-programming, so it would be awkward to
-/// express parser combinators or list processing. The lack of local variables for
-/// data plumbing is also inconvenient. 
+/// The g0 language has no built-in definitions. We use macros to define the
+/// primitive Glas program operators. Side-effects are also controlled via an
+/// algebraic effects model.
 ///
-/// The intention is that users should develop new language modules to provide nice
-/// features, and just use g0 as a starting point to define other language modules.
+/// The goal for g0 is to be reasonably comfortable for programming a foundation
+/// of the Glas language system.
 ///
 module Zero =
     type Word = string
@@ -247,20 +247,8 @@ module Zero =
         match d with
         | Prog (Body=p) -> wordsCalledFromProg p
 
-    /// Words that cannot be defined in g0.
-    let reservedWords = 
-        [ "dip"; "try"; "then"; "else"; "while"; "do"; "with"; "do"
-        ; "prog"; "from"; "open"; "import"; "as"
-        ] 
-        |> List.append (List.map Program.opStr Program.op_list) 
-        |> Set.ofList
-
-    let isReservedWord w =
-        Set.contains w reservedWords
-
     type ShallowValidation = 
         | DuplicateDefs of Word list
-        | ReservedDefs of Word list
         | UsedBeforeDef of Word list
         | LooksOkay 
 
@@ -296,8 +284,6 @@ module Zero =
         let lDefs = definedWords tlv
         let lDups = _findDupWords [] lDefs |> Set.toList
         if not (List.isEmpty lDups) then DuplicateDefs lDups else
-        let lReserved = List.filter isReservedWord lDefs |> List.sort 
-        if not (List.isEmpty lReserved) then ReservedDefs lReserved else
         let lUBD = Set.toList <| _findUseBeforeDef (Set.empty) (tlv.Defs)
         if not (List.isEmpty lUBD) then UsedBeforeDef lUBD else
         LooksOkay
@@ -330,20 +316,12 @@ module Zero =
                 logWarn ll (sprintf "failed to load module %s" m)
             r
 
-        // open a module and also erase keywords from namespace.
+        // open a module for initial namespace
+        // (g0 no longer has reserved words)        
         let openModule ll m =
             match load ll m with
             | None -> Value.unit
-            | Some d0 ->
-                let mutable d = d0
-                for w in reservedWords do
-                    let wLbl = Value.label w
-                    match Value.record_lookup wLbl d with
-                    | None -> ()
-                    | Some _ ->
-                        d <- Value.record_delete wLbl d 
-                        logWarn ll (sprintf "open %s: erasing reserved word '%s'" m w)
-                d
+            | Some d0 -> d0
 
         let applyFrom (ll:IEffHandler) (d0:Value) (From (Src=m; Imports=lImp)) = 
             match load ll m with
@@ -360,11 +338,8 @@ module Zero =
                         logWarn ll (sprintf "module %s does not define word '%s'" m wSrc)
                 d
 
-        let private _primOps =
-            Set.ofList (List.map Program.opStr Program.op_list)
-
+        (*
         let tryLinkCall d0 w =
-            if Set.contains w _primOps then Some (Value.symbol w) else
             let r = Value.record_lookup (Value.label w) d0
             match r with
             | Some (Value.Variant "prog" p) ->
@@ -446,3 +421,7 @@ module Zero =
                 logError ll (sprintf "built-in g0 parse error:\n%s" msg)
                 None
 
+*)
+        // stub
+        let compile (ll:IEffHandler) (s:string) : Value option =
+            None
