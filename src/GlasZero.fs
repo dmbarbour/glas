@@ -6,12 +6,9 @@ namespace Glas
 /// 
 /// The g0 language is similar to a Forth. A program is a sequence of words
 /// and data, which are applied to manipulate a data stack. Features include
-/// access to macros for metaprogramming, importing definitions from modules,
-/// and defining local variables for data plumbing within a program.
-///
-/// The g0 language has no built-in definitions. We use macros to define the
-/// primitive Glas program operators. Side-effects are also controlled via an
-/// algebraic effects model.
+/// access to macros for metaprogramming, and loading definitions from modules.
+/// The g0 language has no built-in definitions, instead using macros as the
+/// foundation to represent primitive operations.
 ///
 /// The goal for g0 is to be reasonably comfortable for programming a foundation
 /// of the Glas language system.
@@ -22,31 +19,23 @@ module Zero =
 
     /// AST for g0 programs.
     /// Comments are dropped. Words are not linked yet.
-    type Prog = ProgStep list
-    and ProgStep =
-        | Call of Word  // word
-        | Sym of Bits // 'word, 42, 0x2A, 0b101010
-        | Str of string // "hello, world!"
-        | Env of With:Prog * Do:Prog        // with [H] do [P]
-        | Loop of While:Prog * Do:Prog      // while [C] do [P]
-        | Cond of Try:Prog * Then:Prog * Else:Prog  // try [C] then [A] else [B]
-        | Dip of Prog   // dip [P]
+    type Block = Action list
+    and Action =
+        // initial parse
+        | Call of Word      // word or macro call
+        | Data of Value     // numbers, strings, etc.
+        | Block of Block    // [foo]
 
-    [<Struct>]
-    type Import = Import of Word:Word * As: Word option
-
-    [<Struct>]
-    type ImportFrom = From of Src : ModuleName * Imports : Import list
-
-    [<Struct>]
-    type Def = Prog of Name: Word * Body: Prog
+    type Ent =
+        | From of ModuleName * ((Word * Word) list) 
+        | Prog of Word * Block
+        | Macro of Word * Block
+        | Assert of Block
 
     /// AST for g0 toplevel.
-    [<Struct>]
     type TopLevel = 
         { Open : ModuleName option
-        ; From : ImportFrom list
-        ; Defs : Def list
+        ; Ents : Ent list
         }
 
     module Parser =
@@ -61,12 +50,16 @@ module Zero =
         let ws : P<unit> =
             spaces >>. (skipMany (lineComment >>. spaces) <?> "spaces and comments")
 
-        let isBadWordSep c =
-            isAsciiLetter c || isDigit c || 
-            (c = '-') || (c = '\'') || (c = '"')
+        let sol : P<unit> =
+            getPosition >>= fun p ->
+                if (1L >= p.Column) 
+                    then preturn () 
+                    else fail "expecting start of line"
+
+        let wsepChars = " \n\r\t[]"
 
         let wsep : P<unit> =
-            nextCharSatisfiesNot isBadWordSep .>> ws
+            nextCharSatisfiesNot (isNoneOf wsepChars) .>> ws
 
         let kwstr s : P<unit> = 
             pstring s >>. wsep
@@ -108,9 +101,6 @@ module Zero =
         let parseNat : P<Bits> =
             parsePosNat <|> (pchar '0' .>> wsep >>% Bits.empty)
 
-        let parseData : P<Bits> =
-            parseBin <|> parseHex <|> parseSymbol <|> parseNat  
-
         let isStrChar (c : char) : bool =
             let cp = int c
             (cp >= 32) && (cp <= 126) && (cp <> 34)
@@ -118,175 +108,100 @@ module Zero =
         let parseString : P<string> =
             pchar '"' >>. manySatisfy isStrChar .>> pchar '"' .>> wsep
 
-        // FParsec's approach to recursive parser definitions is a little awkward.
-        let parseProgStep, parseProgStepRef = createParserForwardedToRef<ProgStep, unit>()
+        let parseBitString : P<Bits> =
+            parseBin <|> parseHex <|> parseSymbol <|> parseNat
 
-        let parseProgBody = 
-            many parseProgStep
-
-        let parseProgBlock : P<Prog> = 
-            between (pchar '[' .>> ws) (pchar ']' .>> ws) parseProgBody
-
-        //dip [ Program ]  
-        let parseDip = parse {
-            do! kwstr "dip"
-            let! pDip = parseProgBlock
-            return Dip pDip
-        }
-
-        // while [ C ] do [ B ]
-        let parseLoop = parse {
-            do! kwstr "while"
-            let! pWhile = parseProgBlock
-            do! kwstr "do"
-            let! pDo = parseProgBlock
-            return Loop (While=pWhile, Do=pDo)
-        }
-
-        // try [ C ] then [ A ] else [ B ]
-        let parseCond = parse {
-            do! kwstr "try"
-            let! pTry = parseProgBlock
-            do! kwstr "then"
-            let! pThen = parseProgBlock
-            do! kwstr "else"
-            let! pElse = parseProgBlock
-            return Cond (Try=pTry, Then=pThen, Else=pElse)
-        }
-
-        // with [ H ] do [ P ]
-        let parseEnv = parse {
-            do! kwstr "with"
-            let! pWith = parseProgBlock
-            do! kwstr "do"
-            let! pDo = parseProgBlock
-            return Env (With=pWith, Do=pDo)
-        }
-
-        parseProgStepRef := 
+        let parseData : P<Value> =
             choice [
-                parseData |>> Sym
-                parseString |>> Str
-                parseEnv
-                parseLoop
-                parseCond
-                parseDip
-                // NOTE: word is last to avoid conflict with with/while/try/dip keywords
-                parseWord |>> Call 
+                parseBitString |>> Value.ofBits
+                parseString |>> Value.ofString
+            ]
+
+        // FParsec's approach to recursive parser definitions is a little awkward.
+        let parseAction, parseActionRef = createParserForwardedToRef<Action, unit>()
+
+        let parseBlock : P<Block> = 
+            between (pchar '[' .>> ws) (pchar ']' .>> ws) (many parseAction)
+
+        parseActionRef := 
+            choice [
+                parseData |>> Data
+                parseBlock |>> Block
+                parseWord |>> Call
             ]
 
         let parseOpen : P<ModuleName> =
             kwstr "open" >>. parseWord
 
-        let parseImport : P<Import> =
-            parseWord .>>. (opt (kwstr "as" >>. parseWord)) 
-                |>> fun (w,aw) -> Import(Word=w,As=aw)
+        let parseImport : P<Word * Word> =
+            parseWord .>>. (opt (kwstr "as" >>. parseWord)) |>> 
+                fun (w,optAsW) ->
+                    let aw = Option.defaultValue w optAsW
+                    (w,aw)
 
-        let parseFrom : P<ImportFrom> =
+        let parseFrom : P<Ent> =
             kwstr "from" >>. parseWord .>>. (kwstr "import" >>. sepBy1 parseImport (pchar ',' .>> ws)) 
-                |>> fun (src,l) -> From (Src=src, Imports=l)
+                |>> From
 
-        let parseProgDef : P<Def> = 
-            kwstr "prog" >>. parseWord .>>. parseProgBlock 
-                |>> fun (w, p) -> Prog (Name=w, Body=p)
+        let parseProg : P<Ent> = 
+            kwstr "prog" >>. parseWord .>>. parseBlock |>> Prog
 
-        let parseDef : P<Def> =
-            // only one definition type for now.
-            // The g0 language is unlikely to add support for defining types, macros, etc.
-            parseProgDef 
+        let parseMacro : P<Ent> =
+            kwstr "macro" >>. parseWord .>>. parseBlock |>> Macro
+
+        let parseAssert : P<Ent> = 
+            kwstr "assert" >>. parseBlock |>> Assert
+
+        let parseEnt : P<Ent> =
+            sol >>. choice [parseFrom; parseProg; parseMacro; parseAssert ]
 
         let parseTopLevel = parse {
             do! ws
-            let! optOpen = opt parseOpen
-            let! lFrom = many parseFrom
-            let! lDefs = many parseDef
+            let! optOpen = opt (sol >>. parseOpen)
+            let! lEnts = many parseEnt
             do! eof
-            return { Open = optOpen; From = lFrom; Defs = lDefs } 
+            return { Open = optOpen; Ents = lEnts } 
         }
 
-    let wordImported imp =
-        match imp with
-        | Import(As=Some w) -> w
-        | Import(Word=w) -> w 
+    let rec private findWordsCalledAcc ws b =
+        match b with
+        | [] -> ws
+        | (op :: b') ->
+            let ws' =
+                match op with
+                | Call w -> Set.add w ws
+                | Data _ -> ws
+                | Block p -> findWordsCalledAcc ws p
+            findWordsCalledAcc ws' b'
 
-    let wordsFrom src = 
-        match src with
-        | From (Imports=imps) -> List.map wordImported imps
+    let wordsCalled (b:Block) =
+        findWordsCalledAcc (Set.empty) b
 
-    let wordDefined def =
-        match def with
-        | Prog (Name=w) -> w
-
-    /// Obtain a list of explicitly defined words from a g0 program.
-    /// A word defined twice will be listed twice.
-    let definedWords tlv =
-        let oldDefs = List.collect wordsFrom (tlv.From)
-        let newDefs = List.map wordDefined (tlv.Defs)
-        List.append oldDefs newDefs 
-
-    let rec private _wordsCalledBlock acc block =
-        List.fold _wordsCalledStep acc block
-    and private _wordsCalledStep acc step =
-        match step with
-        | Call w -> acc |> Set.add w
-        | Sym _ -> acc
-        | Str _ -> acc
-        | Env (With=pWith; Do=pDo) -> 
-            List.fold _wordsCalledBlock acc [pWith; pDo]
-        | Loop (While=pWhile; Do=pDo) ->
-            List.fold _wordsCalledBlock acc [pWhile; pDo]
-        | Cond (Try=pTry; Then=pThen; Else=pElse) ->
-            List.fold _wordsCalledBlock acc [pTry; pThen; pElse]
-        | Dip p -> _wordsCalledBlock acc p
-
-    /// Obtain a set of all words called from a program.
-    let wordsCalledFromProg (p : Prog) : Set<Word> =
-        _wordsCalledBlock (Set.empty) p 
-
-    let wordsCalledFromDef (d : Def) : Set<Word> =
-        match d with
-        | Prog (Body=p) -> wordsCalledFromProg p
-
-    type ShallowValidation = 
-        | DuplicateDefs of Word list
-        | UsedBeforeDef of Word list
-        | LooksOkay 
-
-    let rec private _findDupWords acc l =
-        match l with
-        | (hd::l') ->
-            let acc' = if List.contains hd l' then (hd::acc) else acc
-            _findDupWords acc' l'
-        | [] -> Set.ofList acc
-
-    let rec private _findUseBeforeDef acc defs =
-        match defs with
-        | (d::defs') -> 
-            let calls = wordsCalledFromDef d  
-            // to catch recursive definitions, word being defined is also undefined.
-            let ubd = defs  |> List.map wordDefined 
-                            |> List.filter (fun w -> Set.contains w calls) 
-                            |> Set.ofList
-            _findUseBeforeDef (Set.union acc ubd) defs'
-        | [] -> acc
-
-    /// A shallow validation of a g0 program:
-    ///   - detects duplicate explicit imports/definitions  
-    ///   - detects if reserved words are imported or defined 
-    ///   - detects if defined word is is used before defined 
-    /// The g0 syntax doesn't support shadowing: each word must have a
-    /// constant meaning within a file. Additionally, within a file, a
-    /// word must be defined before it is used.
+    /// I'll discourage shadowing of definitions via issuing a warning.
+    /// A word is observably shadowed if defined or called before a
+    /// later definition within the same file.
     ///
-    /// Shallow validation will be performed by the compiler. If it fails,
-    /// compilation will also fail.
-    let shallowValidation tlv =
-        let lDefs = definedWords tlv
-        let lDups = _findDupWords [] lDefs |> Set.toList
-        if not (List.isEmpty lDups) then DuplicateDefs lDups else
-        let lUBD = Set.toList <| _findUseBeforeDef (Set.empty) (tlv.Defs)
-        if not (List.isEmpty lUBD) then UsedBeforeDef lUBD else
-        LooksOkay
+    /// This also detects duplicate definitions, call before definition, and
+    /// accidental recursion. Everything shows up as shadowing.
+    let wordsShadowed (tlv : TopLevel) : Set<Word> =
+        let fnEnt ent (wsSh,wsDef) =
+            match ent with
+            | From (_, lImports) ->
+                // detect shadowing within the imports list, too.
+                let fnImp (_,aw) (wsSh, wsDef) =
+                    let wsDef' = Set.add aw wsDef
+                    let wsSh' = if Set.contains aw wsDef then Set.add aw wsSh else wsSh
+                    (wsSh', wsDef')
+                List.foldBack fnImp lImports (wsSh, wsDef)
+            | Prog (w, b) | Macro (w, b) ->
+                let wsDef' = Set.add w wsDef
+                let wsSh' = wordsCalled b |> Set.intersect wsDef' |> Set.union wsSh
+                (wsSh', wsDef')
+            | Assert b ->
+                let wsSh' = wordsCalled b |> Set.intersect wsDef |> Set.union wsSh
+                (wsSh', wsDef)
+        List.foldBack fnEnt tlv.Ents (Set.empty, Set.empty) |> fst
+
 
     // The namespace during compilation is represented by a dictionary Value.
     // The g0 language can understand 'prog' and 'data' definitions, and will

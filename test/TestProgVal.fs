@@ -109,19 +109,19 @@ let test_ops =
                     let v1 = randomBytes 6
                     let v2 = randomBytes 7
                     let s0 = [v1;v2]
-                    let sCopy = doEval (Op Copy) noEff s0
+                    let sCopy = doEval (Op lCopy) noEff s0
                     Expect.equal (sCopy) [v1;v1;v2] "copied value"
-                    let sDrop = doEval (Op Drop) noEff s0 
+                    let sDrop = doEval (Op lDrop) noEff s0 
                     Expect.equal (sDrop) [v2] "dropped value"
-                    let sSwap = doEval (Op Swap) noEff s0
+                    let sSwap = doEval (Op lSwap) noEff s0
                     Expect.equal (sSwap) [v2;v1] "swapped value"
 
             testCase "eq" <| fun () ->
                 for _ in 1 .. 100 do
                     let v1 = randomBytes 6
                     let v2 = randomBytes 7
-                    failEval (Op Eq) noEff [v1;v2;v2] 
-                    let s' = doEval (Op Eq) noEff [v1;v1;v2]
+                    failEval (Op lEq) noEff [v1;v2;v2] 
+                    let s' = doEval (Op lEq) noEff [v1;v1;v2]
                     Expect.equal (s') [v2] "eq drops equal values from stack"
 
             testCase "record ops" <| fun () ->
@@ -134,19 +134,19 @@ let test_ops =
                     let rwo = Value.record_delete k r0
 
                     // Get from record.
-                    failEval (Op Get) noEff [Value.ofBits k; rwo]
-                    let sGet = doEval (Op Get) noEff [Value.ofBits k; rwk]
+                    failEval (Op lGet) noEff [Value.ofBits k; rwo]
+                    let sGet = doEval (Op lGet) noEff [Value.ofBits k; rwk]
                     Expect.equal (sGet) [v] "equal get"
 
                     // Put into record.
-                    let sPut1 = doEval (Op Put) noEff [Value.ofBits k; v; rwk]
-                    let sPut2 = doEval (Op Put) noEff [Value.ofBits k; v; rwo]
+                    let sPut1 = doEval (Op lPut) noEff [Value.ofBits k; v; rwk]
+                    let sPut2 = doEval (Op lPut) noEff [Value.ofBits k; v; rwo]
                     Expect.equal (sPut1) [rwk] "equal put with key"
                     Expect.equal (sPut2) [rwk] "equal put without key"
 
                     // Delete from record.
-                    let sDel1 = doEval (Op Del) noEff [Value.ofBits k; rwk]
-                    let sDel2 = doEval (Op Del) noEff [Value.ofBits k; rwo]
+                    let sDel1 = doEval (Op lDel) noEff [Value.ofBits k; rwk]
+                    let sDel2 = doEval (Op lDel) noEff [Value.ofBits k; rwo]
                     Expect.equal (sDel1) [rwo] "equal delete label"
                     Expect.equal (sDel2) [rwo] "equal delete missing label"
 
@@ -156,17 +156,17 @@ let test_ops =
                     let l2 = randomBytes (randomRange 0 30)
 
                     // push left
-                    let sPushl = doEval (Op Pushl) noEff [l2;l1]
+                    let sPushl = doEval (Op lPushl) noEff [l2;l1]
                     let lPushl = FTList.cons l2 (Value.toFTList l1)
                     Expect.equal (sPushl) [Value.ofFTList lPushl] "match pushl 1"
 
                     // push right
-                    let sPushr = doEval (Op Pushr) noEff [l2;l1] 
+                    let sPushr = doEval (Op lPushr) noEff [l2;l1] 
                     let lPushr = FTList.snoc (Value.toFTList l1) l2
                     Expect.equal (sPushr) [Value.ofFTList lPushr] "match pushr"
 
                     // pop left
-                    match interpret (Op Popl) noEff [l1] with
+                    match interpret (Op lPopl) noEff [l1] with
                     | Some s' -> 
                         match l1 with
                         | Value.FTList (FTList.ViewL (v,l')) ->
@@ -175,7 +175,7 @@ let test_ops =
                     | None -> Expect.equal l1 Value.unit "popl from empty list"
 
                     // pop right
-                    match interpret (Op Popr) noEff [l1] with 
+                    match interpret (Op lPopr) noEff [l1] with 
                     | Some s' -> 
                         match l1 with
                         | Value.FTList (FTList.ViewR (l',v)) ->
@@ -185,16 +185,16 @@ let test_ops =
 
                     // joins
                     let l12 = Value.ofFTList (FTList.append (Value.toFTList l1) (Value.toFTList l2)) 
-                    let sJoin = doEval (Op Join) noEff [l2;l1] 
+                    let sJoin = doEval (Op lJoin) noEff [l2;l1] 
                     Expect.equal (sJoin) [l12] "equal joins"
 
                     // splits
                     let wl1 = FTList.length (Value.toFTList l1)
-                    let sSplit = doEval (Op Split) noEff [Value.nat wl1; l12]
+                    let sSplit = doEval (Op lSplit) noEff [Value.nat wl1; l12]
                     Expect.equal (sSplit) [l2;l1] "split list into components"
 
                     // lengths
-                    let sLen = doEval (Op Len) noEff [l1] 
+                    let sLen = doEval (Op lLen) noEff [l1] 
                     Expect.equal (sLen) [Value.nat wl1] "length computations"
  
             testCase "bitstring ops" <| fun () ->
@@ -205,34 +205,34 @@ let test_ops =
                     let b = randomBits n
 
                     let s0 = [Value.ofBits b; Value.ofBits a]
-                    let sNeg = doEval (Op BNeg) noEff s0
+                    let sNeg = doEval (Op lBNeg) noEff s0
                     Expect.equal (sNeg) [Value.ofBits (Bits.bneg b); Value.ofBits a] "negated"
 
                     let ab = Bits.append a b
-                    let sJoin = doEval (Op BJoin) noEff s0
+                    let sJoin = doEval (Op lBJoin) noEff s0
                     Expect.equal (sJoin) [Value.ofBits ab] "joined"
 
-                    let sLen = doEval (Op BLen) noEff s0
+                    let sLen = doEval (Op lBLen) noEff s0
                     Expect.equal (sLen) [Value.nat (uint64 n); Value.ofBits a] "length"
 
-                    let sSplit = doEval (Op BSplit) noEff [Value.nat (uint64 n); Value.ofBits ab]
+                    let sSplit = doEval (Op lBSplit) noEff [Value.nat (uint64 n); Value.ofBits ab]
                     Expect.equal (sSplit) [Value.ofBits b; Value.ofBits a] "split"
 
-                    let sMax = doEval (Op BMax) noEff s0
+                    let sMax = doEval (Op lBMax) noEff s0
                     Expect.equal (sMax) [Value.ofBits (Bits.bmax a b)] "max"
 
-                    let sMin = doEval (Op BMin) noEff s0
+                    let sMin = doEval (Op lBMin) noEff s0
                     Expect.equal (sMin) [Value.ofBits (Bits.bmin a b)] "min"
 
-                    let sBEq = doEval (Op BEq) noEff s0
+                    let sBEq = doEval (Op lBEq) noEff s0
                     Expect.equal (sBEq) [Value.ofBits (Bits.beq a b)] "beq"
 
                     // ensure that ops properly fail if given bitstrings of non-equal lengths
                     let c = randomBits (n + 1)
                     let ebc = [Value.ofBits b; Value.ofBits c]
-                    failEval (Op BMax) noEff ebc
-                    failEval (Op BMin) noEff ebc
-                    failEval (Op BEq) noEff ebc
+                    failEval (Op lBMax) noEff ebc
+                    failEval (Op lBMin) noEff ebc
+                    failEval (Op lBEq) noEff ebc
 
             testCase "arithmetic" <| fun () ->
                 for _ in 1 .. 1000 do
@@ -247,10 +247,10 @@ let test_ops =
                     let divOpt = Arithmetic.div a b
 
                     let s0 = [Value.ofBits b; Value.ofBits a]
-                    let sAdd = doEval (Op Add) noEff s0
-                    let sProd = doEval (Op Mul) noEff s0
-                    let sSubOpt = interpret (Op Sub) noEff s0
-                    let sDivOpt = interpret (Op Div) noEff s0
+                    let sAdd = doEval (Op lAdd) noEff s0
+                    let sProd = doEval (Op lMul) noEff s0
+                    let sSubOpt = interpret (Op lSub) noEff s0
+                    let sDivOpt = interpret (Op lDiv) noEff s0
 
                     Expect.equal (sAdd) [Value.ofBits carry; Value.ofBits sum] "eq add"
                     Expect.equal (sProd) [Value.ofBits overflow; Value.ofBits prod] "eq prod"
@@ -278,9 +278,9 @@ let test_ops =
                     Expect.equal (s') [v] "eq data"
 
             testCase "seq" <| fun () ->
-                let p = mkSeq [Op Copy; Data (Value.symbol "foo"); Op Get; 
-                               Op Swap; Data (Value.symbol "bar"); Op Get; 
-                               Op Mul; Op Swap; Op BJoin]
+                let p = mkSeq [Op lCopy; Data (Value.symbol "foo"); Op lGet; 
+                               Op lSwap; Data (Value.symbol "bar"); Op lGet; 
+                               Op lMul; Op lSwap; Op lBJoin]
                 for _ in 1 .. 1000 do
                     let a = randomBits (5 * randomRange 0 20)
                     let b = randomBits (5 * randomRange 0 20)
@@ -295,11 +295,11 @@ let test_ops =
                     let b = randomBytes 4
                     let c = randomBytes 4
                     let s0 = [c;b;a]
-                    let sDip = doEval (Dip (Op Swap)) noEff s0
+                    let sDip = doEval (Dip (Op lSwap)) noEff s0
                     Expect.equal (sDip) [c;a;b] "dip swap"
 
             testCase "cond" <| fun () ->
-                let abs = Cond (Op Sub, mkSeq [], mkSeq [Op Swap; Op Sub])
+                let abs = Cond (Op lSub, mkSeq [], mkSeq [Op lSwap; Op lSub])
                 for _ in 1 .. 1000 do
                     let a = byte <| rng.Next ()
                     let b = byte <| rng.Next ()
@@ -315,23 +315,23 @@ let test_ops =
 
                 let pFilterMap pFN =
                     mkSeq [Data Value.unit
-                          ;Loop (Dip (Op Popl)
+                          ;Loop (Dip (Op lPopl)
                                 ,Cond(Dip pFN
-                                ,mkSeq[Op Swap; Op Pushr]
-                                ,Dip (Op Drop)))
-                          ;Dip (Op Drop)
+                                ,mkSeq[Op lSwap; Op lPushr]
+                                ,Dip (Op lDrop)))
+                          ;Dip (Op lDrop)
                           ]
 
                 // verify the filterMap loop has some expected behaviors
                 let lTestFM = randomBytes 10
                 let sAll = doEval (pFilterMap Nop) noEff [lTestFM]
                 Expect.equal (sAll) [lTestFM] "filter accepts everything"
-                let sNone = doEval (pFilterMap (Op Fail)) noEff [lTestFM]
+                let sNone = doEval (pFilterMap (Op lFail)) noEff [lTestFM]
                 Expect.equal (sNone) [Value.unit] "filter accepts nothing"
 
                 let inRange lb ub = 
-                    mkSeq [Op Copy; Data (Value.u8 lb); Op Sub; Op Drop
-                          ;Cond(mkSeq [Data (Value.u8 ub); Op Sub], Op Fail, Nop)]
+                    mkSeq [Op lCopy; Data (Value.u8 lb); Op lSub; Op lDrop
+                          ;Cond(mkSeq [Data (Value.u8 ub); Op lSub], Op lFail, Nop)]
                 let pOkByte = inRange 32uy 127uy
                 let okByte b =
                     match b with
@@ -361,9 +361,9 @@ let test_ops =
                     Expect.equal (sLoop) [lF] "equal filtered lists"
 
             testCase "toplevel eff" <| fun () ->
-                let varSym s = mkSeq [Dip (Data Value.unit); Data (Value.symbol s); Op Put]
-                let pLogMsg = mkSeq [varSym "log"; Op Eff ]
-                failEval (Op Eff) (EffLogger()) [Value.symbol "oops"]
+                let varSym s = mkSeq [Dip (Data Value.unit); Data (Value.symbol s); Op lPut]
+                let pLogMsg = mkSeq [varSym "log"; Op lEff ]
+                failEval (Op lEff) (EffLogger()) [Value.symbol "oops"]
                 for _ in 1 .. 100 do
                     let msg = randomBytes 10
                     let eff = EffLogger() 
@@ -373,9 +373,9 @@ let test_ops =
                     Expect.equal (sLog) [Value.unit] "eff return val"
 
             testCase "transactional eff" <| fun () ->
-                let varSym s = mkSeq [Dip (Data Value.unit); Data (Value.symbol s); Op Put]
+                let varSym s = mkSeq [Dip (Data Value.unit); Data (Value.symbol s); Op lPut]
                 let tryOp p = Cond (p, Nop, Nop)
-                let tryEff s = tryOp (mkSeq [varSym s; Op Eff])
+                let tryEff s = tryOp (mkSeq [varSym s; Op lEff])
                 let tryEff3 = mkSeq [tryEff "log"; Dip (tryEff "oops"); Dip (Dip (tryEff "log"))]
                 for _ in 1 .. 100 do
                     let a = randomBytes 10
@@ -391,16 +391,16 @@ let test_ops =
                 // behavior for 'env': 
                 //  increment an effects counter
                 //  rename "oops" effects to "log" and vice versa.
-                let pInc = mkSeq [Data (Value.nat 1UL); Op Add; Op Drop] // fixed-width increment
-                let varSym s = mkSeq [Dip (Data Value.unit); Data (Value.symbol s); Op Put]
-                let getSym s = mkSeq [Data (Value.symbol s); Op Get]
+                let pInc = mkSeq [Data (Value.nat 1UL); Op lAdd; Op lDrop] // fixed-width increment
+                let varSym s = mkSeq [Dip (Data Value.unit); Data (Value.symbol s); Op lPut]
+                let getSym s = mkSeq [Data (Value.symbol s); Op lGet]
                 let pRN s1 s2 = Cond (getSym s1, varSym s2
                                      ,Cond(getSym s2, varSym s1, Nop))
                 let withCRN s1 s2 p = mkSeq [ Data (Value.u8 0uy)
-                                    ; Env (mkSeq [ pInc; Dip (mkSeq [pRN s1 s2; Op Eff])] 
+                                    ; Env (mkSeq [ pInc; Dip (mkSeq [pRN s1 s2; Op lEff])] 
                                           ,p)]
                 let tryOp p = Cond (p, Nop, Nop)
-                let tryEff s = tryOp (mkSeq [varSym s; Op Eff])
+                let tryEff s = tryOp (mkSeq [varSym s; Op lEff])
                 let tryEff3 = mkSeq [tryEff "log"; Dip (tryEff "oops"); Dip (Dip (tryEff "log"))]
                 let pTest = withCRN "log" "oops" tryEff3
                 for _ in 1 .. 100 do
@@ -418,7 +418,7 @@ let test_ops =
                     let a = randomBytes 4
                     let b = randomBytes 3
                     let s0 = [a;b]
-                    let sProg = doEval (Prog (randomRecord(), Op Swap)) noEff s0 
+                    let sProg = doEval (Prog (randomRecord(), Op lSwap)) noEff s0 
                     Expect.equal (sProg) [b;a] "prog"
 
     ]

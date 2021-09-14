@@ -243,8 +243,8 @@ let print (vstr:string) (pstr:string) : int =
             log logger (Value.variant "value" v)
             EXIT_FAIL
         | Some p ->
-            let e0 : Interpreter.RTE = { DS = [v]; ES = []; IO = ioEff }
-            match Interpreter.interpret p e0 with
+            let e0 : DSI.RTE = { DS = [v]; ES = []; IO = ioEff }
+            match DSI.interpret p e0 with
             | Some _ -> 
                 //logInfo logger (sprintf "print %s with %s - done" vstr pstr)
                 EXIT_OK
@@ -286,8 +286,8 @@ let test (pstr:string) : int =
         EXIT_FAIL
     | Some p -> 
         let io = composeEff (Testing.ForkEff()) logger
-        let e0 : Interpreter.RTE = { DS = []; ES = []; IO = io }
-        match Interpreter.interpret p e0 with
+        let e0 : DSI.RTE = { DS = []; ES = []; IO = io }
+        match DSI.interpret p e0 with
         | Some _ ->
             logInfo logger (sprintf "test %s passed" pstr)
             EXIT_OK

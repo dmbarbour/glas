@@ -242,11 +242,11 @@ module Glas.TestGlasZero
         | None ->
             failtest "expected to compile successfully"
 
-    let dataStack (ds : Value list) : ProgVal.Interpreter.RTE  = 
+    let dataStack (ds : Value list) : ProgVal.DSI.RTE  = 
         { DS = ds; ES = List.empty; IO = noEffects }
 
     let doEval p e = 
-        match ProgVal.Interpreter.interpret p e with
+        match ProgVal.DSI.interpret p e with
         | Some e' -> e'
         | None -> failtestf "eval unsuccessful for program %A" p
 
@@ -306,7 +306,7 @@ module Glas.TestGlasZero
             Expect.equal (ProgVal.static_arity pNEQZ) (Some struct(1,1)) "arity neq-zero"
             let eNEQ1 = doEval pNEQZ (dataStack [Value.u8 0uy]) 
             Expect.equal (eNEQ1.DS) [Value.u8 0uy] "8-bit zero is not equal to 0-bit zero (unit)"
-            Expect.isNone (ProgVal.Interpreter.interpret pNEQZ (dataStack [Value.nat 0UL])) 
+            Expect.isNone (ProgVal.DSI.interpret pNEQZ (dataStack [Value.nat 0UL])) 
                             "neq-zero on unit"
 
             // test gcd 

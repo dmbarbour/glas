@@ -122,8 +122,8 @@ module LoadModule =
             else
                 match ll.GetCompiler fileSuffix with
                 | Some p ->
-                    let e0 : Interpreter.RTE = { DS = [v0]; ES = []; IO = (ll :> IEffHandler) }
-                    match Interpreter.interpret p e0 with
+                    let e0 : DSI.RTE = { DS = [v0]; ES = []; IO = (ll :> IEffHandler) }
+                    match DSI.interpret p e0 with
                     | Some e' -> Some (e'.DS.[0])
                     | None -> None // interpreter may output error messages.
                 | None -> None // GetCompiler emits reason to log
@@ -225,8 +225,8 @@ module LoadModule =
             None
 
     let private _compileG0 (p : Program) (ll : IEffHandler) (s : string) : Value option =
-        let e0 : Interpreter.RTE = { DS = [Value.ofString s]; ES = []; IO = ll } 
-        match Interpreter.interpret p e0 with
+        let e0 : DSI.RTE = { DS = [Value.ofString s]; ES = []; IO = ll } 
+        match DSI.interpret p e0 with
         | None -> None
         | Some e' -> 
             match e'.DS with
