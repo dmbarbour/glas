@@ -222,33 +222,12 @@ The 'prog' header also serves as the primary variant for programs within a *Dict
 
 ## Glas Initial Syntax (g0)
 
-Glas requires an initial syntax for bootstrap. To serve this role, I define [the g0 syntax](GlasZero.md). However, g0 is a rather simplistic language, with a Forth-like look and feel but lacking Forth's metaprogramming features. The intention is to simplify bootstrap implementation. A more sophisticated language modules (with support for local variables, recursive function groups, metaprogramming, etc.) should be developed for normal programming in Glas. 
+Glas requires an initial syntax for bootstrap. To serve this role, I define [the g0 language](GlasZero.md), which is essentially a Forth with some decent metaprogramming features and algebraic effects.
 
-## Dictionaries and Definitions
+N
 
-Most Glas modules should each compile to a dictionary that represents the namespace at end of file. This supports a convenient mode of program composition where we inherit a module then continue manipulating definitions.
+ However, g0 is a rather simplistic language, with a Forth-like look and feel but lacking Forth's metaprogramming features. The intention is to simplify bootstrap implementation. A more sophisticated language modules (with support for local variables, recursive function groups, metaprogramming, etc.) should be developed for normal programming in Glas. 
 
-A dictionary is concretely a record of `identifier:Definition` pairs. The definition should be from an open variant whose header hints how the identifier should be applied in context of another program. This enables user syntax to be more implicit. The definition types used by g0 are:
-
-* **prog:(do:GlasProgram, ...)** - a Glas program with potential annotations. 
-* **data:Value** - a raw data definition, or programs that reduce to data.
-* **macro:MacroDef** - describe a macro program for staged computing 
-
-Definitions types used by g0 are precompiled and do not contain references to other dictionary words. However, this is not an essential constraint. Other languages might favor late binding or other dynamic behavior. The set of definition types is subject to ad-hoc extension and de-facto standardization as we develop new language modules. For example, in context of suitable languages, we might extend dictionaries to define types, rewrite rules, process networks, concurrent constraint metaprogramming models, and so on. 
-
-*Aside:* A related convention that I'd like to encourage is *single inheritance* of dictionaries. At most one unqualified import, e.g. represented as `open modulename`. All other identifiers must be explicitly imported or qualified. Single inheritance ensures the provenance of every identifier is unambiguous and invariant to change in dependencies. It also encourages development of aggregator modules for boiler-plate imports.
-
-## Logging Conventions
-
-Almost every application model will support a **log:Message** effect to support debugging. In general, we'll often want the ability to filter which messages we're seeing based on task, level, role, etc.. These properties are mostly independent of content. Instead of a variant type, log messages will normally use a record of ad-hoc fields, with de-facto standardization. For example:
-
-        (lv:warn, role:debug, text:"English message")
-
-This allows gradual and ad-hoc structured extension to log messages without breaking existing routes or filters. It becomes feasible for a log message to have both a brief text description and an interactive object or applet.
-
-Efficient logging will require support for structure sharing within the log storage. 
-
-We could log an object or interactive app while still including some text and still preserving the existing log message routing mechanisms. 
 
 ## Application Models
 
@@ -263,7 +242,9 @@ The compile program implements a function from source (e.g. file binary) to a co
 * **load:ModuleID** - Modules are currently identified by UTF-8 strings such as `"foo"`. File extension is elided. We search for the named module locally then on `GLAS_PATH`. 
 * **log:Message** - Response is unit. Arbitrary output message, useful for progress reports, debugging, code change proposals, etc.. 
 
-Load failure may occur due to missing modules, ambiguity, dependency cyles, failure by the compile program, etc. The compile program decides what to do after a load fails, e.g. fail the compile or continue with fallback. Cause of failure is not visible to the compile program but may implicitly be reported to the programmer.
+Load failures may occur due to missing modules, ambiguous files (e.g. if we have both `foo.g0` and subdirectory `foo/`), dependency cyles, failure of the compiler function, etc. A compiler can continue with load failures. Cause of failure should implicitly be logged for access by the developers.
+
+A language may expose these effects to the programmer in context of compile-time metaprogramming. For example, these effects are explicitly supported by language-g0 macro calls.
 
 ### Data Printer 
 
@@ -276,7 +257,7 @@ Printers are usually not interpreted atomically at the top level. It's possible 
 
 ### Automated Testing
 
-Language modules implicitly support ad-hoc deterministic testing, such as static assertions and unit tests. It is feasible to simulate non-determinism. However, for robust testing of general simulations, it is useful to expose non-deterministic choice to the test system. Effects API:
+Language modules implicitly support ad-hoc deterministic testing, such as static assertions and unit tests. It is feasible to simulate non-determinism. However, for robust testing of general simulations, it is useful to expose non-deterministic choice to the test system. This program would be evaluated with no inputs. Effects API:
 
 * **log:Message** - output arbitrary message to log for debugging purposes.
 * **fork:Count** - read and return a random bitstring of Count bit length.
@@ -331,35 +312,36 @@ To simplify recognition and to resist invisible performance degradation, acceler
 
 *Aside:* It is feasible to accelerate subsets of programs that conform to a common structure, thus a model hint could be broader than identifying a specific accelerator.
 
-## Types
+## Thoughts
 
-Glas requires a simple stack arity check, i.e. to ensure that loops have invariant stack size, and that conditionals have the same stack size on every branch. This check is easy to evaluate and simplifies a few optimizations. But we can do a lot more.
+### Language Compatibility
 
-Desired Structural Properties: 
+Modulo export function, default output from a g0 module is a record of form `(swap:prog:(do:swap, ...), try-then-else:macro:Program, pi:data:Value, ...)`, representing a dictionary of definitions. Each entry in the record is a word:deftype:Def triple, with symbolic words and deftype. The enables g0 to call macros and programs the same way, without syntactic distinction at the call site.
 
-* partial: type annotations can be ambiguous or constraints.
-* extensible: can easily grow the type model. 
-* macros: simple type functions support common patterns.
+It would be convenient if most languages adopt a convention of compiling compatible dictionaries. As needed, languages could extend the set of deftype or reserve certain symbols for multi-method lookup tables or other aggregators.
 
-Desired Expression Properties:
+## Logging Conventions
 
-* abstract types: ensure a subprogram does not directly observe certain data
-* substructural types: may also restrict copy/drop for abstract types
-* row-polymorphic record types: static fields and absence thereof
-* fixed-width numeric types: bytes, 32-bit words, etc..
-* static data types: for robust partial evaluation.
-* session types: express protocols and grammars for effects and data structures.
-* dependent types: trustable encodings of metadata
-* refinement types, e.g. prime numbers only
-* units for numbers, and associated or phantom types in general
+Almost every application model will support a **log:Message** effect to support debugging. In general, we'll often want the ability to filter which messages we're seeing based on task, level, role, etc.. These properties are mostly independent of content. Instead of a variant type, log messages will normally use a record of ad-hoc fields, with de-facto standardization. For example:
 
-Types are a deep subject, but I don't need to have everything up-front assuming I favor extensible models.
+        (lv:warn, role:debug, text:"English message")
 
-## Glas Object
+This allows gradual and ad-hoc structured extension to log messages, e.g. with provenance metadata, without breaking existing routes or filters. It is feasible to extend log messages with images or even applets to better explain issues.
+
+*Note:* Efficient logging with large values require support for structure sharing within the log storage, e.g. using the stowage model.
+
+### Glas Object
+
+The idea is a standard language for stowage and sharing of Glas values at a large scale. Even better if streamable for use in a network context.
 
 See [Glas Object](GlasObject.md).
 
-## Thoughts
+### Gradual Types
+
+By default, Glas does lightweight static arity checks, but there is no sophisticated type system built-in unless language modules introduce one post-bootstrap. Thus, the Glas type system is ultimately user-defined within the module system.
+
+Glas should work very well with gradual types. Access to program definitions as data enables type checks to be applied post-hoc without invasive modification of existing modules to add annotations. Use of annotations can potentially support several types of types based on different purposes or perspectives. Memoization can provide adequate performance.
+
 
 ### Graph Based Data
 
@@ -378,3 +360,5 @@ Because search in context of Glas modules will be deterministic, we cannot rely 
 ### Provenance Tracking
 
 I'm very interested in potential for automatic provenance tracking, i.e. such that we can robustly trace a value to its contributing sources. However, I still don't have a good idea about how to best approach this across multiple layers of language modules and metaprogramming. One idea is to keep some source metadata with every bit that can be traced back to its few 'best' sources. This seems very expensive, but viable.
+
+
