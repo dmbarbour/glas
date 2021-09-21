@@ -40,10 +40,11 @@
 //
 
 open Glas
+open FParsec
 open Glas.Effects
 open Glas.LoadModule
 open Glas.ProgVal
-open FParsec
+open Glas.ProgEval
 
 let printMsg = String.concat "\n" [
     "print Value with Printer"
@@ -187,10 +188,10 @@ let rec indexValue v idx =
 
 let getValue (ll:Loader) (vstr : string): Value option =
     match run parseValue vstr with
-    | Failure (msg, _, _) ->
+    | FParsec.CharParsers.Failure (msg, _, _) ->
         logError ll (sprintf "parse error in Value identifier:\n%s" msg)
         None
-    | Success ((m,idx), _, _) ->
+    | FParsec.CharParsers.Success ((m,idx), _, _) ->
         match ll.LoadModule m with
         | None ->
             logError ll (sprintf "module %s failed to load" m)
@@ -259,14 +260,14 @@ let arity (pstr:string) : int =
     let loader = getLoader logger
     match getValue loader pstr with
     | Some p when isValidProgramAST p -> 
-        match stack_arity p with
+        match stackArity (Arity(1,1)) p with
         | Arity(a,b) ->
             printfn "%d -- %d" a b
             EXIT_OK
-        | Dynamic ->
+        | ArityDyn ->
             logError logger (sprintf "program %s has variable stack arity" pstr)
             EXIT_FAIL
-        | ProgVal.Failure ->
+        | ArityFail ->
             logError logger (sprintf "program %s always fails, has any stack arity" pstr)
             EXIT_FAIL
     | Some _ -> 

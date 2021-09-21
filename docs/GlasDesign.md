@@ -294,9 +294,7 @@ However, partial evaluation is fragile unless supported by annotations. Robust p
 
 ### Staged Metaprogramming
 
-Glas has implicit, pervasive staging: a module's source is processed and compiled into a value, and this value is processed and compiled further by a client module. It is possible to leverage this for metaprogramming using problem-specific intermediate representations. Additionally, language modules can potentially support user-defined, modular macros and other techniques.
-
-However, access to this feature depends on syntax. For example, [the g0 syntax](GlasZero.md) does not support metaprogramming. But users could implement a Glas program or macro interpreter for static evaluation by user-defined language modules. By leveraging *acceleration* we can feasibly achieve excellent performance for staging.
+Glas has implicit, pervasive staging via its module system. Additionally, language modules can provide staging within a module, assuming the language includes a program interpreter. The g0 language, used in bootstrap, has support for staged metaprogramming via macros and an export function.
 
 ### Acceleration
 
@@ -329,6 +327,18 @@ Almost every application model will support a **log:Message** effect to support 
 This allows gradual and ad-hoc structured extension to log messages, e.g. with provenance metadata, without breaking existing routes or filters. It is feasible to extend log messages with images or even applets to better explain issues.
 
 *Note:* Efficient logging with large values require support for structure sharing within the log storage, e.g. using the stowage model.
+
+### Database Modules
+
+It is feasible to design a language module that knows how to 'parse' a database file such as MySQL or LMDB. Developing a few such language modules could simplify tooling for working with large amounts of small to medium sized data.
+
+### Multi-Language Modules
+
+A language module can explicitly load other language modules to parse certain regions of code into useful values. This is awkward with text-based languages because we must demark sections (e.g. using indentation), but it should well together with database modules. 
+
+### Lazy Evaluation
+
+Laziness is difficult to model in context of effects handlers and backtracking failure. However, it is feasible to model it explicitly and observably, e.g. computing partial data and continuations. Doing so may be worthwhile in certain contexts.
 
 ### Glas Object
 

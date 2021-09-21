@@ -6,7 +6,6 @@ namespace Glas
 module ProgVal =
     open Value
     type Program = Value
-    type ProgramFunction = Effects.IEffHandler -> Value list -> Value list option
 
     // basic operators
     let lCopy = label "copy"
@@ -118,7 +117,6 @@ module ProgVal =
         | _ -> None
 
 
-
     let Loop (pWhile, pDo) =
         unit |> record_insert lWhile pWhile
              |> record_insert_unless_nop lDo pDo
@@ -187,18 +185,50 @@ module ProgVal =
         
     type StackArity =
         | Arity of int * int
-        | Failure // arity of subprogram that always Fails
-        | Dynamic // arity of inconsistent subprogram
+        | ArityFail // arity of subprogram that always Fails
+        | ArityDyn // arity of inconsistent subprogram
 
-    let private ar a b = Arity (a, b)
+    let compSeqArity a b =
+        match a, b with
+        | Arity (ia, oa), Arity (ib, ob) ->
+            let d = max 0 (ib - oa)
+            let ia' = ia + d
+            let oa' = oa + d
+            Arity (ia', oa' + (ob - ib))
+        | Arity _, _ -> b
+        | _ -> a
+
+    let compCondArity c a b =
+        let ca = compSeqArity c a
+        match ca, b with
+        | Arity (li, lo), Arity (ri, ro) when ((li - lo) = (ri - ro)) ->
+            Arity (max li ri, max lo ro)
+        | _, ArityFail -> ca
+        | ArityFail, Arity (ri, ro) ->
+            match c with
+            | ArityFail -> b
+            | Arity (ci, _) ->
+                let d = (max ci ri) - ri
+                Arity (ri + d, ro + d)
+            | ArityDyn -> ArityDyn
+        | _ -> ArityDyn
+
+    let compLoopArity c a =
+        // dynamic if not stack invariant.
+        match compSeqArity c a with
+        | Arity (i,o) when (i = o) -> Arity(i,o)
+        | ArityFail -> 
+            match c with
+            | ArityFail -> Arity(0,0)
+            | _ -> ArityDyn
+        | _ -> ArityDyn
 
     let private opArityMap =
+        let inline ar a b = struct(a, b)
         [ (lCopy, ar 1 2)
         ; (lSwap, ar 2 2)
         ; (lDrop, ar 1 0)
         ; (lEq, ar 2 0)
-        ; (lFail, Failure)
-        ; (lEff, ar 1 1)
         ; (lGet, ar 2 1)
         ; (lPut, ar 3 1)
         ; (lDel, ar 2 1)
@@ -222,72 +252,51 @@ module ProgVal =
         ; (lDiv, ar 2 2)
         ] |> Map.ofList
 
-    let rec stack_arity p =
-        match p with 
+    let rec stackArity (ef0:StackArity) (p0:Value) : StackArity =
+        match p0 with 
         | Op op ->
+            if op = lEff then ef0 else
+            if op = lFail then ArityFail else
             match Map.tryFind op opArityMap with
-            | Some arity -> arity
-            | None -> failwithf "missing op %s in arity map" (prettyPrint p)
+            | Some (struct(a,b)) -> Arity (a,b)
+            | None -> failwithf "missing op %s in arity map" (prettyPrint p0)
         | Dip p ->
-            match stack_arity p with
+            match stackArity ef0 p with
             | Arity (a,b) -> Arity (a+1, b+1)
-            | Failure -> Failure
-            | Dynamic -> Dynamic
-        | Data _ -> Arity(0,1)
-        | PSeq lP  -> stack_arity_seq (FTList.toList lP)
-        | Cond (c, a, b) ->
-            let l = stack_arity_seq [c;a]
-            let r = stack_arity b
-            match l,r with
-            | Arity (li,lo), Arity(ri,ro) when ((li - lo) = (ri - ro)) ->
-                Arity (max li ri, max lo ro)
-            | Failure, Arity (ri, ro) -> 
-                match stack_arity c with
-                | Failure -> r
-                | Arity (ci, _) ->
-                    let d = (max ci ri) - ri
-                    Arity (ri + d, ro + d)
-                | Dynamic -> Dynamic
-            | _, Failure -> l
-            | _, _ -> Dynamic
-        | Loop (c, a) ->
-            // seq:[c,a] must be stack invariant.
-            match stack_arity_seq [c;a] with
-            | Arity (i,o) when (i = o) -> Arity(i,o)
-            | Failure -> 
-                match stack_arity c with
-                | Failure -> Arity(0,0)
-                | _ -> Dynamic
-            | _ -> Dynamic
-        | Env (e, p) -> 
-            // constraining bootstrap eff handlers to be 2-2 including state.
-            // i.e. forall S . ((S * Request) * St) -> ((S * Response) * St)
-            match stack_arity e with
-            | Arity(i,o) when ((i = o) && (2 >= i)) -> 
-                stack_arity (Dip p)
-            | _ -> Dynamic
-        | Prog (_, p) -> stack_arity p
-        | _ ->
-            // not a valid program. 
-            Failure
-
-    and stack_arity_seq ps =
-        _stack_arity_seq 0 0 ps
-    and private _stack_arity_seq i o ps =
-        match ps with
-        | [] -> Arity(i,o)
-        | (p::ps') -> 
-            match stack_arity p with
-            | Arity (a,b) -> 
-                let d = max 0 (a - o) // p assumes deeper input stack?
-                let i' = i + d
-                let o' = o + d + (b - a)
-                _stack_arity_seq i' o' ps'
             | ar -> ar
+        | Data _ -> Arity(0,1)
+        | PSeq lP  -> 
+            let fn ar op = compSeqArity ar (stackArity ef0 op)
+            FTList.fold fn (Arity (0,0)) lP
+        | Cond (c, a, b) -> 
+            compCondArity (stackArity ef0 c) (stackArity ef0 a) (stackArity ef0 b)
+        | Loop (c, a) -> 
+            compLoopArity (stackArity ef0 c) (stackArity ef0 a)
+        | Env (e, p) -> 
+            // we can allow imbalanced effects, but e must have one output 
+            // for handler state.
+            let efArity = compSeqArity (Arity(1,1)) (stackArity ef0 e)
+            let p' = Dip p
+            match efArity with
+            | Arity(i,o) when ((i > 0) && (o > 0)) -> 
+                stackArity (Arity(i-1,o-1)) p'
+            | ArityFail -> 
+                stackArity ArityFail p'
+            | _ ->
+                stackArity ArityDyn p'
+        | Prog (_, p) -> 
+            stackArity ef0 p
+        | _ ->
+            failwithf "not a valid program %s" (prettyPrint p0)
+            // not a valid program. 
+            ArityFail
 
     // vestigial
     let static_arity p =
-        match stack_arity p with
+        match stackArity (Arity (1,1)) p with
         | Arity (a,b) -> Some struct(a,b) 
         | _ -> None
+
+
+
 

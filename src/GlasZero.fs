@@ -27,15 +27,17 @@ module Zero =
         | Block of Block    // [foo]
 
     type Ent =
-        | From of ModuleName * ((Word * Word) list) 
-        | Prog of Word * Block
-        | Macro of Word * Block
-        | Assert of Block
+        | ImportFrom of ModuleName * ((Word * Word) list) 
+        | ProgDef of Word * Block
+        | MacroDef of Word * Block
+        | DataDef of Word * Block
+        | StaticAssert of int64 * Block   // (line number recorded for error reporting)
 
     /// AST for g0 toplevel.
     type TopLevel = 
         { Open : ModuleName option
         ; Ents : Ent list
+        ; Export : Block
         }
 
     module Parser =
@@ -45,10 +47,10 @@ module Zero =
         type P<'T> = Parser<'T,unit>
 
         let lineComment : P<unit> =
-            (pchar ';' <?> "`; line comment`") >>. skipManyTill anyChar newline 
+            pchar '#' >>. skipManyTill anyChar newline 
 
         let ws : P<unit> =
-            spaces >>. (skipMany (lineComment >>. spaces) <?> "spaces and comments")
+            spaces >>. skipMany (lineComment >>. spaces)
 
         let sol : P<unit> =
             getPosition >>= fun p ->
@@ -56,7 +58,7 @@ module Zero =
                     then preturn () 
                     else fail "expecting start of line"
 
-        let wsepChars = " \n\r\t[]"
+        let wsepChars = " \n\r\t[],"
 
         let wsep : P<unit> =
             nextCharSatisfiesNot (isNoneOf wsepChars) .>> ws
@@ -121,7 +123,7 @@ module Zero =
         let parseAction, parseActionRef = createParserForwardedToRef<Action, unit>()
 
         let parseBlock : P<Block> = 
-            between (pchar '[' .>> ws) (pchar ']' .>> ws) (many parseAction)
+            between (pchar '[' .>> ws) (pchar ']' .>> wsep) (many parseAction)
 
         parseActionRef := 
             choice [
@@ -133,210 +135,249 @@ module Zero =
         let parseOpen : P<ModuleName> =
             kwstr "open" >>. parseWord
 
+        let parseExport : P<Block> =
+            kwstr "export" >>. parseBlock 
+
         let parseImport : P<Word * Word> =
             parseWord .>>. (opt (kwstr "as" >>. parseWord)) |>> 
                 fun (w,optAsW) ->
                     let aw = Option.defaultValue w optAsW
                     (w,aw)
 
-        let parseFrom : P<Ent> =
+        let parseImportFrom : P<Ent> =
             kwstr "from" >>. parseWord .>>. (kwstr "import" >>. sepBy1 parseImport (pchar ',' .>> ws)) 
-                |>> From
+                |>> ImportFrom
 
-        let parseProg : P<Ent> = 
-            kwstr "prog" >>. parseWord .>>. parseBlock |>> Prog
+        let parseProgDef : P<Ent> = 
+            kwstr "prog" >>. parseWord .>>. parseBlock |>> ProgDef
 
-        let parseMacro : P<Ent> =
-            kwstr "macro" >>. parseWord .>>. parseBlock |>> Macro
+        let parseMacroDef : P<Ent> =
+            kwstr "macro" >>. parseWord .>>. parseBlock |>> MacroDef
 
-        let parseAssert : P<Ent> = 
-            kwstr "assert" >>. parseBlock |>> Assert
+        let parseDataDef : P<Ent> =
+            kwstr "data" >>. parseWord .>>. parseBlock |>> DataDef
+
+        let parseStaticAssert : P<Ent> = 
+            kwstr "assert" >>. getPosition .>>. parseBlock |>> 
+                fun (p,b) ->
+                    StaticAssert (p.Line, b)
 
         let parseEnt : P<Ent> =
-            sol >>. choice [parseFrom; parseProg; parseMacro; parseAssert ]
+            choice [
+                parseImportFrom 
+                parseProgDef 
+                parseMacroDef 
+                parseStaticAssert 
+            ]
 
         let parseTopLevel = parse {
             do! ws
             let! optOpen = opt (sol >>. parseOpen)
-            let! lEnts = many parseEnt
+            let! lEnts = many (sol >>. parseEnt)
+            let! exportFn = opt (sol >>. parseExport) |>> Option.defaultValue []
             do! eof
-            return { Open = optOpen; Ents = lEnts } 
+            return { Open = optOpen; Ents = lEnts; Export = exportFn } 
         }
 
-    let rec private findWordsCalledAcc ws b =
-        match b with
-        | [] -> ws
-        | (op :: b') ->
-            let ws' =
-                match op with
-                | Call w -> Set.add w ws
-                | Data _ -> ws
-                | Block p -> findWordsCalledAcc ws p
-            findWordsCalledAcc ws' b'
+    /// Words called from a single block.
+    let rec wordsCalledBlock (b:Block) =
+        let fnEnt ent =
+            match ent with
+            | Call w -> Set.singleton w
+            | Data _ -> Set.empty
+            | Block p -> wordsCalledBlock p
+        Set.unionMany (Seq.map fnEnt b)
 
-    let wordsCalled (b:Block) =
-        findWordsCalledAcc (Set.empty) b
+    /// All words called from all top-level entries.
+    let wordsCalled (tlv : TopLevel) : Set<Word> =
+        let fnEnt ent =
+            match ent with
+            | ProgDef (_, b) | MacroDef (_, b) | StaticAssert (_, b) | DataDef (_, b) -> 
+                wordsCalledBlock b
+            | ImportFrom _ -> 
+                Set.empty
+        Set.unionMany (Seq.map fnEnt tlv.Ents)
+
+    /// All words explicitly defined in the top-level entries.
+    let wordsDefined (tlv : TopLevel) : Set<Word> = 
+        let fnEnt ent =
+            match ent with
+            | ImportFrom (_, lImports) -> 
+                Set.ofList (List.map snd lImports)
+            | ProgDef (w, _) | MacroDef (w, _) | DataDef (w, _) -> 
+                Set.singleton w
+            | StaticAssert _ -> 
+                Set.empty
+        Set.unionMany (Seq.map fnEnt tlv.Ents)
 
     /// I'll discourage shadowing of definitions via issuing a warning.
     /// A word is observably shadowed if defined or called before a
     /// later definition within the same file.
     ///
-    /// This also detects duplicate definitions, call before definition, and
-    /// accidental recursion. Everything shows up as shadowing.
+    /// This check detects duplicate definitions, call before definition, and
+    /// accidental recursion. But undefined words are not detected.
     let wordsShadowed (tlv : TopLevel) : Set<Word> =
         let fnEnt ent (wsSh,wsDef) =
             match ent with
-            | From (_, lImports) ->
+            | ImportFrom (_, lImports) ->
                 // detect shadowing within the imports list, too.
                 let fnImp (_,aw) (wsSh, wsDef) =
                     let wsDef' = Set.add aw wsDef
                     let wsSh' = if Set.contains aw wsDef then Set.add aw wsSh else wsSh
                     (wsSh', wsDef')
                 List.foldBack fnImp lImports (wsSh, wsDef)
-            | Prog (w, b) | Macro (w, b) ->
+            | ProgDef (w, b) | MacroDef (w, b) | DataDef (w, b) ->
                 let wsDef' = Set.add w wsDef
-                let wsSh' = wordsCalled b |> Set.intersect wsDef' |> Set.union wsSh
+                let wsSh' = wordsCalledBlock b |> Set.intersect wsDef' |> Set.union wsSh
                 (wsSh', wsDef')
-            | Assert b ->
-                let wsSh' = wordsCalled b |> Set.intersect wsDef |> Set.union wsSh
+            | StaticAssert (_, b) ->
+                let wsSh' = wordsCalledBlock b |> Set.intersect wsDef |> Set.union wsSh
                 (wsSh', wsDef)
         List.foldBack fnEnt tlv.Ents (Set.empty, Set.empty) |> fst
 
+    /// List of modules loaded via 'open' or 'from'.
+    /// This doesn't detect modules loaded via compile-time effects from macros.
+    let modulesLoaded (tlv : TopLevel) : List<ModuleName> =
+        let fnEnt ent =
+            match ent with
+            | ImportFrom (m, _) -> [m]
+            | ProgDef _ | MacroDef _ | StaticAssert _ | DataDef _  -> []
+        let lOpen = Option.toList tlv.Open
+        let lFrom = List.collect fnEnt tlv.Ents
+        List.append lOpen lFrom 
 
-    // The namespace during compilation is represented by a dictionary Value.
-    // The g0 language can understand 'prog' and 'data' definitions, and will
-    // treat other definitions same as undefined (equal to 'fail'). Load and
-    // log operations during compile are supported by abstract effects handler,
-    // same as they would be for a user-defined language module. Bootstrap is
-    // mostly about defining special effects handlers.
-    //
-    // No transactional effects are required in this use-case. But it is useful
-    // to track context for log messages, e.g. which file we're processing.
-    //
-    // The main options for compilation are:
-    //
-    // - directly build the Glas program model in F#. This requires parsing
-    //   programs from imported values.
-    // - build the Glas value that represents the program. We might parse the
-    //   final results only if we need to validate and run a program.
-    //
-    // The latter option is superior for performance, since it avoids a lot of
-    // rework. So it's the path I'll take here.
     module Compile =
+        // Goals for compilation:
+        // - Report as many errors as feasible while compiling.
+        //   This enables more than one error to be fixed at a time. 
+        // - Leave continuation with errors decision to client.
+        // - Static arity checks by default, even if no other types.
+
         open Glas.Effects
 
-        let load (ll:IEffHandler) (m:ModuleName) : Value option =
-            let r = ll.Eff(Value.variant "load" (Value.symbol m))
-            if Option.isNone r then
-                logWarn ll (sprintf "failed to load module %s" m)
-            r
+        [<System.FlagsAttribute>]
+        type ErrorFlags =
+            | NoError = 0
+            | SyntaxError = 1           // the program doesn't parse
+            | WordShadowed = 2          // at least one word is shadowed
+            | LoadError = 4             // 'open' or 'from' fails to load 
+            | WordUndefined = 8         // called or imported word is undefined
+            | UnhandledDefType = 16     // called word has unhandled def type
+            | UncalledMacro = 32        // need static parameters for macro call
+            | MacroFailed = 64          // top-level failure within a macro call
+            | BadMacroResult = 128      // first result from macro is not a program
+            | AssertionFail = 256       // evaluation of an assertion failed 
+            | DynamicArity = 512        // program does not have static arity or failure
 
-        // open a module for initial namespace
-        // (g0 no longer has reserved words)        
-        let openModule ll m =
-            match load ll m with
-            | None -> Value.unit
-            | Some d0 -> d0
+        [<Struct>]
+        type CompileState = 
+            { Dict   : Value        // resulting dictionary
+            ; Errors : ErrorFlags   // summary of errors (details are logged)
+            }
 
-        let applyFrom (ll:IEffHandler) (d0:Value) (From (Src=m; Imports=lImp)) = 
-            match load ll m with
-            | None -> d0 
+        let loadModule (ll:IEffHandler) (m:string) = 
+            ll.Eff(Value.variant "load" (Value.symbol m))
+
+        let private tryOptOpen ll optOpen =
+            match optOpen with
+            | None -> 
+                Some (Value.unit)
+            | Some m ->
+                match loadModule ll m with
+                | None ->
+                    logError ll (sprintf "failed to load module %s" m)
+                    None
+                | Some d0 -> Some d0
+
+        let initOpen ll tlv e0 =
+            match tryOptOpen ll tlv.Open with
+            | None -> { Dict = Value.unit; Errors = (e0 ||| ErrorFlags.LoadError ) }
+            | Some d0 ->
+                // we may compile with shadowing, so we don't erase any words here.
+                let haveWord w = Option.isSome (Value.record_lookup (Value.label w) d0)
+                let wsExpect = Set.difference (wordsCalled tlv) (wordsDefined tlv)
+                let wsMissing = Set.filter (haveWord >> not) wsExpect
+                if Set.isEmpty wsMissing then
+                    { Dict = d0; Errors = e0 }
+                else 
+                    logError ll (sprintf "missing definitions for %s" (String.concat ", " wsMissing))
+                    { Dict = d0; Errors = (e0 ||| ErrorFlags.WordUndefined) }
+
+        let applyImportFrom ll st0 m lImports =
+            match loadModule ll m with
+            | None ->
+                logError ll (sprintf "failed to load module %s" m)
+                { st0 with Errors = (st0.Errors ||| ErrorFlags.LoadError) }
             | Some dSrc ->
-                let mutable d = d0
-                for Import (Word=wSrc; As=asOpt) in lImp do
-                    let wDst = Option.defaultValue wSrc asOpt
-                    match Value.record_lookup (Value.label wSrc) dSrc with
-                    | Some v -> 
-                        d <- Value.record_insert (Value.label wDst) v d
-                    | None ->
-                        d <- Value.record_delete (Value.label wDst) d
-                        logWarn ll (sprintf "module %s does not define word '%s'" m wSrc)
-                d
+                let haveWord w = Option.isSome <| Value.record_lookup (Value.label w) dSrc
+                let wsMissing = lImports |> List.map fst |> List.filter (haveWord >> not) 
+                let e' = 
+                    if List.isEmpty wsMissing then st0.Errors else 
+                    logError ll (sprintf "module %s does not define %s" m (String.concat ", " wsMissing))
+                    (st0.Errors ||| ErrorFlags.WordUndefined)
+                let addWord dDst (w,aw) =
+                    match Value.record_lookup (Value.label w) dSrc with
+                    | None -> Value.record_delete (Value.label aw) dDst
+                    | Some vDef -> Value.record_insert (Value.label aw) vDef dDst
+                let d' = List.fold addWord (st0.Dict) lImports
+                { Dict = d'; Errors = e' }
 
-        (*
-        let tryLinkCall d0 w =
-            let r = Value.record_lookup (Value.label w) d0
-            match r with
-            | Some (Value.Variant "prog" p) ->
-                match p with
-                | Value.Variant "do" pBody -> Some pBody // flatten `prog:do:P => P`
-                | _ -> r // preserve annotations
-            | Some (Value.Variant "data" _) -> r
-            | _ -> None
+        
+        //let compileBlock (ll:IEffHandler) (d0:Value) (b:Block) =
 
-        let rec linkProg (d0:Value) (p:Prog) =
-            match p with
-            | [step] -> linkStep d0 step
-            | lSteps -> 
-                let lV = List.map (linkStep d0) lSteps
-                Value.variant "seq" (Value.ofFTList (FTList.ofList lV))
-        and linkStep d0 step =
-            match step with
-            | Call w ->
-                match tryLinkCall d0 w with
-                | Some def -> def
-                | None -> Value.symbol "fail" 
-            | Sym b -> Value.variant "data" (Value.ofBits b)
-            | Str s -> Value.variant "data" (Value.ofString s)
-            | Env (With=pWith; Do=pDo) ->
-                let lV = List.map (linkProg d0) [pWith; pDo]
-                Value.variant "env" (Value.asRecord ["with";"do"] lV)
-            | Loop (While=pWhile; Do=pDo) ->
-                let lV = List.map (linkProg d0) [pWhile; pDo]
-                Value.variant "loop" (Value.asRecord ["while";"do"] lV)
-            | Cond (Try=pTry; Then=pThen; Else=pElse) ->
-                let lV = List.map (linkProg d0) [pTry; pThen; pElse]
-                Value.variant "cond" (Value.asRecord ["try";"then";"else"] lV)
-            | Dip pDip ->
-                let vDip = linkProg d0 pDip
-                Value.variant "dip" vDip
+        let applyProgDef ll st0 w b =
+            failwith "todo: compile program, define prog word"
 
-        let private uncheckedCompileTLV (ll:IEffHandler) (tlv:TopLevel) : Value =
-            let mutable d = 
-                match tlv.Open with
-                | None -> Value.unit
-                | Some m -> openModule ll m
-            for f in tlv.From do
-                d <- applyFrom ll d f
-            for Prog (Name=w; Body=pBody) in tlv.Defs do
-                let vBody = linkProg d pBody
-                let vProg = Value.variant "prog" (Value.variant "do" vBody)
-                // TODO: consider optimizing the program. 
-                // Could leave this to language-g0 bootstrap. Depends on performance.
-                d <- Value.record_insert (Value.label w) vProg d
-            d
+        let applyMacroDef ll st0 w b = 
+            failwith "todo: compile program, define macro word"
 
-        /// The output for compiling a g0 program is the dictionary representing
-        /// the namespace available at the end of file. This compiler does not 
-        /// handle the parsing step or detection of load cycles, nor arity errors.
-        let compileTLV (ll:IEffHandler) (tlv:TopLevel) : Value option =
-            //logInfo ll "performing shallow validation of g0 program"
-            match shallowValidation tlv with
-            | LooksOkay -> 
-                let d = uncheckedCompileTLV ll tlv
-                let lUndef = 
-                        List.map wordsCalledFromDef (tlv.Defs) 
-                            |> Set.unionMany
-                            |> Set.filter (tryLinkCall d >> Option.isNone)
-                            |> Set.toList
-                if not (List.isEmpty lUndef) then
-                    logWarn ll (sprintf "undefined words in use: %A" lUndef)
-                Some d
-            | issues -> 
-                logError ll (sprintf "validation error: %A" issues)
-                None
+        let applyDataDef ll st0 w b = 
+            failwith "todo: compile program, define data word"
 
-        let compile (ll:IEffHandler) (s:string) : Value option =
-            //logInfo ll "using built-in g0 compile function"
-            match FParsec.CharParsers.run Parser.parseTopLevel s with
-            | FParsec.CharParsers.Success (tlv, _, _) -> 
-                //logInfo ll "parse successful!"
-                compileTLV ll tlv
+
+        let applyStaticAssert ll st0 ln b =
+            failwith "todo: compile program, check assertion"
+            (*
+            match tryCompileBlock ll (st0.Dict) b with
+            | Some (p, eComp) when checkAssertion ll p ->
+                { st0 with Errors = st0.Errors ||| eComp }
+            | Some (p, eComp) ->
+                logError ll (sprintf "assertion on line %d fails" ln)
+                { st0 with Errors = st0.Errors ||| eComp ||| ErrorFlags.Assertion }
+            | None ->
+                logError ll (sprintf "failed to compile assertion at line %d" ln)
+                { st0 with Errors = st0.Errors ||| ErrorFlags.Assertion ||| ErrorFlags.CompBlock }
+                *)
+
+        let applyEnt (ll:IEffHandler) (st0:CompileState) (ent:Ent) : CompileState =
+            match ent with
+            | ImportFrom (m, lImports) -> applyImportFrom ll st0 m lImports
+            | ProgDef (w, b) -> applyProgDef ll st0 w b
+            | MacroDef (w, b) -> applyMacroDef ll st0 w b
+            | StaticAssert (ln, b) -> applyStaticAssert ll st0 ln b
+            | DataDef (w, b) -> applyDataDef ll st0 w b
+
+        let compile (ll:IEffHandler) (s:string) : CompileState =
+            match FParsec.CharParsers.run (Parser.parseTopLevel) s with
+            | FParsec.CharParsers.Success (tlv, _, _) ->
+                let eShadowed = 
+                    let wsSh = wordsShadowed tlv
+                    if not (Set.isEmpty wsSh) then ErrorFlags.NoError else
+                    logError ll (sprintf "shadowed words: %s" (String.concat ", " wsSh))
+                    ErrorFlags.WordShadowed
+                let st0 = initOpen ll tlv eShadowed
+                List.fold (applyEnt ll) st0 (tlv.Ents)
             | FParsec.CharParsers.Failure (msg, _, _) ->
-                logError ll (sprintf "built-in g0 parse error:\n%s" msg)
-                None
+                logError ll msg
+                { Dict = Value.unit; Errors = ErrorFlags.SyntaxError }
 
-*)
-        // stub
-        let compile (ll:IEffHandler) (s:string) : Value option =
-            None
+    /// Compile a g0 program, returning the final dictionary only if
+    /// there are no errors during the compilation process. 
+    ///
+    /// Effects handler must support 'log' and 'load' effects. Any
+    /// errors are logged implicitly.
+    let compile (ll:Effects.IEffHandler) (s:string) : Value option =
+        let st = Compile.compile ll s 
+        if Compile.ErrorFlags.NoError = st.Errors 
+            then Some (st.Dict) 
+            else None

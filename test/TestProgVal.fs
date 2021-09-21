@@ -3,6 +3,7 @@ module Glas.TestProgVal
 open Expecto
 open Glas
 open ProgVal
+open ProgEval
 
 let rng = System.Random()
 

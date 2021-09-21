@@ -12,6 +12,7 @@ module LoadModule =
     open System.IO
     open Glas.Effects
     open ProgVal
+    open ProgEval
 
     // type aliases for documentation
     type FolderPath = string
@@ -195,6 +196,13 @@ module LoadModule =
                     | Value.AnyVariant (s,U) ->
                         ll.LoadModule s
                     | _ -> None
+                | Value.Variant "log" vMsg ->
+                    // add filepath to log messages
+                    let vMsg' = 
+                        match ll.Loading with
+                        | (f::_) -> Value.record_insert (Value.label "file") (Value.ofString f) vMsg
+                        | _ -> vMsg
+                    ll.NonLoadEff.Eff (Value.variant "log" vMsg')
                 | _ -> ll.NonLoadEff.Eff v 
         interface ITransactional with
             // Loader assumes external modules are constant during its lifespan.
@@ -210,7 +218,7 @@ module LoadModule =
 
     /// Loader without bootstrapping. Simply use the built-in g0.
     let nonBootStrapLoader (nle : IEffHandler) : Loader =
-        Loader(Zero.Compile.compile, nle)
+        Loader(Zero.compile, nle)
 
 
     let private _findG0 ll =
@@ -224,14 +232,14 @@ module LoadModule =
             logError ll (sprintf "bootstrap failed: language-g0 ambiguous: %A" ambList)
             None
 
+    // built-in g0 compiler (pre-bootstrap)
     let private _compileG0 (p : Program) (ll : IEffHandler) (s : string) : Value option =
-        let e0 : DSI.RTE = { DS = [Value.ofString s]; ES = []; IO = ll } 
-        match DSI.interpret p e0 with
+        match interpret p ll [Value.ofString s] with
         | None -> None
-        | Some e' -> 
-            match e'.DS with
-            | [r] -> Some r
-            | _ -> None
+        | Some [r] -> Some r
+        | _ ->
+            logError ll "incorrect arity for compiler program"
+            None
 
     /// Attempt to bootstrap the g0 language, then use the language-g0
     /// module for the loader.
@@ -254,7 +262,7 @@ module LoadModule =
                     match ll2.CompileCompiler fp "language-g0" with
                     | None -> None
                     | Some p2 when (p1 <> p2) ->
-                        logError nle "bootstrap failed: language-g0 does not exactly rebuild"
+                        logError nle "bootstrap failed: language-g0 does not rebuild itself exactly"
                         None
                     | Some _ ->
                         logInfo nle "bootstrap success! language-g0 is verified fixpoint"
