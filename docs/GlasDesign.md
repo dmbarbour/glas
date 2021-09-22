@@ -220,14 +220,9 @@ The set of annotations is openly extensible and subject to de-facto standardizat
 
 The 'prog' header also serves as the primary variant for programs within a *Dictionary* value.
 
-## Glas Initial Syntax (g0)
+## Bootstrap Syntax
 
-Glas requires an initial syntax for bootstrap. To serve this role, I define [the g0 language](GlasZero.md), which is essentially a Forth with some decent metaprogramming features and algebraic effects.
-
-N
-
- However, g0 is a rather simplistic language, with a Forth-like look and feel but lacking Forth's metaprogramming features. The intention is to simplify bootstrap implementation. A more sophisticated language modules (with support for local variables, recursive function groups, metaprogramming, etc.) should be developed for normal programming in Glas. 
-
+Glas requires an initial syntax for bootstrap. To serve this role, I define [the g0 language](GlasZero.md). The g0 language is essentially a Forth variant with staged metaprogramming, algebraic effects, and immutable tree-structured data. The g0 language should be bootstrapped early such that outputs extracted from the Glas system depend only on state of the module system, not on external tooling. Other language modules will ultimately be defined in terms of g0.
 
 ## Application Models
 

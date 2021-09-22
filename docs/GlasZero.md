@@ -1,8 +1,10 @@
 # The g0 Language
 
-The g0 (jee zero) language is essentially a Forth with algebraic effects, staged metaprogramming, and immutable data. The syntax and semantics are very simple. This language serves as the bootstrap language for Glas systems, i.e. the language-g0 module will be written using g0 files. Upon successful bootstrap, behavior of the Glas system will depend only on state of the module system instead of the versions of external tools.
+The g0 (jee zero) language is essentially a Forth variant with staged metaprogramming, algebraic effects, and immutable tree-structured data. The syntax and semantics are very simple. 
 
-Although g0 is a good Forth, Forth is not suitable for every program nor for every programmer. Manual management of dataflow can be awkward for large functions. The g0 language is notably awkward for features that require implicit global aggregation, such as lookup tables for multi-methods, constraint variables for adaptive metaprogramming, or asynchronous programs forming an implicit global state machine. The expectation is that higher level language modules will be developed as the Glas ecosystem matures, with g0 as the foundation.
+This language serves as the bootstrap language for Glas systems, i.e. the language-g0 module will be written using g0 files. Upon successful bootstrap, behavior of the Glas system will depend only on state of the module system instead of the versions of external tools.
+
+The g0 language is not suitable for every program. Other language modules should be developed to cover cases where g0 becomes awkward. 
 
 ## Top Level
 
@@ -19,26 +21,26 @@ The top-level of a g0 file consists of imports, definitions, assertions, and an 
 
         export [ Program ]
 
-Within a g0 file, programs may only reference words previously defined. All words are statically linked by the compiler, producing program values that do not contain symbolic references. A successful compilation produces a dictionary of definitions (a record of form `(word1:prog:(do:Program, ...), word2:macro:Program, word3:data:Value, ...)`) using Glas programs, then optionally rewrites (or replaces) this dictionary via export function.
+The g0 language assumes imported modules have compiled values of form `(qux:prog:Program, baz:macro:Program, ...)`. The default output from a g0 module is the dictionary visible at the bottom of the file, e.g. `(bar-baz:(...), word1:prog:(do:Program, ...), word2:macro:Program, word3:data:Value, qux:(...), other symbols from foo)`. 
 
-If 'open' appears, it must be the first entry, specifying a module from which to load the initial dictionary. By default, a g0 module starts with the empty dictionary. If 'export' appears, it must be the final entry, describing a function to rewrite (or replace) the final dictionary. By default, the dictionary is exported unmodified.
+If 'open' appears, it must be the first entry, inheriting an initial dictionary. If unspecified, the g0 module starts with an empty dictionary. Within the module, words may only be explicitly defined once, and a word that is explicitly defined cannot be used before its definition. If 'export' appears, it must be the final entry, describing a function to rewrite or replace the final dictionary.
 
-*Note:* If there are errors, compilers should generally fail compilation of the entire module after printing error messages to the log. The intention is to catch errors early and encourage developers to fix them. It is not recommended to limp along while tolerating errors in the code. 
+In case of error, a g0 compiler should attempt to report other errors where feasible before failing compilation. Assertions can help programmers detect errors that the g0 compiler won't normally catch.
+
+## Words
+
+Words in g0 must match regex: 
+
+        WordFragment = [a-z][a-z0-9]*
+        Word = WordFragment('-'WordFragment)*
+
+All top-level imported modules and defined words must be valid words. If a module is intended for use in g0, we can assume it has a compatible name and symbols. If necessary, compile-time load effects can access non-g0 modules.
 
 ## Programs 
 
         [42 [foo] bar]
 
-Programs are expressed as a sequence of words and data between square brackets. Programs within a program are a form of data. Programs are evaluated from left to right, each operation manipulating the data stack or potentially calling external algebraic effects. Data within the program is evaluated by pushing the value onto the data stack. A useful subset of operations are macros, which are evaluated statically and must produce a program on the data stack. 
-
-## Words
-
-A word in g0 must match regex: 
-
-        WordFragment = [a-z][a-z0-9]*
-        Word = WordFragment('-'WordFragment)*
-
-Within a program, a word's meaning depends on its definition type. For example, prog and macro calls are treated differently. However, words always operate on the data stack, applying from left to right.
+Programs are expressed as a sequence of words and data between square brackets. To support metaprogramming, programs are readily available as a form of data. Programs are evaluated from left to right, each word applying a program to the data stack, each data adding to the data stack. At compile-time, program words are partially evaluated when feasible, and macros must be successfully evaluated to produce a program.
 
 ## Data
 
@@ -74,6 +76,10 @@ Currently, there is no dedicated syntax for structured data. We can only constru
 
 We could similarly use 'd0' and 'di' to embed dictionaries. However, despite mitigation, the g0 syntax is awkward for significant data embeddings. It is wise to embed any significant volume of data into other files using either a syntax suitable for the data in question, or a generic syntax similar to JSON or MessagePack (perhaps extended with module references), then develop a language module to extract the structed data.
 
+## Compile-Time Effects
+
+Macro calls, static assertions, data definitions, and the export function all have access to compile-time effects, such as log and load effects via the language module. A compiler may support additional effects - e.g. to disable a warning, enable experimental optimizations, manage quotas - but it shouldn't be anything that significantly affects the meaning or behavior of the program. 
+
 ## Definitions
 
 ### Prog Definitions
@@ -84,33 +90,30 @@ Most words in a g0 dictionaries will be 'prog' words.
 
 ### Macro Definitions
 
-A 'macro' definition is a program that will be statically evaluated in context of its caller, using static inputs. The first two results from a macro should be a value representing a program. This program is then applied inline just after the macro call. 
+A 'macro' definition is a program that will be statically evaluated in context of its caller, using static inputs based on partial evaluation. The first result from a macro must be a value representing a program. This program is applied inline just after the macro call. 
 
-When used together with g0's ability to embed programs as data, macros effectively support higher-order programming at compile-time. List processing, parser combinators, and many other program abstractions can be supported via macros, so long as the programs can be resolved at compile-time.
+When used together with g0's ability to embed programs as data, macros effectively support higher-order programming at compile-time. List processing, parser combinators, and many other program abstractions may be supported via macros.
 
 Macros have access to compile-time effects, and are useful when defining g0 primitives.
 
 ### Defining Primitives
 
-Macros are sufficient to eliminate built-in definitions. For example, we can define primitive operators using macros:
+The g0 language does not have any built-in definitions. Macros are sufficient to define the Glas program operators:
 
         macro apply [] # apply first parameter as program
         prog swap ['swap apply]
         prog drop ['drop apply]
         ...
         macro dip [0 swap 'dip put]
-        macro while-do [[0 swap 'while put] dip 'do put 0 swap 'loop put]
+        prog tag [[0 swap] dip put]
+        macro while-do [['while tag] dip 'do put 'loop tag]
         ...
 
-The g0 language does not have any built-in definitions. It relies entirely on macros for this purpose.
+The g0 ecosystem will usually start with a module to define the primitives and other useful functions.
 
 ### Data Definitions
 
 Data is defined using a program of arity 0--1. This program is evaluated at compile-time, with access to compile-time effects same as macros. 
-
-## Compile-Time Effects
-
-Macro calls, static assertions, data definitions, and the export function all have access to compile-time effects, such as log and load effects via the language module. A compiler may support additional effects - e.g. to disable a warning, enable experimental optimizations, manage quotas - but it shouldn't be anything that significantly affects the meaning or behavior of the program. 
 
 ## Static Assertions
 
@@ -118,19 +121,17 @@ Assertions are evaluated after compilation with an empty data stack and access t
 
 ## Export Function
 
-The export function is a program of static arity 1--1, the final entry in a g0 file. If left unspecified, is equivalent to `export []`. After compiling the export program, it is evaluated with access to compile-time effects. The dictionary of definitions as inputs on the data stack. The value output from the export function becomes the compiled value of the g0 module.
+The export function is a program of static arity 1--1, the final entry in a g0 file. If left unspecified, is equivalent to `export []`. After compiling the export program, it is evaluated with access to compile-time effects. The dictionary of definitions is input on the data stack. The value output from the export function becomes the compiled value of the g0 module.
 
-Export functions enable g0 to define words programmatically, flexibly merge dictionaries, analyze dictionaries for errors, produce module values suitable for non-g0 import contexts, and extract or compile definitions from non-g0 sources. However, programmatic definitions won't be visible within the g0 module that constructs them, only to later modules that import these definitions.
+Export functions enable g0 to define words programmatically, flexibly merge dictionaries, analyze dictionaries for errors, produce module values suitable for non-g0 import contexts, and extract or compile definitions from non-g0 module sources. However, the g0 module will not be able to directly use the words it is defining via export.
 
-*Aside:* It is not recommended to use export functions for export control. Instead, use a 'public.g0' file to manually import the exposed symbols.
+*Aside:* For export control, instead of using an export function, it will often be simpler and better to use a 'public.g0' module within a folder to explicitly whitelist the exposed symbols.
 
 ## Annotations
 
 There is currently no dedicated syntax for annotations in g0. However, if programs construct `prog:(do:P, Annotations)` programs, e.g. by adding annotations to a block before applying it, a g0 compiler should avoid burying the annotations below other prog headers. Instead, the compiler should check recognized annotations for consistency, and add its own annotations as needed, e.g. for stable partial evaluation. 
 
-It is feasible to annotate programs after defining them via export function, e.g. based on searching for data definitions identified by `anno-word`. However, this is awkward and isn't recommended for the normal use case.
-
-*Aside:* Use of compile-time effects or logging to specify annotations was rejected. Use of macros to wrap a block 
+It is also feasible to annotate programs via export function, post-hoc. However, if you're free to invasively modify code, it's usually better to annotate programs internally. 
 
 ## Stable Partial Evaluation for Macros
 
@@ -143,13 +144,7 @@ For simplicity of comprehension and implementation, partial evaluation in g0 sho
 
 Naively, whether this program compiles depends on whether `swap swap` is eliminated by the optimizer. However, it is not a good thing for compilation to depend on the optimizer because it raises the burden for compiling g0. 
 
-To solve this, a g0 optimizing compiler can introduce arity annotations into defined programs based on behavior prior to optimization. For example, the definition of 'await2' should be annotated with `arity:(i:2, o:2)`. Then, the input arity is checked prior to partial evaluation of the 'await2' word. Because there are not two items on the data stack prior to calling 'await2', we'd also have zero inputs to 'apply' and thus fail to compile foo. Programmers will be alerted to fix the problem.
-
-*Aside:* Arity annotations are a convenient solution. In addition to providing stability, this reduces need to memoize computations during early development. There is a risk of users lying to the compiler, but this will eventually be caught.
-
-## No Shadowing
-
-A g0 compiler should report an error and fail if a word is called or explicitly defined before a later definition within the same file. This prevents observable shadowing; words from 'open' may be shadowed, but only if they are not used. This constraint simplifies reasoning and debugging because each word will have only one observable meaning within scope of a g0 file.
+To solve this, a g0 optimizing compiler should introduce arity annotations into defined programs based on behavior prior to optimizations. For example, the definition of 'await2' might be annotated with `arity:(i:2, o:2)`. Then, input arity is checked prior to partial evaluation of the 'await2' word. Because there are not two items on the data stack prior to calling 'await2', we'd also have zero inputs to 'apply' and thus consistently fail to compile foo regardless of optimizations.
 
 ## Compilation Strategy for Programs
 
@@ -196,3 +191,8 @@ A compiler could enable macros to communicate via compile-time effects, e.g. thr
 ### Assertion Parameter? Rejected.
 
 Similar to export, we could provide the dictionary as an input to assertions. This would allow more flexible analysis, but may also complicate reasoning and refactoring insofar as our dictionary exposes symbols that will be shadowed later. I've decided to avoid this complication; assertions are still useful, and any special analysis on the whole dictionary may be deferred to export function.
+
+### Aggregate Definitions? Rejected.
+
+It is feasible to extend g0 with special symbols that support implicit aggregation on 'open' and 'from', preferably monotonic and idempotent such as set union or graph unification. However, this idea has the same problems as macro state, just at a different layer. Similarly, it should be left to higher layer language modules.
+

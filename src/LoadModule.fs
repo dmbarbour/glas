@@ -118,15 +118,18 @@ module LoadModule =
                 | Value.String s -> 
                     ll.CompileG0 (ll :> IEffHandler) s
                 | _ ->
-                    logError ll "input to g0 compiler is not a string"
+                    logError ll "input to g0 compiler must be utf-8 string"
                     None
             else
                 match ll.GetCompiler fileSuffix with
                 | Some p ->
-                    let e0 : DSI.RTE = { DS = [v0]; ES = []; IO = (ll :> IEffHandler) }
-                    match DSI.interpret p e0 with
-                    | Some e' -> Some (e'.DS.[0])
+                    match eval p ll [v0] with
+                    | Some [v'] -> Some v'
                     | None -> None // interpreter may output error messages.
+                    | Some _ -> 
+                        // should be impossible due to arity checks.
+                        logError ll (sprintf "arity error in %s compiler" fileSuffix)
+                        None
                 | None -> None // GetCompiler emits reason to log
 
         member private ll.LoadFileBasic (fp : FilePath) : Value option =
@@ -234,7 +237,7 @@ module LoadModule =
 
     // built-in g0 compiler (pre-bootstrap)
     let private _compileG0 (p : Program) (ll : IEffHandler) (s : string) : Value option =
-        match interpret p ll [Value.ofString s] with
+        match eval p ll [Value.ofString s] with
         | None -> None
         | Some [r] -> Some r
         | _ ->

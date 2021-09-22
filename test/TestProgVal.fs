@@ -40,12 +40,12 @@ let mkSeq = FTList.ofList >> PSeq
 
 
 let doEval p io s0 = 
-    match interpret p io s0 with
+    match eval p io s0 with
     | Some s' -> s'
     | None -> failtestf "eval unsuccessful for program %A" p
 
 let failEval p io s0 =
-    match interpret p io s0 with
+    match eval p io s0 with
     | None -> () // pass - expected failure
     | Some _ -> failtestf "eval unexpectedly successful for program %A stack %A" p (List.map Value.prettyPrint s0)
 
@@ -104,7 +104,7 @@ let noEff = Effects.noEffects
 [<Tests>]
 let test_ops = 
     // note: focusing on type-safe behaviors of programs
-    testList "progval interpreter" [
+    testList "program evaluation" [
             testCase "stack ops" <| fun () ->
                 for _ in 1 .. 10 do 
                     let v1 = randomBytes 6
@@ -167,7 +167,7 @@ let test_ops =
                     Expect.equal (sPushr) [Value.ofFTList lPushr] "match pushr"
 
                     // pop left
-                    match interpret (Op lPopl) noEff [l1] with
+                    match eval (Op lPopl) noEff [l1] with
                     | Some s' -> 
                         match l1 with
                         | Value.FTList (FTList.ViewL (v,l')) ->
@@ -176,7 +176,7 @@ let test_ops =
                     | None -> Expect.equal l1 Value.unit "popl from empty list"
 
                     // pop right
-                    match interpret (Op lPopr) noEff [l1] with 
+                    match eval (Op lPopr) noEff [l1] with 
                     | Some s' -> 
                         match l1 with
                         | Value.FTList (FTList.ViewR (l',v)) ->
@@ -250,8 +250,8 @@ let test_ops =
                     let s0 = [Value.ofBits b; Value.ofBits a]
                     let sAdd = doEval (Op lAdd) noEff s0
                     let sProd = doEval (Op lMul) noEff s0
-                    let sSubOpt = interpret (Op lSub) noEff s0
-                    let sDivOpt = interpret (Op lDiv) noEff s0
+                    let sSubOpt = eval (Op lSub) noEff s0
+                    let sDivOpt = eval (Op lDiv) noEff s0
 
                     Expect.equal (sAdd) [Value.ofBits carry; Value.ofBits sum] "eq add"
                     Expect.equal (sProd) [Value.ofBits overflow; Value.ofBits prod] "eq prod"
@@ -340,7 +340,7 @@ let test_ops =
                     | _ -> false 
                 for x in 0uy .. 255uy do
                     // check our byte predicate
-                    match interpret pOkByte noEff [Value.u8 x] with
+                    match eval pOkByte noEff [Value.u8 x] with
                     | Some sP -> 
                         //printfn "byte %d accepted\n" x 
                         Expect.isTrue (okByte (Value.u8 x)) "accepted byte"
