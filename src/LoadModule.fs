@@ -242,12 +242,12 @@ module LoadModule =
         | None -> None
         | Some fp ->
             let ll0 = nonBootStrapLoader nle
-            match _expectCompiler ll0 "language-g0 via built-in" (ll0.LoadFile fp) with
+            match _expectCompiler ll0 "language-g0 via built-in g0" (ll0.LoadFile fp) with
             | None -> None
             | Some p0 ->
                 logInfo nle "bootstrap: language-g0 compiled using built-in g0"
                 let ll1 = Loader(_compilerFn p0, nle)
-                match _expectCompiler ll1 "language-g0 via bootstrap" (ll1.LoadFile fp) with
+                match _expectCompiler ll1 "language-g0 via language-g0" (ll1.LoadFile fp) with
                 | None -> None 
                 | Some p1 -> 
                     logInfo nle "bootstrap: language-g0 compiled using language-g0"
@@ -258,5 +258,5 @@ module LoadModule =
                         logError nle "bootstrap failed: language-g0 does not rebuild itself exactly"
                         None
                     | Some _ ->
-                        logInfo nle "bootstrap success! language-g0 is verified fixpoint"
+                        logInfo nle "bootstrap success! now building via language-g0"
                         Some ll2 
