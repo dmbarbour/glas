@@ -288,8 +288,6 @@ module ProgVal =
             stackArity ef0 p
         | _ ->
             failwithf "not a valid program %s" (prettyPrint p0)
-            // not a valid program. 
-            ArityFail
 
     // vestigial
     let static_arity p =

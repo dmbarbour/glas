@@ -48,59 +48,63 @@ module LoadModule =
         if isNull envPath then [] else
         envPath.Split(';', StringSplitOptions.None) |> List.ofArray
 
+    // wrap a compiler function for arity 1--1
+    let private _compilerFn (p:Program) (ll:IEffHandler) =
+        let linkedEval = eval p ll 
+        fun v ->
+            match linkedEval [v] with
+            | Some [r] -> Some r 
+            | None -> None
+            | Some _ ->
+                // did we miss a static arity check?
+                logError ll "invalid arity for compiler function"
+                None
+    
+    // factored out some error handling
+    let private _expectCompiler (ll:IEffHandler) (src:FilePath) (vOpt:Value option) =
+        match vOpt with
+        | Some (Value.FullRec ["compile"] ([pCompile], _)) ->
+            match stackArity (Arity(1,1)) pCompile with
+            | ProgVal.Arity (a,b) when (a = b) && (1 >= a) -> 
+                Some pCompile
+            | ar ->
+                logError ll (sprintf "%s compile has incorrect arity %A" src ar)
+                None
+        | Some _ ->
+            logError ll (sprintf "%s does not define 'compile'" src)
+            None
+        | None -> 
+            logError ll (sprintf "%s could not be loaded" src)
+            None
+
     type Loader =
-        // ModuleLoader assumes another effects handler is available for logging.
-        // Also, any request other than 'load' is forwarded to this handler.
+        // Effects other than 'load'. Logging is assumed.
         val private NonLoadEff : IEffHandler 
 
-        // A g0 compile function must be provided. This could be the 'compile' 
-        // defined in GlasZero module, or based on the compiled language-g0 
-        // module to support bootstrap. We assume g0 requires a string input.
-        val private CompileG0 : IEffHandler -> string -> Value option
+        // Compiler for G0 must be provided upon construction.
+        val mutable private CompileG0 : Value -> Value option
 
-        // To resist cyclic dependencies, track which files we are actively
-        // loading. Ideally, we'd also track dependencies precisely, but it
-        // seems unnecessary for this bootstrap implementation - I'll just
-        // log which cycles are noticed rather than attempt to detect all of
-        // them.
+        // To resist cyclic dependencies, track which files we are loading.
         val mutable private Loading : FilePath list
 
-        // To avoid unnecessary rework, cache values for modules we've already
-        // loaded. Ideally, we'd support a persistent cache, but that can be
-        // deferred until after bootstrap.
+        // Cache results per file.
         val mutable private Cache : Map<FilePath, Value option>
 
-        // We'll also cache valid language module compile functions to reduce
-        // rework a little. Here 'valid' just means it parses and passes the
-        // 1--1 static arity check.
-        val mutable private CompilerCache : Map<FilePath, Program option>
+        // Cache compiler functions.
+        val mutable private CompilerCache : Map<FilePath, ((Value -> Value option) option)>
 
-        new (g0,eff0) =
+        new (linkG0,eff0) as ll =
             { NonLoadEff = eff0
-            ; CompileG0 = g0
+            ; CompileG0 = fun _ -> invalidOp "todo: link the g0 compiler"
             ; Loading = []
             ; Cache = Map.empty  
             ; CompilerCache = Map.empty
-            }
+            } then 
+            ll.CompileG0 <- linkG0 (ll :> IEffHandler)
 
-        member ll.CompileCompiler fp langMod = 
-            match ll.LoadFile fp with
-            | Some (Value.FullRec ["compile"] ([vCompile], _)) ->
-                match static_arity vCompile with
-                | Some (1,1) ->
-                    Some vCompile // success!
-                | _ -> 
-                    logError ll (sprintf "%s compile fails arity check (expecting 1--1)" langMod)
-                    None
-            | Some _ ->
-                logError ll (sprintf "module %s does not define 'compile'" langMod)
-                None
-            | None ->
-                logError ll (sprintf "module %s could not be loaded" langMod)
-                None
-
-        member private ll.GetCompiler (fileSuffix : string) : Program option =
+        member private ll.GetCompiler (fileSuffix : string) : (Value -> Value option) option =
             if String.IsNullOrEmpty(fileSuffix) then None else
+            if "g0" = fileSuffix then Some (ll.CompileG0) else 
             let langMod = "language-" + fileSuffix
             match ll.FindModule langMod with
             | None -> None
@@ -108,29 +112,17 @@ module LoadModule =
                 match Map.tryFind fp ll.CompilerCache with
                 | Some result -> result
                 | None -> 
-                    let result = ll.CompileCompiler fp langMod
+                    let result = 
+                        match _expectCompiler ll langMod (ll.LoadFile fp) with
+                        | Some pCompile -> Some (_compilerFn pCompile ll)
+                        | None -> None
                     ll.CompilerCache <- Map.add fp result ll.CompilerCache
                     result
 
         member private ll.Compile fileSuffix (v0 : Value) : Value option = 
-            if "g0" = fileSuffix then
-                match v0 with
-                | Value.String s -> 
-                    ll.CompileG0 (ll :> IEffHandler) s
-                | _ ->
-                    logError ll "input to g0 compiler must be utf-8 string"
-                    None
-            else
-                match ll.GetCompiler fileSuffix with
-                | Some p ->
-                    match eval p ll [v0] with
-                    | Some [v'] -> Some v'
-                    | None -> None // interpreter may output error messages.
-                    | Some _ -> 
-                        // should be impossible due to arity checks.
-                        logError ll (sprintf "arity error in %s compiler" fileSuffix)
-                        None
-                | None -> None // GetCompiler emits reason to log
+            match ll.GetCompiler fileSuffix with
+            | Some p -> p v0
+            | None -> None // GetCompiler emits reason to log
 
         member private ll.LoadFileBasic (fp : FilePath) : Value option =
             let appLang fileSuffix vOpt =
@@ -154,7 +146,7 @@ module LoadModule =
                 r
             | None when List.contains fp (ll.Loading) -> 
                 let cycle = List.rev <| fp :: List.takeWhile ((<>) fp) ll.Loading
-                logError ll (sprintf "dependency cycle detected! %A" cycle)
+                logError ll (sprintf "dependency cycle detected! %s" (String.concat ", " cycle))
                 None
             | None ->
                 let ld0 = ll.Loading
@@ -175,13 +167,13 @@ module LoadModule =
             let searchPath = localDir :: readGlasPath()
             match findModuleInPathList m searchPath with
             | [] -> 
-                logWarn ll (sprintf "module %s not found (searched %A)" m searchPath)
+                logWarn ll (sprintf "module %s not found (searched %s)" m (String.concat ", " searchPath))
                 None
             | [fp] ->
                 logInfo ll (sprintf "loading module %s from file %s" m fp) 
                 Some fp
             | ps ->
-                logError ll (sprintf "module %s is ambiguous; found %A" m ps)
+                logError ll (sprintf "module %s is ambiguous; found %s" m (String.concat ", " ps))
                 None
 
         /// Load a module
@@ -198,7 +190,9 @@ module LoadModule =
                     match vLoad with
                     | Value.AnyVariant (s,U) ->
                         ll.LoadModule s
-                    | _ -> None
+                    | _ -> 
+                        logWarn ll (sprintf "unrecognized module identifier %s" (Value.prettyPrint vLoad)) 
+                        None
                 | Value.Variant "log" vMsg ->
                     // add filepath to log messages
                     let vMsg' = 
@@ -218,10 +212,16 @@ module LoadModule =
             member ll.Abort () = 
                 ll.NonLoadEff.Abort ()
 
+    let private _builtInG0 ll v = 
+        match v with
+        | Value.String s -> Zero.compile ll s
+        | _ -> 
+            logError ll "built-in g0 requires string input"
+            None
 
     /// Loader without bootstrapping. Simply use the built-in g0.
     let nonBootStrapLoader (nle : IEffHandler) : Loader =
-        Loader(Zero.compile, nle)
+        Loader(_builtInG0, nle)
 
 
     let private _findG0 ll =
@@ -232,16 +232,7 @@ module LoadModule =
             logError ll "bootstrap failed: language-g0 not found on GLAS_PATH"
             None
         | ambList ->
-            logError ll (sprintf "bootstrap failed: language-g0 ambiguous: %A" ambList)
-            None
-
-    // built-in g0 compiler (pre-bootstrap)
-    let private _compileG0 (p : Program) (ll : IEffHandler) (s : string) : Value option =
-        match eval p ll [Value.ofString s] with
-        | None -> None
-        | Some [r] -> Some r
-        | _ ->
-            logError ll "incorrect arity for compiler program"
+            logError ll (sprintf "bootstrap failed: language-g0 ambiguous: %s" (String.concat ", " ambList))
             None
 
     /// Attempt to bootstrap the g0 language, then use the language-g0
@@ -250,19 +241,18 @@ module LoadModule =
         match _findG0 nle with
         | None -> None
         | Some fp ->
-            //logInfo nle (sprintf "bootstrap: language-g0 found at %s" fp)
             let ll0 = nonBootStrapLoader nle
-            match ll0.CompileCompiler fp "language-g0" with
+            match _expectCompiler ll0 "language-g0 via built-in" (ll0.LoadFile fp) with
             | None -> None
             | Some p0 ->
                 logInfo nle "bootstrap: language-g0 compiled using built-in g0"
-                let ll1 = Loader(_compileG0 p0, nle)
-                match ll1.CompileCompiler fp "language-g0" with
+                let ll1 = Loader(_compilerFn p0, nle)
+                match _expectCompiler ll1 "language-g0 via bootstrap" (ll1.LoadFile fp) with
                 | None -> None 
                 | Some p1 -> 
                     logInfo nle "bootstrap: language-g0 compiled using language-g0"
-                    let ll2 = Loader(_compileG0 p1, nle)
-                    match ll2.CompileCompiler fp "language-g0" with
+                    let ll2 = Loader(_compilerFn p1, nle)
+                    match ll2.LoadFile fp with
                     | None -> None
                     | Some p2 when (p1 <> p2) ->
                         logError nle "bootstrap failed: language-g0 does not rebuild itself exactly"
