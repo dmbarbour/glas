@@ -4,308 +4,21 @@ module ProgEval =
     open Value
     open ProgVal
 
-    module DSI =
-        // A lightweight, direct-style interpreter for the Glas program model.
-        // Perhaps useful as a reference and for getting started. However, this
-        // interpreter style is very inefficient, also awkward for extensions.
-        // I expect to drop DSI in favor of FTI very soon.
-        open Effects
-
-        /// The interpreter's runtime environment. 
-        [<Struct>]
-        type RTE =
-            { DS : Value list                     //< data stack
-            ; ES : struct(Value * Program) list   //< env/eff stack
-            ; IO : IEffHandler                    //< top-level effect
-            }
-
-        let inline copy e = 
-            match e.DS with
-            | x::_ -> Some { e with DS = x::(e.DS) }
-            | _ -> None
-
-        let inline drop e =
-            match e.DS with
-            | _::ds -> Some { e with DS = ds }
-            | _ -> None
-
-        let inline swap e = 
-            match e.DS with
-            | x::y::ds -> Some { e with DS = y::x::ds }
-            | _ -> None
-
-        let inline eq e = 
-            match e.DS with 
-            | x::y::ds when (x = y) -> Some { e with DS = ds }
-            | _ -> None
-
-        let inline get e = 
-            match e.DS with
-            | ((Bits k)::r::ds) ->
-                match record_lookup k r with
-                | Some v -> Some { e with DS = (v::ds) } 
-                | None -> None
-            | _ -> None
-
-        let inline put e = 
-            match e.DS with
-            | ((Bits k)::v::r::ds) ->
-                let r' = record_insert k v r
-                Some { e with DS = (r'::ds) }
-            | _ -> None
-
-        let inline del e = 
-            match e.DS with
-            | ((Bits k)::r::ds) ->
-                let r' = record_delete k r
-                Some { e with DS = (r'::ds) }
-            | _ -> None
-
-        let inline pushl e = 
-            match e.DS with
-            | (v::(FTList l)::ds) ->
-                let l' = FTList.cons v l
-                Some { e with DS = ((ofFTList l')::ds) }
-            | _ -> None
-
-        let inline popl e = 
-            match e.DS with
-            | (FTList (FTList.ViewL (v,l')))::ds ->
-                Some { e with DS = (v::(ofFTList l')::ds) }
-            | _ -> None
-
-        let inline pushr e = 
-            match e.DS with
-            | (v::(FTList l)::ds) -> 
-                let l' = FTList.snoc l v
-                Some { e with DS = ((ofFTList l')::ds) }
-            | _ -> None
-
-        let inline popr e = 
-            match e.DS with
-            | ((FTList (FTList.ViewR (l',v)))::ds) ->
-                Some { e with DS = (v::(ofFTList l')::ds) }
-            | _ -> None
-
-        let inline join e = 
-            match e.DS with
-            | ((FTList l2)::(FTList l1)::ds) ->
-                let l' = FTList.append l1 l2
-                Some { e with DS = ((ofFTList l')::ds) }
-            | _ -> None
-
-        let inline split e =
-            match e.DS with
-            | ((Nat n)::(FTList l)::ds) when (FTList.length l >= n) ->
-                let (l1,l2) = FTList.splitAt n l
-                Some { e with DS = ((ofFTList l2)::(ofFTList l1)::ds) }
-            | _ -> None
-            
-        let inline len e = 
-            match e.DS with
-            | ((FTList l)::ds) ->
-                let len = nat (FTList.length l)
-                Some { e with DS = (len::ds) }
-            | _ -> None
-
-        let inline bjoin e = 
-            match e.DS with
-            | ((Bits b)::(Bits a)::ds) ->
-                let ab = Bits.append a b
-                Some { e with DS = ((ofBits ab)::ds) }
-            | _ -> None
-
-        let inline bsplit e = 
-            match e.DS with
-            | ((Nat n)::(Bits ab)::ds) when (uint64 (Bits.length ab) >= n) ->
-                let (a,b) = Bits.splitAt (int n) ab
-                Some { e with DS = ((ofBits b)::(ofBits a)::ds) }
-            | _ -> None
-
-        let inline blen e = 
-            match e.DS with
-            | ((Bits b)::ds) -> 
-                let len = nat (uint64 (Bits.length b))
-                Some { e with DS = (len::ds) }
-            | _ -> None
-
-        let inline bneg e = 
-            match e.DS with
-            | ((Bits b)::ds) ->
-                let b' = Bits.bneg b
-                Some { e with DS = ((ofBits b')::ds) }
-            | _ -> None
-
-        let inline bmax e = 
-            match e.DS with
-            | ((Bits a)::(Bits b)::ds) when (Bits.length a = Bits.length b) ->
-                let b' = Bits.bmax a b
-                Some { e with DS = ((ofBits b')::ds) }
-            | _ -> None
-
-        let inline bmin e = 
-            match e.DS with
-            | ((Bits a)::(Bits b)::ds) when (Bits.length a = Bits.length b) ->
-                let b' = Bits.bmin a b
-                Some { e with DS = ((ofBits b')::ds) }
-            | _ -> None
-
-        let inline beq e = 
-            match e.DS with
-            | ((Bits a)::(Bits b)::ds) when (Bits.length a = Bits.length b) ->
-                let b' = Bits.beq a b
-                Some { e with DS = ((ofBits b')::ds) }
-            | _ -> None
-
-        let inline add e =
-            match e.DS with
-            | ((Bits n2)::(Bits n1)::ds) ->
-                let struct(sum,carry) = Arithmetic.add n1 n2
-                Some { e with DS = ((ofBits carry)::(ofBits sum)::ds) }
-            | _ -> None
-
-        let inline mul e =
-            match e.DS with
-            | ((Bits n2)::(Bits n1)::ds) ->
-                let struct(prod,overflow) = Arithmetic.mul n1 n2
-                Some { e with DS = ((ofBits overflow)::(ofBits prod)::ds) }
-            | _ -> None
-
-        let inline sub e =
-            match e.DS with
-            | ((Bits n2)::(Bits n1)::ds) ->
-                match Arithmetic.sub n1 n2 with
-                | Some diff -> Some { e with DS = ((ofBits diff)::ds) }
-                | None -> None
-            | _ -> None
-
-        let inline div e = 
-            match e.DS with
-            | ((Bits divisor)::(Bits dividend)::ds) ->
-                match Arithmetic.div dividend divisor with
-                | Some struct(quotient,remainder) ->
-                    Some { e with DS = ((ofBits remainder)::(ofBits quotient)::ds) }
-                | None -> None
-            | _ -> None
-
-        let inline data v e = 
-            Some { e with DS = (v::e.DS) }
-
-        let rec eff e =
-            match e.ES with
-            | struct(v,p)::es ->
-                let ep = { e with DS = (v::e.DS); ES = es; IO = e.IO }
-                match interpret p ep with 
-                | Some { DS = (v'::ds'); ES = es'; IO = io' } ->
-                    Some { DS = ds'; ES = struct(v',p)::es'; IO = io' }
-                | _ -> None
-            | [] -> 
-                match e.DS with
-                | request::ds ->
-                    match e.IO.Eff request with
-                    | Some response ->
-                        Some { e with DS = (response::ds) }
-                    | None -> None
-                | [] -> None
-        and interpretOpMap =
-            [ (lCopy, copy)
-            ; (lDrop, drop)
-            ; (lSwap, swap)
-            ; (lEq, eq)
-            ; (lFail, fun _ -> None)
-            ; (lEff, eff)
-            ; (lGet, get)
-            ; (lPut, put)
-            ; (lDel, del)
-            ; (lPushl, pushl)
-            ; (lPopl, popl)
-            ; (lPushr, pushr)
-            ; (lPopr, popr)
-            ; (lJoin, join)
-            ; (lSplit, split)
-            ; (lLen, len)
-            ; (lBJoin, bjoin)
-            ; (lBSplit, bsplit)
-            ; (lBLen, blen)
-            ; (lBNeg, bneg)
-            ; (lBMax, bmax)
-            ; (lBMin, bmin)
-            ; (lBEq, beq)
-            ; (lAdd, add)
-            ; (lMul, mul)
-            ; (lSub, sub)
-            ; (lDiv, div)
-            ] |> Map.ofList
-        and interpretOp (op:Bits) (e:RTE) : RTE option =
-            match Map.tryFind op interpretOpMap with
-            | Some fn -> fn e
-            | None -> failwithf "unhandled op %s" (prettyPrint (ofBits op))
-        and dip p e = 
-            match e.DS with
-            | (x::ds) -> 
-                match interpret p { e with DS = ds } with
-                | Some e' -> Some { e' with DS = (x::e'.DS) } 
-                | None -> None
-            | [] -> None
-        and seq s e =
-            match s with
-            | FTList.ViewL (p, s') ->
-                match interpret p e with
-                | Some e' -> seq s' e'
-                | None -> None
-            | _ -> Some e
-        and cond pTry pThen pElse e =
-            use tx = withTX (e.IO) // backtrack effects in pTry
-            match interpret pTry e with
-            | Some e' -> tx.Commit(); interpret pThen e'
-            | None -> tx.Abort(); interpret pElse e
-        and loop pWhile pDo e = 
-            use tx = withTX (e.IO) // backtrack effects in pWhile
-            match interpret pWhile e with
-            | Some e' -> 
-                tx.Commit(); 
-                match interpret pDo e' with
-                | Some ef -> loop pWhile pDo ef
-                | None -> None // failure in main loop body is elevated.
-            | None -> tx.Abort(); Some e  // failure in loop condition ends loop.
-        and env pWith pDo e = 
-            match e.DS with
-            | (v::ds) ->
-                let eWith = { DS = ds; ES = struct(v,pWith)::e.ES; IO = e.IO }
-                match interpret pDo eWith with
-                | Some { DS = ds'; ES= struct(v',_)::es'; IO=io' } ->
-                    Some { DS = (v'::ds'); ES=es'; IO=io' }
-                | _ -> None
-            | [] -> None
-        and interpret (p:Program) (e:RTE) : RTE option =
-            match p with
-            | Op op -> interpretOp op e 
-            | Dip p' -> dip p' e 
-            | Data v -> data v e
-            | PSeq s -> seq s e
-            | Cond (pTry, pThen, pElse) -> cond pTry pThen pElse e
-            | Loop (pWhile, pDo) -> loop pWhile pDo e 
-            | Env (pWith, pDo) -> env pWith pDo e 
-            | Prog (_, p') -> interpret p' e 
-            | _ -> None
-
-        let eval p eff s0 = 
-            match interpret p { DS = s0; ES = []; IO = eff } with
-            | Some e' -> Some (e'.DS)
-            | None -> None
-
-
     module FTI =
         open Effects
 
         // A simple finally tagless interpreter.
         //
-        // The main benefit is avoiding runtime parsing within loops. The behavior should
-        // also be more accessible for JIT compilation. We also have fewer intermediate 
-        // 'Some' allocations at runtime. 
+        // The benefit of FTI over direct style is that we avoid runtime parsing within loops,
+        // and the resulting eval function is stable and accessible to .NET JIT compiler. 
         //
-        // Support for acceleration would be a useful, straightforward extension to the 
-        // 'compile' step if more performance is needed for some special use-cases.
+        // However, the current implementation is checking for arity errors and manipulating 
+        // a stack representation at runtime instead of preallocating memory. We currently 
+        // do not optimize the program. Acceleration, memoization, and stowage are not yet 
+        // supported. There is significant room for improvement.
+        //
+        // If performance proves adequate for bootstrap, I'll avoid touching this further.
+        // But if needed, I'll explore other performance enhancements.
 
         /// runtime environment
         ///
@@ -603,7 +316,9 @@ module ProgEval =
             | Cond (pTry, pThen, pElse) -> cond (compile pTry) (compile pThen) (compile pElse)
             | Loop (pWhile, pDo) -> loop (compile pWhile) (compile pDo) 
             | Env (pWith, pDo) -> env (compile pWith) (compile pDo) 
-            | Prog (_, p') -> compile p' 
+            | Prog (_, p') -> 
+                // memoization, stowage, or acceleration could be annotated here.
+                compile p' 
             | _ -> failwithf "unrecognized program %s" (prettyPrint p)
 
         let ioEff (io:IEffHandler) cte cc rte =
@@ -623,11 +338,16 @@ module ProgEval =
             }
 
         let eval (p:Program) (io:IEffHandler) =
-            let cc0 rte = Some (rte.DataStack)
-            let cte0 = { FK = (fun _ -> None); EH = ioEff io; TX = io }
-            let run = compile p cte0 cc0
+            let cc rte = 
+                assert((List.isEmpty rte.DipStack)
+                    && (List.isEmpty rte.EffStateStack)
+                    && (Option.isNone rte.FailureStack)) 
+                Some (rte.DataStack)
+            let cte = { FK = (fun _ -> None); EH = ioEff io; TX = io }
+            let run = compile p cte cc
             run << dataStack
 
-
-    let eval = FTI.eval
+    /// The current favored implementation of eval.
+    let eval : Program -> Effects.IEffHandler -> Value list -> Value list option = 
+        FTI.eval
 

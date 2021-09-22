@@ -79,8 +79,8 @@ let valueMsg = String.concat "\n" [
     "Using `.label` indexes a record, and `[3]` indexes a list, starting at `[0]`."
     "The value for the requested module is loaded then accessed by index."
     ""
-    "Currently, there is no support for providing a program without writing it into"
-    "a file first."
+    "Currently, there is no support for building a value programmatically on the"
+    "command line."
     ""
     "Values are used as part of other commands. See `help`."
     ]
@@ -244,14 +244,17 @@ let print (vstr:string) (pstr:string) : int =
             log logger (Value.variant "value" v)
             EXIT_FAIL
         | Some p ->
-            let e0 : DSI.RTE = { DS = [v]; ES = []; IO = ioEff }
-            match DSI.interpret p e0 with
-            | Some _ -> 
+            match eval p ioEff [v] with
+            | Some [] -> 
                 //logInfo logger (sprintf "print %s with %s - done" vstr pstr)
                 EXIT_OK
             | None ->
                 logInfo logger (sprintf "print %s with %s - aborted in failure" vstr pstr)
                 log logger (Value.variant "value" v)
+                EXIT_FAIL
+            | Some _ ->
+                // should be impossible
+                logError logger (sprintf "program %s stymied the arity checker" vstr)
                 EXIT_FAIL
 
 let arity (pstr:string) : int =
@@ -287,8 +290,7 @@ let test (pstr:string) : int =
         EXIT_FAIL
     | Some p -> 
         let io = composeEff (Testing.ForkEff()) logger
-        let e0 : DSI.RTE = { DS = []; ES = []; IO = io }
-        match DSI.interpret p e0 with
+        match eval p io [] with
         | Some _ ->
             logInfo logger (sprintf "test %s passed" pstr)
             EXIT_OK
