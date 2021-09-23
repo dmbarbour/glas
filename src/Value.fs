@@ -689,15 +689,10 @@ module Value =
                     yield! FTList.toSeq l' |> Seq.collect (fun v -> seq { yield ", "; yield! _ppV false v})
                 | _ -> ()
                 yield "]"
-            | Bits b ->
+            | Bits b when Bits.head b ->
                 if bLRSep then
                     yield " "
-                let blen = Bits.length b
                 yield (Bits.toI b).ToString()
-                if not (Bits.head b) then
-                    // report width only if larger than number 
-                    yield "u"
-                    yield blen.ToString()
             | L v ->
                 yield "L"
                 yield! _ppV true v

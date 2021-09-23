@@ -276,7 +276,7 @@ module Zero =
             }
 
         let loadModule (ll:IEffHandler) (m:string) = 
-            ll.Eff(Value.variant "load" (Value.symbol m))
+            ll.Eff(Value.variant "load" (Value.ofString m))
 
         let private tryOptOpen ll optOpen =
             match optOpen with

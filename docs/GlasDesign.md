@@ -21,7 +21,7 @@ Glas data is modeled as immutable binary trees. Each node may have up to two edg
 
 This trivially supports algebraic products (pairs with both edges), sums (choice of either edge), and the unit value (no edges). However, Glas encourages use of labeled data structures instead of basic products and sums. Labels greatly improve extensibility and documentation of data.
 
-Glas systems encode labels with 'bitstrings', which are long sequences of nodes with only one edge. The label is encoded into the bitstring using UTF-8 with a null terminator. For example, symbol 'path' is represented by the bitstring `01110000 01100001 01110100 01101000 00000000`. A 'symbol' is just the label by itself, but in general we can follow the null terminator with an arbitrary value. Because long bitstrings are very common in Glas systems, we compact bitstrings.
+Glas systems encode labels with 'bitstrings', which are long sequences of nodes with zero or one edge. The label is encoded into the bitstring using UTF-8 with a null terminator. For example, symbol 'path' is represented by the bitstring `01110000 01100001 01110100 01101000 00000000`. A 'symbol' is just the label by itself, but in general we can follow the null terminator with an arbitrary value. Because long bitstrings are very common in Glas systems, we compact bitstrings.
 
         type BitString = (space-optimized) Bool list
         type T1 = BitString * (1 + (T1*T1))
@@ -30,9 +30,9 @@ Glas systems encode labels with 'bitstrings', which are long sequences of nodes 
 
 Labeled products, aka records, are then represented by a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). Common label prefixes will overlap, and the associated value immediately follows the label's null terminator. Labeled sums, or variants, are essentially singleton records. 
 
-Glas systems usually encode natural numbers as bitstrings in MSB to LSB order. For example, the bitstring `10111` represents the number 23. In many cases, we'll favor fixed-width numeric representations, e.g. `00010111` encodes 23 as an 8-bit byte. The standard Glas program model only has operators for natural numbers, but we could also use bitstrings to encode floats and other numeric types. Intmaps, sparse arrays, hashtables, etc. can usefully be encoded as radix trees indexed by fixed-width numbers.
+Bytes are encoded as fixed-width bitstrings, msb to lsb, e.g. `00010111` is an 8-bit byte. Natural numbers are encoded as bitstrings of variable width, eliding the '0' prefix.
 
-Bitstrings are only used for small things. Glas uses lists to encode general sequential structures. Logically, a list is `type List a = (a * List a) | 1`, i.e. a list is constructed of `(Head * Tail)` pairs and terminated with unit `()`. (This encoding is not an algebraic sum type.) However, performance of the direct list representation is awkward for many use-cases. Glas systems tend to use a [finger tree](https://en.wikipedia.org/wiki/Finger_tree) representation for lists, supporting efficient indexing, split, append, and access to both endpoints.
+Glas uses lists to encode general sequential structures. Logically, a list is `type List a = (a * List a) | ()`, i.e. a list is constructed of `(Head * Tail)` pairs and terminated with unit `()`. This encoding is not an algebraic sum type; it requires distinguishing unit values. For performance, Glas systems may implicitly use a [finger tree](https://en.wikipedia.org/wiki/Finger_tree) representation for lists, supporting efficient indexing, split, append, and access to both endpoints.
 
         type T2 = BitString * (1 + (T2 * FingerTree<T2> * NonPairT2))
         type NonPairT2 = 1 + (T2 + T2) // unit, left tree, or right tree.
@@ -166,49 +166,28 @@ A record may have many labels, sharing prefixes. Non-branching path segments can
 
 ### List Operators
 
-A linked list has simple structure, but terrible performance for any use-case except a stack. To solve this, Glas provides a few dedicated operators for lists. This enables the runtime or compiler to transparently substitute a more efficient representation such as a [finger tree](https://en.wikipedia.org/wiki/Finger_tree).
+The basic linked list is a simple structure but has awful performance for any use-case except a data stack. To solve this, Glas systems should transparently represent lists using a [finger tree](https://en.wikipedia.org/wiki/Finger_tree) representation, at least by default, allowing efficient access to both ends and to split ops. This allows immutable lists to be used as arrays or double-ended queues.
 
 * **pushl** (L V -- V:L) - given value and list, add value to left (head) of list
 * **popl** (V:L -- L V) - given a non-empty list, split into head and tail. 
 * **pushr** (L V -- L:V) - given value and list, add value to right of list
 * **popr** (L:V -- L V) - given non-empty list, split into last element and everything else
 * **join** (L1 L2 -- L1+L2) - appends list at top of data stack to the list below it
-* **split** (Lm+Ln |Lm| -- Lm Ln) - given number and list of at least that many elements, produce a pair of sub-lists such that join produces the original list, and the head portion has requested number of elements. Fails if this is not possible.
-* **len** (L -- |L|) - given list, return a number that represents length of list. Uses smallest encoding of number (i.e. no zeroes prefix).
+* **split** (Lm+Ln |Lm| -- Lm Ln) - given number and list of at least that length, produce a pair of sub-lists such that join produces the original list, and the first slice has requested number of elements. Fails if this is not possible.
+* **len** (L -- |L|) - given list, return a number that represents length of list. 
 
 These operators assume a simplistic, Lisp-like representation of lists: `type List = () | (Value * List)`. That is, each list node has either no edges or two edges. In a non-empty list node, edge 0 refers to the head value and edge 1 to the remaining list.
 
-### Bitstring Operators
-
-A bitstring is a specialized list of bits represented by a non-branching path, e.g. `01100101` is a string of 8 bits. Empty bitstrings are permitted. Glas uses bitstrings to represent bytes and 'machine' words, natural numbers, and as a path parameter when constructing records.
-
-List operators:
-
-* **bjoin** - as list join, but for bitstrings
-* **bsplit** - as list split, but for bitstrings
-* **blen** - as list len, but for bitstrings
-
-Bitwise operators:
-
-* **bneg** - bitwise 'not'; flip all bits of one bitstring
-* **bmax** - bitwise 'or' of two bitstrings of equal length
-* **bmin** - bitwise 'and' of two bitstrings of equal length
-* **beq** - bitwise equivalence of two bitstrings of equal length, i.e. 1 where bits match, 0 otherwise. (Negation of 'xor'.)
-
-Bitstring operators fail if assumed conditions are not met, i.e. not a bitstring or not of equal length. Unlike lists, the assumption for bitstrings is that they are relatively small and Glas systems should optimize for compact or fixed-width encodings instead of efficient access to both ends of a large bitstring.
-
-*Aside:* We probably don't need bitwise ops; they're essentially extensions of the arithmetic ops.
-
 ### Arithmetic Operators
 
-Glas encodes natural numbers into bitstrings assuming msb-to-lsb order. For example, `00010111` encodes 23. Although the zeroes prefix `000` doesn't contribute to numeric value, Glas arithmetic operators preserve bitstring field widths. For example, subtracting 17 results in `00000110`.
+Glas encodes natural numbers (0, 1, 2, ...) in base-2 as bitstrings, msb to lsb order, using the fewest possible bits. For example, `10111` encodes 23, but `00010111` is not a valid number because it has an unnecessary zeroes prefix. If input to an arithmetic operator is not a valid number, the operator will fail. Consequently, programmers must explicitly convert between bytes and numbers.
 
-* **add** (N1 N2 -- Sum Carry) - compute sum and carry for two numbers on stack. Sum has field width of N1, carry has field width of N2. Carry can be larger than 1 iff N2 is wider than N1 (e.g. adding 32-bit number to an 8-bit number).
-* **mul** (N1 N2 -- Prod Overflow) - compute product of two numbers on stack. Product has field width of N1, while overflow uses field width of N2. 
-* **sub** (N1 N2 -- Diff) - Computes a non-negative difference (N1 - N2), preserving field width of N1. Fails if result would be negative. This also serves as the comparison operator for natural numbers.
-* **div** (Dividend Divisor -- Quotient Remainder) - If divisor is zero, this operator fails. Compute division of two numbers. Quotient has field width of dividend, and remainder has field width of divisor.
+* **add** (N1 N2 -- Sum) - compute sum of two numbers on stack.
+* **mul** (N1 N2 -- Prod) - compute product of two numbers on stack.
+* **sub** (N1 N2 -- Diff) - computes non-negative difference (N1 - N2). Fails if N2 > N1.
+* **div** (Dividend Divisor -- Quotient Remainder) - computes number of times that divisor can be subtracted from dividend, and remaining value from the dividend. Fails if divisor is zero.
 
-Glas doesn't have built-in support for negative numbers, floating point, etc.. Extending arithmetic will benefit from *Acceleration*.
+Glas is not optimized for number processing, but does provide convenient access to basic bignum arithmetic. It should not be too difficult for programmers to model rational or scientific numbers. High performance number processing will certainly rely on accelerators.
 
 ### Annotations Operators
 
@@ -293,17 +272,11 @@ Glas has implicit, pervasive staging via its module system. Additionally, langua
 
 ### Acceleration
 
-Acceleration is an optimization pattern where we replace an inefficient reference implementation of a function with an optimized implementation. Accelerated code could leverage hardware resources that are difficult to use within normal Glas programs.
+Acceleration is an optimization pattern where we replace an inefficient reference implementation of any function with an optimized implementation. Accelerated code can potentially leverage hardware resources, such as GPGPU or FPGA, that are difficult to directly use within Glas programs. 
 
-For example, we can design a program model for GPGPU, taking notes from OpenCL, CUDA, or Haskell's [Accelerate](https://hackage.haskell.org/package/accelerate). This language should provide a safe (local, deterministic) subset of features available on most GPGPUs. A reference implementation can be implemented using the Glas program model. A hardware-optimized implementation can be developed and validated against the reference.
+The general idea is that we can annotate subprograms for evaluation on specialized hardware. A compiler or interpreter will recognize the annotation and either loudly raise warning or error if it does not support the requested accelerator, or silently substitute an optimized implementation.
 
-Or we design a program model based on Kahn Process Networks. The accelerated implementation could support distributed, parallel, stream-processing computations. The main cost is limiting use of the effects handler.
-
-Accelerators are a high-risk investment because there are portability, security, and consistency concerns for the accelerated implementation. Ability to fuzz-test against a reference is useful for detecting flaws - in this sense, accelerators are better than primitives because they have an executable specification. Carefully selected accelerators can be worth the risk, extending Glas to new problem domains.
-
-To simplify recognition and to resist invisible performance degradation, acceleration must be explicitly annotated via `prog:(do:Program, accel:(...))`. This allows the compiler or interpreter to report when acceleration fails for any reason (i.e. unrecognized, deprecated, or no implementation for current target). 
-
-*Aside:* It is feasible to accelerate subsets of programs that conform to a common structure, thus a model hint could be broader than identifying a specific accelerator.
+Accelerators are a high-risk investment. There are portability, security, and consistency concerns for the accelerated implementation. Fortunately, this is mitigated because we can test and check behavior against a provided reference implementation. But due to the risk, it's better to focus on a few widely useful extensions instead of lots of specialized functions.
 
 ## Thoughts
 
@@ -325,15 +298,9 @@ This allows gradual and ad-hoc structured extension to log messages, e.g. with p
 
 ### Database Modules
 
-It is feasible to design a language module that knows how to 'parse' a database file such as MySQL or LMDB. Developing a few such language modules could simplify tooling for working with large amounts of small to medium sized data.
+It is feasible to design a language module that knows how to parse a structured binary or database file such as MySQL or LMDB or MessagePack. Such languages have several potential benefits. Databases are more scalable than text files. Support for multiple sublanguages is easier with databases instead of indenting or distinguishing texts. Databases are easier to tool with multiple views and visual programming.
 
-### Multi-Language Modules
-
-A language module can explicitly load other language modules to parse certain regions of code into useful values. This is awkward with text-based languages because we must demark sections (e.g. using indentation), but it should well together with database modules. 
-
-### Lazy Evaluation
-
-Laziness is difficult to model in context of effects handlers and backtracking failure. However, it is feasible to model it explicitly and observably, e.g. computing partial data and continuations. Doing so may be worthwhile in certain contexts.
+A concern with database modules is that we'll often need to parse and 'compile' the whole database into a value for Glas modules. This will become more expensive as the database grows larger or is updated more frequently. This can be mitigated by memoization and by modular use of databases.
 
 ### Glas Object
 
@@ -343,27 +310,32 @@ See [Glas Object](GlasObject.md).
 
 ### Gradual Types
 
-By default, Glas does lightweight static arity checks, but there is no sophisticated type system built-in unless language modules introduce one post-bootstrap. Thus, the Glas type system is ultimately user-defined within the module system.
+By default, Glas does lightweight static arity checkss, but there is no sophisticated type system built-in. Language modules can introduce their own type system, type annotations, and safety analyses. Thus, the type system is effectively user-defined.
 
-Glas should work very well with gradual types. Access to program definitions as data enables type checks to be applied post-hoc without invasive modification of existing modules to add annotations. Use of annotations can potentially support several types of types based on different purposes or perspectives. Memoization can provide adequate performance.
-
+Glas should work very well with gradual types. Access to program definitions as data enables type checks to be performed post-hoc, e.g. via assertions in a later module, without invasive modification of existing modules to add annotations. It is also feasible to overlay several type systems, with independent analyses. Memoization and stowage can mitigate redundant checks.
 
 ### Graph Based Data
 
-I've considered using graph based data structures instead of tree based. Similar to the current model, each node in a graph has at most two outbound edges, labeled 0 or 1. Complex labels would be formed by an arc through the graph. The difference is that we can also form directed cycles within this graph. 
-
-I decided against graphs because they are relatively awkward to manipulate with using conventional operators in a purely functional style. Also, most cyclic phenomena is actually fractal or temporal, so the ability for finite graph data to usefully model the phenomena is limited.
-
-Of course, we can still model graph data indirectly using adjacency lists, matrices, DSL programs that construct graphs, or other non-graph structures. And it might be worthwhile to develop some accelerated models for working with graphs when Glas is a little more mature.
+I rejected general graphs as the basic data structure for Glas because trees are more simple and adequate for most use-cases. However, I think it's still a good idea to develop some language modules around the observation and manipulation of abstract graphs. We could implement and eventually accelerate these languages.
 
 ### Program Search
 
-I'm very interested in a style of metaprogramming where programmers express hard and soft constraints and search tactics for a program - respectively representing requirements and desiderata and recommendations - then the system searches for valid solutions. Glas provides a viable foundation, but it's still a distant future. Part of the solution will certainly involve loading 'catalog' modules that index other modules to support search.
+I'm very interested in a style of metaprogramming where programmers express hard and soft constraints and search tactics for a program. For example, each program component would declare constraint variables, describe how to compute a result (or fail) based on the values of those variables, and describe potential ways to assign those variables. Separately, we search for solutions. Glas provides a viable foundation, though the g0 syntax is not suitable for this role.
 
-Because search in context of Glas modules will be deterministic, we cannot rely on non-determinism to learn or stabilize heuristic choices. A challenge will be effective memoization and caching to avoid unnecessary recomputation of choices across minor changes in source.
+A challenge will be achieving effective performance from search in context of deterministic computations. Memoization may help if applied carefully.
 
 ### Provenance Tracking
 
-I'm very interested in potential for automatic provenance tracking, i.e. such that we can robustly trace a value to its contributing sources. However, I still don't have a good idea about how to best approach this across multiple layers of language modules and metaprogramming. One idea is to keep some source metadata with every bit that can be traced back to its few 'best' sources. This seems very expensive, but viable.
+I'm very interested in automatic provenance tracking, i.e. such that we can robustly trace a value to its contributing sources. I still don't have a good idea about how to approach this without huge overheads.
 
+### Bitstring Operators? Dropped.
 
+Each node in a bitstring has one or zero outbound edges, each labeled 0 or 1, forming a string such as `01100101` to represent a byte. Initially, I defined list ops for bitstrings, blen, bjoin, bsplit. Additionally, a few bitwise ops, e.g. bmax is bitwise-or, bmin is bitwise-and, bneg negates each bit, and beq is a negated bitwise-exclusive-or. Seven ops total.
+
+However, in practice I almost never want these operators. The conventional uses of bitwise ops are for representing, observing, and manipulating flags, or possibly bit-banging for cryptography. In Glas systems, flags are instead represented as a record of labels, one label per flag. The list ops aren't very useful since I still need to construct or process bitstrings using loops. Cryptography needs acceleration anyways.
+
+### Simplifying Arithmetic
+
+Originally the arithmetic operators will preserve sizes of bitstring inputs, i.e. producing sum and carry or product and overflow. If we multiply a 16-bit number by a 32-bit number, then product is 16 bits and overflow is 32 bits. If we add an 8-bit number to a 32-bit number, sum is 8 bits and carry is 32 bits. Similarly, quotient and remainder would be sized matching dividend and divisor respectively. 
+
+In theory, this could simplify static analysis of memory requirements. In practice, it is awkward to work around size constraints on numbers by default, especially knowing that lists don't have any particular size limit. I've decided to more simply use variable-size natural numbers in all cases. We can potentially defer fixed-width number processing to an accelerator.

@@ -16,6 +16,13 @@ let randomBits len =
         arr.[ix - 1] <- (0 <> (rng.Next() &&& 1))
     Bits.ofArray arr
 
+let rec eralz b =
+    if Bits.isEmpty b || Bits.head b then b else
+    eralz (Bits.tail b)
+
+let randomNumber () =
+    randomBits (5 * (randomRange 0 20)) |> eralz
+
 let opArray = Array.ofList symOpsList
 let randomOp () = opArray.[rng.Next() % opArray.Length]
 let randomSym = randomOp 
@@ -197,79 +204,50 @@ let test_ops =
                     // lengths
                     let sLen = doEval (Op lLen) noEff [l1] 
                     Expect.equal (sLen) [Value.nat wl1] "length computations"
- 
-            testCase "bitstring ops" <| fun () ->
-                // not sure how to test bitstring ops without reimplementing them...
-                for _ in 1 .. 1000 do
-                    let n = randomRange 0 100
-                    let a = randomBits n
-                    let b = randomBits n
-
-                    let s0 = [Value.ofBits b; Value.ofBits a]
-                    let sNeg = doEval (Op lBNeg) noEff s0
-                    Expect.equal (sNeg) [Value.ofBits (Bits.bneg b); Value.ofBits a] "negated"
-
-                    let ab = Bits.append a b
-                    let sJoin = doEval (Op lBJoin) noEff s0
-                    Expect.equal (sJoin) [Value.ofBits ab] "joined"
-
-                    let sLen = doEval (Op lBLen) noEff s0
-                    Expect.equal (sLen) [Value.nat (uint64 n); Value.ofBits a] "length"
-
-                    let sSplit = doEval (Op lBSplit) noEff [Value.nat (uint64 n); Value.ofBits ab]
-                    Expect.equal (sSplit) [Value.ofBits b; Value.ofBits a] "split"
-
-                    let sMax = doEval (Op lBMax) noEff s0
-                    Expect.equal (sMax) [Value.ofBits (Bits.bmax a b)] "max"
-
-                    let sMin = doEval (Op lBMin) noEff s0
-                    Expect.equal (sMin) [Value.ofBits (Bits.bmin a b)] "min"
-
-                    let sBEq = doEval (Op lBEq) noEff s0
-                    Expect.equal (sBEq) [Value.ofBits (Bits.beq a b)] "beq"
-
-                    // ensure that ops properly fail if given bitstrings of non-equal lengths
-                    let c = randomBits (n + 1)
-                    let ebc = [Value.ofBits b; Value.ofBits c]
-                    failEval (Op lBMax) noEff ebc
-                    failEval (Op lBMin) noEff ebc
-                    failEval (Op lBEq) noEff ebc
 
             testCase "arithmetic" <| fun () ->
                 for _ in 1 .. 1000 do
-                    let a = randomBits (5 * randomRange 0 20)
-                    let b = randomBits (5 * randomRange 0 20)
+                    let a = randomNumber ()
+                    let b = randomNumber () 
 
-                    // the expected results. We aren't testing Arithmetic module here.
-                    // mostly need to check that stack order is right.
-                    let struct(sum,carry) = Arithmetic.add a b
-                    let struct(prod,overflow) = Arithmetic.mul a b
-                    let subOpt = Arithmetic.sub a b
-                    let divOpt = Arithmetic.div a b
+                    // the expected results.
+                    let iA = Bits.toI a
+                    let iB = Bits.toI b
+                    let sum = (iA + iB)
+                    let prod = (iA * iB)
+                    let subOpt = 
+                        if (iA >= iB) 
+                            then Some (iA - iB)
+                            else None
+                    let divOpt =
+                        if (iB <> 0I)
+                            then Some struct(iA / iB, iA % iB ) 
+                            else None
 
+                    // the evaluated results
                     let s0 = [Value.ofBits b; Value.ofBits a]
                     let sAdd = doEval (Op lAdd) noEff s0
                     let sProd = doEval (Op lMul) noEff s0
                     let sSubOpt = eval (Op lSub) noEff s0
                     let sDivOpt = eval (Op lDiv) noEff s0
 
-                    Expect.equal (sAdd) [Value.ofBits carry; Value.ofBits sum] "eq add"
-                    Expect.equal (sProd) [Value.ofBits overflow; Value.ofBits prod] "eq prod"
+                    Expect.equal (sAdd) [Value.ofBits (Bits.ofI sum)] "eq add"
+                    Expect.equal (sProd) [Value.ofBits (Bits.ofI prod)] "eq prod"
                     match sSubOpt, subOpt with
                     | Some sSub, Some diff -> 
-                        Expect.equal (sSub) [Value.ofBits diff] "eq sub"
+                        Expect.equal (sSub) [Value.ofBits (Bits.ofI diff)] "eq sub"
                     | None, None -> 
-                        Expect.isLessThan (Bits.toI a) (Bits.toI b) "negative diff"
+                        Expect.isLessThan (iA) (iB) "negative diff"
                     | _, _ -> 
-                        failtest "inconsistent subtract success" 
+                        failtestf "inconsistent subtract success (%d, %d)" (uint64 iA) (uint64 iB) 
 
                     match sDivOpt, divOpt with
                     | Some sDiv, Some struct(q,r) ->
-                        Expect.equal (sDiv) [Value.ofBits r; Value.ofBits q] "eq div"
+                        Expect.equal (sDiv) ([r; q] |> List.map (Bits.ofI >> Value.ofBits)) "eq div"
                     | None, None -> 
-                        Expect.equal (Bits.toNat64 b) 0UL "div by zero"
+                        Expect.equal iB 0I "div by zero"
                     | _, _ -> 
-                        failtest "inconsistent div success"
+                        failtestf "inconsistent div success (%d, %d)" (uint64 iA) (uint64 iB)
 
 
             testCase "data" <| fun () ->
@@ -281,14 +259,14 @@ let test_ops =
             testCase "seq" <| fun () ->
                 let p = mkSeq [Op lCopy; Data (Value.symbol "foo"); Op lGet; 
                                Op lSwap; Data (Value.symbol "bar"); Op lGet; 
-                               Op lMul; Op lSwap; Op lBJoin]
+                               Op lMul]
                 for _ in 1 .. 1000 do
-                    let a = randomBits (5 * randomRange 0 20)
-                    let b = randomBits (5 * randomRange 0 20)
+                    let a = randomNumber ()
+                    let b = randomNumber ()
                     let r0 = Value.asRecord ["foo";"bar"] [Value.ofBits a; Value.ofBits b]
                     let s' = doEval p noEff [r0]
-                    let struct(prod, overflow) = Arithmetic.mul a b
-                    Expect.equal (s') [Value.ofBits (Bits.append overflow prod)] "expected seq result"
+                    let expectProd = Bits.ofI ((Bits.toI a) * (Bits.toI b))
+                    Expect.equal (s') [Value.ofBits expectProd] "expected seq result"
 
             testCase "dip" <| fun () ->
                 for _ in 1 .. 10 do
@@ -306,60 +284,28 @@ let test_ops =
                     let b = byte <| rng.Next ()
                     let c = if (a > b) then (a - b) else (b - a)
                     //printf "a=%d, b=%d, c=%d\n" a b c
-                    let sAbs = doEval abs noEff [Value.u8 b; Value.u8 a]
-                    Expect.equal (sAbs) [Value.u8 c] "expected abs diff"
+                    let sAbs = doEval abs noEff [Value.nat (uint64 b); Value.nat (uint64 a)]
+                    Expect.equal (sAbs) [Value.nat (uint64 c)] "expected abs diff"
 
 
             testCase "loop" <| fun () ->
-                // loop program: filter a list of bytes for range 32..126.
-                // this sort of behavior is quite awkward to express w/o dedicated syntax.
+                // testing loop via simple fibonacci function.
+                //  1 1 2 3 5 8 ...
+                // First argument is index into sequence.
 
-                let pFilterMap pFN =
-                    mkSeq [Data Value.unit
-                          ;Loop (Dip (Op lPopl)
-                                ,Cond(Dip pFN
-                                ,mkSeq[Op lSwap; Op lPushr]
-                                ,Dip (Op lDrop)))
-                          ;Dip (Op lDrop)
+                let zero = Value.unit
+                let one = Value.ofBits (Bits.ofList [true])
+                let pfib =
+                    mkSeq [Dip (mkSeq [Data zero; Data one])
+                          ;Loop (mkSeq [Data one; Op lSub]
+                                ,Dip (mkSeq [Op lCopy; Dip (Op lAdd); Op lSwap]))
+                          ; Data (Value.unit); Op lEq; Dip (Op lDrop)
                           ]
 
-                // verify the filterMap loop has some expected behaviors
-                let lTestFM = randomBytes 10
-                let sAll = doEval (pFilterMap Nop) noEff [lTestFM]
-                Expect.equal (sAll) [lTestFM] "filter accepts everything"
-                let sNone = doEval (pFilterMap (Op lFail)) noEff [lTestFM]
-                Expect.equal (sNone) [Value.unit] "filter accepts nothing"
-
-                let inRange lb ub = 
-                    mkSeq [Op lCopy; Data (Value.u8 lb); Op lSub; Op lDrop
-                          ;Cond(mkSeq [Data (Value.u8 ub); Op lSub], Op lFail, Nop)]
-                let pOkByte = inRange 32uy 127uy
-                let okByte b =
-                    match b with
-                    | Value.U8 n -> (32uy <= n) && (n <= 126uy)
-                    | _ -> false 
-                for x in 0uy .. 255uy do
-                    // check our byte predicate
-                    match eval pOkByte noEff [Value.u8 x] with
-                    | Some sP -> 
-                        //printfn "byte %d accepted\n" x 
-                        Expect.isTrue (okByte (Value.u8 x)) "accepted byte"
-                        Expect.equal (sP) [Value.u8 x] "identity behavior"
-                    | None ->
-                        //printf "byte %d rejected\n" x
-                        Expect.isFalse (okByte (Value.u8 x)) "rejected byte"
-
-                let pLoop = pFilterMap pOkByte
-                for _ in 1 .. 100 do
-                    let l0 = randomBytes 100
-                    // our filtered list (via F#)
-                    let lF = l0 |> Value.toFTList 
-                                |> FTList.toList 
-                                |> List.filter okByte
-                                |> FTList.ofList 
-                                |> Value.ofFTList    
-                    let sLoop = doEval pLoop noEff [l0]
-                    Expect.equal (sLoop) [lF] "equal filtered lists"
+                let n = 16
+                let fibn = 1597
+                let r = doEval pfib noEff [Value.nat (uint64 n)] 
+                Expect.equal [Value.nat (uint64 fibn)] r  "fibonacci loop"
 
             testCase "toplevel eff" <| fun () ->
                 let varSym s = mkSeq [Dip (Data Value.unit); Data (Value.symbol s); Op lPut]
@@ -392,12 +338,12 @@ let test_ops =
                 // behavior for 'env': 
                 //  increment an effects counter
                 //  rename "oops" effects to "log" and vice versa.
-                let pInc = mkSeq [Data (Value.nat 1UL); Op lAdd; Op lDrop] // fixed-width increment
+                let pInc = mkSeq [Data (Value.nat 1UL); Op lAdd] // increment counter
                 let varSym s = mkSeq [Dip (Data Value.unit); Data (Value.symbol s); Op lPut]
                 let getSym s = mkSeq [Data (Value.symbol s); Op lGet]
                 let pRN s1 s2 = Cond (getSym s1, varSym s2
                                      ,Cond(getSym s2, varSym s1, Nop))
-                let withCRN s1 s2 p = mkSeq [ Data (Value.u8 0uy)
+                let withCRN s1 s2 p = mkSeq [ Data (Value.unit)
                                     ; Env (mkSeq [ pInc; Dip (mkSeq [pRN s1 s2; Op lEff])] 
                                           ,p)]
                 let tryOp p = Cond (p, Nop, Nop)
@@ -412,7 +358,7 @@ let test_ops =
                     let sLog = doEval pTest eff [a;b;c]
                     Expect.isFalse (eff.InTX) "completed transactions"
                     Expect.equal (FTList.toList eff.Outputs) [b] "expected messages"
-                    Expect.equal (sLog) [Value.u8 1uy; a; Value.unit; c] "expected results"
+                    Expect.equal (sLog) [Value.nat 1UL; a; Value.unit; c] "expected results"
 
             testCase "prog" <| fun () ->
                 for _ in 1 .. 10 do

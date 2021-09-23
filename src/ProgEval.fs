@@ -129,78 +129,39 @@ module ProgEval =
                 cc { rte with DataStack = ((nat (FTList.length l))::ds') }
             | _ -> cte.FK rte 
 
-        let bjoin cte cc rte =
-            match rte.DataStack with
-            | ((Bits b)::(Bits a)::ds') ->
-                cc { rte with DataStack = ((ofBits (Bits.append a b))::ds') }
-            | _ -> cte.FK rte
-
-        let bsplit cte cc rte = 
-            match rte.DataStack with
-            | ((Nat n)::(Bits ab)::ds') when (uint64 (Bits.length ab) >= n) ->
-                let (a,b) = Bits.splitAt (int n) ab
-                cc { rte with DataStack = ((ofBits b)::(ofBits a)::ds') }
-            | _ -> cte.FK rte
-
-        let blen cte cc rte = 
-            match rte.DataStack with
-            | ((Bits b)::ds') ->
-                cc { rte with DataStack = ((nat (uint64 (Bits.length b)))::ds') }
-            | _ -> cte.FK rte
-
-        let bneg cte cc rte = 
-            match rte.DataStack with
-            | ((Bits b)::ds') ->
-                cc { rte with DataStack = ((ofBits (Bits.bneg b))::ds') }
-            | _ -> cte.FK rte
-
-        let bmax cte cc rte = 
-            match rte.DataStack with
-            | ((Bits b)::(Bits a)::ds') when (Bits.length a = Bits.length b) ->
-                cc { rte with DataStack = ((ofBits (Bits.bmax a b))::ds') }
-            | _ -> cte.FK rte
-
-        let bmin cte cc rte = 
-            match rte.DataStack with
-            | ((Bits b)::(Bits a)::ds') when (Bits.length a = Bits.length b) ->
-                cc { rte with DataStack = ((ofBits (Bits.bmin a b))::ds') }
-            | _ -> cte.FK rte
-        
-        let beq cte cc rte = 
-            match rte.DataStack with
-            | ((Bits b)::(Bits a)::ds') when (Bits.length a = Bits.length b) ->
-                cc { rte with DataStack = ((ofBits (Bits.beq a b))::ds') }
-            | _ -> cte.FK rte
+        let inline (|Num|_|) v =
+            match v with
+            | Bits b when Bits.isEmpty b || Bits.head b -> Some (Bits.toI b)
+            | _ -> None
+        let inline Num i = i |> Bits.ofI |> Value.ofBits
 
         let add cte cc rte = 
             match rte.DataStack with
-            | ((Bits n2)::(Bits n1)::ds') ->
-                let struct(sum,carry) = Arithmetic.add n1 n2
-                cc { rte with DataStack = ((ofBits carry)::(ofBits sum)::ds') }
+            | ((Num n2)::(Num n1)::ds') ->
+                cc { rte with DataStack = ((Num (n1 + n2))::ds') }
             | _ -> cte.FK rte
 
         let mul cte cc rte = 
             match rte.DataStack with
-            | ((Bits n2)::(Bits n1)::ds') ->
-                let struct(prod,overflow) = Arithmetic.mul n1 n2
-                cc { rte with DataStack = ((ofBits overflow)::(ofBits prod)::ds') }
+            | ((Num n2)::(Num n1)::ds') ->
+                cc { rte with DataStack = ((Num (n1 * n2))::ds') }
             | _ -> cte.FK rte
 
         let sub cte cc rte = 
             match rte.DataStack with
-            | ((Bits n2)::(Bits n1)::ds') ->
-                match Arithmetic.sub n1 n2 with
-                | Some diff -> cc { rte with DataStack = ((ofBits diff)::ds') }
-                | None -> cte.FK rte
+            | ((Num n2)::(Num n1)::ds') ->
+                let iDiff = n1 - n2
+                if iDiff.Sign >= 0 
+                    then cc { rte with DataStack = ((Num iDiff)::ds') }
+                    else cte.FK rte
             | _ -> cte.FK rte
 
         let div cte cc rte = 
             match rte.DataStack with
-            | ((Bits divisor)::(Bits dividend)::ds') ->
-                match Arithmetic.div dividend divisor with
-                | Some struct(quotient, remainder) ->
-                    cc { rte with DataStack = ((ofBits remainder)::(ofBits quotient)::ds') }
-                | None -> cte.FK rte
+            | ((Num divisor)::(Num dividend)::ds') when (divisor.Sign <> 0) ->
+                let mutable remainder = Unchecked.defaultof<bigint> // assigned byref
+                let quotient = bigint.DivRem(dividend, divisor, &remainder)
+                cc { rte with DataStack = ((Num remainder)::(Num quotient)::ds') }
             | _ -> cte.FK rte
 
         let fail cte _ = // rte implicit
@@ -216,8 +177,6 @@ module ProgEval =
             ; (lGet, get); (lPut, put); (lDel, del)
             ; (lPushl, pushl); (lPopl, popl); (lPushr, pushr); (lPopr, popr)
             ; (lJoin, join); (lSplit, split); (lLen, len)
-            ; (lBJoin, bjoin); (lBSplit, bsplit); (lBLen, blen)
-            ; (lBNeg, bneg); (lBMax, bmax); (lBMin, bmin); (lBEq, beq)
             ; (lAdd, add); (lMul, mul); (lSub, sub); (lDiv, div)
             ] |> Map.ofList
 

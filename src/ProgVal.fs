@@ -24,13 +24,6 @@ module ProgVal =
     let lJoin = label "join"
     let lSplit = label "split"
     let lLen = label "len"
-    let lBJoin = label "bjoin"
-    let lBSplit = label "bsplit"
-    let lBLen = label "blen"
-    let lBNeg = label "bneg"
-    let lBMax = label "bmax"
-    let lBMin = label "bmin"
-    let lBEq = label "beq"
     let lAdd = label "add"
     let lMul = label "mul"
     let lSub = label "sub"
@@ -38,11 +31,10 @@ module ProgVal =
 
     let symOpsList = 
         [ lCopy; lSwap; lDrop
-        ; lEq; lFail
-        ; lEff
+        ; lEq; lFail; lEff
         ; lGet; lPut; lDel
-        ; lPushl; lPopl; lPushr; lPopr; lJoin; lSplit; lLen
-        ; lBJoin; lBSplit; lBLen; lBNeg; lBMax; lBMin; lBEq
+        ; lPushl; lPopl; lPushr; lPopr
+        ; lJoin; lSplit; lLen
         ; lAdd; lMul; lSub; lDiv
         ]
 
@@ -239,15 +231,8 @@ module ProgVal =
         ; (lJoin, ar 2 1)
         ; (lSplit, ar 2 2)
         ; (lLen, ar 1 1)
-        ; (lBJoin, ar 2 1)
-        ; (lBSplit, ar 2 2)
-        ; (lBLen, ar 1 1)
-        ; (lBNeg, ar 1 1)
-        ; (lBMax, ar 2 1)
-        ; (lBMin, ar 2 1)
-        ; (lBEq, ar 2 1)
-        ; (lAdd, ar 2 2)
-        ; (lMul, ar 2 2)
+        ; (lAdd, ar 2 1)
+        ; (lMul, ar 2 1)
         ; (lSub, ar 2 1)
         ; (lDiv, ar 2 2)
         ] |> Map.ofList

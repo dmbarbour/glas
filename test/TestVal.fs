@@ -278,13 +278,11 @@ let tests =
             Expect.equal "\"\\n\\\"Hello, world!\\\"\\a\\t\\v\\r\\x1B\\x7F\"" spp "pretty printing ugly strings"
 
         testCase "printing numbers" <| fun () ->
-            Expect.equal "23u8" (prettyPrint (u8 23uy)) "print bytes"
-            Expect.equal "5432u16" (prettyPrint (u16 5432us)) "print shorts"
-            Expect.equal "23" (prettyPrint (nat 23UL)) "printing nats"
+            Expect.equal "23" (prettyPrint (nat 23UL)) "print numbers"
             Expect.equal "42" (prettyPrint (nat 42UL)) "printing more nats"
 
         testCase "printing basic pairs and sums data" <| fun () ->
-            Expect.equal "(() . 0u1)" (prettyPrint (pair unit (left unit))) "pulu"
+            Expect.equal "(() . L())" (prettyPrint (pair unit (left unit))) "pulu"
             Expect.equal "R[()]" (prettyPrint (right (pair unit unit))) "rpuu"
             Expect.equal "RL(() . 1)" (prettyPrint (right (left (pair unit (right unit))))) "rlpuru"
 
@@ -293,12 +291,13 @@ let tests =
             Expect.equal "text:msg:\"hello, world!\"" (prettyPrint (variant "text" (variant "msg" (ofString "hello, world!")))) "text"
 
         testCase "printing lists" <| fun () -> 
-            Expect.equal "[1u8, 2u8, 127u8, 128, 254, 255]" (prettyPrint (ofBinary [|1uy;2uy;127uy;128uy;254uy;255uy|])) "binary"
-            Expect.equal "\"Ok\"" (prettyPrint (ofBinary [|byte 'O'; byte 'k'|])) "strings"
+            let l = [1;2;127;128;254;255] |> List.map (uint64 >> Value.nat) |> FTList.ofList |> Value.ofFTList
+            Expect.equal "[1, 2, 127, 128, 254, 255]" (prettyPrint l) "list of numbers"
+            Expect.equal "\"Ok\"" (prettyPrint (ofBinary [|byte 'O'; byte 'k'|])) "looks like a string"
 
         testCase "printing records" <| fun () ->
-            let v = asRecord ["foo"; "bar"; "baz"; "qux"; "gort"] (List.map (byte >> u8) [1 .. 5])
-            let ppv = "(bar:2u8, baz:3u8, foo:1u8, gort:5u8, qux:4u8)"
+            let v = asRecord ["foo"; "bar"; "baz"; "qux"; "gort"] (List.map (uint64 >> Value.nat) [1 .. 5])
+            let ppv = "(bar:2, baz:3, foo:1, gort:5, qux:4)"
             Expect.equal ppv (prettyPrint v) "record"
 
     ]

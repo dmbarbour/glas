@@ -188,10 +188,10 @@ module LoadModule =
                 match v with
                 | Value.Variant "load" vLoad ->
                     match vLoad with
-                    | Value.AnyVariant (s,U) ->
-                        ll.LoadModule s
+                    | Value.String m ->
+                        ll.LoadModule m
                     | _ -> 
-                        logWarn ll (sprintf "unrecognized module identifier %s" (Value.prettyPrint vLoad)) 
+                        logWarn ll (sprintf "unrecognized module %s (expect string)" (Value.prettyPrint vLoad)) 
                         None
                 | Value.Variant "log" vMsg ->
                     // add filepath to log messages
