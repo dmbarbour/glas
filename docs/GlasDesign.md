@@ -60,7 +60,7 @@ A consequence of this design is that the compiler logic is fully accessible with
 
 ## Glas Programs
 
-Glas defines a standard program model designed for staging, composition, and compilation of programs, while being easy to interpret. This model is used when defining language modules, streaming binaries, automated tests, and is suitable for transaction machine applications. However, it is possible to support many other program models within a mature Glas system via binary extraction or acceleration.
+Glas defines a standard program model designed for staging, composition, and compilation of programs, while being easy to interpret. This model is used when defining language modules, binary extraction, automated tests, and is suitable for transaction machine applications. However, it is possible to support many other program models within a mature Glas system via binary extraction or acceleration.
 
 Glas programs are stack-based. Valid Glas programs have static stack arity, i.e. branches are balanced and loops are stack-invariant. To detect errors ahead-of-time where feasible, other ad-hoc type safety analyses are recommended but not required. In general, Glas programs are responsible for verifying other Glas programs. 
 
@@ -222,27 +222,31 @@ A language may expose these effects to the programmer in context of compile-time
 
 ### Data Printer 
 
-The command-line tool will support serialization of module system values to binary. A data printer is an arity 1--0 function with an effect to write binary data fragments. Additionally, the printer may output log messages. In common use, binary data is written to stdout and log messages are written to stderr.
+A viable command-line interface for extraction of binary data from the Glas module system is `glas print (ValueRef) with (ValueRef)`. Here a ValueRef is a dotted path into the module system, such as `std.print`. The referenced printer should be an arity 1--0 function with an effect to write binary data fragments. Additionally, the printer may output log messages. In normal use, binary data will be written to stdout and log messages to stderr. Effects API:
 
-* **write:Binary** - addend binary data - a list of bytes - to the output stream. Response is unit, or fails if argument is not valid binary.
-* **log:Message** - Response is unit. Arbitrary output message, useful for progress reports or debugging.
+* **write:Binary** - Write binary data (list of bytes) to stdout. Response is unit. Fails if argument is not binary.
+* **log:Message** - Arbitrary log message to stderr. Useful for progress reports or debugging.
 
-Printers are usually not interpreted atomically at the top level. It's possible to write several megabytes before a program fails. A failure will usually be reported by exit code. Of course, we could write within a `try` clause whenever we want atomicity. 
-
-### Automated Testing
-
-Language modules implicitly support ad-hoc deterministic testing, such as static assertions and unit tests. It is feasible to simulate non-determinism. However, for robust testing of general simulations, it is useful to expose non-deterministic choice to the test system. This program would be evaluated with no inputs. Effects API:
-
-* **log:Message** - output arbitrary message to log for debugging purposes.
-* **fork:Count** - read and return a random bitstring of Count bit length.
-
-Exposing non-determinism with 'fork' supports incremental computing with backtracking or use of static analysis and heuristics to focus on cases that have a chance of failing. Glas system tooling should be able to compile modules whose names start with `test` to obtain a zero-arity `(test:Program, ...)` that is evaluated with access to 'fork'. 
+The printer will immediately write outputs unless it's within a 'try' or 'while' clause, in which case writes are buffered in case of failure. Thus, it is possible to produce several megabytes of data before failing, or to buffer everything and print at the end, depending on how the printer is defined.
 
 ### User Applications
 
 With backtracking conditionals, Glas programs are a good fit transaction machines, i.e. where an application is represented by a transaction that the system will run repeatedly. Transaction machines have many benefits and are an excellent fit for my long-term vision of live coding and reactive systems. I'm developing this idea in the [Glas Apps](GlasApps.md) document. 
 
 The Glas command-line tool should provide an option to run a console application without requiring full compilation and binary extraction. Whether this uses an interpreter or JIT compiler would be left to the tool.
+
+### Automated Testing
+
+Glas languages should support static assertions and other lightweight tests and checks. However, build-time tests are under pressure to resolve swiftly, and will tend to tread the same ground repeatedly. For long-running tests such as fuzz-testing, we need a different solution.
+
+I propose to write *background tests* into log messages of form `(test:Program, ...)`. The test program should be 0--Any arity, and the primary outcome is pass/fail of evaluation. Supported effects are log and fork:
+
+* **log:Message** - Response is unit. Write an arbitrary message to support debugging of tests.
+* **fork** - Response is a non-deterministic boolean - a '0' or '1' bitstring.
+
+Use of 'fork' can simulate race conditions or random inputs to a test. However, fork outcomes are not necessarily fair or random. A test system may use heuristics and program analysis to search for forks that are more likely to lead to test failure.
+
+A failed background test would not directly prevent the system from running, but can be recorded to indicate health of the system to developers, and perhaps accessed via reflection on the system.
 
 ## Performance
 
@@ -260,23 +264,35 @@ Glas programs can use annotations to guide use of stowage. Stowage may also be i
 
 *Note:* Deduplication is [security sensitive](https://tahoe-lafs.readthedocs.io/en/tahoe-lafs-1.12.1/convergence-secret.html). If we must secure the content, we will want to add a cryptographic salt before encryption.
 
-### Partial Evaluation
-
-Glas is designed to simplify partial evaluation: Linking is static. Stack allocation is static. Static record paths are readily distinguishable from dynamic record fields. Effects handlers can be inlined and partially applied, including a top-level compiler-provided handler. 
-
-However, partial evaluation is fragile unless supported by annotations. Robust partial evaluation benefits from type-system hints: we can require certain record fields or stack elements to be statically computable. Conveniently, it is easy to verify partial evaluation - we need only to try partial evaluation and see. 
-
-### Staged Metaprogramming
+### Staged Metaprogramming and Partial Evaluation
 
 Glas has implicit, pervasive staging via its module system. Additionally, language modules can provide staging within a module, assuming the language includes a program interpreter. The g0 language, used in bootstrap, has support for staged metaprogramming via macros and an export function.
 
+Staging supports manual partial evaluation. More implicitly, the Glas program model is also designed to support partial evaluation: Linking is static. Stack allocation is static. It is feasible to distinguish static record fields. Effects handlers can be inlined and partially applied, including the top-level compiler-provided handler.
+
+Further, annotations can indicate where partial evaluation is assumed so we can properly warn programmers when it fails.
+
 ### Acceleration
 
-Acceleration is an optimization pattern where we replace an inefficient reference implementation of any function with an optimized implementation. Accelerated code can potentially leverage hardware resources, such as GPGPU or FPGA, that are difficult to directly use within Glas programs. 
+Acceleration is an optimization pattern. The general idea to annotate subprograms for accelerated evaluation, then a compiler or interpreter should recognize the annotation and silently substitute an optimized implementation called an accelerator. If the acceleration is not supported, the compiler raises warnings to prevent silent performance degradation.
 
-The general idea is that we can annotate subprograms for evaluation on specialized hardware. A compiler or interpreter will recognize the annotation and either loudly raise warning or error if it does not support the requested accelerator, or silently substitute an optimized implementation.
+Abstract CPUs are a useful pattern for acceleration. Instead of accelerating twenty floating-point math functions independently, accelerate evaluation of a bytecode for an abstract CPU that features floating-point registers. Use the bytecode to implement those twenty functions, and perhaps many more. The accelerator may optionally require that bytecode is a static parameter support ahead-of-time compilation or non-local evaluation on a GPGPU.
 
-Accelerators are a high-risk investment. There are portability, security, and consistency concerns for the accelerated implementation. Fortunately, this is mitigated because we can test and check behavior against a provided reference implementation. But due to the risk, it's better to focus on a few widely useful extensions instead of lots of specialized functions.
+The compiler or interpreter may provide specialized data representations to mitigate data conversion and validation overheads when moving data between accelerated operations. Type annotations can guard against accidental data conversions. Thus accelerators essentially extend their host with new performance primitives - functions and types both - without complicating formal semantics. 
+
+The cost of acceleration is implementation complexity, greater entanglement with the compiler, and related risks to correctness, security, and portability. Nonetheless, this tradeoff is worthwhile when it enables Glas to be used in problem domains where its performance is otherwise unacceptable. Glas will rely on acceleration to effectively support compression, cryptography, image rendering, machine learning, physics simulations, and many other problem domains. 
+
+### Distributed Computation
+
+For computation at larger scales, it is feasible to *accelerate* evaluation of observably deterministic concurrency models such as [Kahn Process Networks](https://en.wikipedia.org/wiki/Kahn_process_networks) or [Lafont Interaction Nets](https://en.wikipedia.org/wiki/Interaction_nets). The accelerator would distribute the computation across multiple processors, perhaps across a mesh network. 
+
+Accelerated subprograms don't need to be pure. However, in context of a distributed systems, channeling all effects through the 'eff' operator is awkward and easily becomes a synchronization bottleneck. Fortunately, for build-time computations (e.g. language modules, data printers) the effects are very limited and this is unlikely to become a problem. If we need concurrent external interaction after build-time, we can solve it in the application model.
+
+Build-time computations have minimal external effects - e.g. language modules (log and load) or data printers (log and write), thus distributed computations
+
+ (log and load or log and write) this is unlikely to become an issue in general.
+
+where effects are log and load, or printing binary data, this is unlikely to become a problem.
 
 ## Thoughts
 

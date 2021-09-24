@@ -167,8 +167,8 @@ module ProgEval =
         let fail cte _ = // rte implicit
             cte.FK 
 
-        let eff cte = // cc rte implicit
-            (cte.EH) cte
+        let eff cte cc = // rte implicit
+            (cte.EH) cte cc
 
         // symbolic ops except for 'eff' are covered here
         let opMap<'A> : Map<Bits,Op<'A>> =
@@ -233,10 +233,10 @@ module ProgEval =
             beginTX cte (opTry { cte with FK = ccElse } ccThen)
 
         let loop<'A> (opWhile:Op<'A>) (opDo:Op<'A>) cte cc0 =
-            let ccHalt = abortTX cte cc0
-            let cycleRef = ref ccHalt
+            let cycleRef = ref cc0
             let ccRepeat rte = (!cycleRef) rte
             let ccDo = commitTX cte (opDo cte ccRepeat) 
+            let ccHalt = abortTX cte cc0
             let ccWhile = beginTX cte (opWhile { cte with FK = ccHalt } ccDo)
             cycleRef := ccWhile // close the loop
             ccWhile
@@ -271,7 +271,7 @@ module ProgEval =
                 | None -> failwithf "(internal compile error) unhandled op %s" (prettyPrint p)
             | Dip p' -> dip (compile p') 
             | Data v -> data v 
-            | PSeq s -> pseq (FTList.map compile s)
+            | PSeq ps -> pseq (FTList.map compile ps)
             | Cond (pTry, pThen, pElse) -> cond (compile pTry) (compile pThen) (compile pElse)
             | Loop (pWhile, pDo) -> loop (compile pWhile) (compile pDo) 
             | Env (pWith, pDo) -> env (compile pWith) (compile pDo) 
