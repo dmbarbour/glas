@@ -22,31 +22,35 @@ module LoadModule =
     let private matchModuleName (m:ModuleName) (fullPath:FilePath) : bool =
         Path.GetFileName(fullPath).Split('.').[0] = m
 
-    /// Return files that match module name within a folder.
-    /// This includes a public module within a subfolder.
-    let findModuleInFolder (m:ModuleName) (dir:FolderPath) : FilePath list =
-        if not (Directory.Exists(dir)) then [] else
-        let subDir = Path.Combine(dir, m) 
-        let folders =
-            if not (Directory.Exists(subDir)) then Seq.empty else
-            Directory.EnumerateFiles(subDir) |> Seq.filter (matchModuleName "public")
-        let files = Directory.EnumerateFiles(dir) |> Seq.filter (matchModuleName m)
-        Seq.append folders files |> Seq.toList
+    let private findModuleFile (m:ModuleName) (dir:FolderPath) : FilePath list =
+        Directory.EnumerateFiles(dir) |> Seq.filter (matchModuleName m) |> List.ofSeq
 
-    /// Return first matching files for directories on GLAS_PATH.
-    /// Does not continue searching GLAS_PATH after a match is found.
-    let rec findModuleInPathList (m:ModuleName) (dirs: FolderPath list) : FilePath list =
-        match dirs with 
-        | d::dirs' -> 
-            let dm = findModuleInFolder m d 
-            if not (List.isEmpty dm) then dm else
-            findModuleInPathList m dirs'
-        | [] -> []
+    let private findModuleFolder (m:ModuleName) (dir:FolderPath) : FilePath list =
+        let subdir = Path.Combine(dir,m)
+        if not (Directory.Exists(subdir)) then [] else
+        match findModuleFile "public" subdir with
+        | [] -> [Path.Combine(subdir, "public.g0")] // missing file
+        | files -> files
 
-    let readGlasPath () : FolderPath list =
+    let findModuleLocal (m:ModuleName) (dir:FolderPath) : FilePath list =
+        List.append (findModuleFile m dir) (findModuleFolder m dir)
+
+    let findModuleGlobal (m:ModuleName) : FilePath list =
         let envPath = Environment.GetEnvironmentVariable("GLAS_PATH")
         if isNull envPath then [] else
-        envPath.Split(';', StringSplitOptions.None) |> List.ofArray
+        let rec searchPath ds =
+            match ds with
+            | [] -> []
+            | (d::ds') ->
+                match findModuleFolder m d with
+                | [] -> searchPath ds'
+                | files -> files
+        envPath.Split(';', StringSplitOptions.None) |> List.ofArray |> searchPath
+    
+    let findModule (m:ModuleName) (dir0:FolderPath) : FilePath list =
+        match findModuleLocal m dir0 with
+        | [] -> findModuleGlobal m
+        | files -> files
 
     // wrap a compiler function for arity 1--1
     let private _compilerFn (p:Program) (ll:IEffHandler) =
@@ -134,7 +138,7 @@ module LoadModule =
                 try fp |> File.ReadAllBytes |> Value.ofBinary |> Some
                 with 
                 | e -> 
-                    logError ll (sprintf "exception while loading file %s:  %A" fp e)
+                    logError ll (sprintf "error loading file %s:  %A" fp e)
                     None
             List.foldBack appLang langs v0
 
@@ -164,10 +168,9 @@ module LoadModule =
                 match ll.Loading with
                 | [] -> Directory.GetCurrentDirectory()
                 | (hd::_) -> Path.GetDirectoryName(hd)
-            let searchPath = localDir :: readGlasPath()
-            match findModuleInPathList m searchPath with
+            match findModule m localDir with
             | [] -> 
-                logWarn ll (sprintf "module %s not found (searched %s)" m (String.concat ", " searchPath))
+                logWarn ll (sprintf "module %s not found" m)
                 None
             | [fp] ->
                 logInfo ll (sprintf "loading module %s from file %s" m fp) 
@@ -223,13 +226,10 @@ module LoadModule =
     let nonBootStrapLoader (nle : IEffHandler) : Loader =
         Loader(_builtInG0, nle)
 
-
     let private _findG0 ll =
-        // only bootstrap from GLAS_PATH.
-        match findModuleInPathList "language-g0" (readGlasPath()) with
+        match findModuleGlobal "language-g0" with
         | [fp] -> Some fp
         | [] -> 
-            logError ll "bootstrap failed: language-g0 not found on GLAS_PATH"
             None
         | ambList ->
             logError ll (sprintf "bootstrap failed: language-g0 ambiguous: %s" (String.concat ", " ambList))
@@ -239,7 +239,7 @@ module LoadModule =
     /// module for the loader.
     let tryBootStrapLoader (nle : IEffHandler) : Loader option = 
         match _findG0 nle with
-        | None -> None
+        | None -> None 
         | Some fp ->
             let ll0 = nonBootStrapLoader nle
             match _expectCompiler ll0 "language-g0 via built-in g0" (ll0.LoadFile fp) with

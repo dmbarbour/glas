@@ -299,6 +299,7 @@ module Glas.TestGlasZero
         "prog gcd [eralz [neq-zero] [copy [swap] dip mod] while-do drop eralz]"
         ]
 
+    (*
     [<Tests>]
     let testCompile =
         testCase "gcd and its dependencies" <| fun () ->
@@ -348,3 +349,4 @@ module Glas.TestGlasZero
             Expect.equal eGCD [Value.nat 21UL] "gcd computed "
 
 
+*)

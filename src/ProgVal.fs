@@ -17,25 +17,11 @@ module ProgVal =
     let lGet = label "get"
     let lPut = label "put"
     let lDel = label "del"
-    let lPushl = label "pushl"
-    let lPopl = label "popl"
-    let lPushr = label "pushr"
-    let lPopr = label "popr"
-    let lJoin = label "join"
-    let lSplit = label "split"
-    let lLen = label "len"
-    let lAdd = label "add"
-    let lMul = label "mul"
-    let lSub = label "sub"
-    let lDiv = label "div"
 
     let symOpsList = 
         [ lCopy; lSwap; lDrop
         ; lEq; lFail; lEff
         ; lGet; lPut; lDel
-        ; lPushl; lPopl; lPushr; lPopr
-        ; lJoin; lSplit; lLen
-        ; lAdd; lMul; lSub; lDiv
         ]
 
     let symOpsRec =
@@ -72,20 +58,20 @@ module ProgVal =
     let Nop = lv lSeq unit
 
     let Dip v = lv lDip v
-    let inline (|Dip|_|) v =
+    let (|Dip|_|) v =
         match v with
         | Stem lDip p -> Some p
         | _ -> None
 
     let Data v = lv lData v
-    let inline (|Data|_|) v =
+    let (|Data|_|) v =
         match v with
         | Stem lData vData -> Some vData
         | _ -> None
     
     // adding 'P' prefix to avoid conflict with F# Seq
     let PSeq lV = lv lSeq (ofFTList lV)
-    let inline (|PSeq|_|) v =
+    let (|PSeq|_|) v =
         match v with
         | Stem lSeq (FTList lV) -> Some lV
         | _ -> None
@@ -100,7 +86,7 @@ module ProgVal =
              |> record_insert_unless_nop lThen pThen
              |> record_insert_unless_nop lElse pElse
              |> lv lCond
-    let inline (|Cond|_|) v =
+    let (|Cond|_|) v =
         match v with
         | Stem lCond (RecL [lTry; lThen; lElse] ([Some pTry; optThen; optElse], U)) ->
             let pThen = Option.defaultValue Nop optThen
@@ -113,7 +99,7 @@ module ProgVal =
         unit |> record_insert lWhile pWhile
              |> record_insert_unless_nop lDo pDo
              |> lv lLoop
-    let inline (|Loop|_|) v =
+    let (|Loop|_|) v =
         match v with
         | Stem lLoop (RecL [lWhile;lDo] ([Some pWhile; optDo], U)) ->
             let pDo = Option.defaultValue Nop optDo 
@@ -125,7 +111,7 @@ module ProgVal =
              |> record_insert lDo pDo
              |> lv lEnv
 
-    let inline (|Env|_|) v =
+    let (|Env|_|) v =
         match v with
         | Stem lEnv (RecL [lWith; lDo] ([Some pWith; Some pDo], U)) ->
             Some (pWith, pDo)
@@ -135,7 +121,7 @@ module ProgVal =
         vAnno |> record_insert_unless_nop lDo pDo
               |> lv lProg
 
-    let inline (|Prog|_|) v =
+    let (|Prog|_|) v =
         match v with
         | Stem lProg (RecL [lDo] ([optDo], vAnno)) ->
             let pDo = Option.defaultValue Nop optDo
@@ -224,17 +210,6 @@ module ProgVal =
         ; (lGet, ar 2 1)
         ; (lPut, ar 3 1)
         ; (lDel, ar 2 1)
-        ; (lPushl, ar 2 1)
-        ; (lPopl, ar 1 2)
-        ; (lPushr, ar 2 1)
-        ; (lPopr, ar 1 2)
-        ; (lJoin, ar 2 1)
-        ; (lSplit, ar 2 2)
-        ; (lLen, ar 1 1)
-        ; (lAdd, ar 2 1)
-        ; (lMul, ar 2 1)
-        ; (lSub, ar 2 1)
-        ; (lDiv, ar 2 2)
         ] |> Map.ofList
 
     let rec stackArity (ef0:StackArity) (p0:Value) : StackArity =

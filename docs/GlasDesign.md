@@ -1,62 +1,49 @@
 # Glas Language Design
 
+Glas is now a backronym for 'General LAnguage System'. It was originally named in reference to transparency of glass, liquid and solid states to represent staged metaprogramming, and the human mastery over glass as a material. 
+
 ## Module System and Syntax
 
 Glas modules are typically represented by files and folders. Dependencies between Glas modules must be acyclic (i.e. a directed acyclic graph), and dependencies across folder boundaries are structurally restricted. Every module will deterministically compute a value. 
 
-To compute the value for a file `foo.ext`, the Glas system will compile the file binary using a program defined in module `language-ext`. Most syntax is user-defined in the module system excepting [g0](GlasZero.md) for bootstrapping. File extensions compose. For example, to compute the value for `foo.xyz.json` we first apply `language-json` to compute an intermediate value, then apply `language-xyz` to compute the value of the `foo` module. If a file has no extension, its value is the file binary. Files and folders whose names start with `.` are hidden from the Glas module system.
+To compute the value for a file `foo.ext`, the Glas system will compile the file binary using a program defined in module `language-ext`. To bootstrap, the [g0](GlasZero.md) language is predefined. File extensions compose. For example, to compute the value for `foo.xyz.json` we first compile using `language-json` then compile using `language-xyz`. If a file has no extension, its value is simply the binary. Files and folders whose names start with `.` are hidden from the Glas module system.
 
-To compute the value for a folder `foo/`, we use the value of its contained `public` file. Folders are implicit boundaries for dependencies: a file can only reference other modules (files or subfolders) within the same folder, or reference global modules.
+To compute the value for a folder `foo/`, we use the value from its contained `public` file. Folders are implicit boundaries for dependencies: a file can only reference global modules or those within the same folder as itself. 
 
-Global modules are found using the GLAS_PATH environment variable, whose value should be a list of folders separated by semicolons. If there is no local module with a given name, we'll search for the first matching module on GLAS_PATH. It's best that all modules on GLAS_PATH are subfolders. Later, we might extend module search to a configurable distribution on the network.
+Global modules are found using the GLAS_PATH environment variable, whose value should be a list of folders separated by semicolons. If there is no local module with a given name, we'll search for the first matching folder (not file) on GLAS_PATH. Later, we may extend module search to the network by some means, perhaps including a URL on GLAS_PATH.
 
 *Note:* Glas does not specify a package manager. We can start with Nix or Guix, then later develop something more specialized. 
 
 ## Data Model
 
-Glas data is modeled as immutable binary trees. Each node may have up to two edges, uniquely labeled 0 and 1, to subtrees. A naive representation is:
+Glas data is immutable binary trees. A naive representation is:
 
         type T0 = ((1+T0) * (1+T0))
-        // A tree is a node with two optional, distinct edges to subtrees.
 
-This trivially supports algebraic products (pairs with both edges), sums (choice of either edge), and the unit value (no edges). However, Glas encourages use of labeled data structures instead of basic products and sums. Labels greatly improve extensibility and documentation of data.
+This trivially supports algebraic products (pairs with both edges), sums (choice of edge labeled '0' or '1'), and unit value (terminal tree node with no edges). The empty tree cannot be represented.
 
-Glas systems encode labels with 'bitstrings', which are long sequences of nodes with zero or one edge. The label is encoded into the bitstring using UTF-8 with a null terminator. For example, symbol 'path' is represented by the bitstring `01110000 01100001 01110100 01101000 00000000`. A 'symbol' is just the label by itself, but in general we can follow the null terminator with an arbitrary value. Because long bitstrings are very common in Glas systems, we compact bitstrings.
+Glas encourages use of *labeled* data structures. Instead of simple pairs and sums, we encode labels into edges on a path through a tree. For example, the label 'data' is represented by path `01100100 01100001 01110100 0110001 00000000`, using a null terminator to clarify the end of label. Labeled data means we reach data after traversing the label. To efficiently encode labels, we'll use a different tree representation:
 
-        type BitString = (space-optimized) Bool list
-        type T1 = BitString * (1 + (T1*T1))
-        // A tree is a bitstring that ends either in unit or a fork.
-        // T1 is equivalent to T0 but more efficient for bitstrings.
+        type BitString = (compact) Bool list
+        type T1 = (BitString * (1 + (T1*T1)))
 
-Labeled products, aka records, are then represented by a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). Common label prefixes will overlap, and the associated value immediately follows the label's null terminator. Labeled sums, or variants, are essentially singleton records. 
+A variant is a single labeled value. A record combines multiple labels, overlapping the common label prefixes to form a [radix tree](https://en.wikipedia.org/wiki/Radix_tree) due to compaction of bitstrings. A symbol is simply the label itself, terminated by unit (the single-node tree). 
 
-Bytes are encoded as fixed-width bitstrings, msb to lsb, e.g. `00010111` is an 8-bit byte. Natural numbers are encoded as bitstrings of variable width, eliding the '0' prefix.
+Bytes are encoded as fixed-width bitstrings, msb to lsb, e.g. `00010111` is an 8-bit byte. A binary is a list of bytes, and a string is (usually) a utf-8 binary. Natural numbers are typically encoded as variable-width bitstrings, msb to lsb, excluding the zeroes prefix, e.g. number 23 is `10111`. 
 
-Glas uses lists to encode general sequential structures. Logically, a list is `type List a = (a * List a) | ()`, i.e. a list is constructed of `(Head * Tail)` pairs and terminated with unit `()`. This encoding is not an algebraic sum type; it requires distinguishing unit values. For performance, Glas systems may implicitly use a [finger tree](https://en.wikipedia.org/wiki/Finger_tree) representation for lists, supporting efficient indexing, split, append, and access to both endpoints.
+Glas uses lists to encode sequential structures. Logically, a list has type `type List a = (a * List a) | ()`, i.e. a list is constructed of `(Head * Tail)` pairs, finally terminated by unit `()`. However, Glas systems will often represent lists under-the-hood as [finger trees](https://en.wikipedia.org/wiki/Finger_tree), using *Acceleration* to support efficient list join, indexing, and access to both ends.
 
-        type T2 = BitString * (1 + (T2 * FingerTree<T2> * NonPairT2))
-        type NonPairT2 = 1 + (T2 + T2) // unit, left tree, or right tree.
-        // A tree is a bitstring that ends either in unit or a list-like structure 
-        // with at least two items. An actual list ends in unit, but the list-like
-        // structure might end in a node with a single edge.
-        //
-        // T2 is equivalent to T1 but more efficient for ad-hoc list manipulations. 
+To work with very large trees, Glas systems will offload subtrees into content-addressed storage. I call this pattern *stowage*. Of course, Glas applications may also use effects to interact with external storage. Stowage has a benefit of working nicely with pure computations, serves as a virtual memory and compression layer, and has several benefits for incremental computation and communication. Stowage is guided by program annotations.
 
-Glas systems represent strings and binaries as lists of bytes, favoring the UTF-8 encoding for strings. It is feasible to further optimize via compact encoding of binary fragments (cf. [ropes](https://en.wikipedia.org/wiki/Rope_%28data_structure%29)). In general, Glas systems have much freedom to optimize representations so long as the details are abstracted. For example, records with a few statically known labels can be optimized to C-like structs at runtime. 
-
-To work with larger-than-memory data structures, Glas systems may offload subtrees to content-addressed storage, then lazily load data into memory as needed or anticipated. I call this pattern *Stowage*. In addition to serving as a virtual memory and large scale structure sharing compression layer for immutable data, stowage has benefits for incremental computation and communication.
-
-*Aside:* Data in Glas has a low probability of sharing representations by accident. The empty list, empty record, min-width zero, and unit do overlap (and not by accident). But probability of collision for non-empty lists, records, symbols, and numbers is very small. Tools could heuristically render Glas data and support human editing without much difficulty even without context of a known data type.
+It is feasible to print arbitrary data, heuristically recognizing common data types. 
 
 ## Binary Extraction
 
-The Glas command-line tool shall provide a simple option to print module system values as binaries to file or stdout. This is concretely expressed by command-line arguments `print Value with Printer`, where `Value` and `Printer` both have the form `modulename(.symbol)*` allowing access into labeled records and lists. The printer's value must represent a valid *Data Printer* function (see below). If a printer is unspecified, we implicitly use `std.print`. 
+The Glas command-line tool shall provide a simple option to print module system values as binaries to file or stdout. This is concretely expressed by command-line `glas print Value with Printer`, where `Value` and `Printer` both have the form `modulename(.symbol)*` allowing access to labeled records. The printer's value must represent a valid *Data Printer* program (see below). 
 
-Printers can extract externally useful binaries from the module system. For example, we could 'print' a document, streaming music, or an executable binary. Multi-file outputs can be represented indirectly by printing a tar or zip file. Printing values is also useful for REPL-style development and debugging of the module system. 
+Binary extraction is how we turn the Glas module system into externally useful artifacts. For example, we could 'print' a document, an executable binary, or optionally a zipfile containing several items. Printing values is also useful for REPL-style development and debugging of the module system. 
 
-In Glas systems, extraction of binary executables replaces the conventional command-line compiler tools. To adapt executables for a host system, it is feasible to depend on a `target` module that describes OS and machine architecture. This target could feasibly be adjusted for cross-compilation via tweaking GLAS_PATH.
-
-A consequence of this design is that the compiler logic is fully accessible within the module system. All binaries that artifacts that can be constructed externally can be constructed internally within the module system.
+The conventional command-line compiler tool is replaced by binary extraction. Compilation can be performed within the module system or by a specialized data printer, but the command-line tool doesn't need any logic about producing executables. However, the command-line also cannot provide compilation flags. Instead, the module system itself may contain a 'target' module that would represent information such as target architecture, space vs. time optimization heuristics, etc..
 
 ## Glas Programs
 
@@ -95,11 +82,10 @@ The stack in Glas is really an intermediate data plumbing model. User syntax cou
 
 ### Control Operators
 
-* **seq:\[List, Of, Operators\]** - sequential composition of operators. 
- * **seq:\[\]** - empty sequence doubles as identity operator (nop)
-* **cond:(try:P, then:Q, else:R)** - run P; if P does not fail, run Q; if P fails, backtrack P then run R.
-* **loop:(while:P, do:Q)** - begin loop: run P; if P does not fail, run Q then repeat loop. If P fails, backtrack P then exit loop.
-* **eq** - Structural equality of values. Takes top two items from data stack. If they are identical, continue (with those items removed from stack), otherwise fail.
+* **seq:\[List, Of, Operators\]** - sequential composition of operators. Empty sequence serves as nop.
+* **cond:(try:P, then:Q, else:R)** - run P; if P does not fail, run Q; if P fails, undo P then run R.
+* **loop:(while:P, do:Q)** - run P. If successful, run Q then repeat. Otherwise, terminate loop.
+* **eq** - Remove two items from data stack. If identical, continue, otherwise fail.
 * **fail** - always fail
 
         seq:[]              ∀S . S → S
@@ -119,7 +105,7 @@ The stack in Glas is really an intermediate data plumbing model. User syntax cou
             Q ⊲ S' → S
             -------------------
             LOOP ⊲ S → S
-        eq : ∀S,A,B . ((S * A) * B) → ((S * B) * B) | FAIL
+        eq : ∀S,A,B . ((S * A) * B) → S | FAIL
         fail : ∀S . S → FAIL
 
 User syntax can extend the effective set of control operators, e.g. compiling a mutually recursive function group into a central loop. 
@@ -152,42 +138,17 @@ A design feature of env/eff is that the handler code can be inlined and partiall
 
 ### Record and Variant Operators
 
-A set of operations useful for records and variants. Pair and sum types are also supported by these operators as a trivial case using one-bit labels. However, Glas systems don't favor use of pairs and sums because they lack convenient extensibility. 
+A set of operations useful for records and variants. These are essentially the only data operations in Glas programs; everything else is constructed from them and conditional/loop ops. Pair and sum types can also be supported via one-bit labels. 
 
-Labels are encoded into bitstrings, usually as null-terminated UTF-8 text. Within a record, label bitstrings must exhibit the prefix property: no valid label is a prefix of another valid label. Other than null terminators, this could be supported by fixed-width label encodings, e.g. forming an intmap.
+If programs use pair and sum types, they'll also use these operators just with one-bit labels. Fixed-width labels can be useful for an intmap. But in Glas, most labels encode null-terminated text.
 
-Record operators:
+Operators:
 
 * **get** ((label:V|R) label -- V) - given label and record, extract value from record. Fails if label is not in record.
-* **put** ((label?_|R) V label -- (label:V|R)) - given a label, value, and record, create new record that is almost the same except with value on label.
-* **del** ((label?_|R) label -- R) - given label and record, create new record with label fully removed modulo prefix sharing with other paths in record. 
+* **put** (V (label?_|R) label -- (label:V|R)) - given a label, record, and value on the data stack, create new record with the given label associated with the given value. Will replace existing label in record.
+* **del** ((label?_|R) label -- R) - remove label from record. Equivalent to adding label then removing it except for any prefix shared with other labels in the record.
 
-A record may have many labels, sharing prefixes. Non-branching path segments can be compactly encoded to reduce the number of pointers. It is feasible for a compiler to optimize records with statically known labels like a C struct. A variant is a singleton record. 
-
-### List Operators
-
-The basic linked list is a simple structure but has awful performance for any use-case except a data stack. To solve this, Glas systems should transparently represent lists using a [finger tree](https://en.wikipedia.org/wiki/Finger_tree) representation, at least by default, allowing efficient access to both ends and to split ops. This allows immutable lists to be used as arrays or double-ended queues.
-
-* **pushl** (L V -- V:L) - given value and list, add value to left (head) of list
-* **popl** (V:L -- L V) - given a non-empty list, split into head and tail. 
-* **pushr** (L V -- L:V) - given value and list, add value to right of list
-* **popr** (L:V -- L V) - given non-empty list, split into last element and everything else
-* **join** (L1 L2 -- L1+L2) - appends list at top of data stack to the list below it
-* **split** (Lm+Ln |Lm| -- Lm Ln) - given number and list of at least that length, produce a pair of sub-lists such that join produces the original list, and the first slice has requested number of elements. Fails if this is not possible.
-* **len** (L -- |L|) - given list, return a number that represents length of list. 
-
-These operators assume a simplistic, Lisp-like representation of lists: `type List = () | (Value * List)`. That is, each list node has either no edges or two edges. In a non-empty list node, edge 0 refers to the head value and edge 1 to the remaining list.
-
-### Arithmetic Operators
-
-Glas encodes natural numbers (0, 1, 2, ...) in base-2 as bitstrings, msb to lsb order, using the fewest possible bits. For example, `10111` encodes 23, but `00010111` is not a valid number because it has an unnecessary zeroes prefix. If input to an arithmetic operator is not a valid number, the operator will fail. Consequently, programmers must explicitly convert between bytes and numbers.
-
-* **add** (N1 N2 -- Sum) - compute sum of two numbers on stack.
-* **mul** (N1 N2 -- Prod) - compute product of two numbers on stack.
-* **sub** (N1 N2 -- Diff) - computes non-negative difference (N1 - N2). Fails if N2 > N1.
-* **div** (Dividend Divisor -- Quotient Remainder) - computes number of times that divisor can be subtracted from dividend, and remaining value from the dividend. Fails if divisor is zero.
-
-Glas is not optimized for number processing, but does provide convenient access to basic bignum arithmetic. It should not be too difficult for programmers to model rational or scientific numbers. High performance number processing will certainly rely on accelerators.
+Variants are essentially singleton records. The distinction between records and variants will mostly be handled during by static analysis instead of runtime ops.
 
 ### Annotations Operators
 
@@ -195,9 +156,17 @@ Annotations support performance (acceleration, stowage, memoization, optimizatio
 
 * **prog:(do:P, ...)** - runs program P. All fields other than 'do' are annotations. 
 
-The set of annotations is openly extensible and subject to de-facto standardization. If a Glas compiler or interpreter encounters any annotations it does not recognize, it can log a warning then ignore. 
+The set of annotations is openly extensible and subject to de-facto standardization. If a Glas compiler or interpreter encounters any annotations it does not recognize, it can log a warning then ignore. Some annotations in use:
+
+* *accel:Model* - accelerate the program. The model is often a symbol indicating that the program implements a specific accelerated function that the compiler should recognize. However, more general models are feasible.
+* *arity:(i:Nat, o:Nat)* - effective arity, usually based on a program *before* it was optimized. This may be checked, ignored, or assumed to be correct depending on context.
+* *eff:(arity?Arity)* - Presence of 'eff' indicates the subprogram is impure. May be augmented by 'arity' if not the typical 1--1.
 
 The 'prog' header also serves as the primary variant for programs within a *Dictionary* value.
+
+### List, Arithmetic, Bitwise Operators, Etc..
+
+I've dropped most Glas program operators on data representations (modulo records). Instead, the idea is to implement these functions within Glas then annotate for *Acceleration*.
 
 ## Bootstrap Syntax
 
@@ -222,10 +191,10 @@ A language may expose these effects to the programmer in context of compile-time
 
 ### Data Printer 
 
-A viable command-line interface for extraction of binary data from the Glas module system is `glas print (ValueRef) with (ValueRef)`. Here a ValueRef is a dotted path into the module system, such as `std.print`. The referenced printer should be an arity 1--0 function with an effect to write binary data fragments. Additionally, the printer may output log messages. In normal use, binary data will be written to stdout and log messages to stderr. Effects API:
+See *Binary Extraction*. Printers are arity 1--0 functions with an effect to write binary data. Additionally, the printer may output arbitrary log messages for purpose of status or debugging. In normal use, binary data is written to stdout and log message texts are written to stderr. Effects API:
 
-* **write:Binary** - Write binary data (list of bytes) to stdout. Response is unit. Fails if argument is not binary.
-* **log:Message** - Arbitrary log message to stderr. Useful for progress reports or debugging.
+* **write:Binary** - Write binary data (a list of bytes) to stdout. Response is unit. Fails if argument is not a binary.
+* **log:Message** - Arbitrary log message. Texts will usually be written to stderr. 
 
 The printer will immediately write outputs unless it's within a 'try' or 'while' clause, in which case writes are buffered in case of failure. Thus, it is possible to produce several megabytes of data before failing, or to buffer everything and print at the end, depending on how the printer is defined.
 
@@ -237,14 +206,16 @@ The Glas command-line tool should provide an option to run a console application
 
 ### Automated Testing
 
-Glas languages should support static assertions and other lightweight tests and checks. However, build-time tests are under pressure to resolve swiftly, and will tend to tread the same ground repeatedly. For long-running tests such as fuzz-testing, we need a different solution.
+Glas languages such as g0 should support static assertions or other lightweight tests and checks. However, build-time tests are under pressure to resolve swiftly, and must be deterministic due to the limits on build-time effects. So, there is still an open 
+
+ and will tend to tread the same ground repeatedly. For long-running tests such as fuzz-testing, we need a different solution.
 
 I propose to write *background tests* into log messages of form `(test:Program, ...)`. The test program should be 0--Any arity, and the primary outcome is pass/fail of evaluation. Supported effects are log and fork:
 
 * **log:Message** - Response is unit. Write an arbitrary message to support debugging of tests.
 * **fork** - Response is a non-deterministic boolean - a '0' or '1' bitstring.
 
-Use of 'fork' can simulate race conditions or random inputs to a test. However, fork outcomes are not necessarily fair or random. A test system may use heuristics and program analysis to search for forks that are more likely to lead to test failure.
+Use of 'fork' can simulate race conditions or random inputs to a test. However, fork outcomes are not necessarily fair or random. A test system may use heuristics and analysis to search for forks that are more likely to lead to test failure.
 
 A failed background test would not directly prevent the system from running, but can be recorded to indicate health of the system to developers, and perhaps accessed via reflection on the system.
 
@@ -282,17 +253,13 @@ The compiler or interpreter may provide specialized data representations to miti
 
 The cost of acceleration is implementation complexity, greater entanglement with the compiler, and related risks to correctness, security, and portability. Nonetheless, this tradeoff is worthwhile when it enables Glas to be used in problem domains where its performance is otherwise unacceptable. Glas will rely on acceleration to effectively support compression, cryptography, image rendering, machine learning, physics simulations, and many other problem domains. 
 
+*Aside:* It is acceptable to use unchecked accelerators, e.g. `prog:(do:fail, accel:list-append)`, for short-term development. Not recommended for long-term use. The reference implementation is valuable for verification of the compiler, user-defined transpilation, etc..
+
 ### Distributed Computation
 
-For computation at larger scales, it is feasible to *accelerate* evaluation of observably deterministic concurrency models such as [Kahn Process Networks](https://en.wikipedia.org/wiki/Kahn_process_networks) or [Lafont Interaction Nets](https://en.wikipedia.org/wiki/Interaction_nets). The accelerator would distribute the computation across multiple processors, perhaps across a mesh network. 
+For computation at larger scales, it is feasible to *accelerate* evaluation of observably deterministic concurrency models such as [Kahn Process Networks](https://en.wikipedia.org/wiki/Kahn_process_networks) or [Lafont Interaction Nets](https://en.wikipedia.org/wiki/Interaction_nets). The accelerator would distribute the computation across multiple processors, perhaps across a mesh network. Some processes within the network would have access to other accelerators. 
 
-Accelerated subprograms don't need to be pure. However, in context of a distributed systems, channeling all effects through the 'eff' operator is awkward and easily becomes a synchronization bottleneck. Fortunately, for build-time computations (e.g. language modules, data printers) the effects are very limited and this is unlikely to become a problem. If we need concurrent external interaction after build-time, we can solve it in the application model.
-
-Build-time computations have minimal external effects - e.g. language modules (log and load) or data printers (log and write), thus distributed computations
-
- (log and load or log and write) this is unlikely to become an issue in general.
-
-where effects are log and load, or printing binary data, this is unlikely to become a problem.
+Accelerated subprograms don't need to be pure. However, in context of a distributed systems, channeling all effects through the 'eff' operator is awkward and easily becomes a synchronization bottleneck. Fortunately, for build-time computations (e.g. language modules, data printers) the effects are very limited and this is unlikely to become a problem. If we want concurrent external interaction at runtime, we will solve it in the application model.
 
 ## Thoughts
 
@@ -344,14 +311,32 @@ A challenge will be achieving effective performance from search in context of de
 
 I'm very interested in automatic provenance tracking, i.e. such that we can robustly trace a value to its contributing sources. I still don't have a good idea about how to approach this without huge overheads.
 
-### Bitstring Operators? Dropped.
+## Change Proposals
+
+### Bitstring Operators? Removal Accepted.
 
 Each node in a bitstring has one or zero outbound edges, each labeled 0 or 1, forming a string such as `01100101` to represent a byte. Initially, I defined list ops for bitstrings, blen, bjoin, bsplit. Additionally, a few bitwise ops, e.g. bmax is bitwise-or, bmin is bitwise-and, bneg negates each bit, and beq is a negated bitwise-exclusive-or. Seven ops total.
 
 However, in practice I almost never want these operators. The conventional uses of bitwise ops are for representing, observing, and manipulating flags, or possibly bit-banging for cryptography. In Glas systems, flags are instead represented as a record of labels, one label per flag. The list ops aren't very useful since I still need to construct or process bitstrings using loops. Cryptography needs acceleration anyways.
 
-### Simplifying Arithmetic
+### Simplifying Arithmetic? Accepted.
 
-Originally the arithmetic operators will preserve sizes of bitstring inputs, i.e. producing sum and carry or product and overflow. If we multiply a 16-bit number by a 32-bit number, then product is 16 bits and overflow is 32 bits. If we add an 8-bit number to a 32-bit number, sum is 8 bits and carry is 32 bits. Similarly, quotient and remainder would be sized matching dividend and divisor respectively. 
+Originally the arithmetic operators will preserve sizes of bitstring inputs, i.e. producing sum and carry or product and overflow. If we multiply a 16-bit number by a 32-bit number, then product is 16 bits and overflow is 32 bits. If we add an 8-bit number to a 32-bit number, sum is 8 bits and carry is 32 bits. If we divide  32-bit by 16-bit, the quotient is 32-bit and remainder is 16-bits. Subtraction was a weird exception, perhaps should have reduced smaller number to zero and reduce the other equally.
 
-In theory, this could simplify static analysis of memory requirements. In practice, it is awkward to work around size constraints on numbers by default, especially knowing that lists don't have any particular size limit. I've decided to more simply use variable-size natural numbers in all cases. We can potentially defer fixed-width number processing to an accelerator.
+In theory, this might simplify static allocation of memory. But I found it too awkward to be dealing with arbitrary boundaries on numbers within Glas, especially in context of list 'len' not having a fixed width. I've decided to use variable-sized numbers by default, and leave fixed-width arithmetic to acceleration of abstract CPUs.
+
+I'm interested in removing arithmetic operators entirely, leave this to user-defined code and accelerators.
+
+### Eliminating List Operators? Accepted.
+
+Instead of list operators as primitives, use accelerators. Make this a default example for accelerators while we're at it. This also enables elimination of arithmetic ops.
+
+### Eliminating Arithmetic Operators? Accepted.
+
+Let's use accelerators for these, too. 
+
+This leaves the primitive data manipulations as get, put, and del - all very simple to comprehend and implement.
+
+### Reorder 'put'? Accepted.
+
+Prior order of 'put' arguments was `Record Value Label -- Record`. Now is `Value Record Label -- Record`. This significantly reduces the amount of dip and swap operations required for common patterns using 'put'.

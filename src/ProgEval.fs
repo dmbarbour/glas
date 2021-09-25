@@ -33,58 +33,63 @@ module ProgEval =
             ; FailureStack : RTE option     
             } 
 
-        /// simplest continuation
-        type CC<'A> = RTE -> 'A 
+        /// simplest continuation.
+        type CC = RTE -> obj 
+
+        // Note: I removed generics from this to keep the code simpler. Doesn't make
+        // a big difference in any case, only need to box/unbox the final result.
 
         /// CTE - compile-time environment (excluding primary continuation)
         [<Struct>]
-        type CTE<'R> = 
-            { FK : CC<'R>           // on failure
-            ; EH : Op<'R>           // effects handler
+        type CTE = 
+            { FK : CC               // on failure
+            ; EH : Op               // effects handler
             ; TX : ITransactional   // top-level transaction interface.
             }
-        and Op<'A> = CTE<'A> -> CC<'A> -> CC<'A> 
-
+        and Op = CTE -> CC -> CC 
 
         let copy cte cc rte =
             match rte.DataStack with
             | (a::_) as ds -> cc { rte with DataStack = (a::ds) }
-            | _ -> cte.FK rte
+            | _ -> (cte.FK) rte
 
         let drop cte cc rte =
             match rte.DataStack with
             | (_::ds') -> cc { rte with DataStack = ds' }
-            | _ -> cte.FK rte
+            | _ -> (cte.FK) rte
 
-        let swap cte cc rte = 
+        let swap cte cc rte =
             match rte.DataStack with
             | (a::b::ds') -> cc { rte with DataStack = (b::a::ds') }
-            | _ -> cte.FK rte
+            | _ -> (cte.FK) rte
 
-        let eq cte cc rte =  
+        let eq cte cc rte =
             match rte.DataStack with
             | (a::b::ds') when (a = b) -> cc { rte with DataStack = ds' }
-            | _ -> cte.FK rte
+            | _ -> (cte.FK) rte
 
         let get cte cc rte =
             match rte.DataStack with
             | ((Bits k)::r::ds') ->
                 match record_lookup k r with
                 | Some v -> cc { rte with DataStack = (v::ds') }
-                | _ -> cte.FK rte
-            | _ -> cte.FK rte
+                | _ -> (cte.FK) rte
+            | _ -> (cte.FK) rte
 
-        let put cte cc rte = 
+        let put cte cc rte =
             match rte.DataStack with
-            | ((Bits k)::v::r::ds') -> 
+            | ((Bits k)::r::v::ds') -> 
                 cc { rte with DataStack = ((record_insert k v r)::ds') }
             | _ -> cte.FK rte
 
-        let del cte cc rte = 
-            match rte.DataStack with
-            | ((Bits k)::r::ds') ->
-                cc { rte with DataStack = ((record_delete k r)::ds') }
-            | _ -> cte.FK rte
+        let del cte cc =
+            fun rte ->  
+                match rte.DataStack with
+                | ((Bits k)::r::ds') ->
+                    cc { rte with DataStack = ((record_delete k r)::ds') }
+                | _ -> cte.FK rte
+
+        (* Hiding these temporarily. Likely to become accelerators.
 
         let pushl cte cc rte = 
             match rte.DataStack with
@@ -164,31 +169,23 @@ module ProgEval =
                 cc { rte with DataStack = ((Num remainder)::(Num quotient)::ds') }
             | _ -> cte.FK rte
 
-        let fail cte _ = // rte implicit
-            cte.FK 
+        *)
+
+        let fail cte cc = // rte implicit
+            (cte.FK) 
 
         let eff cte cc = // rte implicit
             (cte.EH) cte cc
-
-        // symbolic ops except for 'eff' are covered here
-        let opMap<'A> : Map<Bits,Op<'A>> =
-            [ (lCopy, copy); (lDrop, drop); (lSwap, swap)
-            ; (lEq, eq); (lFail, fail); (lEff, eff)
-            ; (lGet, get); (lPut, put); (lDel, del)
-            ; (lPushl, pushl); (lPopl, popl); (lPushr, pushr); (lPopr, popr)
-            ; (lJoin, join); (lSplit, split); (lLen, len)
-            ; (lAdd, add); (lMul, mul); (lSub, sub); (lDiv, div)
-            ] |> Map.ofList
 
         // We can logically flatten 'dip:P' into the sequence:
         //   dipBegin P dipEnd
         // We use the extra runtime dip stack to temporarily store the
         // top item from the data stack.
-        let dipBegin cte cc rte =  
+        let dipBegin cte cc rte =
             match rte.DataStack with
             | (a::ds') -> 
                 cc { rte with DataStack = ds'; DipStack = (a::(rte.DipStack)) }
-            | _ -> cte.FK rte // error in program
+            | _ -> (cte.FK) rte // error in program
 
         let dipEnd _ cc rte =
             match rte.DipStack with
@@ -196,8 +193,8 @@ module ProgEval =
                 cc { rte with DataStack = (a::(rte.DataStack)); DipStack = dip' }
             | _ -> failwith "(internal compile error) imbalanced dip stack"
 
-        let dip (opDip : Op<'A>) cte cc =
-            dipBegin cte (opDip cte (dipEnd cte cc))
+        let dip (opDip : Op) cte cc0 =
+            dipBegin cte (opDip cte (dipEnd cte cc0))
 
         let data (v:Value) cte cc rte =
             cc { rte with DataStack = (v::(rte.DataStack)) }
@@ -216,30 +213,37 @@ module ProgEval =
                 cc rte'
             | None -> failwith "(internal compile error) imbalanced transaction"
 
-        let commitTX cte cc rte = 
+        let commitTX cte cc rte =
             match rte.FailureStack with
             | Some priorTX ->
                 cte.TX.Commit()
                 cc { rte with FailureStack = priorTX.FailureStack }
             | None -> failwith "(internal compile error) imbalanced transaction"
 
-        let beginTX cte cc rte = 
+        let beginTX cte cc rte =
             cte.TX.Try()
             cc { rte with FailureStack = Some rte }
                 
-        let cond<'A> (opTry:Op<'A>) (opThen:Op<'A>) (opElse:Op<'A>) cte cc =
-            let ccElse = abortTX cte (opElse cte cc)
-            let ccThen = commitTX cte (opThen cte cc)
-            beginTX cte (opTry { cte with FK = ccElse } ccThen)
+        let cond (opTry:Op) (opThen:Op) (opElse:Op) cte cc =
+            let ccCondElse = abortTX cte (opElse cte cc)
+            let ccCondThen = commitTX cte (opThen cte cc)
+            beginTX cte (opTry { cte with FK = ccCondElse } ccCondThen)
 
-        let loop<'A> (opWhile:Op<'A>) (opDo:Op<'A>) cte cc0 =
+        // Note for potential future headaches reduction:
+        // 
+        // F# doesn't do tail-call optimization by default in Debug mode!
+        //
+        // This gave me quite some trouble, trying to trace down why tailcalls were not
+        // working as expected. I eventually solved by adding <Tailcalls>True</Tailcalls>
+        // to the property group in the fsproj.
+        let loop (opWhile:Op) (opDo:Op) cte cc0 =
             let cycleRef = ref cc0
-            let ccRepeat rte = (!cycleRef) rte
-            let ccDo = commitTX cte (opDo cte ccRepeat) 
-            let ccHalt = abortTX cte cc0
-            let ccWhile = beginTX cte (opWhile { cte with FK = ccHalt } ccDo)
-            cycleRef := ccWhile // close the loop
-            ccWhile
+            let ccLoopRepeat rte = (!cycleRef) rte
+            let ccLoopHalt = abortTX cte cc0
+            let ccLoopDo = commitTX cte (opDo cte ccLoopRepeat) 
+            let ccLoopWhile = beginTX cte (opWhile { cte with FK = ccLoopHalt } ccLoopDo)
+            cycleRef := ccLoopWhile // close the loop
+            ccLoopWhile
 
         // special operator to retrieve data from the eff-state stack.
         let effStatePop cte cc rte =
@@ -253,32 +257,42 @@ module ProgEval =
             match rte.DataStack with
             | (a::ds') ->
                 cc { rte with DataStack = ds'; EffStateStack = (a::(rte.EffStateStack)) }
-            | _ -> cte.FK rte // arity error in program
+            | _ -> (cte.FK) rte // arity error in program
 
-        let env<'A> (opWith:Op<'A>) (opDo:Op<'A>) cte0 cc0 =
+        let env (opWith:Op) (opDo:Op) cte0 cc0 =
             let eh0 = cte0.EH // restore parent effect in context of opWith
             let eh' cte cc = (effStatePop cte (opWith { cte with EH = eh0 } (effStatePush cte cc)))
             effStatePush cte0 (opDo { cte0 with EH = eh'} (effStatePop cte0 cc0))
 
-        let pseq<'A> (ops:FTList<Op<'A>>) cte cc0 =
+        let pseq (ops:FTList<Op>) cte cc0 =
             FTList.foldBack (fun op cc -> op cte cc) ops cc0
 
-        let rec compile<'A> (p:Program) : Op<'A> =
+        let rec compile (p:Program) : Op =
             match p with
-            | Op opSym -> 
-                match Map.tryFind opSym opMap with
-                | Some op -> op
-                | None -> failwithf "(internal compile error) unhandled op %s" (prettyPrint p)
-            | Dip p' -> dip (compile p') 
+            | Stem lCopy U -> copy
+            | Stem lDrop U -> drop
+            | Stem lSwap U -> swap
+            | Stem lEq U -> eq
+            | Stem lFail U -> fail
+            | Stem lEff U -> eff
+            | Stem lGet U -> get
+            | Stem lPut U -> put
+            | Stem lDel U -> del
+            | Dip p' -> dip (compile p')
             | Data v -> data v 
-            | PSeq ps -> pseq (FTList.map compile ps)
-            | Cond (pTry, pThen, pElse) -> cond (compile pTry) (compile pThen) (compile pElse)
-            | Loop (pWhile, pDo) -> loop (compile pWhile) (compile pDo) 
-            | Env (pWith, pDo) -> env (compile pWith) (compile pDo) 
+            | PSeq ps -> pseq (FTList.map (compile) ps)
+            | Cond (pTry, pThen, pElse) ->
+                cond (compile pTry) (compile pThen) (compile pElse)
+            | Loop (pWhile, pDo) ->
+                loop (compile pWhile) (compile pDo)
+            | Env (pWith, pDo) ->
+                env (compile pWith) (compile pDo) 
             | Prog (_, p') -> 
                 // memoization, stowage, or acceleration could be annotated here.
                 compile p' 
-            | _ -> failwithf "unrecognized program %s" (prettyPrint p)
+            | _ -> 
+                //failwithf "unrecognized program %s" (prettyPrint p)
+                failwith "unrecognized program"
 
         let ioEff (io:IEffHandler) cte cc rte =
             match rte.DataStack with
@@ -286,8 +300,8 @@ module ProgEval =
                 match io.Eff request with
                 | Some response ->
                     cc { rte with DataStack = (response::ds') }
-                | _ -> cte.FK rte
-            | _ -> cte.FK rte
+                | _ -> (cte.FK) rte
+            | _ -> (cte.FK) rte
 
         let dataStack ds = 
             { DataStack = ds
@@ -297,14 +311,15 @@ module ProgEval =
             }
 
         let eval (p:Program) (io:IEffHandler) =
-            let cc rte = 
+            let ccEvalOK rte = 
                 assert((List.isEmpty rte.DipStack)
                     && (List.isEmpty rte.EffStateStack)
                     && (Option.isNone rte.FailureStack)) 
-                Some (rte.DataStack)
-            let cte = { FK = (fun _ -> None); EH = ioEff io; TX = io }
-            let run = compile p cte cc
-            run << dataStack
+                box (Some (rte.DataStack))
+            let ccEvalFail rte = box None
+            let cte = { FK = ccEvalFail; EH = ioEff io; TX = io }
+            let run = (compile p) cte ccEvalOK
+            dataStack >> run >> unbox<Value list option> 
 
     /// The current favored implementation of eval.
     let eval : Program -> Effects.IEffHandler -> Value list -> Value list option = 

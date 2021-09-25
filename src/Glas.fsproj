@@ -3,6 +3,8 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net5.0</TargetFramework>
+    <!-- The 'loop' definition assumes tailcalls. Need even for debug. -->
+    <Tailcalls>true</Tailcalls>
   </PropertyGroup>
 
   <ItemGroup>
