@@ -4,8 +4,6 @@ module ProgEval =
     open Value
     open ProgVal
 
-    // If we can observe arity errors at runtime, raise this exception.
-    exception RuntimeUnderflowError
 
     module FTI =
         open Effects
@@ -26,6 +24,12 @@ module ProgEval =
         //
         // I intend to accelerate the list ops and maybe arithmetic ops for bootstrap. 
         //
+
+        // When we observe arity errors at runtime, raise this exception.
+        // We'll catch it at the top-level eval, so it isn't directly
+        // exposed to the caller.
+        exception RuntimeUnderflowError
+
 
         /// runtime environment
         ///
@@ -86,12 +90,9 @@ module ProgEval =
         let get cte cc rte =
             match rte.DataStack with
             | (kv::r::ds') ->
-                match kv with 
-                | Bits k -> 
-                    match record_lookup k r with
-                    | Some v -> cc { rte with DataStack = (v::ds') }
-                    | None -> (cte.FK) rte
-                | _ -> (cte.FK) rte
+                match record_lookup_v kv r with
+                | Some v -> cc { rte with DataStack = (v::ds') }
+                | None -> (cte.FK) rte
             | _ -> raise RuntimeUnderflowError
 
         let put cte cc rte =
@@ -342,7 +343,10 @@ module ProgEval =
             let ccEvalFail rte = box None
             let cte = { FK = ccEvalFail; EH = ioEff io; TX = io }
             let run = (compile p) cte ccEvalOK
-            dataStack >> run >> unbox<Value list option> 
+            fun ds ->
+                try ds |> dataStack |> run |> unbox<Value list option>
+                with
+                | RuntimeUnderflowError -> None
 
     /// The current favored implementation of eval.
     let eval : Program -> Effects.IEffHandler -> Value list -> Value list option = 

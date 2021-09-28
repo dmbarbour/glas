@@ -117,7 +117,7 @@ module Zero =
         let parseAction, parseActionRef = createParserForwardedToRef<Action, unit>()
 
         let parseBlock : P<Block> = 
-            between (pchar '[' .>> ws) (pchar ']' .>> wsep) (many parseAction)
+            between (pchar '[' .>> ws) (pchar ']' .>> ws) (many parseAction)
 
         parseActionRef := 
             choice [
@@ -313,7 +313,6 @@ module Zero =
             let tryEval =
                 try eval p forbidEffects ds 
                 with 
-                | RuntimeUnderflowError -> None
                 | ForbiddenEffectException _ -> None
             match tryEval with
             | Some ds' ->
@@ -345,11 +344,7 @@ module Zero =
                 | Some ((ProgVal.Prog _) as p) ->
                     _compileCallProg cte revOps ds p b'
                 | Some (Value.Variant "macro" m) ->
-                    let tryEval = 
-                        try eval m (cte.LogLoad) ds
-                        with
-                        | RuntimeUnderflowError -> None
-                    match tryEval with
+                    match eval m (cte.LogLoad) ds with
                     | Some (p :: ds') ->
                         _compileCallProg cte revOps ds' p b'
                     | _ ->
