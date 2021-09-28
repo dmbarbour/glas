@@ -128,6 +128,20 @@ module ProgVal =
             Some (vAnno, pDo)
         | _ -> None
 
+    /// Utility function. Add annotations to a program.
+    let addAnno k v p =
+        let struct(anno0, pDo) = 
+            match p with
+            | Prog(vAnno, pDo) -> struct(vAnno, pDo)
+            | _ -> struct(Value.unit, p)
+        let anno' = Value.record_insert k v anno0
+        Prog(anno', pDo)
+
+    let getAnno k p =
+        match p with
+        | Prog(anno, _) -> Value.record_lookup k anno
+        | _ -> None
+
     /// Return a sequence of program component values that are invalid programs.
     let rec invalidProgramComponents v =
         seq {

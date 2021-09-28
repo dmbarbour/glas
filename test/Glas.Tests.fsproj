@@ -10,8 +10,6 @@
     <Compile Include="TestBits.fs" />
     <Compile Include="TestFTList.fs" />
     <Compile Include="TestVal.fs" />
-    <!-- <Compile Include="TestArith.fs" /> -->
-    <!-- <Compile Include="TestProg.fs" /> -->
     <Compile Include="TestProgVal.fs" />
     <Compile Include="TestGlasZero.fs" />
     <Compile Include="Main.fs" />

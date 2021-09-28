@@ -52,12 +52,6 @@ module Zero =
         let ws : P<unit> =
             spaces >>. skipMany (lineComment >>. spaces)
 
-        let sol : P<unit> =
-            getPosition >>= fun p ->
-                if (1L >= p.Column) 
-                    then preturn () 
-                    else fail "expecting start of line"
-
         let wsepChars = " \n\r\t[],"
 
         let wsep : P<unit> =
@@ -172,9 +166,9 @@ module Zero =
 
         let parseTopLevel = parse {
             do! ws
-            let! optOpen = opt (sol >>. parseOpen)
-            let! lEnts = many (sol >>. parseEnt)
-            let! exportFn = opt (sol >>. parseExport) |>> Option.defaultValue []
+            let! optOpen = opt (parseOpen)
+            let! lEnts = many (parseEnt)
+            let! exportFn = opt (parseExport) |>> Option.defaultValue []
             do! eof
             return { Open = optOpen; Ents = lEnts; Export = exportFn } 
         }
@@ -255,8 +249,10 @@ module Zero =
         // Goals for compilation:
         // - Report as many errors as feasible while compiling, even after
         //   we know that compilation will fail. 
-        // - Static arity checks for newly defined words by default. 
-        // - Enable client to continue with errors.
+        // - Allow client to continue with errors at its own discretion.
+        //
+        // I'm still considering static arity checks or annotations. 
+        //
 
         [<System.FlagsAttribute>]
         type ErrorFlags =
@@ -266,11 +262,11 @@ module Zero =
             | LoadError = 4             // 'open' or 'from' fails to load 
             | WordUndefined = 8         // called or imported word is undefined
             | UnknownDefType = 16       // called word has unrecognized def type
-            | UncalledMacro = 32        // need static parameters for macro call
-            | MacroFailed = 64          // top-level failure within a macro call
-            | BadMacroResult = 128      // first result from macro is not a program
-            | AssertionFail = 256       // evaluation of an assertion failed 
-            | DynamicArity = 512        // program does not have static arity or failure
+            | MacroFailure = 64         // evaluation of macro failed for any reason
+            | AssertionFail = 128       // evaluation of an assertion failed 
+            | DataEvalFail = 256        // evaluation of data block failed
+            | ExportFailed = 512        // evaluation of export failed.
+            | BadStaticArity = 1024     // failed static arity check
 
         [<Struct>]
         type CTE =
@@ -278,6 +274,7 @@ module Zero =
             ; CallWarn : Set<Word>   // to resist duplicate call warnings 
             ; Errors : ErrorFlags
             ; LogLoad : IEffHandler
+            ; DbgCx : string
             }
         type AR = (struct(int*int)) option
 
@@ -291,88 +288,54 @@ module Zero =
                 member __.Abort () = ()
             }
 
-        // Obtain arity via top-level annotation if possible. If not, compute arity.
-        let progArity (p:Program) : AR =
-            match p with
-            | Prog (vAnno, pDo) -> 
-                match vAnno with
-                | FullRec ["arity"] ([FullRec ["i";"o"] ([Nat i; Nat o], _)], _) ->
-                    Some struct(int i, int o)
-                | FullRec ["arity"] ([Value.Variant "invalid" U], _) -> 
-                    None
-                | _ -> static_arity pDo
-            | _ -> static_arity p
-
-        // macros adjust program arity to require at least one output, even
-        // if that output is from the data stack. Mostly this affects the
-        // basic 'apply' macro.
-        let macroArity (p:Program) : AR =
-            match progArity p with
-            | Some struct(i,0) -> 
-                Some struct(i+1, 1)
-            | other -> other
-
-        // evaluate with effects forbidden.
-        // currently returns None if:
-        //   insufficient parameters
-        //   top-level effect is requested
-        //   failure during evaluation
-        //
-        // The caller should preserve a failing call rather than reduce to 'fail'.
-        // This would have greater potential to simplify runtime debugging.
-        let tryPartialEval p ds =
-            // todo: consider caching of `eval p forbidEffects`. Lower priority
-            // due to lazy compilation of conditional behavior.
-            match progArity p with
-            | Some struct(i,o) when (i >= List.length ds) -> 
-                try eval p forbidEffects ds 
-                with 
-                | ForbiddenEffectException _ -> None
-            | _ -> None
-
-        let private stepArity ar1 ar2 = 
-            match ar1, ar2 with
-            | Some struct(i1,o1), Some struct(i2,o2) ->
-                let d = max 0 (i2 - o1)
-                Some struct(i1 + d, o1 + d + (o2 - i2))
-            | _ -> None
-
-        // translate block into a program value.
-        let private toProg (ops:Program list) : Program =
-            let addOpArity ar op = stepArity ar (progArity op)
-            let arOps = List.fold addOpArity (Some struct(0,0)) ops
-            let annoArity =
-                match arOps with
-                | None -> 
-                    // annotate for invalid static arity
-                    [("arity", Value.symbol "invalid")]
-                | Some struct(i,o) ->
-                    let aio = 
-                        Value.asRecord ["i";"o"] 
-                            [ Value.nat (uint64 i)
-                            ; Value.nat (uint64 o) 
-                            ]
-                    [("arity", aio)]
-            let allAnno = List.concat [annoArity]
-            let vAnno = allAnno |> Map.ofList |> Value.ofMap
-            // eliminate singleton 'seq'.
-            match ops with
-            | [op] -> Prog (vAnno, op)
-            | _ -> Prog (vAnno, PSeq (FTList.ofList ops))
-
         let private addDataOpsRev (revOps:Program list) (ds:Value list) =
             List.append (List.map (ProgVal.Data) ds) revOps
+
+        let private checkArity (struct(cte,p)) =
+            let ar = stackArity (Arity(1,1)) p
+            let eArity =
+                if ArityDyn <> ar then ErrorFlags.NoError else 
+                logError (cte.LogLoad) (sprintf "%s does not have static arity" (cte.DbgCx))
+                ErrorFlags.BadStaticArity
+            let cte' = { cte with Errors = eArity ||| cte.Errors }
+            struct(cte', p)
+
+        // unwraps 'prog:do:P' to 'P' when annotations are empty
+        let unwrapProg p =
+            match p with
+            | Prog (anno, pDo) when (Value.unit = anno) -> pDo
+            | _ -> p
 
         // Compile a program block into a value. 
         let rec compileBlock (cte:CTE) (b:Block) =
             _compileBlock cte [] [] b
+        and private _compileCallProg cte revOps ds p b =
+            let tryEval =
+                try eval p forbidEffects ds 
+                with 
+                | RuntimeUnderflowError -> None
+                | ForbiddenEffectException _ -> None
+            match tryEval with
+            | Some ds' ->
+                _compileBlock cte revOps ds' b
+            | None ->
+                let revOps' = (unwrapProg p) :: (addDataOpsRev revOps ds)
+                _compileBlock cte revOps' [] b
+        and private _compileFailedCall cte revOps ds w eType b =
+            let revOps' = (Op lFail) :: addDataOpsRev revOps ds
+            let cte' = 
+                { cte with 
+                    Errors = (eType ||| cte.Errors) 
+                    CallWarn = Set.add w (cte.CallWarn)
+                }
+            _compileBlock cte' revOps' [] b
         and private _compileBlock (cte:CTE) (revOps:Program list) (ds:Value list) (b:Block) =
             match b with
-            | [] -> 
-                struct(cte, toProg (List.rev (addDataOpsRev revOps ds)))
             | ((Block p)::b') ->
-                let struct(cte', pVal) = compileBlock cte p
-                _compileBlock cte' revOps (pVal::ds) b'
+                let ixEnd = 1 + List.length b'
+                let dbg = cte.DbgCx + (sprintf " block -%d" ixEnd)
+                let struct(cte', pv) = compileBlock { cte with DbgCx = dbg } p
+                _compileBlock { cte' with DbgCx = cte.DbgCx } revOps (pv::ds) b'
             | ((Const v)::b') ->
                 _compileBlock cte revOps (v::ds) b'
             | ((Call w)::b') ->
@@ -380,25 +343,35 @@ module Zero =
                 | Some (ProgVal.Data v) ->
                     _compileBlock cte revOps (v::ds) b'
                 | Some ((ProgVal.Prog _) as p) ->
-                    failwith "todo: apply prog"
-                | Some (Value.Variant "macro" p) ->
-                    failwith "todo: apply macro"
-                | Some _ -> // unrecognized deftype
+                    _compileCallProg cte revOps ds p b'
+                | Some (Value.Variant "macro" m) ->
+                    let tryEval = 
+                        try eval m (cte.LogLoad) ds
+                        with
+                        | RuntimeUnderflowError -> None
+                    match tryEval with
+                    | Some (p :: ds') ->
+                        _compileCallProg cte revOps ds' p b'
+                    | _ ->
+                        let ixEnd = 1 + List.length b' 
+                        if not (Set.contains w (cte.CallWarn)) then
+                            let msg = sprintf "macro %s failed in %s at -%d" w (cte.DbgCx) ixEnd
+                            logError (cte.LogLoad) msg
+                        _compileFailedCall cte revOps ds w (ErrorFlags.MacroFailure) b'
+                | Some _ -> 
+                    // unrecognized deftype, will warn on first call
                     if not (Set.contains w (cte.CallWarn)) then 
                         logError (cte.LogLoad) (sprintf "word %s has unhandled deftype" w) 
-                    let revOps' = (Op lFail) :: addDataOpsRev revOps ds
-                    let cte' = 
-                        { cte with
-                            CallWarn = Set.add w (cte.CallWarn) 
-                            Errors = ErrorFlags.UnknownDefType ||| cte.Errors 
-                        }
-                    _compileBlock cte' revOps' [] b'
+                    _compileFailedCall cte revOps ds w (ErrorFlags.UnknownDefType) b'
                 | None ->
-                    // undefined words are reported earlier.
-                    let revOps' = (Op lFail) :: addDataOpsRev revOps ds
-                    let cte' = { cte with Errors = ErrorFlags.WordUndefined ||| cte.Errors }
-                    _compileBlock cte' revOps' [] b'
-
+                    // no need to report undefined words here, reported on 'open' or 'import'
+                    _compileFailedCall cte revOps ds w (ErrorFlags.WordUndefined) b'
+            | [] -> 
+                let p = 
+                    match List.rev (addDataOpsRev revOps ds) with
+                    | [op] -> op
+                    | ops -> PSeq (FTList.ofList ops)
+                checkArity (struct(cte,p))
 
         let loadModule (ll:IEffHandler) (m:string) = 
             ll.Eff(Value.variant "load" (Value.ofString m))
@@ -452,33 +425,72 @@ module Zero =
                     Errors = errNew ||| cte.Errors 
                 }
 
-        
-        //let compileBlock (ll:IEffHandler) (d0:Value) (b:Block) =
+        // add 'prog:do' prefix if it does not already exist
+        let private wrapProg p =
+            match p with
+            | Prog _ -> p 
+            | _ -> Prog(Value.unit, p)
 
         let applyProgDef cte w b =
-            failwith "todo: compile program, define prog word"
+            let dbg = sprintf "prog %s" w
+            let struct(cte', p) = compileBlock { cte with DbgCx = dbg } b
+            { cte' with 
+                Dict = Value.record_insert (Value.label w) (wrapProg p) (cte'.Dict) 
+                DbgCx = cte.DbgCx
+            }
 
         let applyMacroDef cte w b = 
-            failwith "todo: compile program, define macro word"
+            let dbg = sprintf "macro %s" w
+            let struct(cte', p) = compileBlock { cte with DbgCx = dbg } b 
+            let m = Value.variant "macro" (wrapProg p)
+            { cte' with 
+                Dict = Value.record_insert (Value.label w) m (cte'.Dict) 
+                DbgCx = cte.DbgCx
+            }
 
-        let applyDataDef cte w b = 
-            failwith "todo: compile program, define data word"
-
+        let applyDataDef cte w b =
+            let ll = cte.LogLoad
+            let dbg = sprintf "data %s" w
+            let struct(cte', pData) = compileBlock { cte with DbgCx = dbg } b
+            let vDataOpt = 
+                match eval pData ll [] with
+                | Some [vData] -> Some vData
+                | Some _ ->
+                    logError ll (sprintf "%s produces too much data" dbg) 
+                    None
+                | _ ->
+                    logError ll (sprintf "%s evaluation failed" dbg)
+                    None
+            let eDataEval = 
+                if Option.isSome vDataOpt 
+                    then ErrorFlags.NoError 
+                    else ErrorFlags.DataEvalFail
+            { cte' with
+                DbgCx = cte.DbgCx
+                Dict = Value.record_set (Value.label w) vDataOpt (cte.Dict)
+                Errors = eDataEval ||| cte.Errors
+            }
 
         let applyStaticAssert cte ln b =
-            failwith "todo: compile program, check assertion"
-            (*
-            match tryCompileBlock ll (st0.Dict) b with
-            | Some (p, eComp) when checkAssertion ll p ->
-                { st0 with Errors = st0.Errors ||| eComp }
-            | Some (p, eComp) ->
-                logError ll (sprintf "assertion on line %d fails" ln)
-                { st0 with Errors = st0.Errors ||| eComp ||| ErrorFlags.Assertion }
-            | None ->
-                logError ll (sprintf "failed to compile assertion at line %d" ln)
-                { st0 with Errors = st0.Errors ||| ErrorFlags.Assertion ||| ErrorFlags.CompBlock }
-                *)
-
+            let ll = cte.LogLoad
+            let dbg = sprintf "assert at line %d" ln
+            let struct(cte', pAssert) = compileBlock { cte with DbgCx = dbg } b
+            let bSuccess =
+                match eval pAssert ll [] with
+                | Some _ -> true // any number of results is okay
+                | None ->
+                    logError ll (sprintf "%s failed" dbg)
+                    false
+            let eAssert = 
+                if bSuccess 
+                    then ErrorFlags.NoError 
+                    else ErrorFlags.AssertionFail
+            { cte' with
+                DbgCx = cte.DbgCx
+                Errors = eAssert ||| cte.Errors
+                // no Dict changes
+            } 
+            
         let applyEnt (cte:CTE) (ent:Ent) : CTE =
             match ent with
             | ImportFrom (m, lImports) -> applyImportFrom cte m lImports
@@ -487,11 +499,34 @@ module Zero =
             | StaticAssert (ln, b) -> applyStaticAssert cte ln b
             | DataDef (w, b) -> applyDataDef cte w b
 
+        let applyExport cte b =
+            let ll = cte.LogLoad
+            let struct(cte', pExport) = compileBlock { cte with DbgCx = "export" } b
+            let vExportOpt =
+                match eval pExport ll [cte.Dict] with
+                | Some [vExport] -> Some vExport
+                | Some _ -> // requires arity error
+                    logError ll "export produces too much data"
+                    None
+                | None ->
+                    logError ll "export evaluation failed"
+                    None
+            let eExport =
+                if Option.isSome vExportOpt
+                    then ErrorFlags.NoError
+                    else ErrorFlags.ExportFailed
+            { cte' with
+                DbgCx = cte.DbgCx
+                Dict = Option.defaultValue (Value.unit) vExportOpt
+                Errors = eExport ||| cte.Errors
+            }
+
         let initCTE ll err d0 =
             { Dict = d0
             ; LogLoad = ll
             ; Errors = err
             ; CallWarn = Set.empty
+            ; DbgCx = ""
             }
 
         let compile (ll:IEffHandler) (s:string) : CTE =
@@ -499,14 +534,15 @@ module Zero =
             | FParsec.CharParsers.Success (tlv, _, _) ->
                 let eShadow = 
                     let wsSh = wordsShadowed tlv
-                    if not (Set.isEmpty wsSh) then ErrorFlags.NoError else
+                    if Set.isEmpty wsSh then ErrorFlags.NoError else
                     logError ll (sprintf "shadowed words: %s" (String.concat ", " wsSh))
                     ErrorFlags.WordShadowed
                 let struct(dOpen,eOpen) = initOpen ll tlv 
                 let cte0 = initCTE ll (eShadow ||| eOpen) dOpen
-                List.fold applyEnt cte0 (tlv.Ents)
+                let cte' = List.fold applyEnt cte0 (tlv.Ents)
+                applyExport cte' (tlv.Export)
             | FParsec.CharParsers.Failure (msg, _, _) ->
-                logError ll msg
+                logError ll (sprintf "syntax error: %s" msg)
                 initCTE ll (ErrorFlags.SyntaxError) (Value.unit)
 
     /// Compile a g0 program, returning the final dictionary only if

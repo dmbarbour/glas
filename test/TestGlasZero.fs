@@ -208,17 +208,19 @@ module Glas.TestGlasZero
     // Simple effects handler to test loading of modules.
     // Note that we aren't testing the log function, since
     // the logging behavior isn't very well specified.
-    let testLoadEff (d:Value) : IEffHandler =
-        let logging = false
-        let logger = 
-            if logging then consoleErrLogger () 
-                       else noEffects 
+    let testLoadEff (src:string) (ns:Map<string,Value>) : IEffHandler =
+        let logging = not (System.String.IsNullOrEmpty(src))
         { new IEffHandler with
-            member __.Eff msg =
-                match msg with
-                | Value.Variant "load" (Value.Bits k) ->
-                    Value.record_lookup k d
-                | _ -> logger.Eff msg
+            member __.Eff request =
+                if logging then
+                    printfn "%s: %s" src (Value.prettyPrint request)
+                match request with
+                | Value.Variant "load" (Value.String m) ->
+                    Map.tryFind m ns
+                | Value.Variant "log" msg ->
+                    Some (Value.unit)
+                | _ ->
+                    None
           interface ITransactional with
             member __.Try () = ()
             member __.Commit () = ()
@@ -227,9 +229,11 @@ module Glas.TestGlasZero
 
     let doCompile ll s = 
         match compile ll s with
-        | Some r -> r
+        | Some r ->
+            //printfn "COMPILED TO %s" (Value.prettyPrint r) 
+            r
         | None ->
-            failtest "expected to compile successfully"
+            failtestf "program does not compile"
 
     let doEval p e ds = 
         match ProgEval.eval p e ds with
@@ -252,32 +256,41 @@ module Glas.TestGlasZero
         "prog del ['del apply]"
         ""
         "# construction of composite operations"
-        "macro dip [0 swap 'dip put]"
-        "prog tag [[0 swap] dip put]"
-        "macro while-do [['while tag] dip 'do put 'loop tag]"
-        "macro try-then-else [[['try tag] dip 'then put] dip 'else put 'cond tag]"
-        "macro with-do [['with tag] dip 'do put 'env tag]"
+        "macro dip [0 'dip put]"
+        "macro while-do [0 'do put 'while put 0 'loop put]"
+        "macro try-then-else [0 'else put 'then put 'try put 0 'cond put]"
+        "macro with-do [0 'do put 'with put 0 'env put]"
     ]
 
-    let nmath = String.concat "\n" [
+    let listOps = String.concat "\n" [
+        "# list ops were removed from Glas primitive ops."
+        "# let's rebuild them here."
+        ""
+        "# testing multiple import styles"
         "open prims"
-        "# operations for bignum math "
-        "prog modn [div [drop]dip eralz]"
-        ]
-
-    let util = String.concat "\n" [
-        "open prims"
-        "prog neq [[eq][fail][]try-then-else]"
-        ]
-
-    let gcd = String.concat "\n" [
-        "# exercise every import type"
-        "open util"
-        "from nmath import modn as mod, eralz"
-        "prog neq-zero [0 neq drop]"
-        "# define gcd via Euclidean algorithm"
-        "prog gcd [eralz [neq-zero] [copy [swap] dip mod] while-do drop eralz]"
-        ]
+        "from prims import copy as cp"
+        ""
+        "prog pushl [0 0b0 put 0b1 put]"
+        "prog popl  [cp 0b1 get swap 0b0 get]"
+        ""
+        "prog log-val [cp 0 'log put eff 0 eq]"
+        "assert [\"hello\" popl 0x68 eq \"ello\" eq]"
+        "assert [\"ello\" 0x68 pushl \"hello\" eq]"
+        ""
+        "prog list-rev-append ["
+        "  [[popl] dip]  # (V:L1) L2 -- L1 V L2"
+        "  [swap pushl]  # L1 V L2 -- L1 (V:L2)"
+        "  while-do      # L1 L2 -- () (Rev(L1)+L2)"
+        "  swap 0 eq     # remove L1 unit value"
+        "]"
+        "assert [\"cba\" \"def\" list-rev-append \"abcdef\" eq]"
+        "prog list-rev [0 list-rev-append]"
+        ""
+        "assert [\"hello\" log-val list-rev log-val \"olleh\" eq]"
+        ""
+        "prog join [[list-rev] dip list-rev-append]"
+        ""
+    ]
     
     // note: cannot use math as base test since removed arithmetic.
     // might try to implement list append, instead.
@@ -291,36 +304,19 @@ module Glas.TestGlasZero
                 | Some v when ProgVal.isValidProgramAST v -> v
                 | Some _ -> failtestf "unable to parse program for word %s" w
 
-            let ll0 = testLoadEff (Value.unit) 
+            let ll0 = testLoadEff "" (Map.empty) 
             let mPrims = doCompile ll0 prims
 
-            let ll1 = testLoadEff (Value.asRecord ["prims"] [mPrims])
-            let mnmath = doCompile ll1 nmath
-            let mutil = doCompile ll1 util
+            let ll1 = testLoadEff "" (Map.ofList [("prims", mPrims)])
+            let mLists = doCompile ll1 listOps
 
-            // test modn
-            let pModn = getfn mnmath "modn"
-            Expect.equal (ProgVal.static_arity pModn) (Some struct(2,1)) "arity modn"
-            let eModn1 = doEval pModn noEffects [Value.nat 1071UL; Value.nat 462UL]
-            Expect.equal eModn1 [Value.nat 462UL] "mod1"
-            let eModn2 = doEval pModn noEffects [Value.nat 462UL; Value.nat 1071UL]
-            Expect.equal eModn2 [Value.nat 147UL] "mod2"
+            let s0 = "abcdefghijklm"
+            let s1 = "nopqrstuvwxyz"
 
-            // provide nmath and util to compilation of gcd module
-            let ll2 = testLoadEff (Value.asRecord ["nmath"; "util"] [mnmath; mutil])
-            let mgcd = doCompile ll2 gcd
-
-            // test neq-zero
-            let pNEQZ = getfn mgcd "neq-zero"
-            Expect.equal (ProgVal.static_arity pNEQZ) (Some struct(1,1)) "arity neq-zero"
-            let eNEQ1 = doEval pNEQZ noEffects [Value.nat 0UL] 
-            Expect.equal eNEQ1 [Value.u8 0uy] "8-bit zero is not equal to 0-bit zero (unit)"
-            Expect.isNone (ProgEval.eval pNEQZ noEffects [Value.nat 0UL]) 
-                            "neq-zero on unit"
-
-            // test gcd 
-            let pGCD = getfn mgcd "gcd"
-            Expect.equal (ProgVal.static_arity pGCD) (Some struct(2,1)) "arity gcd"
-            let eGCD = doEval pGCD noEffects [Value.nat 462UL; Value.nat 1071UL]
-            Expect.equal eGCD [Value.nat 21UL] "gcd computed "
+            let pJoin = getfn mLists "join"
+            match ProgEval.eval pJoin noEffects [Value.ofString s1; Value.ofString s0] with
+            | Some [Value.String s] -> 
+                Expect.equal s (s0 + s1) "join succeeded" 
+            | _ ->
+                failtest "join did not return expected value" 
 

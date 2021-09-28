@@ -4,6 +4,9 @@ module ProgEval =
     open Value
     open ProgVal
 
+    // If we can observe arity errors at runtime, raise this exception.
+    exception RuntimeUnderflowError
+
     module FTI =
         open Effects
 
@@ -14,14 +17,14 @@ module ProgEval =
         //
         // This implementation uses lazy compilation for conditional behavior. This ensures that
         // time-complexity of FTI compilation is not worse than direct style interpretation when
-        // actual code coverage is a small part of the program.
+        // runtime evaluation covers a small portion of a large program.
         //
         // However, the current implementation is checking for arity errors and manipulating 
         // a stack representation at runtime instead of preallocating memory. We currently 
         // do not optimize the program. Acceleration, memoization, and stowage are not yet 
         // supported. There is much room for improvement.
         //
-        // I intend to accelerate the list ops, at least, and perhaps basic arithmetic ops.
+        // I intend to accelerate the list ops and maybe arithmetic ops for bootstrap. 
         //
 
         /// runtime environment
@@ -55,43 +58,57 @@ module ProgEval =
         let copy cte cc rte =
             match rte.DataStack with
             | (a::_) as ds -> cc { rte with DataStack = (a::ds) }
-            | _ -> (cte.FK) rte
+            | _ -> raise RuntimeUnderflowError
 
         let drop cte cc rte =
             match rte.DataStack with
             | (_::ds') -> cc { rte with DataStack = ds' }
-            | _ -> (cte.FK) rte
+            | _ -> raise RuntimeUnderflowError
 
         let swap cte cc rte =
             match rte.DataStack with
             | (a::b::ds') -> cc { rte with DataStack = (b::a::ds') }
-            | _ -> (cte.FK) rte
+            | _ -> raise RuntimeUnderflowError
 
         let eq cte cc rte =
             match rte.DataStack with
-            | (a::b::ds') when (a = b) -> cc { rte with DataStack = ds' }
-            | _ -> (cte.FK) rte
+            | (a::b::ds') ->
+                if (a = b) 
+                    then cc { rte with DataStack = ds' }
+                    else (cte.FK) rte
+            | _ -> raise RuntimeUnderflowError
+
+        let inline record_lookup_v kv r =
+            match kv with
+            | Bits k -> record_lookup k r
+            | _ -> None
 
         let get cte cc rte =
             match rte.DataStack with
-            | ((Bits k)::r::ds') ->
-                match record_lookup k r with
-                | Some v -> cc { rte with DataStack = (v::ds') }
+            | (kv::r::ds') ->
+                match kv with 
+                | Bits k -> 
+                    match record_lookup k r with
+                    | Some v -> cc { rte with DataStack = (v::ds') }
+                    | None -> (cte.FK) rte
                 | _ -> (cte.FK) rte
-            | _ -> (cte.FK) rte
+            | _ -> raise RuntimeUnderflowError
 
         let put cte cc rte =
             match rte.DataStack with
-            | ((Bits k)::r::v::ds') -> 
-                cc { rte with DataStack = ((record_insert k v r)::ds') }
-            | _ -> cte.FK rte
+            | (kv::r::v::ds') -> 
+                match kv with
+                | Bits k -> cc { rte with DataStack = ((record_insert k v r)::ds') }
+                | _ -> (cte.FK) rte
+            | _ -> raise RuntimeUnderflowError
 
-        let del cte cc =
-            fun rte ->  
-                match rte.DataStack with
-                | ((Bits k)::r::ds') ->
-                    cc { rte with DataStack = ((record_delete k r)::ds') }
-                | _ -> cte.FK rte
+        let del cte cc rte =
+            match rte.DataStack with
+            | (kv::r::ds') ->
+                match kv with
+                | Bits k -> cc { rte with DataStack = ((record_delete k r)::ds') }
+                | _ -> (cte.FK) rte
+            | _ -> raise RuntimeUnderflowError
 
         (* Hiding these temporarily. Likely to become accelerators.
 
@@ -189,7 +206,7 @@ module ProgEval =
             match rte.DataStack with
             | (a::ds') -> 
                 cc { rte with DataStack = ds'; DipStack = (a::(rte.DipStack)) }
-            | _ -> (cte.FK) rte // error in program
+            | _ -> raise RuntimeUnderflowError
 
         let dipEnd _ cc rte =
             match rte.DipStack with
@@ -264,7 +281,7 @@ module ProgEval =
             match rte.DataStack with
             | (a::ds') ->
                 cc { rte with DataStack = ds'; EffStateStack = (a::(rte.EffStateStack)) }
-            | _ -> (cte.FK) rte // arity error in program
+            | _ -> raise RuntimeUnderflowError
 
         let env (opWith:Op) (opDo:Op) cte0 cc0 =
             let eh0 = cte0.EH // restore parent effect in context of opWith

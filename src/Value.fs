@@ -337,6 +337,11 @@ module Value =
                     pair l (record_insert p' v (_ofSE s e))
             | None -> { v with Stem = Bits.append p (v.Stem) } 
 
+    let record_set k vOpt r =
+        match vOpt with
+        | Some v -> record_insert k v r
+        | None -> record_delete k r
+
     let asRecord ks vs = 
         let addElem r k v = record_insert (label k) v r
         List.fold2 addElem unit ks vs
