@@ -342,9 +342,9 @@ module ProgEval =
                 box (Some (rte.DataStack))
             let ccEvalFail rte = box None
             let cte = { FK = ccEvalFail; EH = ioEff io; TX = io }
-            let run = (compile p) cte ccEvalOK
+            let runLazy = lazy ((compile p) cte ccEvalOK)
             fun ds ->
-                try ds |> dataStack |> run |> unbox<Value list option>
+                try ds |> dataStack |> (runLazy.Force()) |> unbox<Value list option>
                 with
                 | RuntimeUnderflowError -> None
 
