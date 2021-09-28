@@ -103,7 +103,7 @@ module Glas.TestGlasZero
                 let vb = Value.ofBits
 
                 // A simple program.
-                let p1 =  [Data (vb (toB 12 0xabcUL)); Data (Value.symbol "foo"); Data (Value.ofString "test"); Call "swap"]
+                let p1 =  [Const (vb (toB 12 0xabcUL)); Const (Value.symbol "foo"); Const (Value.ofString "test"); Call "swap"]
                 Expect.equal p1 (pp "0xaBc 'foo \"test\" \n  swap  ") "test simple program"
 
                 let p2 = [Block []; Call "dip"]
@@ -237,7 +237,7 @@ module Glas.TestGlasZero
         | None -> failtestf "eval unsuccessful for program %A" p
 
     let prims = String.concat "\n" [
-        "# simplest macro - apply data as program"
+        "# the simplest macro - apply static data as program"
         "macro apply []"
         ""
         "# primitive symbolic operators"
@@ -250,24 +250,6 @@ module Glas.TestGlasZero
         "prog get ['get apply]"
         "prog put ['put apply]"
         "prog del ['del apply]"
-        "prog pushl ['pushl apply]"
-        "prog popl ['popl apply]"
-        "prog pushr ['pushr apply]"
-        "prog popr ['popr apply]"
-        "prog join ['join apply]"
-        "prog split ['split apply]"
-        "prog len ['len apply]"
-        "prog bjoin ['bjoin apply]"
-        "prog bsplit ['bsplit apply]"
-        "prog blen ['blen apply]"
-        "prog bneg ['bneg apply]"
-        "prog bmax ['bmax apply]"
-        "prog bmin ['bmin apply]"
-        "prog beq ['beq apply]"
-        "prog add ['add apply]"
-        "prog mul ['mul apply]"
-        "prog sub ['sub apply]"
-        "prog div ['div apply]"
         ""
         "# construction of composite operations"
         "macro dip [0 swap 'dip put]"
@@ -279,8 +261,6 @@ module Glas.TestGlasZero
 
     let nmath = String.concat "\n" [
         "open prims"
-        "# eralz - erase leading zeroes"
-        "prog eralz [[0b0 get] [] while-do]"
         "# operations for bignum math "
         "prog modn [div [drop]dip eralz]"
         ]
@@ -298,11 +278,13 @@ module Glas.TestGlasZero
         "# define gcd via Euclidean algorithm"
         "prog gcd [eralz [neq-zero] [copy [swap] dip mod] while-do drop eralz]"
         ]
+    
+    // note: cannot use math as base test since removed arithmetic.
+    // might try to implement list append, instead.
 
-    (*
     [<Tests>]
     let testCompile =
-        testCase "gcd and its dependencies" <| fun () ->
+        testCase "compile and test a simple g0 program" <| fun () ->
             let getfn m w =
                 match Value.record_lookup (Value.label w) m with
                 | None -> failtestf "unable to find word %s" w
@@ -316,18 +298,12 @@ module Glas.TestGlasZero
             let mnmath = doCompile ll1 nmath
             let mutil = doCompile ll1 util
 
-            // test eralz
-            let pEralz = getfn mnmath "eralz"
-            Expect.equal (ProgVal.static_arity pEralz) (Some struct(1,1)) "arity eralz"
-            let eEralz = doEval pEralz noEffects [Value.u64 12345UL]
-            Expect.equal eEralz [Value.nat 12345UL] "erase zero-bits prefix"
-
             // test modn
             let pModn = getfn mnmath "modn"
             Expect.equal (ProgVal.static_arity pModn) (Some struct(2,1)) "arity modn"
-            let eModn1 = doEval pModn noEffects [Value.u64 1071UL; Value.u32 462u]
+            let eModn1 = doEval pModn noEffects [Value.nat 1071UL; Value.nat 462UL]
             Expect.equal eModn1 [Value.nat 462UL] "mod1"
-            let eModn2 = doEval pModn noEffects [Value.u32 462u; Value.u64 1071UL]
+            let eModn2 = doEval pModn noEffects [Value.nat 462UL; Value.nat 1071UL]
             Expect.equal eModn2 [Value.nat 147UL] "mod2"
 
             // provide nmath and util to compilation of gcd module
@@ -337,7 +313,7 @@ module Glas.TestGlasZero
             // test neq-zero
             let pNEQZ = getfn mgcd "neq-zero"
             Expect.equal (ProgVal.static_arity pNEQZ) (Some struct(1,1)) "arity neq-zero"
-            let eNEQ1 = doEval pNEQZ noEffects [Value.u8 0uy] 
+            let eNEQ1 = doEval pNEQZ noEffects [Value.nat 0UL] 
             Expect.equal eNEQ1 [Value.u8 0uy] "8-bit zero is not equal to 0-bit zero (unit)"
             Expect.isNone (ProgEval.eval pNEQZ noEffects [Value.nat 0UL]) 
                             "neq-zero on unit"
@@ -345,8 +321,6 @@ module Glas.TestGlasZero
             // test gcd 
             let pGCD = getfn mgcd "gcd"
             Expect.equal (ProgVal.static_arity pGCD) (Some struct(2,1)) "arity gcd"
-            let eGCD = doEval pGCD noEffects [Value.u32 462u; Value.u64 1071UL]
+            let eGCD = doEval pGCD noEffects [Value.nat 462UL; Value.nat 1071UL]
             Expect.equal eGCD [Value.nat 21UL] "gcd computed "
 
-
-*)

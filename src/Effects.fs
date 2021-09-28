@@ -72,8 +72,24 @@ module Effects =
             member __.Abort () = ()
         }
 
-    /// Apply effects to a, then fallback to b if a fails.
-    /// This can be used for lightweight routing of effects.
+    /// Rewrite and/or filter effects functionally.
+    let rewriteEffects (fn : Value -> Value option) (io:IEffHandler) =
+        { new IEffHandler with
+            member __.Eff v0 =
+                match fn v0 with
+                | Some v' -> io.Eff v'
+                | None -> None
+          interface ITransactional with
+            member __.Try () = io.Try()
+            member __.Commit () = io.Commit()
+            member __.Abort () = io.Abort ()
+        }
+
+    /// Apply effects to a, then fallback to b only if a fails.
+    /// Transactions apply to both effect handlers.
+    ///
+    /// Note: this implementation doesn't scale nicely to many
+    /// effects. Fine if it's just a few, though.
     let composeEff (a : IEffHandler) (b : IEffHandler)  =
         { new IEffHandler with
             member __.Eff msg =
@@ -86,19 +102,18 @@ module Effects =
             member __.Abort () = try a.Abort() finally b.Abort()
         }
 
-    /// As wrapFail except we may change the `fail` label.
-    let wrapFailTag lbl =
-        let k = Value.label lbl
-        let startsWithLbl v = Option.isSome (Value.tryMatchStem k v)
-        fun msgList -> 
-            if Seq.forall startsWithLbl (FTList.toSeq msgList) 
-                then msgList // flatten if empty list or all log messages are failures
-                else msgList |> Value.ofFTList |> Value.variant lbl |> FTList.singleton
-    
-    /// wrapFail is the default rewrite function for transactional logging support.
-    /// Primarily, we'll rewrite a list of aborted log messages to a single message
-    /// of form `fail:MsgList`. There is also logic to flatten a stack of failures. 
-    let wrapFail = wrapFailTag "fail"
+    // Thoughts:
+    //  I could improve composeEff with a variation that routes based on 
+    //  label, e.g. 'log' vs. 'load'. 
+    // 
+    //  Additionally, I could manage transactions more efficiently. Instead
+    //  of sending 'Try()' to all effects, just send to those used. If our
+    //  stack depth is 3 deep, we can send Try 3 times for effect on label.
+    //
+    //  However, I doubt that effects will become the performance bottleneck
+    //  in context of bootstrap, so there isn't much need to implement this.
+    //  Also, behavior would be incorrect if there is any shared IEffHandler.
+       
 
     /// Transactional Logging Support
     /// 
@@ -107,30 +122,35 @@ module Effects =
     /// 
     /// Logging requires special attention in context of hierarchical
     /// transactions and backtracking. We should keep the log messages
-    /// because they are precious for debugging. However, which log
-    /// messages are committed or aborted should also be clear to the
-    /// client.
+    /// from the abort path because they are precious for debugging. 
     ///
-    /// The default method to group aborted log messages under 
-    /// `fail:[MessageList]`. Users may override this behavior, 
-    /// e.g. for contexts where label 'fail' is used.
+    /// However, it should be clear that certain messages are from the
+    /// aborted message path. To support this, by default I'll add the
+    /// 'recant' label to all messages that were from a failure path. 
     ///
     /// At the top-level, a function can be provided to receive the 
     /// logged messages when they become available.
     type TXLogSupport =
         val private WriteLog : Value -> unit
-        val private WrapFail : FTList<Value> -> FTList<Value>
+        val private Recanted : FTList<Value> -> FTList<Value>
         val mutable private TXStack : FTList<Value> list
 
-        /// Set the committed output destination. 
-        /// Wrap aborted messages with `fail:MessageList`.
+        /// Set the committed output destination. Default behavior for 
+        /// handling aborted messages - add 'recant' to every message.
         new (out) = 
-            { WriteLog = out; WrapFail = wrapFail; TXStack = [] }
+            let recantMsg = Value.record_insert (Value.label "recant") (Value.unit)
+            { WriteLog = out
+            ; Recanted = FTList.map recantMsg
+            ; TXStack = [] 
+            }
 
-        /// Set the commited output destination and the rewrite
-        /// function for handling aborted aborted messages. 
-        new (out, rewriteF) = 
-            { WriteLog = out; WrapFail = rewriteF; TXStack = [] }
+        /// Set the commited output destination and the function for
+        /// rewriting logged messages upon abort. 
+        new (out, recantFn) = 
+            { WriteLog = out
+            ; Recanted = recantFn
+            ; TXStack = [] 
+            }
 
         member self.Log(msg : Value) : unit =
             match self.TXStack with
@@ -147,7 +167,7 @@ module Effects =
             match self.TXStack with
             | [] -> invalidOp "pop empty transaction stack"
             | (tx0::tx0Rem) ->
-                let tx0' = if bCommit then tx0 else self.WrapFail tx0
+                let tx0' = if bCommit then tx0 else self.Recanted tx0
                 match tx0Rem with
                 | (tx1::txs) -> // commit into lower transaction
                     self.TXStack <- (FTList.append tx1 tx0')::txs 
@@ -196,6 +216,8 @@ module Effects =
 
     let private selectColor v =
         match v with
+        | Value.FullRec ["recant"] ([_], _) -> 
+            System.ConsoleColor.DarkMagenta
         | Value.FullRec ["lv"] ([lv],_) ->
             match lv with
             | Value.Variant "info" _ -> System.ConsoleColor.Green
@@ -213,7 +235,6 @@ module Effects =
                 | 5 -> System.ConsoleColor.DarkCyan
                 | 6 -> System.ConsoleColor.DarkYellow
                 | _ -> System.ConsoleColor.DarkRed
-        | Value.Variant "fail" _ ->  System.ConsoleColor.DarkMagenta
         | _ -> System.ConsoleColor.Blue
 
     /// Log Output to Console StdErr (with color!)

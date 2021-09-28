@@ -150,22 +150,22 @@ module Value =
         | None -> 
             { Stem = Bits.empty; Spine=Some struct(a, FTList.empty, NonPairVal(b)) }
 
-    let fst v =
+    let vfst v =
         match tryPairSpine v with
         | Some struct(v0,_,_) -> v0
         | None -> invalidArg "v" "not a pair"
 
-    let tryFst v =
+    let tryVFst v =
         match tryPairSpine v with
         | Some struct(v0,_,_) -> Some v0
         | None -> None
     
-    let snd v =
+    let vsnd v =
         match tryPairSpine v with
         | Some struct(_, s, e) -> _ofSE s e 
         | None -> invalidArg "v" "not a pair"
 
-    let trySnd v =
+    let tryVSnd v =
         match tryPairSpine v with
         | Some struct(_, s, e) -> Some (_ofSE s e) 
         | None -> None
@@ -215,30 +215,13 @@ module Value =
     let inline (|U8|_|) v =
         if isBits v then Bits.(|Byte|_|) v.Stem else None
 
-    let inline u16 (n : uint16) : Value = 
-        Bits.ofU16 n |> ofBits
-
-    let inline (|U16|_|) v =
-        if isBits v then Bits.(|U16|_|) v.Stem else None
-
-    let inline u32 (n : uint32) : Value =
-        Bits.ofU32 n |> ofBits
-
-    let inline (|U32|_|) v =
-        if isBits v then Bits.(|U32|_|) v.Stem else None
-
-    let inline u64 (n : uint64) : Value =
-        Bits.ofU64 n |> ofBits
-
-    let inline (|U64|_|) v = 
-        if isBits v then Bits.(|U64|_|) v.Stem else None
-
     let inline nat n =
         Bits.ofNat64 n |> ofBits
     
     let inline (|Nat|_|) v =
         if isBits v then Bits.(|Nat64|_|) v.Stem else None
 
+    let ofI = Bits.ofI >> ofBits
     let inline (|I|_|) v =
         if isBits v then Some (Bits.toI v.Stem) else None
 

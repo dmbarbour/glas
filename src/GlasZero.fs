@@ -23,7 +23,7 @@ module Zero =
     and Action =
         // initial parse
         | Call of Word      // word or macro call
-        | Data of Value     // numbers, strings, etc.
+        | Const of Value    // numbers, strings, etc.
         | Block of Block    // [foo]
 
     type Ent =
@@ -127,7 +127,7 @@ module Zero =
 
         parseActionRef := 
             choice [
-                parseData |>> Data
+                parseData |>> Const
                 parseBlock |>> Block
                 parseWord |>> Call
             ]
@@ -184,7 +184,7 @@ module Zero =
         let fnEnt ent =
             match ent with
             | Call w -> Set.singleton w
-            | Data _ -> Set.empty
+            | Const _ -> Set.empty
             | Block p -> wordsCalledBlock p
         Set.unionMany (Seq.map fnEnt b)
 
@@ -247,13 +247,16 @@ module Zero =
         List.append lOpen lFrom 
 
     module Compile =
-        // Goals for compilation:
-        // - Report as many errors as feasible while compiling.
-        //   This enables more than one error to be fixed at a time. 
-        // - Leave continuation with errors decision to client.
-        // - Static arity checks by default, even if no other types.
+        open Effects
+        open ProgVal
+        open ProgEval
+        open Value
 
-        open Glas.Effects
+        // Goals for compilation:
+        // - Report as many errors as feasible while compiling, even after
+        //   we know that compilation will fail. 
+        // - Static arity checks for newly defined words by default. 
+        // - Enable client to continue with errors.
 
         [<System.FlagsAttribute>]
         type ErrorFlags =
@@ -262,7 +265,7 @@ module Zero =
             | WordShadowed = 2          // at least one word is shadowed
             | LoadError = 4             // 'open' or 'from' fails to load 
             | WordUndefined = 8         // called or imported word is undefined
-            | UnhandledDefType = 16     // called word has unhandled def type
+            | UnknownDefType = 16       // called word has unrecognized def type
             | UncalledMacro = 32        // need static parameters for macro call
             | MacroFailed = 64          // top-level failure within a macro call
             | BadMacroResult = 128      // first result from macro is not a program
@@ -270,10 +273,132 @@ module Zero =
             | DynamicArity = 512        // program does not have static arity or failure
 
         [<Struct>]
-        type CompileState = 
-            { Dict   : Value        // resulting dictionary
-            ; Errors : ErrorFlags   // summary of errors (details are logged)
+        type CTE =
+            { Dict : Value
+            ; CallWarn : Set<Word>   // to resist duplicate call warnings 
+            ; Errors : ErrorFlags
+            ; LogLoad : IEffHandler
             }
+        type AR = (struct(int*int)) option
+
+        exception ForbiddenEffectException of Value
+        let forbidEffects = 
+            { new IEffHandler with
+                member __.Eff v = raise (ForbiddenEffectException(v))
+              interface ITransactional with
+                member __.Try () = ()
+                member __.Commit () = ()
+                member __.Abort () = ()
+            }
+
+        // Obtain arity via top-level annotation if possible. If not, compute arity.
+        let progArity (p:Program) : AR =
+            match p with
+            | Prog (vAnno, pDo) -> 
+                match vAnno with
+                | FullRec ["arity"] ([FullRec ["i";"o"] ([Nat i; Nat o], _)], _) ->
+                    Some struct(int i, int o)
+                | FullRec ["arity"] ([Value.Variant "invalid" U], _) -> 
+                    None
+                | _ -> static_arity pDo
+            | _ -> static_arity p
+
+        // macros adjust program arity to require at least one output, even
+        // if that output is from the data stack. Mostly this affects the
+        // basic 'apply' macro.
+        let macroArity (p:Program) : AR =
+            match progArity p with
+            | Some struct(i,0) -> 
+                Some struct(i+1, 1)
+            | other -> other
+
+        // evaluate with effects forbidden.
+        // currently returns None if:
+        //   insufficient parameters
+        //   top-level effect is requested
+        //   failure during evaluation
+        //
+        // The caller should preserve a failing call rather than reduce to 'fail'.
+        // This would have greater potential to simplify runtime debugging.
+        let tryPartialEval p ds =
+            // todo: consider caching of `eval p forbidEffects`. Lower priority
+            // due to lazy compilation of conditional behavior.
+            match progArity p with
+            | Some struct(i,o) when (i >= List.length ds) -> 
+                try eval p forbidEffects ds 
+                with 
+                | ForbiddenEffectException _ -> None
+            | _ -> None
+
+        let private stepArity ar1 ar2 = 
+            match ar1, ar2 with
+            | Some struct(i1,o1), Some struct(i2,o2) ->
+                let d = max 0 (i2 - o1)
+                Some struct(i1 + d, o1 + d + (o2 - i2))
+            | _ -> None
+
+        // translate block into a program value.
+        let private toProg (ops:Program list) : Program =
+            let addOpArity ar op = stepArity ar (progArity op)
+            let arOps = List.fold addOpArity (Some struct(0,0)) ops
+            let annoArity =
+                match arOps with
+                | None -> 
+                    // annotate for invalid static arity
+                    [("arity", Value.symbol "invalid")]
+                | Some struct(i,o) ->
+                    let aio = 
+                        Value.asRecord ["i";"o"] 
+                            [ Value.nat (uint64 i)
+                            ; Value.nat (uint64 o) 
+                            ]
+                    [("arity", aio)]
+            let allAnno = List.concat [annoArity]
+            let vAnno = allAnno |> Map.ofList |> Value.ofMap
+            // eliminate singleton 'seq'.
+            match ops with
+            | [op] -> Prog (vAnno, op)
+            | _ -> Prog (vAnno, PSeq (FTList.ofList ops))
+
+        let private addDataOpsRev (revOps:Program list) (ds:Value list) =
+            List.append (List.map (ProgVal.Data) ds) revOps
+
+        // Compile a program block into a value. 
+        let rec compileBlock (cte:CTE) (b:Block) =
+            _compileBlock cte [] [] b
+        and private _compileBlock (cte:CTE) (revOps:Program list) (ds:Value list) (b:Block) =
+            match b with
+            | [] -> 
+                struct(cte, toProg (List.rev (addDataOpsRev revOps ds)))
+            | ((Block p)::b') ->
+                let struct(cte', pVal) = compileBlock cte p
+                _compileBlock cte' revOps (pVal::ds) b'
+            | ((Const v)::b') ->
+                _compileBlock cte revOps (v::ds) b'
+            | ((Call w)::b') ->
+                match Value.record_lookup (Value.label w) (cte.Dict) with
+                | Some (ProgVal.Data v) ->
+                    _compileBlock cte revOps (v::ds) b'
+                | Some ((ProgVal.Prog _) as p) ->
+                    failwith "todo: apply prog"
+                | Some (Value.Variant "macro" p) ->
+                    failwith "todo: apply macro"
+                | Some _ -> // unrecognized deftype
+                    if not (Set.contains w (cte.CallWarn)) then 
+                        logError (cte.LogLoad) (sprintf "word %s has unhandled deftype" w) 
+                    let revOps' = (Op lFail) :: addDataOpsRev revOps ds
+                    let cte' = 
+                        { cte with
+                            CallWarn = Set.add w (cte.CallWarn) 
+                            Errors = ErrorFlags.UnknownDefType ||| cte.Errors 
+                        }
+                    _compileBlock cte' revOps' [] b'
+                | None ->
+                    // undefined words are reported earlier.
+                    let revOps' = (Op lFail) :: addDataOpsRev revOps ds
+                    let cte' = { cte with Errors = ErrorFlags.WordUndefined ||| cte.Errors }
+                    _compileBlock cte' revOps' [] b'
+
 
         let loadModule (ll:IEffHandler) (m:string) = 
             ll.Eff(Value.variant "load" (Value.ofString m))
@@ -281,61 +406,66 @@ module Zero =
         let private tryOptOpen ll optOpen =
             match optOpen with
             | None -> 
-                Some (Value.unit)
+                // no 'open', just return empty dict
+                Some (Value.unit)   
             | Some m ->
                 match loadModule ll m with
                 | None ->
-                    logError ll (sprintf "failed to load module %s" m)
+                    logError ll (sprintf "failed to load module %s for 'open'" m)
                     None
                 | Some d0 -> Some d0
 
-        let initOpen ll tlv e0 =
+        let initOpen ll tlv =
             match tryOptOpen ll tlv.Open with
-            | None -> { Dict = Value.unit; Errors = (e0 ||| ErrorFlags.LoadError ) }
+            | None -> struct(Value.unit, ErrorFlags.LoadError)
             | Some d0 ->
+                // detect any words we expected in 'open'
                 // we may compile with shadowing, so we don't erase any words here.
                 let haveWord w = Option.isSome (Value.record_lookup (Value.label w) d0)
                 let wsExpect = Set.difference (wordsCalled tlv) (wordsDefined tlv)
                 let wsMissing = Set.filter (haveWord >> not) wsExpect
                 if Set.isEmpty wsMissing then
-                    { Dict = d0; Errors = e0 }
+                    struct(d0, ErrorFlags.NoError)
                 else 
-                    logError ll (sprintf "missing definitions for %s" (String.concat ", " wsMissing))
-                    { Dict = d0; Errors = (e0 ||| ErrorFlags.WordUndefined) }
+                    logError ll (sprintf "missing definitions for %s"  (String.concat ", " wsMissing))
+                    struct(d0, ErrorFlags.WordUndefined)
 
-        let applyImportFrom ll st0 m lImports =
+        let applyImportFrom (cte:CTE) (m:ModuleName) (lImports:(Word * Word) list) =
+            let ll = cte.LogLoad
             match loadModule ll m with
             | None ->
                 logError ll (sprintf "failed to load module %s" m)
-                { st0 with Errors = (st0.Errors ||| ErrorFlags.LoadError) }
+                { cte with Errors = (cte.Errors ||| ErrorFlags.LoadError) }
             | Some dSrc ->
-                let haveWord w = Option.isSome <| Value.record_lookup (Value.label w) dSrc
+                let haveWord (w:string) = Option.isSome <| Value.record_lookup (Value.label w) dSrc
                 let wsMissing = lImports |> List.map fst |> List.filter (haveWord >> not) 
-                let e' = 
-                    if List.isEmpty wsMissing then st0.Errors else 
+                let errNew = 
+                    if List.isEmpty wsMissing then ErrorFlags.NoError else 
                     logError ll (sprintf "module %s does not define %s" m (String.concat ", " wsMissing))
-                    (st0.Errors ||| ErrorFlags.WordUndefined)
+                    ErrorFlags.WordUndefined
                 let addWord dDst (w,aw) =
                     match Value.record_lookup (Value.label w) dSrc with
                     | None -> Value.record_delete (Value.label aw) dDst
                     | Some vDef -> Value.record_insert (Value.label aw) vDef dDst
-                let d' = List.fold addWord (st0.Dict) lImports
-                { Dict = d'; Errors = e' }
+                { cte with 
+                    Dict = List.fold addWord (cte.Dict) lImports
+                    Errors = errNew ||| cte.Errors 
+                }
 
         
         //let compileBlock (ll:IEffHandler) (d0:Value) (b:Block) =
 
-        let applyProgDef ll st0 w b =
+        let applyProgDef cte w b =
             failwith "todo: compile program, define prog word"
 
-        let applyMacroDef ll st0 w b = 
+        let applyMacroDef cte w b = 
             failwith "todo: compile program, define macro word"
 
-        let applyDataDef ll st0 w b = 
+        let applyDataDef cte w b = 
             failwith "todo: compile program, define data word"
 
 
-        let applyStaticAssert ll st0 ln b =
+        let applyStaticAssert cte ln b =
             failwith "todo: compile program, check assertion"
             (*
             match tryCompileBlock ll (st0.Dict) b with
@@ -349,27 +479,35 @@ module Zero =
                 { st0 with Errors = st0.Errors ||| ErrorFlags.Assertion ||| ErrorFlags.CompBlock }
                 *)
 
-        let applyEnt (ll:IEffHandler) (st0:CompileState) (ent:Ent) : CompileState =
+        let applyEnt (cte:CTE) (ent:Ent) : CTE =
             match ent with
-            | ImportFrom (m, lImports) -> applyImportFrom ll st0 m lImports
-            | ProgDef (w, b) -> applyProgDef ll st0 w b
-            | MacroDef (w, b) -> applyMacroDef ll st0 w b
-            | StaticAssert (ln, b) -> applyStaticAssert ll st0 ln b
-            | DataDef (w, b) -> applyDataDef ll st0 w b
+            | ImportFrom (m, lImports) -> applyImportFrom cte m lImports
+            | ProgDef (w, b) -> applyProgDef cte w b
+            | MacroDef (w, b) -> applyMacroDef cte w b
+            | StaticAssert (ln, b) -> applyStaticAssert cte ln b
+            | DataDef (w, b) -> applyDataDef cte w b
 
-        let compile (ll:IEffHandler) (s:string) : CompileState =
+        let initCTE ll err d0 =
+            { Dict = d0
+            ; LogLoad = ll
+            ; Errors = err
+            ; CallWarn = Set.empty
+            }
+
+        let compile (ll:IEffHandler) (s:string) : CTE =
             match FParsec.CharParsers.run (Parser.parseTopLevel) s with
             | FParsec.CharParsers.Success (tlv, _, _) ->
-                let eShadowed = 
+                let eShadow = 
                     let wsSh = wordsShadowed tlv
                     if not (Set.isEmpty wsSh) then ErrorFlags.NoError else
                     logError ll (sprintf "shadowed words: %s" (String.concat ", " wsSh))
                     ErrorFlags.WordShadowed
-                let st0 = initOpen ll tlv eShadowed
-                List.fold (applyEnt ll) st0 (tlv.Ents)
+                let struct(dOpen,eOpen) = initOpen ll tlv 
+                let cte0 = initCTE ll (eShadow ||| eOpen) dOpen
+                List.fold applyEnt cte0 (tlv.Ents)
             | FParsec.CharParsers.Failure (msg, _, _) ->
                 logError ll msg
-                { Dict = Value.unit; Errors = ErrorFlags.SyntaxError }
+                initCTE ll (ErrorFlags.SyntaxError) (Value.unit)
 
     /// Compile a g0 program, returning the final dictionary only if
     /// there are no errors during the compilation process. 
@@ -377,7 +515,7 @@ module Zero =
     /// Effects handler must support 'log' and 'load' effects. Any
     /// errors are logged implicitly.
     let compile (ll:Effects.IEffHandler) (s:string) : Value option =
-        let st = Compile.compile ll s 
-        if Compile.ErrorFlags.NoError = st.Errors 
-            then Some (st.Dict) 
+        let cte = Compile.compile ll s 
+        if Compile.ErrorFlags.NoError = cte.Errors 
+            then Some (cte.Dict) 
             else None

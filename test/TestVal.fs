@@ -64,56 +64,39 @@ let tests =
             Expect.equal (compare t (pair unit unit)) 1 "cmp t puu"
             Expect.equal (compare f (pair unit unit)) 1 "cmp f puu"
 
-        testCase "number comparisons" <| fun () ->
-            let l = List.map uint32 (randomList 20 30)
+        testCase "fixed-width number comparisons" <| fun () ->
+            let l = List.map uint8 (randomList 20 30)
             for x in l do
                 for y in l do
-                    Expect.equal (compare (u32 x) (u32 y)) (compare x y) "compare numbers"
-                    Expect.equal ((u32 x) = (u32 y)) (x = y) "eq numbers"
+                    Expect.equal (compare (u8 x) (u8 y)) (compare x y) "compare numbers"
+                    Expect.equal ((u8 x) = (u8 y)) (x = y) "eq numbers"
 
         testCase "number round trip" <| fun () ->
             let l = randomList 200 300
             for x in l do
                 match u8 (uint8 x) with
-                | U16 _ | U32 _ | U64 _ -> failtest "matched wrong type U8"
                 | U8 n -> Expect.equal n (uint8 x) "round trip U8"
                 | _ -> failtest "failed to round-trip U8"
 
-                match u16 (uint16 x) with
-                | U8 _ | U32 _ | U64 _ -> failtest "matched wrong type U16"
-                | U16 n -> Expect.equal n (uint16 x) "round trip U16"
-                | _ -> failtest "failed to round-trip U16"
-
-                match u32 (uint32 x) with
-                | U8 _ | U16 _ | U64 _ -> failtest "matched wrong type U32"
-                | U32 n -> Expect.equal n (uint32 x) "round trip U32"
-                | _ -> failtest "failed to round-trip U32"
-
-                match u64 (uint64 x) with
-                | U8 _ | U16 _ | U32 _ -> failtest "matched wrong type U64"
-                | U64 n -> Expect.equal n (uint64 x) "round trip U64"
-                | _ -> failtest "failed to round-trip U64"
-
-
 
         testCase "pair of numbers" <| fun () ->
-            let a = pair (u32 99ul) (u64 999UL)
-            match fst a with
-            | U32 99ul -> ()
+            let a = pair (nat 99UL) (nat 999UL)
+            match vfst a with
+            | Nat 99UL -> ()
             | _ -> failtest "incorrect fst"
-            match snd a with
-            | U64 999UL -> ()
+            match vsnd a with
+            | Nat 999UL -> ()
             | _ -> failtest "incorrect snd"
 
         testCase "deep match pair" <| fun () -> 
-            let a = pair (u8 111uy) (u16 2222us)
-            let b = pair (u32 33333ul) (u64 444444UL)
+            let a = pair (nat 1234UL) (nat 2345UL)
+            let b = pair (nat 4567UL) (nat 5678UL)
             match (pair a b) with
-            | P (P (U8 w, U16 x), P (U32 y, U64 z)) ->
-                Expect.equal w 111uy "match U8"
-                Expect.equal x 2222us "match U16"
-                Expect.equal y 33333ul "match U32"
-                Expect.equal z 444444UL "match U64"
+            | P (P (Nat w, Nat x), P (Nat y, Nat z)) ->
+                Expect.equal w 1234UL "match pair ll"
+                Expect.equal x 2345UL "match pair lr"
+                Expect.equal y 4567UL "match pair rl"
+                Expect.equal z 5678UL "match pair rr"
             | _ -> failtest "failed to match"
 
         testCase "matchLR" <| fun () ->
@@ -121,18 +104,18 @@ let tests =
             | L (U8 x) -> Expect.equal x 27uy "match left"
             | _ -> failtest "failed to match left"
 
-            match (right (u16 22222us)) with
-            | R (U16 x) -> Expect.equal x 22222us "match right"
+            match (right (u8 42uy)) with
+            | R (U8 x) -> Expect.equal x 42uy "match right"
             | _ -> failtest "failed to match right"
 
-        testCase "list round-trip" <| fun () ->
-            let l = randomList 2000 3000 |> List.map uint32
-            let v = ofFTList (FTList.map u32 (FTList.ofList l))
-            let toU32 x = 
-                match x with
-                | (U32 n) -> n
-                | _ -> invalidArg (nameof x) "not a U32"
-            let l' = v |> toFTList |> FTList.toList |>  List.map toU32
+        testCase "ftlist round-trip" <| fun () ->
+            let l = randomList 2000 3000 |> List.map uint64
+            let v = ofFTList (FTList.map nat (FTList.ofList l))
+            let toNat v = 
+                match v with
+                | Nat n -> n
+                | _ -> failwithf "%s is not a nat" (prettyPrint v)
+            let l' = v |> toFTList |> FTList.toList |> List.map toNat
             Expect.equal l' l "round trip"
 
         testCase "binary round trip" <| fun () ->
@@ -152,18 +135,18 @@ let tests =
 
 
             // multi-value lookup
-            let r = pair (pair (u8 27uy) (u16 333us)) (pair (u32 1234ul) (u64 12345UL))
+            let r = pair (pair (u8 27uy) (u8 42uy)) (pair (u8 108uy) (u8 22uy))
             match record_lookup (Bits.ofList [false; false]) r with
             | Some (U8 27uy) -> ()
             | x -> failtest (sprintf "saturated lookup 00 -> %A" x)
             match record_lookup (Bits.ofList [false; true]) r with
-            | Some (U16 333us) -> ()
+            | Some (U8 42uy) -> ()
             | x -> failtest (sprintf "saturated lookup 01 -> %A" x)
             match record_lookup (Bits.ofList [true; false]) r with
-            | Some (U32 1234ul) -> ()
+            | Some (U8 108uy) -> ()
             | x -> failtest (sprintf "saturated lookup 10 -> %A" x)
             match record_lookup (Bits.ofList [true; true]) r with
-            | Some (U64 12345UL) -> ()
+            | Some (U8 22uy) -> ()
             | x -> failtest (sprintf "saturated lookup 11 -> %A" x)
         
         testCase "record delete" <| fun () ->
@@ -179,34 +162,34 @@ let tests =
         testCase "record insert" <| fun () ->
             let checkElem k m r =
                 match (record_lookup (Bits.ofByte k) r), (Map.tryFind k m) with
-                | Some (U32 n), Some n' -> Expect.equal n n' "equal lookup"
+                | Some (Nat n), Some n' -> Expect.equal n n' "equal lookup"
                 | None, None -> ()
                 | _ -> failtest "mismatch"
             let mutable m = Map.empty
             let mutable r = unit
-            for x in 1ul .. 4000ul do
+            for x in 1UL .. 4000UL do
                 let k = uint8 (rng.Next())
                 checkElem k m r
                 m <- Map.add k x m
-                r <- record_insert (Bits.ofByte k) (u32 x) r
+                r <- record_insert (Bits.ofByte k) (nat x) r
                 checkElem k m r
 
         testCase "record insert delete" <| fun () ->
             let checkElem k m r =
                 match (record_lookup (Bits.ofByte k) r), (Map.tryFind k m) with
-                | Some (U32 n), Some n' -> Expect.equal n n' "equal lookup"
+                | Some (Nat n), Some n' -> Expect.equal n n' "equal lookup"
                 | None, None -> ()
                 | _ -> failtest "mismatch"
             let mutable m = Map.empty
             let mutable r = unit
-            for x in 1ul .. 3000ul do
+            for x in 1UL .. 3000UL do
                 // add a few items.
                 let addCt = randomRange 5 10
                 for _ in 1 .. addCt do
                     let k = uint8 (rng.Next())
                     checkElem k m r
                     m <- Map.add k x m
-                    r <- record_insert (Bits.ofByte k) (u32 x) r
+                    r <- record_insert (Bits.ofByte k) (nat x) r
                     checkElem k m r
                 // remove a few items.
                 let delCt = randomRange 10 20

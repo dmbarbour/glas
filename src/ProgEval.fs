@@ -12,13 +12,17 @@ module ProgEval =
         // The benefit of FTI over direct style is that we avoid runtime parsing within loops,
         // and the resulting eval function is stable and accessible to .NET JIT compiler. 
         //
+        // This implementation uses lazy compilation for conditional behavior. This ensures that
+        // time-complexity of FTI compilation is not worse than direct style interpretation when
+        // actual code coverage is a small part of the program.
+        //
         // However, the current implementation is checking for arity errors and manipulating 
         // a stack representation at runtime instead of preallocating memory. We currently 
         // do not optimize the program. Acceleration, memoization, and stowage are not yet 
-        // supported. There is significant room for improvement.
+        // supported. There is much room for improvement.
         //
-        // If performance proves adequate for bootstrap, I'll avoid touching this further.
-        // But if needed, I'll explore other performance enhancements.
+        // I intend to accelerate the list ops, at least, and perhaps basic arithmetic ops.
+        //
 
         /// runtime environment
         ///
@@ -224,9 +228,11 @@ module ProgEval =
             cte.TX.Try()
             cc { rte with FailureStack = Some rte }
                 
-        let cond (opTry:Op) (opThen:Op) (opElse:Op) cte cc =
-            let ccCondElse = abortTX cte (opElse cte cc)
-            let ccCondThen = commitTX cte (opThen cte cc)
+        let cond (opTry:Op) (opThenLazy:Lazy<Op>) (opElseLazy:Lazy<Op>) cte cc =
+            let ccCondThenLazy = lazy (commitTX cte ((opThenLazy.Force()) cte cc))
+            let ccCondElseLazy = lazy (abortTX  cte ((opElseLazy.Force()) cte cc))
+            let ccCondThen rte = (ccCondThenLazy.Force()) rte
+            let ccCondElse rte = (ccCondElseLazy.Force()) rte
             beginTX cte (opTry { cte with FK = ccCondElse } ccCondThen)
 
         // Note for potential future headaches reduction:
@@ -236,11 +242,12 @@ module ProgEval =
         // This gave me quite some trouble, trying to trace down why tailcalls were not
         // working as expected. I eventually solved by adding <Tailcalls>True</Tailcalls>
         // to the property group in the fsproj.
-        let loop (opWhile:Op) (opDo:Op) cte cc0 =
+        let loop (opWhile:Op) (opDoLazy:Lazy<Op>) cte cc0 =
             let cycleRef = ref cc0
             let ccLoopRepeat rte = (!cycleRef) rte
+            let ccLoopDoLazy = lazy (commitTX cte ((opDoLazy.Force()) cte ccLoopRepeat))
+            let ccLoopDo rte = (ccLoopDoLazy.Force()) rte
             let ccLoopHalt = abortTX cte cc0
-            let ccLoopDo = commitTX cte (opDo cte ccLoopRepeat) 
             let ccLoopWhile = beginTX cte (opWhile { cte with FK = ccLoopHalt } ccLoopDo)
             cycleRef := ccLoopWhile // close the loop
             ccLoopWhile
@@ -282,17 +289,16 @@ module ProgEval =
             | Data v -> data v 
             | PSeq ps -> pseq (FTList.map (compile) ps)
             | Cond (pTry, pThen, pElse) ->
-                cond (compile pTry) (compile pThen) (compile pElse)
+                cond (compile pTry) (lazy (compile pThen)) (lazy (compile pElse))
             | Loop (pWhile, pDo) ->
-                loop (compile pWhile) (compile pDo)
+                loop (compile pWhile) (lazy (compile pDo))
             | Env (pWith, pDo) ->
                 env (compile pWith) (compile pDo) 
             | Prog (_, p') -> 
                 // memoization, stowage, or acceleration could be annotated here.
                 compile p' 
             | _ -> 
-                //failwithf "unrecognized program %s" (prettyPrint p)
-                failwith "unrecognized program"
+                failwithf "unrecognized program %s" (prettyPrint p)
 
         let ioEff (io:IEffHandler) cte cc rte =
             match rte.DataStack with

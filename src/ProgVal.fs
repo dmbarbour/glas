@@ -166,7 +166,7 @@ module ProgVal =
         | ArityFail // arity of subprogram that always Fails
         | ArityDyn // arity of inconsistent subprogram
 
-    let compSeqArity a b =
+    let private compSeqArity a b =
         match a, b with
         | Arity (ia, oa), Arity (ib, ob) ->
             let d = max 0 (ib - oa)
@@ -176,7 +176,7 @@ module ProgVal =
         | Arity _, _ -> b
         | _ -> a
 
-    let compCondArity c a b =
+    let private compCondArity c a b =
         let ca = compSeqArity c a
         match ca, b with
         | Arity (li, lo), Arity (ri, ro) when ((li - lo) = (ri - ro)) ->
@@ -191,7 +191,7 @@ module ProgVal =
             | ArityDyn -> ArityDyn
         | _ -> ArityDyn
 
-    let compLoopArity c a =
+    let private compLoopArity c a =
         // dynamic if not stack invariant.
         match compSeqArity c a with
         | Arity (i,o) when (i = o) -> Arity(i,o)
@@ -201,25 +201,19 @@ module ProgVal =
             | _ -> ArityDyn
         | _ -> ArityDyn
 
-    let private opArityMap =
-        let inline ar a b = struct(a, b)
-        [ (lCopy, ar 1 2)
-        ; (lSwap, ar 2 2)
-        ; (lDrop, ar 1 0)
-        ; (lEq, ar 2 0)
-        ; (lGet, ar 2 1)
-        ; (lPut, ar 3 1)
-        ; (lDel, ar 2 1)
-        ] |> Map.ofList
-
+    /// Computes arity of program. If there are 'arity:(i:Nat, o:Nat)' annotations
+    /// under 'prog' operations, requires that annotations are consistent.
     let rec stackArity (ef0:StackArity) (p0:Value) : StackArity =
         match p0 with 
-        | Op op ->
-            if op = lEff then ef0 else
-            if op = lFail then ArityFail else
-            match Map.tryFind op opArityMap with
-            | Some (struct(a,b)) -> Arity (a,b)
-            | None -> failwithf "missing op %s in arity map" (prettyPrint p0)
+        | Stem lCopy U -> Arity (1,2)
+        | Stem lSwap U -> Arity (2,2)
+        | Stem lDrop U -> Arity (1,0)
+        | Stem lEq U -> Arity (2,0)
+        | Stem lGet U -> Arity (2,1)
+        | Stem lPut U -> Arity (3,1)
+        | Stem lDel U -> Arity (2,1)
+        | Stem lEff U -> ef0
+        | Stem lFail U -> ArityFail
         | Dip p ->
             match stackArity ef0 p with
             | Arity (a,b) -> Arity (a+1, b+1)
@@ -244,12 +238,22 @@ module ProgVal =
                 stackArity ArityFail p'
             | _ ->
                 stackArity ArityDyn p'
-        | Prog (_, p) -> 
-            stackArity ef0 p
+        | Prog (anno, p) ->
+            let arInfer = stackArity ef0 p
+            let arAnno = 
+                match anno with
+                | FullRec ["arity"] ([FullRec ["i";"o"] ([Nat i; Nat o], _)], _) ->
+                    Some(int i, int o)
+                | _ -> None
+            match arInfer, arAnno with
+            | Arity (i,o), Some (i',o') when ((i' >= i) && ((o - i) = (o' - i'))) ->
+                // annotated arity is compatible with inferred arity
+                Arity(i',o')
+            | _, None -> arInfer // no annotation, use inferred
+            | _, _ -> ArityDyn // arity inconsistent with annotation
         | _ ->
             failwithf "not a valid program %s" (prettyPrint p0)
 
-    // vestigial
     let static_arity p =
         match stackArity (Arity (1,1)) p with
         | Arity (a,b) -> Some struct(a,b) 
