@@ -104,9 +104,8 @@ The g0 language does not have any built-in definitions. Macros are sufficient to
         prog swap ['swap apply]
         prog drop ['drop apply]
         ...
-        macro dip [0 swap 'dip put]
-        prog tag [[0 swap] dip put]
-        macro while-do [['while tag] dip 'do put 'loop tag]
+        macro dip [0 'dip put]
+        macro while-do [0 'do put 'while put 0 'loop put]
         ...
 
 The g0 ecosystem will usually start with a module to define the primitives and other useful functions.
@@ -195,4 +194,3 @@ Similar to export, we could provide the dictionary as an input to assertions. Th
 ### Aggregate Definitions? Rejected.
 
 It is feasible to extend g0 with special symbols that support implicit aggregation on 'open' and 'from', preferably monotonic and idempotent such as set union or graph unification. However, this idea has the same problems as macro state, just at a different layer. Similarly, it should be left to higher layer language modules.
-
