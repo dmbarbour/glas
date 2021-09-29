@@ -216,14 +216,16 @@ module Zero =
             match ent with
             | ImportFrom (_, lImports) ->
                 // detect shadowing within the imports list, too.
-                let fnImp (_,aw) (wsSh, wsDef) =
-                    let wsDef' = Set.add aw wsDef
-                    let wsSh' = if Set.contains aw wsDef then Set.add aw wsSh else wsSh
+                let fnImp (_,w) (wsSh, wsDef) =
+                    let wsDef' = Set.add w wsDef
+                    let wsSh' = if Set.contains w wsDef then Set.add w wsSh else wsSh
                     (wsSh', wsDef')
                 List.foldBack fnImp lImports (wsSh, wsDef)
             | ProgDef (w, b) | MacroDef (w, b) | DataDef (w, b) ->
+                let shWord = if Set.contains w wsDef then Set.singleton w else Set.empty
                 let wsDef' = Set.add w wsDef
-                let wsSh' = wordsCalledBlock b |> Set.intersect wsDef' |> Set.union wsSh
+                let shCall = Set.intersect wsDef' (wordsCalledBlock b) 
+                let wsSh' = Set.unionMany [shWord; shCall; wsSh]
                 (wsSh', wsDef')
             | StaticAssert (_, b) ->
                 let wsSh' = wordsCalledBlock b |> Set.intersect wsDef |> Set.union wsSh

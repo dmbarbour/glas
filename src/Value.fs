@@ -677,10 +677,15 @@ module Value =
                     yield! FTList.toSeq l' |> Seq.collect (fun v -> seq { yield ", "; yield! _ppV false v})
                 | _ -> ()
                 yield "]"
-            | Bits b when Bits.head b ->
+            | Bits b ->
                 if bLRSep then
                     yield " "
-                yield (Bits.toI b).ToString()
+                if (Bits.head b) then 
+                    yield (Bits.toI b).ToString()
+                else
+                    yield "0b"
+                    for b in Bits.toSeq b do
+                        if b then yield "1" else yield "0"
             | L v ->
                 yield "L"
                 yield! _ppV true v
