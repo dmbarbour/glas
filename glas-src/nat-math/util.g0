@@ -1,2 +1,0 @@
-prog unit [0]
-prog drop-unit [unit eq]

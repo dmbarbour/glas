@@ -52,13 +52,14 @@ let printMsg = String.concat "\n" [
     ""
     "A Printer is a Glas Program, arity 1--0, that uses 'write' effects to"
     "output streaming data, and 'log' effects for debugging. A Printer can"
-    "fail after partial output if applied to the wrong type of Value."
+    "fail after partial output if applied to a value of unexpected type."
     ""
-    "If a printer is not specified, we'll try 'std.print'. It is feasible to"
-    "define printers that evaluate program arguments, or typecheck the value"
-    "then print the type. Thus, print provides a basis for lightweight REPL."
+    "If a printer is not specified, we'll try 'std.print', which should be"
+    "designed for text terminal based debugging of arbitrary values. This"
+    "could be used as a REPL, albeit inefficient due to lack of caching."
     ""
-    "Programmers can use shell commands to redirect stdout to a file."
+    "By default, writes go to stdout and log messages to stderr. The client"
+    "can redirect these streams normally."
     ""
     "Value or Printer are specified as values. See 'help value'."
     ""
@@ -67,33 +68,19 @@ let printMsg = String.concat "\n" [
 let arityMsg = String.concat "\n" [
     "arity Program"
     ""
-    "Print a description of the program's arity, e.g. `1 -- 0`."
+    "Print a description of the program's arity, e.g. `1--0`."
     "This also checks if the input is a valid Glas program."
     ]
 
 
 let valueMsg = String.concat "\n" [
-    "module(.label|[index])*"
+    "module(.label)*"
     ""
     "A value or program is specified by dotted path starting with module name."
-    "Using `.label` indexes a record, and `[3]` indexes a list, starting at `[0]`."
-    "The value for the requested module is loaded then accessed by index."
+    "Using `.label` indexes a record value. This is adequate for most use-cases."
+    "There is no support for specifying values via command line."
     ""
-    "Currently, there is no support for building a value programmatically on the"
-    "command line."
-    ""
-    "Values are used as part of other commands. See `help`."
-    ]
-
-let testMsg = String.concat "\n" [
-    "test TestProgram"
-    ""
-    "A TestProgram is a Glas program, arity 0--0, that uses a 'fork' effect for"
-    "non-deterministic choice to support randomization. At the moment, it is "
-    "better to use internal assertions within modules. But if tools mature, the"
-    "use of non-deterministic choice would become a search for failing inputs." 
-    ""
-    "See `help value` for specifying the TestProgram."
+    "Values are parameters in commands. See `help`."
     ]
 
 let runMsg = String.concat "\n" [
@@ -115,10 +102,8 @@ let helpMsg = String.concat "\n" [
     "    print Value"
     "    print Value with Printer"
     "    arity Program"
-    "    test TestProgram"
-    //"    test TestProgram fork Pattern"
     "    run AppProgram"
-    "    help (print|arity|test|run|value)"
+    "    help (print|arity|run|value)"
     ""
     "The performance and completeness of this implementation is not great. The"
     "intention is to bootstrap the command line then print a new executable."
@@ -134,9 +119,6 @@ let help (cmd : string list) : int =
         EXIT_OK
     | ("arity"::_) ->
         System.Console.WriteLine(arityMsg)
-        EXIT_OK
-    | ("test"::_) -> 
-        System.Console.WriteLine(testMsg)
         EXIT_OK
     | ("run"::_) ->
         System.Console.WriteLine(runMsg)
@@ -166,7 +148,7 @@ let parseLabel : Parser<string,unit> =
 let parseValueIndex : Parser<ValueIndex, unit> =
     choice [
         pchar '.' >>. parseLabel |>> RecordLabel
-        pchar '[' >>. puint64 .>> pchar ']' |>> ListItem
+        //pchar '[' >>. puint64 .>> pchar ']' |>> ListItem
     ] 
 
 let parseValue =
@@ -259,44 +241,25 @@ let print (vstr:string) (pstr:string) : int =
 
 let arity (pstr:string) : int =
     let logger = consoleErrLogger ()
-    logInfo logger (sprintf "arity %s" pstr) 
     let loader = getLoader logger
     match getValue loader pstr with
     | Some p when isValidProgramAST p -> 
         match stackArity (Arity(1,1)) p with
         | Arity(a,b) ->
-            printfn "%d -- %d" a b
+            printfn "%d--%d" a b
             EXIT_OK
         | ArityDyn ->
-            logError logger (sprintf "program %s has variable stack arity" pstr)
+            printfn "dynamic"
             EXIT_FAIL
         | ArityFail ->
-            logError logger (sprintf "program %s always fails, has any stack arity" pstr)
+            printfn "failure"
             EXIT_FAIL
     | Some _ -> 
-        logError logger (sprintf "value %s does not appear to be a program" pstr)
+        printfn "non-program"
         EXIT_FAIL
     | None ->
         // reason for failure is already logged. 
         EXIT_FAIL
-
-let test (pstr:string) : int =
-    let logger = consoleErrLogger ()
-    logInfo logger (sprintf "test %s" pstr)
-    let loader = getLoader logger
-    match getProgram loader (0,0) pstr with
-    | None -> 
-        // cause of failure should already be logged.
-        EXIT_FAIL
-    | Some p -> 
-        let io = composeEff (Testing.ForkEff()) logger
-        match eval p io [] with
-        | Some _ ->
-            logInfo logger (sprintf "test %s passed" pstr)
-            EXIT_OK
-        | None ->
-            logError logger (sprintf "test %s FAILED" pstr)
-            EXIT_FAIL
 
 let run (p:string) : int =
     let logger = consoleErrLogger ()
@@ -315,7 +278,6 @@ let main argv =
     | [ "print"; v ] -> print v "std.print"
     | [ "print"; v ; "with"; p ] -> print v p
     | [ "arity"; p ] -> arity p
-    | [ "test"; p ] -> test p
     | [ "run"; p ] -> run p
     | ("help"::cmd) -> help cmd
     | args ->

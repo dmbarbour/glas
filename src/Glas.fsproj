@@ -16,7 +16,7 @@
     <Compile Include="GlasZero.fs" />
     <Compile Include="LoadModule.fs" />
     <Compile Include="Printing.fs" />
-    <Compile Include="Testing.fs" />
+    <!-- <Compile Include="Testing.fs" /> -->
     <Compile Include="Running.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>

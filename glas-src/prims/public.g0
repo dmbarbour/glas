@@ -1,0 +1,23 @@
+
+# primitive operators
+macro ap []
+
+prog copy ['copy ap]
+prog swap ['swap ap]
+prog drop ['drop ap]
+
+prog eq ['eq ap]
+prog eff ['eff ap]
+prog fail ['fail ap]
+
+prog get ['get ap]
+prog put ['put ap]
+prog del ['del ap]
+
+macro dip [0 'dip put]
+macro while-do [0 'do put 'while put 0 'loop put]
+macro try-then-else [0 'else put 'then put 'try put 0 'cond put]
+macro with-do [0 'do put 'with put 0 'env put]
+
+export [ 'ap del ]
+

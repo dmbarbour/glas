@@ -206,18 +206,16 @@ The Glas command-line tool should provide an option to run a console application
 
 ### Automated Testing
 
-Glas languages such as g0 should support static assertions or other lightweight tests and checks. However, build-time tests are under pressure to resolve swiftly, and must be deterministic due to the limits on build-time effects. So, there is still an open 
+Static assertions within modules are very useful for automated testing. However, build-time tests are deterministic and under pressure to resolve swiftly. There is an open niche for long-running or non-deterministic tests, such as fuzz-testing.
 
- and will tend to tread the same ground repeatedly. For long-running tests such as fuzz-testing, we need a different solution.
+To support this, we can express tests as arity 0--Any Glas programs with access to 'fork' effect for non-deterministic choice input. 
 
-I propose to write *background tests* into log messages of form `(test:Program, ...)`. The test program should be 0--Any arity, and the primary outcome is pass/fail of evaluation. Supported effects are log and fork:
-
+* **fork** - Response is a non-deterministic boolean - i.e. a '0' or '1' single edge bitstring.
 * **log:Message** - Response is unit. Write an arbitrary message to support debugging of tests.
-* **fork** - Response is a non-deterministic boolean - a '0' or '1' bitstring.
 
-Use of 'fork' can simulate race conditions or random inputs to a test. However, fork outcomes are not necessarily fair or random. A test system may use heuristics and analysis to search for forks that are more likely to lead to test failure.
+Non-deterministic choice doesn't mean random choice. A good test system should support incremental computing with backtracking on fork choices, and apply heuristics, memory, and program analysis to focus attention on forks that are more likely to discover a failed test.
 
-A failed background test would not directly prevent the system from running, but can be recorded to indicate health of the system to developers, and perhaps accessed via reflection on the system.
+The primary output from a test is pass/fail of evaluation. Log messages are a secondary output mostly to support debugging of failed tests.
 
 ## Performance
 

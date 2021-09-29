@@ -161,6 +161,7 @@ module Zero =
                 parseImportFrom 
                 parseProgDef 
                 parseMacroDef 
+                parseDataDef
                 parseStaticAssert 
             ]
 
@@ -353,10 +354,10 @@ module Zero =
                             let msg = sprintf "macro %s failed in %s at -%d" w (cte.DbgCx) ixEnd
                             logError (cte.LogLoad) msg
                         _compileFailedCall cte revOps ds w (ErrorFlags.MacroFailure) b'
-                | Some _ -> 
+                | Some v -> 
                     // unrecognized deftype, will warn on first call
                     if not (Set.contains w (cte.CallWarn)) then 
-                        logError (cte.LogLoad) (sprintf "word %s has unhandled deftype" w) 
+                        logError (cte.LogLoad) (sprintf "word %s has unhandled deftype (%s)" w (prettyPrint v)) 
                     _compileFailedCall cte revOps ds w (ErrorFlags.UnknownDefType) b'
                 | None ->
                     // no need to report undefined words here, reported on 'open' or 'import'
@@ -449,7 +450,7 @@ module Zero =
             let struct(cte', pData) = compileBlock { cte with DbgCx = dbg } b
             let vDataOpt = 
                 match eval pData ll [] with
-                | Some [vData] -> Some vData
+                | Some [vData] -> Some (Value.variant "data" vData)
                 | Some _ ->
                     logError ll (sprintf "%s produces too much data" dbg) 
                     None

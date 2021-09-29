@@ -1,0 +1,28 @@
+open prims
+
+# V L -- V:L
+prog pushl [0 0b1 put 0b0 put]
+
+# V:L -- V L
+prog popl [copy 0b0 get swap 0b1 get]
+
+prog rev-append [
+    [[popl swap] dip]   # [V:L X -- L V X] 
+    [pushl]             # [L V X -- L V:X]
+    while-do
+    swap 0 eq        # eliminate end-of-list L
+]
+prog rev [0 rev-append]
+assert ["hello" rev "olleh" eq]
+
+prog append [[rev] dip rev-append]
+assert ["abc" "def" append "abcdef" eq]
+
+data l0 [0]
+prog l1 [l0 pushl]
+prog l2 [l1 pushl]
+prog l3 [l2 pushl]
+prog l4 [l3 pushl]
+prog l5 [l4 pushl]
+prog l6 [l5 pushl]
+prog l7 [l6 pushl]

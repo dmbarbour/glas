@@ -1,8 +1,7 @@
 namespace Glas
 
-/// This module supports running of Glas programs as console applications. This
-/// is mostly oriented around some effects for network, filesystem, general memory,
-/// and so on, albeit adapted for running in a transactional environment. 
+/// This module (will eventually) support running of Glas programs as console
+/// applications with access to network, filesystem, and transactional memory.
 module Running =
 
     /// Simple associative memory model. This allows 'addresses' to be arbitrary
@@ -27,7 +26,7 @@ module Running =
         | Get -> Some struct(v0, v0)
         | Put v' -> Some struct(v', Value.unit)
         | Swap v' -> Some struct(v', v0)
-        | Del -> None
+        | Del -> Some struct(Value.unit, Value.unit)
         | Path (p, Put pv') ->
             let v' = Value.record_insert p pv' v0
             Some struct(v', Value.unit)

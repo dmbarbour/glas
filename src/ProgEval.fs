@@ -252,8 +252,8 @@ module ProgEval =
             ; FailureStack = None
             }
 
-        // cancel active transactions, using RTE FailureStack as cue.
-        let rec unwindTX (io:IEffHandler) (rte:RTE) =
+        // cancel all active transactions, using RTE FailureStack as cue.
+        let rec unwindTX (io:ITransactional) (rte:RTE) =
             match rte.FailureStack with
             | None -> ()
             | Some rte' ->
@@ -273,6 +273,7 @@ module ProgEval =
                 try ds |> dataStack |> (runLazy.Force()) |> unbox<Value list option>
                 with
                 | RuntimeUnderflowError(rte) -> 
+                    // underflow shouldn't occur in practice, so this isn't well tested.
                     unwindTX io rte 
                     None
 
