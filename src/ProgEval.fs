@@ -25,12 +25,6 @@ module ProgEval =
         // I intend to accelerate the list ops and maybe arithmetic ops for bootstrap. 
         //
 
-        // When we observe arity errors at runtime, raise this exception.
-        // We'll catch it at the top-level eval, so it isn't directly
-        // exposed to the caller.
-        exception RuntimeUnderflowError
-
-
         /// runtime environment
         ///
         /// Most operations focus on the data stack.
@@ -43,6 +37,12 @@ module ProgEval =
             ; EffStateStack : Value list
             ; FailureStack : RTE option     
             } 
+
+        // When we observe arity errors at runtime, raise this exception.
+        // We'll catch it at the top-level eval, so it isn't directly
+        // exposed to the caller.
+        exception RuntimeUnderflowError of RTE
+
 
         /// simplest continuation.
         type CC = RTE -> obj 
@@ -62,17 +62,17 @@ module ProgEval =
         let copy cte cc rte =
             match rte.DataStack with
             | (a::_) as ds -> cc { rte with DataStack = (a::ds) }
-            | _ -> raise RuntimeUnderflowError
+            | _ -> raise <| RuntimeUnderflowError(rte)
 
         let drop cte cc rte =
             match rte.DataStack with
             | (_::ds') -> cc { rte with DataStack = ds' }
-            | _ -> raise RuntimeUnderflowError
+            | _ -> raise <| RuntimeUnderflowError(rte)
 
         let swap cte cc rte =
             match rte.DataStack with
             | (a::b::ds') -> cc { rte with DataStack = (b::a::ds') }
-            | _ -> raise RuntimeUnderflowError
+            | _ -> raise <| RuntimeUnderflowError(rte)
 
         let eq cte cc rte =
             match rte.DataStack with
@@ -80,7 +80,7 @@ module ProgEval =
                 if (a = b) 
                     then cc { rte with DataStack = ds' }
                     else (cte.FK) rte
-            | _ -> raise RuntimeUnderflowError
+            | _ -> raise <| RuntimeUnderflowError(rte)
 
         let inline record_lookup_v kv r =
             match kv with
@@ -93,7 +93,7 @@ module ProgEval =
                 match record_lookup_v kv r with
                 | Some v -> cc { rte with DataStack = (v::ds') }
                 | None -> (cte.FK) rte
-            | _ -> raise RuntimeUnderflowError
+            | _ -> raise <| RuntimeUnderflowError(rte)
 
         let put cte cc rte =
             match rte.DataStack with
@@ -101,7 +101,7 @@ module ProgEval =
                 match kv with
                 | Bits k -> cc { rte with DataStack = ((record_insert k v r)::ds') }
                 | _ -> (cte.FK) rte
-            | _ -> raise RuntimeUnderflowError
+            | _ -> raise <| RuntimeUnderflowError(rte)
 
         let del cte cc rte =
             match rte.DataStack with
@@ -109,89 +109,7 @@ module ProgEval =
                 match kv with
                 | Bits k -> cc { rte with DataStack = ((record_delete k r)::ds') }
                 | _ -> (cte.FK) rte
-            | _ -> raise RuntimeUnderflowError
-
-        (* Hiding these temporarily. Likely to become accelerators.
-
-        let pushl cte cc rte = 
-            match rte.DataStack with
-            | (v::(FTList l)::ds') ->
-                cc { rte with DataStack = ((ofFTList (FTList.cons v l))::ds') }
-            | _ -> cte.FK rte
-        
-        let popl cte cc rte = 
-            match rte.DataStack with
-            | (FTList (FTList.ViewL (v, l'))::ds') ->
-                cc { rte with DataStack = (v::(ofFTList l')::ds') }
-            | _ -> cte.FK rte
-
-        let pushr cte cc rte = 
-            match rte.DataStack with
-            | (v::(FTList l)::ds') ->
-                cc { rte with DataStack = ((ofFTList (FTList.snoc l v))::ds') }
-            | _ -> cte.FK rte
-
-        let popr cte cc rte =  
-            match rte.DataStack with
-            | ((FTList (FTList.ViewR (l', v)))::ds') ->
-                cc { rte with DataStack = (v::(ofFTList l')::ds') }
-            | _ -> cte.FK rte
-        
-        let join cte cc rte = 
-            match rte.DataStack with 
-            | ((FTList rhs)::(FTList lhs)::ds') ->
-                cc { rte with DataStack = ((ofFTList (FTList.append lhs rhs))::ds') }
-            | _ -> cte.FK rte
-
-        let split cte cc rte =
-            match rte.DataStack with
-            | ((Nat n)::(FTList l)::ds') when (FTList.length l >= n) ->
-                let (l1, l2) = FTList.splitAt n l
-                cc { rte with DataStack = ((ofFTList l2)::(ofFTList l1)::ds') }
-            | _ -> cte.FK rte
-
-        let len cte cc rte =  
-            match rte.DataStack with
-            | ((FTList l)::ds') ->
-                cc { rte with DataStack = ((nat (FTList.length l))::ds') }
-            | _ -> cte.FK rte 
-
-        let inline (|Num|_|) v =
-            match v with
-            | Bits b when Bits.isEmpty b || Bits.head b -> Some (Bits.toI b)
-            | _ -> None
-        let inline Num i = i |> Bits.ofI |> Value.ofBits
-
-        let add cte cc rte = 
-            match rte.DataStack with
-            | ((Num n2)::(Num n1)::ds') ->
-                cc { rte with DataStack = ((Num (n1 + n2))::ds') }
-            | _ -> cte.FK rte
-
-        let mul cte cc rte = 
-            match rte.DataStack with
-            | ((Num n2)::(Num n1)::ds') ->
-                cc { rte with DataStack = ((Num (n1 * n2))::ds') }
-            | _ -> cte.FK rte
-
-        let sub cte cc rte = 
-            match rte.DataStack with
-            | ((Num n2)::(Num n1)::ds') ->
-                let iDiff = n1 - n2
-                if iDiff.Sign >= 0 
-                    then cc { rte with DataStack = ((Num iDiff)::ds') }
-                    else cte.FK rte
-            | _ -> cte.FK rte
-
-        let div cte cc rte = 
-            match rte.DataStack with
-            | ((Num divisor)::(Num dividend)::ds') when (divisor.Sign <> 0) ->
-                let mutable remainder = Unchecked.defaultof<bigint> // assigned byref
-                let quotient = bigint.DivRem(dividend, divisor, &remainder)
-                cc { rte with DataStack = ((Num remainder)::(Num quotient)::ds') }
-            | _ -> cte.FK rte
-
-        *)
+            | _ -> raise <| RuntimeUnderflowError(rte)
 
         let fail cte cc = // rte implicit
             (cte.FK) 
@@ -207,7 +125,7 @@ module ProgEval =
             match rte.DataStack with
             | (a::ds') -> 
                 cc { rte with DataStack = ds'; DipStack = (a::(rte.DipStack)) }
-            | _ -> raise RuntimeUnderflowError
+            | _ -> raise <| RuntimeUnderflowError(rte)
 
         let dipEnd _ cc rte =
             match rte.DipStack with
@@ -282,7 +200,7 @@ module ProgEval =
             match rte.DataStack with
             | (a::ds') ->
                 cc { rte with DataStack = ds'; EffStateStack = (a::(rte.EffStateStack)) }
-            | _ -> raise RuntimeUnderflowError
+            | _ -> raise <| RuntimeUnderflowError(rte)
 
         let env (opWith:Op) (opDo:Op) cte0 cc0 =
             let eh0 = cte0.EH // restore parent effect in context of opWith
@@ -334,6 +252,14 @@ module ProgEval =
             ; FailureStack = None
             }
 
+        // cancel active transactions, using RTE FailureStack as cue.
+        let rec unwindTX (io:IEffHandler) (rte:RTE) =
+            match rte.FailureStack with
+            | None -> ()
+            | Some rte' ->
+                io.Abort()
+                unwindTX io rte'
+
         let eval (p:Program) (io:IEffHandler) =
             let ccEvalOK rte = 
                 assert((List.isEmpty rte.DipStack)
@@ -346,7 +272,9 @@ module ProgEval =
             fun ds ->
                 try ds |> dataStack |> (runLazy.Force()) |> unbox<Value list option>
                 with
-                | RuntimeUnderflowError -> None
+                | RuntimeUnderflowError(rte) -> 
+                    unwindTX io rte 
+                    None
 
     /// The current favored implementation of eval.
     let eval : Program -> Effects.IEffHandler -> Value list -> Value list option = 
