@@ -22,7 +22,8 @@ module ProgEval =
         // do not optimize the program. Acceleration, memoization, and stowage are not yet 
         // supported. There is much room for improvement.
         //
-        // I intend to accelerate the list ops and maybe arithmetic ops for bootstrap. 
+        // I intend to accelerate the list ops and maybe arithmetic ops for bootstrap. I'm still
+        // uncertain how and whether I should check validity of the accelerators.
         //
 
         /// runtime environment
@@ -42,6 +43,10 @@ module ProgEval =
         // We'll catch it at the top-level eval, so it isn't directly
         // exposed to the caller.
         exception RuntimeUnderflowError of RTE
+
+        // Due to lazy compilation, we might catch some compilation errors
+        // at runtime. We'll perform an intermediate catch here.
+        exception JITCompilationError of RTE * Program
 
 
         /// simplest continuation.
@@ -234,7 +239,11 @@ module ProgEval =
                 // memoization, stowage, or acceleration could be annotated here.
                 compile p' 
             | _ -> 
-                failwithf "unrecognized program %s" (prettyPrint p)
+                // not a valid program. Detection is possibly deferred due to lazy
+                // compilation. I'll defer further until program is encountered at
+                // runtime so we can properly unwind the transaction stack.
+                fun cte cc rte ->
+                    raise <| JITCompilationError(rte,p)
 
         let ioEff (io:IEffHandler) cte cc rte =
             match rte.DataStack with
@@ -260,6 +269,10 @@ module ProgEval =
                 io.Abort()
                 unwindTX io rte'
 
+        // Note that 'eval' does not check the program for validity up front.
+        // this is to avoid the O(N) overhead when only a small portion of the
+        // program is used. A consequence is that some errors are caught later,
+        // at runtime, via exceptions.
         let eval (p:Program) (io:IEffHandler) =
             let ccEvalOK rte = 
                 assert((List.isEmpty rte.DipStack)
@@ -273,9 +286,13 @@ module ProgEval =
                 try ds |> dataStack |> (runLazy.Force()) |> unbox<Value list option>
                 with
                 | RuntimeUnderflowError(rte) -> 
-                    // underflow shouldn't occur in practice, so this isn't well tested.
+                    // underflow shouldn't occur if programs are checked ahead of eval.
                     unwindTX io rte 
                     None
+                | JITCompilationError(rte,p) ->
+                    // JIT error shouldn't occur if programs are checked ahead of eval.
+                    unwindTX io rte
+                    failwithf "invalid subprogram %s" (prettyPrint p)
 
     /// The current favored implementation of eval.
     let eval : Program -> Effects.IEffHandler -> Value list -> Value list option = 
