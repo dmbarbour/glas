@@ -1,20 +1,24 @@
 open prims
 
-# V L -- V:L
+# pushl (V L -- V:L)
 prog pushl [0 0b1 put 0b0 put]
 
-# V:L -- V L
+# popl (V:L -- V L)
 prog popl [copy 0b0 get swap 0b1 get]
 
-prog rev-append [
-    [[popl swap] dip]   # [V:L X -- L V X] 
-    [pushl]             # [L V X -- L V:X]
-    while-do
-    swap 0 eq        # eliminate end-of-list L
-]
+prog p-each [[popl] swap p-dip p-while-do [0 eq] p-seq2]
+
+# each ([Op] => (ABC -- A Op B Op C Op))
+macro each [p-each]
+
+# rev-append (CBA DEF -- ABCDEF)
+prog rev-append [swap [swap pushl] each]
+
+# rev  (ABCDEF -- FEDCBA)
 prog rev [0 rev-append]
 assert ["hello" rev "olleh" eq]
 
+# append (ABC DEF -- ABCDEF)
 prog append [[rev] dip rev-append]
 assert ["abc" "def" append "abcdef" eq]
 
@@ -22,7 +26,14 @@ data l0 [0]
 prog l1 [l0 pushl]
 prog l2 [l1 pushl]
 prog l3 [l2 pushl]
-prog l4 [l3 pushl]
-prog l5 [l4 pushl]
-prog l6 [l5 pushl]
-prog l7 [l6 pushl]
+assert [0x6e 0x6f 0x6d l3 "nom" eq]
+
+# pushr (L V -- L:V)
+prog pushr-basic [l1 append]
+assert ["pin" 0x67 pushr-basic "ping" eq]
+
+# popr (L:V -- L V)
+prog popr-basic [rev popl rev swap]
+assert ["pint" popr-basic 0x74 eq "pin" eq]
+
+# todo: annotate acceleration

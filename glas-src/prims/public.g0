@@ -1,23 +1,35 @@
 
-# primitive operators
-macro ap []
+macro apply []
 
-prog copy ['copy ap]
-prog swap ['swap ap]
-prog drop ['drop ap]
+prog copy ['copy apply]
+prog swap ['swap apply]
+prog drop ['drop apply]
 
-prog eq ['eq ap]
-prog eff ['eff ap]
-prog fail ['fail ap]
+prog eq ['eq apply]
+prog eff ['eff apply]
+prog fail ['fail apply]
 
-prog get ['get ap]
-prog put ['put ap]
-prog del ['del ap]
+prog get ['get apply]
+prog put ['put apply]
+prog del ['del apply]
 
-macro dip [0 'dip put]
-macro while-do [0 'do put 'while put 0 'loop put]
-macro try-then-else [0 'else put 'then put 'try put 0 'cond put]
-macro with-do [0 'do put 'with put 0 'env put]
+prog p-data [0 'data put]
+prog p-dip [0 'dip put]
+prog p-while-do [0 'do put 'while put 0 'loop put]
+prog p-try-then-else [0 'else put 'then put 'try put 0 'cond put]
+prog p-with-do [0 'do put 'with put 0 'env put]
 
-export [ 'ap del ]
+macro static-data [p-data] # essentially a NOP, but requires static data
+macro dip [p-dip]
+macro while-do [p-while-do]
+macro try-then-else [p-try-then-else]
+macro with-do [p-with-do]
 
+# construct sequences, for use with p-dip, p-while-do, etc..
+# p-seq2    ([A] [B] -- [A B])
+prog p-seq2 [0b11 0b10 put 0b0 put 0 'seq put]
+macro seq2 [p-seq2]
+
+# p-seq3    ([A] [B] [C] -- [A B C])
+prog p-seq3 [0b111 0b110 put 0b10 put 0b0 put 0 'seq put]
+macro seq3 [p-seq3]
