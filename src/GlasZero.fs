@@ -192,6 +192,7 @@ module Zero =
             | ImportFrom _ -> 
                 Set.empty
         Set.unionMany (Seq.map fnEnt tlv.Ents)
+            |> Set.union (wordsCalledBlock tlv.Export)
 
     /// All words explicitly defined in the top-level entries.
     let wordsDefined (tlv : TopLevel) : Set<Word> = 

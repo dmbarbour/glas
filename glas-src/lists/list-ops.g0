@@ -1,14 +1,13 @@
 open prims
 
 # pushl (V L -- V:L)
-prog pushl [0 0b1 put 0b0 put]
+prog pushl [pair]
 
 # popl (V:L -- V L)
-prog popl [copy 0b0 get swap 0b1 get]
+prog popl [unpair]
 
-prog p-foreach [[popl] swap p-dip p-while-do [0 eq] p-seq]
-
-# each ([Op] => (ABC -- A Op B Op C Op))
+# foreach ([Op] => (ABC -- A Op B Op C Op))
+prog p-foreach [p-dip [popl] swap p-while-do [0 eq] p-seq]
 macro foreach [p-foreach]
 
 # rev-append (CBA DEF -- ABCDEF)
@@ -30,7 +29,7 @@ prog l4 [l3 pushl]
 prog l5 [l4 pushl]
 prog l6 [l5 pushl]
 prog l7 [l6 pushl]
-assert [0x6e 0x6f 0x6d 0x6e 0x6f 0x6d l3 "nom" eq]
+assert [0x6f 0x6d 0x6e 0x2d 0x6e 0x6f 0x6d l7 "omn-nom" eq]
 
 # pushr (L V -- L:V)
 prog pushr-raw [l1 append]
@@ -40,13 +39,9 @@ assert ["pin" 0x67 pushr-raw "ping" eq]
 prog popr-raw [rev popl rev swap]
 assert ["pint" popr-raw 0x74 eq "pin" eq]
 
+prog pushr [[pushr-raw] 'list-pushr p-anno-accel apply]
+prog popr [[popr-raw] 'list-popr p-anno-accel apply]
 
-# todo: annotate pushr, popr for acceleration
-
-
-# prog li [pushr]
-
+prog li [pushr]
 
 # todo: split (requires natural numbers) 
-
-
