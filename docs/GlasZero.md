@@ -1,6 +1,6 @@
 # The g0 Language
 
-The g0 (jee zero) language is essentially a Forth variant with staged metaprogramming, algebraic effects, and immutable tree-structured data. The syntax and semantics are very simple. 
+The g0 (jee zero) language is essentially a Forth variant oriented around staged metaprogramming, algebraic effects, and immutable tree-structured data. The syntax and semantics are very simple. 
 
 This language serves as the bootstrap language for Glas systems, i.e. the language-g0 module will be written using g0 files. Upon successful bootstrap, behavior of the Glas system will depend only on state of the module system instead of the versions of external tools.
 

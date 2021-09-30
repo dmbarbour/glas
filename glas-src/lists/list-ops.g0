@@ -6,7 +6,7 @@ prog pushl [0 0b1 put 0b0 put]
 # popl (V:L -- V L)
 prog popl [copy 0b0 get swap 0b1 get]
 
-prog p-foreach [[popl] swap p-dip p-while-do [0 eq] p-seq2]
+prog p-foreach [[popl] swap p-dip p-while-do [0 eq] p-seq]
 
 # each ([Op] => (ABC -- A Op B Op C Op))
 macro foreach [p-foreach]

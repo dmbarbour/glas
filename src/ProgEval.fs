@@ -45,7 +45,9 @@ module ProgEval =
         exception RuntimeUnderflowError of RTE
 
         // Due to lazy compilation, we might catch some compilation errors
-        // at runtime. We'll perform an intermediate catch here.
+        // at runtime. We'll perform an intermediate catch here, mostly so
+        // we can unwind but also so we don't raise an error unless this
+        // invalid code is actually encountered at runtime.
         exception JITCompilationError of RTE * Program
 
 
@@ -239,9 +241,7 @@ module ProgEval =
                 // memoization, stowage, or acceleration could be annotated here.
                 compile p' 
             | _ -> 
-                // not a valid program. Detection is possibly deferred due to lazy
-                // compilation. I'll defer further until program is encountered at
-                // runtime so we can properly unwind the transaction stack.
+                // not a valid program.
                 fun cte cc rte ->
                     raise <| JITCompilationError(rte,p)
 
@@ -270,9 +270,6 @@ module ProgEval =
                 unwindTX io rte'
 
         // Note that 'eval' does not check the program for validity up front.
-        // this is to avoid the O(N) overhead when only a small portion of the
-        // program is used. A consequence is that some errors are caught later,
-        // at runtime, via exceptions.
         let eval (p:Program) (io:IEffHandler) =
             let ccEvalOK rte = 
                 assert((List.isEmpty rte.DipStack)

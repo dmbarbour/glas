@@ -2,11 +2,17 @@ namespace Glas
 
 /// This module (will eventually) support running of Glas programs as console
 /// applications with access to network, filesystem, and transactional memory.
+///
+/// This should be adequate for evaluating a bootstrap glas command-line utility
+/// prior to its compilation to an independent executable. It might also be used
+/// for developing some web services early on.
 module Running =
+    // A general approach here is to model network and filesystem resources as
+    // remote objects to which we have 'channels'. The channels each have some
+    // local memory.
 
-    /// Simple associative memory model. This allows 'addresses' to be arbitrary
-    /// values, but they should preferably be short values. The default value for
-    /// memory is unit, so Memory may drop associations to unit values.
+    // Memory is a simple associative map of values. Key values should be small
+    // because they'll be looked up and compared frequently.
     type Memory = Map<Value, Value>
 
     /// Memory Operations cover the API described in GlasApps.md

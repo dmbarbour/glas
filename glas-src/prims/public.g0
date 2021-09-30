@@ -1,5 +1,14 @@
+# The 'prims' module provides a useful set of words for getting started with
+# the g0 language. Not all are true primitives, just stuff that is relatively
+# low level and doesn't require many lines of logic within this file.
+#
+# Relevantly, support for bitstrings, lists, numbers, etc. are not primitive
+# but should probably be available via module 'std'. But a lot of metaprogramming
+# support is considered primitive.
 
 macro apply []
+
+# TRUE PRIMITIVES
 
 prog copy ['copy apply]
 prog swap ['swap apply]
@@ -13,23 +22,231 @@ prog get ['get apply]
 prog put ['put apply]
 prog del ['del apply]
 
-prog p-data [0 'data put]
 prog p-dip [0 'dip put]
 prog p-while-do [0 'do put 'while put 0 'loop put]
 prog p-try-then-else [0 'else put 'then put 'try put 0 'cond put]
 prog p-with-do [0 'do put 'with put 0 'env put]
 
-macro static-data [p-data] # essentially a NOP, but requires static data
 macro dip [p-dip]
 macro while-do [p-while-do]
 macro try-then-else [p-try-then-else]
 macro with-do [p-with-do]
 
-# construct sequences, for use with p-dip, p-while-do, etc..
-# p-seq2    ([A] [B] -- [A B])
-prog p-seq2 [0b11 0b10 put 0b0 put 0 'seq put]
-macro seq2 [p-seq2]
+# PAIRS
 
-# p-seq3    ([A] [B] [C] -- [A B C])
-prog p-seq3 [0b111 0b110 put 0b10 put 0b0 put 0 'seq put]
-macro seq3 [p-seq3]
+prog pair [0 0b1 put 0b0 put]
+prog pair-fst [0b0 get]
+prog pair-snd [0b1 get]
+prog unpair [copy pair-fst swap pair-snd]
+
+# DATA AND SEQ MACRO SUPPORT
+#
+# No need for 'data' or 'seq' as macros, but p-* forms
+# are very convenient for construction of new macros.
+
+# p-data    Value -- [Value]
+prog p-data [0 'data put]
+
+# p-seq     ([A] [B] -- [A B])
+#  compose two programs sequentially.
+prog p-seq  [['seq get] [pair] [0 pair pair] try-then-else 0 'seq put]
+
+# p-curry   (Value [Fn] -- [Value Fn])
+#  bind first parameter into a program value.
+prog p-curry [[p-data] dip p-seq]
+
+# p-nop     -- []
+#  non-operation in Glas is empty seq
+#  (explicit to prevent annotations from g0 compiler)
+data p-nop ['seq]
+
+# CONDITIONAL VARIATIONS
+
+# try       ([P]try == [P][][]try-then-else)
+# try-then  ([P][L]try-then == [P][L][]try-then-else)
+# try-else  ([P][R]try-else == [P][][R]try-then-else)
+prog p-try [0 'try put 0 'cond put]
+prog p-try-then [0 'then put 'try put 0 'cond put]
+prog p-try-else [0 'else put 'try put 0 'cond put]
+macro try [p-try]
+macro try-then [p-try-then]
+macro try-else [p-try-else]
+
+# NON-MODIFYING OBSERVATIONS
+
+# verify    ([Predicate] -- | FAIL)
+#  evaluates predicate, then undoes effects.
+#  passes if the predicate would pass, fails otherwise.
+prog p-verify [[fail] p-try-then [fail] p-try-then]
+macro verify [p-verify]
+
+# verify-not ([Predicate] -- | FAIL)
+#  evaluates predicate, then undoes effects.
+#  passes if predicate would fail, succeeds otherwise.
+prog p-verify-not [[fail] p-try-then [fail] p-try-else]
+macro verify-not [p-verify-not]
+
+# LOOP VARIATIONS
+
+# loop          ([Op]loop)
+#  run sub-program repeatedly until it fails.
+prog p-loop [0 'while put 0 'loop put]
+macro loop [p-loop]
+
+# do-while      ([Body][Cond]do-while)
+#  run body before checking condition. Equivalent: 
+#    Body [Cond] [Body] while-do
+prog p-do-while [[copy] dip swap p-while-do p-seq]
+macro do-while [p-do-while]
+
+# until-do      ([Cond][Body]until-do)
+#
+#  loop until a condition evaluates successfully. Equivalent:
+#
+#    [[Cond] [fail] try-then] [Body] while-do Cond
+#
+#  Currently evaluates Cond twice upon final success. Not sure how to
+#  avoid this while preserving arity checks. Avoid use with expensive
+#  conditions until this can be optimized.
+#
+prog p-until-do [[copy [fail] p-try-then] dip p-while-do swap p-seq]
+macro until-do [p-until-do]
+
+# do-until      ([Body][Cond]do-until)
+#  run Body before checking condition. Loop halts when condition evaluates
+#  successfully. Inherits some issues from until-do.
+prog p-do-until [[copy] dip swap p-until-do p-seq]
+macro do-until [p-do-until]
+
+# DATA PLUMBING SUPPORT
+# 
+# rot3      (X Y Z -- Y Z X)        rotate 3rd item to top
+# unrot3    (X Y Z -- Z X Y)               top item to 3rd
+# copy2     (X Y -- X Y X Y)        copy two items on stack
+# drop2     (X Y -- )               drop two items from stack
+# dip2      (X Y [Op] -- Op X Y)    hide two items from Op
+#
+# All of these have variants from 2..7. However, a data stack over a few
+# elements grows difficult to mentally track or manage, so you should be
+# organizing data (into records, lists, etc.) to keep the stack small.
+
+prog rot2 [swap]
+prog rot3 [[rot2] dip swap]
+prog rot4 [[rot3] dip swap]
+prog rot5 [[rot4] dip swap]
+prog rot6 [[rot5] dip swap]
+prog rot7 [[rot6] dip swap]
+
+prog unrot2 [swap]
+prog unrot3 [swap [unrot2] dip]
+prog unrot4 [swap [unrot3] dip]
+prog unrot5 [swap [unrot4] dip]
+prog unrot6 [swap [unrot5] dip]
+prog unrot7 [swap [unrot6] dip]
+
+prog copy2 [[copy ] dip copy [unrot2] dip]
+prog copy3 [[copy2] dip copy [unrot3] dip]
+prog copy4 [[copy3] dip copy [unrot4] dip]
+prog copy5 [[copy4] dip copy [unrot5] dip]
+prog copy6 [[copy5] dip copy [unrot6] dip]
+prog copy7 [[copy6] dip copy [unrot7] dip]
+
+prog drop2 [drop drop]
+prog drop3 [drop drop drop]
+prog drop4 [drop drop drop drop]
+prog drop5 [drop drop drop drop drop]
+prog drop6 [drop drop drop drop drop drop]
+prog drop7 [drop drop drop drop drop drop drop]
+
+macro dip2 [p-dip p-dip]
+macro dip3 [p-dip p-dip p-dip]
+macro dip4 [p-dip p-dip p-dip p-dip]
+macro dip5 [p-dip p-dip p-dip p-dip p-dip]
+macro dip6 [p-dip p-dip p-dip p-dip p-dip p-dip]
+macro dip7 [p-dip p-dip p-dip p-dip p-dip p-dip p-dip]
+
+# CONVENIENCE FUNCTIONS FOR RECORDS AND VARIANTS
+
+# getd          Record Label Default -- Value
+#  get with a default value.
+prog getd [[drop get] [[drop2] dip] try-else]
+
+# Pseudo-literal construction of records.
+# 
+#   d0 'x 6
+#   di 'y 7
+#   di ... ops on dict
+#
+# d0          -- ()
+# di          (Record Label Value -- Record)    'dict item'
+data d0 [0]
+prog di [unrot3 put]
+
+# Constructing records directly from stack items.
+# 
+# In these cases, we usually have static labels in the local program,
+# and values provided later at runtime.
+# 
+# d1            V1 L1 -- L1:V1
+# d2            V1 V2 L1 L2 -- (L1:V1, L2:V2)
+# d3            V1 V2 V3 L1 L2 L3 -- (L1:V1, L2:V2, L3:V3)
+# d4..d7        similarly
+
+prog d1 [d0 swap put]
+prog d2 [[rot2 [d1] dip swap] dip put]
+prog d3 [[rot3 [d2] dip swap] dip put]
+prog d4 [[rot4 [d3] dip swap] dip put]
+prog d5 [[rot5 [d4] dip swap] dip put]
+prog d6 [[rot6 [d5] dip swap] dip put]
+prog d7 [[rot7 [d6] dip swap] dip put]
+
+# ANNOTATIONS SUPPORT
+
+# p-prog-body
+# returns main behavior of a program, i.e. stripping the
+# `prog:do:` annotations header, if any (recursively)
+prog p-prog-body [['prog get 'do p-nop getd] loop]
+
+# p-prog-anno   
+# returns header annotations for programs that have some.
+# returns empty record if no header annotations. 
+prog p-prog-anno [['prog get 'do del] [drop 0] try-else]
+
+# p-prog-anno-set
+# set header annotations for a program. Or clear annotations
+# if an empty record of annotations is set.
+prog p-prog-anno-set [
+    [p-prog-body] dip
+    ['do del 0 eq]['do put 0 'prog put] try-else
+]
+
+# p-prog-anno-put       ([Program] Value Label -- [Program](Label:Value))
+#  add a specific annotation to a program.
+prog p-prog-anno-put [[[copy p-prog-anno] dip swap] dip put p-prog-anno-set]
+
+# p-prog-anno-get       ([Program](Label:Value) Label -- Value)
+prog p-prog-anno-get [[p-prog-anno] dip get]
+
+# p-prog-anno-getd      ([Program](Label?_) Label Value -- Value)
+#  get annotated value with a default.
+prog p-prog-anno-getd [[p-prog-anno] dip2 getd]
+
+# p-anno-accel      ([Program] Model -- [Program](accel:Model))
+#
+#  Acceleration is the most performance-critical annotation. It asks the
+#  compiler or interpreter to substitute an optimized implementation or 
+#  to raise warnings or errors. The 'Model' is really a compiler hint,
+#  usually just a symbol.
+#  
+prog p-anno-accel ['accel p-prog-anno-put]
+
+# p-anno-arity      ([Program] In Out -- [Program](arity:(i:In, o:Out)))
+#
+#  Arity annotations will often be checked for consistency, but might not
+#  be exact due to using less data than the arity would suggest.
+#
+prog p-anno-arity ['i 'o d2 'accel p-prog-anno-put]
+
+# Note: We might add annotations for types, for recommended optimizations,
+# for assumed preconditions and expected postconditions, memoization and stowage,
+# etc.. 
