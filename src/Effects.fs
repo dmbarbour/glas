@@ -197,6 +197,9 @@ module Effects =
     /// and of log events with new variants.
     let logText lv msg =
         Value.asRecord ["lv"; "text"] [Value.symbol lv; Value.ofString msg]
+    
+    let logTextV lv msg v =
+        Value.asRecord ["lv";"text";"val"] [Value.symbol lv; Value.ofString msg; v]
 
     // common log levels
     let info = "info"
@@ -213,6 +216,9 @@ module Effects =
     let logWarn ll msg = log ll (logText warn msg)
     let logError ll msg = log ll (logText error msg)
 
+    let logInfoV ll msg v = log ll (logTextV info msg v)
+    let logWarnV ll msg v = log ll (logTextV warn msg v)
+    let logErrorV ll msg v = log ll (logTextV error msg v)
 
     let private selectColor v =
         match v with

@@ -1,6 +1,6 @@
 # The 'prims' module provides a useful set of words for getting started with
 # the g0 language. Not all are true primitives, just stuff that is relatively
-# low level and doesn't require many lines of logic within this file.
+# low level and doesn't require many lines of logic.
 #
 # Relevantly, support for bitstrings, lists, numbers, etc. are not primitive
 # but should probably be available via module 'std'. But a lot of metaprogramming
@@ -38,6 +38,7 @@ prog pair [0 0b1 put 0b0 put]
 prog pair-fst [0b0 get]
 prog pair-snd [0b1 get]
 prog unpair [copy pair-fst swap pair-snd]
+assert [1 2 3 pair pair pair-snd unpair 3 eq 2 eq]
 
 # DATA AND SEQ MACRO SUPPORT
 #
@@ -60,6 +61,8 @@ prog p-curry [[p-data] dip p-seq]
 #  (explicit to prevent annotations from g0 compiler)
 data p-nop ['seq]
 
+assert [1 [2 pair] p-curry apply unpair 2 eq 1 eq]
+
 # CONDITIONAL VARIATIONS
 
 # try       ([P]try == [P][][]try-then-else)
@@ -79,12 +82,14 @@ macro try-else [p-try-else]
 #  passes if the predicate would pass, fails otherwise.
 prog p-verify [[fail] p-try-then [fail] p-try-then]
 macro verify [p-verify]
+assert [0 [0 eq] verify 0 eq]
 
 # verify-not ([Predicate] -- | FAIL)
 #  evaluates predicate, then undoes effects.
 #  passes if predicate would fail, succeeds otherwise.
 prog p-verify-not [[fail] p-try-then [fail] p-try-else]
 macro verify-not [p-verify-not]
+assert [0 [1 eq] verify-not 0 eq]
 
 # LOOP VARIATIONS
 
@@ -137,12 +142,16 @@ prog rot5 [[rot4] dip swap]
 prog rot6 [[rot5] dip swap]
 prog rot7 [[rot6] dip swap]
 
+assert [1 2 3 4 5 6 7 rot7 1 eq 7 eq 6 eq 5 eq 4 eq 3 eq 2 eq]
+
 prog unrot2 [swap]
 prog unrot3 [swap [unrot2] dip]
 prog unrot4 [swap [unrot3] dip]
 prog unrot5 [swap [unrot4] dip]
 prog unrot6 [swap [unrot5] dip]
 prog unrot7 [swap [unrot6] dip]
+
+assert [1 2 3 4 5 6 7 unrot7 6 eq 5 eq 4 eq 3 eq 2 eq 1 eq 7 eq]
 
 prog copy2 [[copy ] dip copy [unrot2] dip]
 prog copy3 [[copy2] dip copy [unrot3] dip]
@@ -151,12 +160,16 @@ prog copy5 [[copy4] dip copy [unrot5] dip]
 prog copy6 [[copy5] dip copy [unrot6] dip]
 prog copy7 [[copy6] dip copy [unrot7] dip]
 
+assert [1 2 3 4 5 6 7 copy7 [7 eq 6 eq 5 eq 4 eq 3 eq 2 eq] copy dip dip 1 eq 1 eq]
+
 prog drop2 [drop drop]
 prog drop3 [drop drop drop]
 prog drop4 [drop drop drop drop]
 prog drop5 [drop drop drop drop drop]
 prog drop6 [drop drop drop drop drop drop]
 prog drop7 [drop drop drop drop drop drop drop]
+
+assert [1 2 3 4 5 6 7 8 drop7 1 eq]
 
 macro dip2 [p-dip p-dip]
 macro dip3 [p-dip p-dip p-dip]
@@ -165,11 +178,52 @@ macro dip5 [p-dip p-dip p-dip p-dip p-dip]
 macro dip6 [p-dip p-dip p-dip p-dip p-dip p-dip]
 macro dip7 [p-dip p-dip p-dip p-dip p-dip p-dip p-dip]
 
+assert [1 2 3 4 5 6 7 8 9 [2 eq] dip7 9 eq 8 eq 7 eq 6 eq 5 eq 4 eq 3 eq 1 eq]
+
 # CONVENIENCE FUNCTIONS FOR RECORDS AND VARIANTS
 
 # getd          Record Label Default -- Value
 #  get with a default value.
 prog getd [[drop get] [[drop2] dip] try-else]
+
+assert [42 0 'x put copy 'x 0 getd 42 eq 'y 0 getd 0 eq]
+
+# putd          Value Record Label Default -- Record
+#  put with a default value. What this means: 
+#   If the Value matches Default, delete Label from Record.
+#   Otherwise, set Label to Value in Record.
+prog putd [[[rot3] dip eq del] [drop put] try-else]
+
+#assert [42 0 'x put ]
+
+
+# Constructing records directly from stack items.
+# 
+# In these cases, we usually have static labels in the local program,
+# and values provided later at runtime.
+# 
+# d0            -- ()
+# d1            V1 L1 -- L1:V1
+# d2            V1 V2 L1 L2 -- (L1:V1, L2:V2)
+# d3            V1 V2 V3 L1 L2 L3 -- (L1:V1, L2:V2, L3:V3)
+# d4..d7        similarly
+
+data d0 [0]
+prog d1 [d0 swap put]
+prog d2 [[rot2 [d1] dip swap] dip put]
+prog d3 [[rot3 [d2] dip swap] dip put]
+prog d4 [[rot4 [d3] dip swap] dip put]
+prog d5 [[rot5 [d4] dip swap] dip put]
+prog d6 [[rot6 [d5] dip swap] dip put]
+prog d7 [[rot7 [d6] dip swap] dip put]
+
+assert [
+    1 2 3 4 5 6 7 
+    ['x 'y 'z 'a 'b 'c 'd d7] apply
+    copy
+    'a get 4 eq
+    'x get 1 eq
+]
 
 # Pseudo-literal construction of records.
 # 
@@ -179,42 +233,33 @@ prog getd [[drop get] [[drop2] dip] try-else]
 #
 # d0          -- ()
 # di          (Record Label Value -- Record)    'dict item'
-data d0 [0]
 prog di [unrot3 put]
 
-# Constructing records directly from stack items.
-# 
-# In these cases, we usually have static labels in the local program,
-# and values provided later at runtime.
-# 
-# d1            V1 L1 -- L1:V1
-# d2            V1 V2 L1 L2 -- (L1:V1, L2:V2)
-# d3            V1 V2 V3 L1 L2 L3 -- (L1:V1, L2:V2, L3:V3)
-# d4..d7        similarly
-
-prog d1 [d0 swap put]
-prog d2 [[rot2 [d1] dip swap] dip put]
-prog d3 [[rot3 [d2] dip swap] dip put]
-prog d4 [[rot4 [d3] dip swap] dip put]
-prog d5 [[rot5 [d4] dip swap] dip put]
-prog d6 [[rot6 [d5] dip swap] dip put]
-prog d7 [[rot7 [d6] dip swap] dip put]
+assert [
+    d0 'x 11
+    di 'y 12
+    di 'z 13
+    di 'point d1
+    copy
+    'point get 'y get 12 eq
+    'point get 'x get 11 eq
+]
 
 # ANNOTATIONS SUPPORT
 
-# p-prog-body
-# returns main behavior of a program, i.e. stripping the
-# `prog:do:` annotations header, if any (recursively)
+# p-prog-body       Program -- Program
+#  returns main behavior of a program, i.e. stripping the
+#  `prog:do:` annotations header, if any (recursively)
 prog p-prog-body [['prog get 'do p-nop getd] loop]
 
-# p-prog-anno   
-# returns header annotations for programs that have some.
-# returns empty record if no header annotations. 
+# p-prog-anno       Program -- Annotations
+#  returns header annotations for programs that have some.
+#  returns empty record if no header annotations. 
 prog p-prog-anno [['prog get 'do del] [drop 0] try-else]
 
-# p-prog-anno-set
-# set header annotations for a program. Or clear annotations
-# if an empty record of annotations is set.
+# p-prog-anno-set   Program Annotations -- Program
+#  set header annotations for a program. Or clear annotations
+#  if an empty record of annotations is set.
 prog p-prog-anno-set [
     [p-prog-body] dip
     ['do del 0 eq]['do put 0 'prog put] try-else
@@ -239,14 +284,78 @@ prog p-prog-anno-getd [[p-prog-anno] dip2 getd]
 #  usually just a symbol.
 #  
 prog p-anno-accel ['accel p-prog-anno-put]
+prog p-anno-accel-get ['accel p-prog-anno-get]
 
 # p-anno-arity      ([Program] In Out -- [Program](arity:(i:In, o:Out)))
 #
 #  Arity annotations will often be checked for consistency, but might not
 #  be exact due to using less data than the arity would suggest.
 #
-prog p-anno-arity ['i 'o d2 'accel p-prog-anno-put]
+prog p-anno-arity ['i 'o d2 'arity p-prog-anno-put]
+prog p-anno-arity-get ['arity p-prog-anno-get copy 'i get swap 'o get]
 
-# Note: We might add annotations for types, for recommended optimizations,
-# for assumed preconditions and expected postconditions, memoization and stowage,
-# etc.. 
+assert [
+    42 p-nop p-curry 
+    14 15 p-anno-arity 
+    'xyzzy p-anno-accel
+    copy 
+    p-anno-arity-get pair 14 15 pair eq
+    p-anno-accel-get 'xyzzy eq
+]
+
+# Future annotations should support:
+#  memoization, stowage
+#  type safety analysis
+#  preconditions and postconditions
+#  labeled inputs and outputs to simplify auto-wiring
+
+
+# BASIC LOGGING
+#
+# Logging is convenient for debugging. Most applications will support a 
+# logging effect that accepts requests of form `log:Message` and responds
+# with unit (0). If not, we can simply ignore log failures.
+# 
+# By convention, Message is a record such as `(lv:warn, text:"problem found")`
+# that may be extended with new fields on an ad-hoc basis. If a field has an
+# uninformative value, it could also be erased.
+#
+# In context of the g0 language, logging can be used from macro calls, assert,
+# and data definitions even if not used elsewhere.
+#
+
+# log-send      Message --
+#  Sends provided Message as a logging effect. Failure is silently ignored.
+prog log-send [[0 'log put eff 0 eq][drop] try-else]
+
+# log message builders
+#   log-msg-text-lv         "Hello" 'warn -- (lv:warn, text:"Hello")
+#   log-msg-val-text-lv   42 "Hello" 'warn -- (lv:warn, text:"Hello", val:42)
+# Will drop a 0 text, level, or value field.
+prog log-msg-text-lv [0 'lv 0 putd 'text 0 putd]
+prog log-msg-val-text-lv [log-msg-text-lv 'val 0 putd]
+
+# "Message" log-info  (or log-warn or log-error)
+prog log-info ['info log-msg-text-lv log-send]
+prog log-warn ['warn log-msg-text-lv log-send]
+prog log-error ['error log-msg-text-lv log-send]
+
+# Value "Message" log-info-v  (or log-warn-v or log-error-v)
+prog log-info-v ['info log-msg-val-text-lv log-send]
+prog log-warn-v ['warn log-msg-val-text-lv log-send]
+prog log-error-v ['error log-msg-val-text-lv log-send]
+
+# LOADING MODULES AS VALUES? defer to another module.
+#
+# In addition to 'open' and 'from import' statements at the top-level, g0 programs
+# can load modules via compile-time effects. Module IDs normally are provided as
+# strings, e.g. "foo" instead of 'foo.
+#
+# However, I'm uncertain of the API I want for this, and I might want extra string
+# processing to work with dotted paths to discover values within a module, or even
+# to search intermediate index modules and dereference through them.
+#
+# So, I'll leave this for now.
+
+# testing implicit info output for assertions without 0--0 arity
+# assert ["hello" "from" "prims" rot3 [swap] dip]

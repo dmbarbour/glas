@@ -112,11 +112,13 @@ The g0 ecosystem will usually start with a module to define the primitives and o
 
 ### Data Definitions
 
-Data is defined using a program of arity 0--1. This program is evaluated at compile-time, with access to compile-time effects same as macros. 
+Data is defined using a program of arity 0--1. After macro evaluation, this program is evaluated at compile-time with access to compile-time effects. The generated value on the data stack becomes a `data:Value` definition in the dictionary. Failure to evaluate a data definition causes the whole module to fail.
 
 ## Static Assertions
 
-Assertions are evaluated after compilation with an empty data stack and access to compile-time effects. Assertions do not modify the dictionary and instead represent a pass/fail check. If evaluation of the assertion fails, compilation of the module will also fail. Static assertions within g0 programs are a convenient alternative to external unit tests.
+Assertions must be 0--Any static arity programs, favoring 0--0. After macro evaluation, assertions are evaluated with an empty data stack and access to compile-time effects. If 0--N arity where N is non-zero, an info message is implicitly written to the log describing the final data stack. On failure, an error is emitted and the entire module will fail to evaluate.
+
+Static assertions within g0 programs are a convenient basis for lightweight unit tests. They will run every time the program is built, but memoization can  
 
 ## Export Function
 

@@ -6,12 +6,12 @@ prog pushl [pair]
 # popl (V:L -- V L)
 prog popl [unpair]
 
-# foreach ([Op] => (ABC -- A Op B Op C Op))
-prog p-foreach [p-dip [popl] swap p-while-do [0 eq] p-seq]
-macro foreach [p-foreach]
+# each ([Op] => (ABC -- A Op B Op C Op))
+prog p-each [p-dip [popl] swap p-while-do [0 eq] p-seq]
+macro each [p-each]
 
 # rev-append (CBA DEF -- ABCDEF)
-prog rev-append [swap [swap pushl] foreach]
+prog rev-append [swap [swap pushl] each]
 
 # rev  (ABCDEF -- FEDCBA)
 prog rev [0 rev-append]
@@ -31,6 +31,17 @@ prog l6 [l5 pushl]
 prog l7 [l6 pushl]
 assert [0x6f 0x6d 0x6e 0x2d 0x6e 0x6f 0x6d l7 "omn-nom" eq]
 
+# maybe add expansions for lists of sizes 0..7.
+prog unl0 [0 eq]
+prog unl1 [popl unl0]
+prog unl2 [popl unl1]
+prog unl3 [popl unl2]
+prog unl4 [popl unl3]
+prog unl5 [popl unl4]
+prog unl6 [popl unl5]
+prog unl7 [popl unl6]
+assert ["omn-nom" unl7 0x6d eq 0x6f eq 0x6e eq 0x2d eq 0x6e eq 0x6d eq 0x6f eq]
+
 # pushr (L V -- L:V)
 prog pushr-raw [l1 append]
 assert ["pin" 0x67 pushr-raw "ping" eq]
@@ -44,4 +55,7 @@ prog popr [[popr-raw] 'list-popr p-anno-accel apply]
 
 prog li [pushr]
 
-# todo: split (requires natural numbers) 
+# todo: 
+#  (requires natural numbers)
+#  split, slice
+#  

@@ -476,7 +476,11 @@ module Zero =
             let struct(cte', pAssert) = compileBlock { cte with DbgCx = dbg } b
             let bSuccess =
                 match eval pAssert ll [] with
-                | Some _ -> true // any number of results is okay
+                | Some results ->
+                    if not (List.isEmpty results) then
+                        logInfoV ll (sprintf "%s passed with outputs" dbg) 
+                                    (Value.ofFTList (FTList.ofList results))  
+                    true // any number of results is okay
                 | None ->
                     logError ll (sprintf "%s failed" dbg)
                     false
