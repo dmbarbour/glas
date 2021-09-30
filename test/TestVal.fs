@@ -265,7 +265,7 @@ let tests =
             Expect.equal "42" (prettyPrint (nat 42UL)) "printing more nats"
 
         testCase "printing basic pairs and sums data" <| fun () ->
-            Expect.equal "(() . L())" (prettyPrint (pair unit (left unit))) "pulu"
+            Expect.equal "(() . 0b0)" (prettyPrint (pair unit (left unit))) "pulu"
             Expect.equal "R[()]" (prettyPrint (right (pair unit unit))) "rpuu"
             Expect.equal "RL(() . 1)" (prettyPrint (right (left (pair unit (right unit))))) "rlpuru"
 
