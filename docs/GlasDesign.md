@@ -39,7 +39,7 @@ To work with very large trees, Glas systems will offload subtrees into content-a
 
 Binary extraction replaces the conventional command-line compiler. 
 
-In concrete terms, a command line for binary extraction might be `glas print Value with Printer`, where Value and Printer are references into the module system such as `std.print`, and Printer must represent a Glas program that uses limited effects. The Printer receives the Value as an input then is evaluated to produce a binary stream on stdout. The caller can redirect output to a file.
+In concrete terms, a command line for binary extraction might be `glas print Value -p Printer`, where Value and Printer are references into the module system such as `std.print`, and Printer must represent a Glas program that uses limited effects. The Printer receives the Value as an input then is evaluated to produce a binary stream on stdout. The caller can redirect output to a file.
 
 The binary in question could represent a jpeg image, PDF document, zipfile, or executable. With suitable printers, it might also represent a summary such as program arity or type, though for these roles it might be nicer to develop a new command.
 
@@ -197,13 +197,11 @@ The Glas command line interface is oriented around a glas executable with user-d
 
 The glas command line interface is extensible by defining modules with name `glas-cli-(verb)`. This module shall compile to a record value of form `(run:Program, ...)`. Aside from 'run' this record may include properties to support help messages, tab completion, effects API version, etc..
 
-The glas executable must know enough to bootstrap the g0 language, compile language modules and dependencies, then eventually compile the verb. Logically, this process is performed every time the executable runs. However, for performance, the executable should privately cache computations to avoid unnecessary rework. In case a verb fails to compile, the executable should provide fallback implementations for critical verbs such as 'help' and 'print'.
+The glas executable must know enough to bootstrap the g0 language, compile language modules and dependencies, then eventually compile the verb. Logically, this process is performed every time the executable runs. However, for performance, the executable should privately cache computations to avoid unnecessary rework. The executable can provide fallback implementations for critical verbs such as 'help' and 'print'.
 
-Essentially, the glas executable provides a runtime environment for its verbs. 
+Essentially, the glas executable provides a runtime environment for its verbs.
 
-The run program should be arity 1--0, receiving Parameters as a list of strings on the data stack but mostly interacting with the world via the *Console Applications* effects API described in [Glas Apps](GlasApps.md), albeit extended with a *load:ModuleID* effect because parameters and some verbs (such as REPLs) will reference other modules. However, the program would not be a transaction machine by default.
-
-*Note:* The executable itself should eventually be bootstrapped via *Binary Extraction* of an executable file. 
+The program should be arity 1--0, receiving Parameters as a list of strings on the data stack then mostly interacting with the world via the *Console Applications* effects API described in [Glas Apps](GlasApps.md), albeit extended with module loading to leverage the executable's bootstrap effort and private cache.
 
 ### Data Printer 
 
@@ -216,11 +214,11 @@ Writes at the top-level are immediate unless under a 'try' or 'while' clause. Th
 
 ### Transaction Machines
 
-Transaction machines have many benefits as a basis for applications and are an excellent fit for my visions of live coding reactive systems. With backtracking conditionals, Glas programs are a good fit transaction machines, i.e. every 'try' or 'while' clause is essentially a transaction. I describe this concept further in the [Glas Apps](GlasApps.md) document.
+Transaction machines have many benefits as an application architecture. They are an excellent foundation for my visions of live coding reactive systems. I describe this concept further in the [Glas Apps](GlasApps.md) document. 
 
-It is feasible for command line verbs to support transaction machine behavior. If the program contains a long-running top-level loop of form `loop:(while:A, do:cond:try:B)`, this loop can run as a transaction machine. We can add an acceleration annotation to indicate transaction machine optimizations apply. Live coding is implied if this loop loads and evaluates programs.
+Glas programs use backtracking conditionals: every 'try' or 'while' clause is a transaction. A long-running top-level 0--0 arity loop of form `loop:(while:A, do:cond:try:B)` can run as a transaction machine. Annotations can indicate which transaction machine optimizations are expected. It is feasible to extend to higher arity by compiling the data stack into a collection of fine-grained transaction variables.
 
-We can also compile and extract binary executables based on transaction machines, though we might need to abandon the live connection to the Glas module system.
+Conveniently, a distinct evaluation mode is not required. We only need support for optimizations and a suitable effects API. A Glas command line verb could support transaction machines with live coding by loading Glas modules within the loop and implicitly watching for changes to loaded modules.
 
 ### Automated Testing
 
