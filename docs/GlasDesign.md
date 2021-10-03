@@ -39,9 +39,9 @@ To work with very large trees, Glas systems will offload subtrees into content-a
 
 Binary extraction replaces the conventional command-line compiler. 
 
-In concrete terms, a CLI command for binary extraction might be `glas print Value with Printer`, where Value and Printer are references into the module system such as `std.print`, and Printer must represent a Glas program that uses limited effects (see *Data Printer*). The Printer receives the Value as an input then is evaluated to produce a binary stream on stdout. The caller can redirect output to a file.
+In concrete terms, a command line for binary extraction might be `glas print Value with Printer`, where Value and Printer are references into the module system such as `std.print`, and Printer must represent a Glas program that uses limited effects. The Printer receives the Value as an input then is evaluated to produce a binary stream on stdout. The caller can redirect output to a file.
 
-The binary in question could represent a jpeg image, PDF document, zipfile, or executable. With suitable printers, it might also represent a summary such as program arity or type, though for these roles it might be nicer to develop a new command (see *CLI Verbs*).
+The binary in question could represent a jpeg image, PDF document, zipfile, or executable. With suitable printers, it might also represent a summary such as program arity or type, though for these roles it might be nicer to develop a new command.
 
 In any case, the logic for producing a useful binary will be represented in the module system. The command-line tool may maintain a private cache for performance, but such byproducts should not be exposed to the client. Ideally, extracted binaries are deterministic based on module system state with no extraneous input from tooling or environment.
 
@@ -195,25 +195,15 @@ The Glas command line interface is oriented around a glas executable with user-d
 
         glas (verb) Parameters ...
 
-The glas command line interface is extensible by defining modules with name `glas-cli-(verb)`. This module shall compile to a record value of form `(run:Program, ...)`. Aside from 'run' other properties may support help messages, tab completion, debugging, etc.. 
+The glas command line interface is extensible by defining modules with name `glas-cli-(verb)`. This module shall compile to a record value of form `(run:Program, ...)`. Aside from 'run' this record may include properties to support help messages, tab completion, effects API version, etc..
 
-The glas executable must know enough to bootstrap the g0 language, compile language modules and dependencies, then eventually compile the verb. Logically, this process is performed every time the executable runs. However, for performance, the executable should privately cache computations to avoid unnecessary rework. In case a verb fails to compile, the executable may include a fallback implementation for some verbs such as 'help' and 'print'.
+The glas executable must know enough to bootstrap the g0 language, compile language modules and dependencies, then eventually compile the verb. Logically, this process is performed every time the executable runs. However, for performance, the executable should privately cache computations to avoid unnecessary rework. In case a verb fails to compile, the executable should provide fallback implementations for critical verbs such as 'help' and 'print'.
 
 Essentially, the glas executable provides a runtime environment for its verbs. 
 
-The effects API provided to verbs is ad-hoc, subject to development and deprecation over time, but should be stable enough that maintaining the verbs is not a problem. If necessary, we could use a program annotation or a verb property to indicate the expected effects API, or use effects to negotiate an API.
+The run program should be arity 1--0, receiving Parameters as a list of strings on the data stack but mostly interacting with the world via the *Console Applications* effects API described in [Glas Apps](GlasApps.md), albeit extended with a *load:ModuleID* effect because parameters and some verbs (such as REPLs) will reference other modules. However, the program would not be a transaction machine by default.
 
-I do have some thoughts on the effects API:
-
-* **load:ModuleID** - Most verbs must load other values from the module system. The glas executable should provide lightweight access to Glas module values to improve consistency and simplify reuse of the compilation cache.
-* **log:Message** - log messages should be routed to stderr by default. Later, the glas executable might support alternatives via environment variables or configuration files.
-* *std:in, std:out* - Like conventional command-line programs, the effects API should provide access to the console IO streams as implicitly open file-streams. 
-* *invert allocation* - Instead of an `open file` request *returning* a file-handle, APIs should favor the pattern `open file as handle`, *providing* a reference value as part of the request. This simplifies debugging, improves program determinism, supports decentralized allocation, and resists some security risks. 
-* *asynchronous effects* - due to backtracking conditionals, external requests must be deferred until we leave a 'try' or 'while' clause, thus effects cannot synchronously await response from the outside world. Fortunately, asynchronous effects work nicely with network or streaming file IO.
-
-See also [Glas Apps](GlasApps.md). Although I doubt most command-line applications would run as transaction machines, the API presented under *Console Applications* might be adapted to the glas executable.
-
-The Glas command line interface is flexible and extensible, but the expectation is that we'll eventually use *Binary Extraction* to produce executable binaries that run independently. Bootstrap of the command line executable also depends on this.
+*Note:* The executable itself should eventually be bootstrapped via *Binary Extraction* of an executable file. 
 
 ### Data Printer 
 
@@ -224,17 +214,17 @@ Relating to *Binary Extraction*. Printers must have arity 1--0 and implement a f
 
 Writes at the top-level are immediate unless under a 'try' or 'while' clause. Thus, it is possible to produce several megabytes of data before failing, or to buffer everything and print at the end, depending on how the printer is defined.
 
-### User Applications
+### Transaction Machines
 
 Transaction machines have many benefits as a basis for applications and are an excellent fit for my visions of live coding reactive systems. With backtracking conditionals, Glas programs are a good fit transaction machines, i.e. every 'try' or 'while' clause is essentially a transaction. I describe this concept further in the [Glas Apps](GlasApps.md) document.
 
-It is feasible for the command line interface to support running certain verbs as transaction machines based on an effect to request this mode. This would support live coding if the glas executable watches for changes in loaded modules then rebuilds as needed.
+It is feasible for command line verbs to support transaction machine behavior. If the program contains a long-running top-level loop of form `loop:(while:A, do:cond:try:B)`, this loop can run as a transaction machine. We can add an acceleration annotation to indicate transaction machine optimizations apply. Live coding is implied if this loop loads and evaluates programs.
 
-Binary extraction of applications based on transaction machines is also viable, albeit unlikely to preserve live coding.
+We can also compile and extract binary executables based on transaction machines, though we might need to abandon the live connection to the Glas module system.
 
 ### Automated Testing
 
-Static assertions within modules are very useful for automated testing. However, build-time tests are deterministic and under pressure to resolve swiftly. There is an open niche for long-running or non-deterministic tests, such as fuzz-testing.
+Static assertions within modules are very useful for automated testing. However, build-time tests are deterministic and under pressure to resolve swiftly. There leaves open a niche for long-running or non-deterministic tests, such as fuzz-testing.
 
 To support this, we can express tests as arity 0--Any Glas programs with access to 'fork' effect for non-deterministic choice input. 
 
@@ -244,6 +234,8 @@ To support this, we can express tests as arity 0--Any Glas programs with access 
 Non-deterministic choice doesn't mean random choice. A good test system should support incremental computing with backtracking on fork choices, and apply heuristics, memory, and program analysis to focus attention on forks that are more likely to discover a failed test.
 
 The primary output from a test is pass/fail of evaluation. Log messages are a secondary output mostly to support debugging of failed tests.
+
+A glas command line verb could support automated testing based on this simplified effects API to encourage simulation of effects and guarantee reproducibility of failures (assuming we record the fork path).
 
 ## Performance
 
