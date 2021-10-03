@@ -1,8 +1,7 @@
 from list-ops import
-    pushl, popl,
-    pushr, popr,
-    rev, append,
-    p-each, each,
-    l0, l1, l2, l3, l4, l5, l6, l7,
-    unl0, unl1, unl2, unl3, unl4, unl5, unl6, unl7
-
+    li, l0, l1, l2, l3, l4, l5, l6, l7,
+    unl0, unl1, unl2, unl3, unl4, unl5, unl6, unl7,
+    pushl, popl, pushr, popr,
+    rev, append, rev-app,
+    each, p-each,
+    list

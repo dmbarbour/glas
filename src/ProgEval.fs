@@ -22,8 +22,14 @@ module ProgEval =
         // do not optimize the program. Acceleration, memoization, and stowage are not yet 
         // supported. There is much room for improvement.
         //
+        // Additionally, I currently do not attempt to share structure within the compiled
+        // program, e.g. by recognizing common subprograms. So, we're doing a lot of rework
+        // here. Cached compilation could help with this.
+        //
         // I intend to accelerate the list ops and maybe arithmetic ops for bootstrap. I'm still
-        // uncertain how and whether I should check validity of the accelerators.
+        // uncertain how and whether I should check validity of the accelerators. It isn't the
+        // case that the compiler must check this - it could be checked via explicit testing vs.
+        // the non-accelerated implementation.
         //
 
         /// runtime environment

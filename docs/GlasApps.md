@@ -130,7 +130,7 @@ Timestamps will initially support `nt:Number` referring to Windows NT time - a n
 
 ### Memory
 
-Applications need private memory to carry information across transactions. For convenience and simplicity, memory is modeled as a key-value database. Keys and values are arbitrary Glas data. By default, a MemRef is associated with the 'unit' value.
+Applications need private memory to carry information across transactions. For convenience and simplicity, memory is modeled as a set of key-value pairs, where a MemRef is a key value. Keys and values are arbitrary Glas data, but keys should be 'small' values to support efficient lookup.
 
 * **mem:(on:MemRef, op:MemOp)** - MemRef is an arbitrary value. The MemOp represents an operation to observe or modify the associated value.
  * **get** - Response is value currently associated with MemRef.

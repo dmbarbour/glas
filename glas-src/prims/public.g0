@@ -1,10 +1,9 @@
 # The 'prims' module provides a useful set of words for getting started with
 # the g0 language. Not all are true primitives, just stuff that is relatively
-# low level and doesn't require many lines of logic.
+# concrete, widely useful, low level, and doesn't require too much logic.
 #
-# Relevantly, support for bitstrings, lists, numbers, etc. are not primitive
-# but should probably be available via module 'std'. But a lot of metaprogramming
-# support is considered primitive.
+# At the moment, list ops, natural number arithmetic, and advanced record ops
+# such as iteration over keys is left to external modules.
 
 macro apply []
 
@@ -32,7 +31,8 @@ macro while-do [p-while-do]
 macro try-then-else [p-try-then-else]
 macro with-do [p-with-do]
 
-# PAIRS
+# PAIRS - trees with both the '0' and '1' edges.
+# Pairs are mostly used for construction of lists.
 
 prog pair [0 0b1 put 0b0 put]
 prog pair-fst [0b0 get]
@@ -76,6 +76,8 @@ macro try-then [p-try-then]
 macro try-else [p-try-else]
 
 # NON-MODIFYING OBSERVATIONS
+#
+# Many uses of these operations might be better expressed as typechecks.
 
 # verify    ([Predicate] -- | FAIL)
 #  evaluates predicate, then undoes effects.
@@ -83,6 +85,7 @@ macro try-else [p-try-else]
 prog p-verify [[fail] p-try-then [fail] p-try-then]
 macro verify [p-verify]
 assert [0 [0 eq] verify 0 eq]
+assert [0 [[1 eq] verify][1][2] try-then-else 2 eq 0 eq]
 
 # verify-not ([Predicate] -- | FAIL)
 #  evaluates predicate, then undoes effects.
@@ -90,6 +93,7 @@ assert [0 [0 eq] verify 0 eq]
 prog p-verify-not [[fail] p-try-then [fail] p-try-else]
 macro verify-not [p-verify-not]
 assert [0 [1 eq] verify-not 0 eq]
+assert [0 [[0 eq] verify-not][1][2] try-then-else 2 eq 0 eq]
 
 # LOOP VARIATIONS
 
@@ -193,9 +197,16 @@ assert [42 0 'x put copy 'x 0 getd 42 eq 'y 0 getd 0 eq]
 #   If the Value matches Default, delete Label from Record.
 #   Otherwise, set Label to Value in Record.
 prog putd [[[rot3] dip eq del] [drop put] try-else]
-
-#assert [42 0 'x put ]
-
+assert [
+    6 7 0 'x put 'y put copy 
+    42 swap 'x 42 putd 
+    ['y get 6 eq] verify
+    ['x get] verify-not
+    drop
+    42 swap 'x 0 putd
+    ['y get 6 eq] verify
+    'x get 42 eq
+]
 
 # Constructing records directly from stack items.
 # 
@@ -309,19 +320,20 @@ assert [
 #  preconditions and postconditions
 #  labeled inputs and outputs to simplify auto-wiring
 
-
 # BASIC LOGGING
 #
-# Logging is convenient for debugging. Most applications will support a 
-# logging effect that accepts requests of form `log:Message` and responds
-# with unit (0). If not, we can simply ignore log failures.
+# Logging is convenient for debugging or tracking progress of an application.
+# Most application models in Glas systems will support an effect 'log:Message'
+# that should respond with unit value (0). If not, we can ignore log failures.
 # 
-# By convention, Message is a record such as `(lv:warn, text:"problem found")`
-# that may be extended with new fields on an ad-hoc basis. If a field has an
-# uninformative value, it could also be erased.
+# By convention, Message is a record such as `(lv:warn, text:"problem found")`.
+# This may be extended with new fields on an ad-hoc basis, e.g. we could have
+# log messages specifically to support progress bars or notifications.
 #
-# In context of the g0 language, logging can be used from macro calls, assert,
-# and data definitions even if not used elsewhere.
+# Compile-time also produces a log. Thus, g0 can perform compile-time logging
+# via macro calls, data definitions, assertions, or the export function. This
+# is convenient when debugging why an assertion has failed, or warning about a
+# deprecated accelerator that will soon be eliminated.
 #
 
 # log-send      Message --
@@ -344,18 +356,3 @@ prog log-error ['error log-msg-text-lv log-send]
 prog log-info-v ['info log-msg-val-text-lv log-send]
 prog log-warn-v ['warn log-msg-val-text-lv log-send]
 prog log-error-v ['error log-msg-val-text-lv log-send]
-
-# LOADING MODULES AS VALUES? defer to another module.
-#
-# In addition to 'open' and 'from import' statements at the top-level, g0 programs
-# can load modules via compile-time effects. Module IDs normally are provided as
-# strings, e.g. "foo" instead of 'foo.
-#
-# However, I'm uncertain of the API I want for this, and I might want extra string
-# processing to work with dotted paths to discover values within a module, or even
-# to search intermediate index modules and dereference through them.
-#
-# So, I'll leave this for now.
-
-# testing implicit info output for assertions without 0--0 arity
-# assert ["hello" "from" "prims" rot3 [swap] dip]

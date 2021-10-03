@@ -410,11 +410,15 @@ module FTList =
         match T.viewL (toT ftl) with
         | Some struct(e, t') -> fold fn (fn st0 (e.V)) (ofT t')
         | None -> st0
-    
+
     let rec foldBack fn ftl (st0 : 'ST) =
         match T.viewR (toT ftl) with
         | Some struct(t', e) -> foldBack fn (ofT t') (fn (e.V) st0)
         | None -> st0
+
+    let collect fn =
+        let collectFn l x = append l (fn x)
+        Seq.fold collectFn empty
 
     let toList (ftl : FTList<'a>) : 'a list =
         let cons e l = e::l

@@ -35,15 +35,17 @@ Glas uses lists to encode sequential structures. Logically, a list has type `typ
 
 To work with very large trees, Glas systems will offload subtrees into content-addressed storage. I call this pattern *stowage*. Of course, Glas applications may also use effects to interact with external storage. Stowage has a benefit of working nicely with pure computations, serves as a virtual memory and compression layer, and has several benefits for incremental computation and communication. Stowage is guided by program annotations.
 
-It is feasible to print arbitrary data, heuristically recognizing common data types. 
-
 ## Binary Extraction
 
-The Glas command-line tool shall provide a simple option to print module system values as binaries to file or stdout. This is concretely expressed by command-line `glas print Value with Printer`, where `Value` and `Printer` both have the form `modulename(.symbol)*` allowing access to labeled records. The printer's value must represent a valid *Data Printer* program (see below). 
+Binary extraction replaces the conventional command-line compiler. 
 
-Binary extraction is how we turn the Glas module system into externally useful artifacts. For example, we could 'print' a document, an executable binary, or optionally a zipfile containing several items. Printing values is also useful for REPL-style development and debugging of the module system. 
+In concrete terms, a CLI command for binary extraction might be `glas print Value with Printer`, where Value and Printer are references into the module system such as `std.print`, and Printer must represent a Glas program that uses limited effects (see *Data Printer*). The Printer receives the Value as an input then is evaluated to produce a binary stream on stdout. The caller can redirect output to a file.
 
-The conventional command-line compiler tool is replaced by binary extraction. Compilation can be performed within the module system or by a specialized data printer, but the command-line tool doesn't need any logic about producing executables. However, the command-line also cannot provide compilation flags. Instead, the module system itself may contain a 'target' module that would represent information such as target architecture, space vs. time optimization heuristics, etc..
+The binary in question could represent a jpeg image, PDF document, zipfile, or executable. With suitable printers, it might also represent a summary such as program arity or type, though for these roles it might be nicer to develop a new command (see *CLI Verbs*).
+
+In any case, the logic for producing a useful binary will be represented in the module system. The command-line tool may maintain a private cache for performance, but such byproducts should not be exposed to the client. Ideally, extracted binaries are deterministic based on module system state with no extraneous input from tooling or environment.
+
+See also *Command Line* and *Data Printer* under *Application Models*.
 
 ## Glas Programs
 
@@ -174,13 +176,11 @@ Glas requires an initial syntax for bootstrap. To serve this role, I define [the
 
 ## Application Models
 
-We can model various apps with Glas programs by controlling input, output, and effect types.
-
 ### Language Modules
 
-Language modules have a module name of form `language-*`. The value of a language module should be a record of form `(compile:Program, ...)`. Aside from 'compile', the record for a language module may define other ad-hoc properties - documentation, linter, decompiler, language server app, REPL mode, etc..
+Language modules have a module name of form `language-(ext)`, binding to files with extension `.(ext)`. The language module shall comile to a record value of form `(compile:Program, ...)`. Aside from 'compile', other properties may provide description, documentation, linters, decompiler, code completion support, [language server](https://en.wikipedia.org/wiki/Language_Server_Protocol) support, REPL support, etc..
 
-The compile program implements a function from source (e.g. file binary) to a compiled value on the stack. The compile program can also access other module values and generate some log outputs. Effects API:
+The compile program must have arity 1--1 and implements a function from source (usually a file binary) to a compiled value on the stack. The compile program can also access other module values and generate some log outputs. Effects API:
 
 * **load:ModuleID** - Modules are currently identified by UTF-8 strings such as `"foo"`. File extension is elided. We search for the named module locally then on `GLAS_PATH`. 
 * **log:Message** - Response is unit. Arbitrary output message, useful for progress reports, debugging, code change proposals, etc.. 
@@ -189,20 +189,48 @@ Load failures may occur due to missing modules, ambiguous files (e.g. if we have
 
 A language may expose these effects to the programmer in context of compile-time metaprogramming. For example, these effects are explicitly supported by language-g0 macro calls.
 
+### Command Line
+
+The Glas command line interface is oriented around a glas executable with user-defined verbs.
+
+        glas (verb) Parameters ...
+
+The glas command line interface is extensible by defining modules with name `glas-cli-(verb)`. This module shall compile to a record value of form `(run:Program, ...)`. Aside from 'run' other properties may support help messages, tab completion, debugging, etc.. 
+
+The glas executable must know enough to bootstrap the g0 language, compile language modules and dependencies, then eventually compile the verb. Logically, this process is performed every time the executable runs. However, for performance, the executable should privately cache computations to avoid unnecessary rework. In case a verb fails to compile, the executable may include a fallback implementation for some verbs such as 'help' and 'print'.
+
+Essentially, the glas executable provides a runtime environment for its verbs. 
+
+The effects API provided to verbs is ad-hoc, subject to development and deprecation over time, but should be stable enough that maintaining the verbs is not a problem. If necessary, we could use a program annotation or a verb property to indicate the expected effects API, or use effects to negotiate an API.
+
+I do have some thoughts on the effects API:
+
+* **load:ModuleID** - Most verbs must load other values from the module system. The glas executable should provide lightweight access to Glas module values to improve consistency and simplify reuse of the compilation cache.
+* **log:Message** - log messages should be routed to stderr by default. Later, the glas executable might support alternatives via environment variables or configuration files.
+* *std:in, std:out* - Like conventional command-line programs, the effects API should provide access to the console IO streams as implicitly open file-streams. 
+* *invert allocation* - Instead of an `open file` request *returning* a file-handle, APIs should favor the pattern `open file as handle`, *providing* a reference value as part of the request. This simplifies debugging, improves program determinism, supports decentralized allocation, and resists some security risks. 
+* *asynchronous effects* - due to backtracking conditionals, external requests must be deferred until we leave a 'try' or 'while' clause, thus effects cannot synchronously await response from the outside world. Fortunately, asynchronous effects work nicely with network or streaming file IO.
+
+See also [Glas Apps](GlasApps.md). Although I doubt most command-line applications would run as transaction machines, the API presented under *Console Applications* might be adapted to the glas executable.
+
+The Glas command line interface is flexible and extensible, but the expectation is that we'll eventually use *Binary Extraction* to produce executable binaries that run independently. Bootstrap of the command line executable also depends on this.
+
 ### Data Printer 
 
-See *Binary Extraction*. Printers are arity 1--0 functions with an effect to write binary data. Additionally, the printer may output arbitrary log messages for purpose of status or debugging. In normal use, binary data is written to stdout and log message texts are written to stderr. Effects API:
+Relating to *Binary Extraction*. Printers must have arity 1--0 and implement a function from a printed value to a written binary. The output is written as an stdout stream to simplify production of very large binaries. Log messages are a secondary output, useful for progress or debugging, and are normally written to stderr. Effects API:
 
 * **write:Binary** - Write binary data (a list of bytes) to stdout. Response is unit. Fails if argument is not a binary.
 * **log:Message** - Arbitrary log message. Texts will usually be written to stderr. 
 
-The printer will immediately write outputs unless it's within a 'try' or 'while' clause, in which case writes are buffered in case of failure. Thus, it is possible to produce several megabytes of data before failing, or to buffer everything and print at the end, depending on how the printer is defined.
+Writes at the top-level are immediate unless under a 'try' or 'while' clause. Thus, it is possible to produce several megabytes of data before failing, or to buffer everything and print at the end, depending on how the printer is defined.
 
 ### User Applications
 
-With backtracking conditionals, Glas programs are a good fit transaction machines, i.e. where an application is represented by a transaction that the system will run repeatedly. Transaction machines have many benefits and are an excellent fit for my long-term vision of live coding and reactive systems. I'm developing this idea in the [Glas Apps](GlasApps.md) document. 
+Transaction machines have many benefits as a basis for applications and are an excellent fit for my visions of live coding reactive systems. With backtracking conditionals, Glas programs are a good fit transaction machines, i.e. every 'try' or 'while' clause is essentially a transaction. I describe this concept further in the [Glas Apps](GlasApps.md) document.
 
-The Glas command-line tool should provide an option to run a console application without requiring full compilation and binary extraction. Whether this uses an interpreter or JIT compiler would be left to the tool.
+It is feasible for the command line interface to support running certain verbs as transaction machines based on an effect to request this mode. This would support live coding if the glas executable watches for changes in loaded modules then rebuilds as needed.
+
+Binary extraction of applications based on transaction machines is also viable, albeit unlikely to preserve live coding.
 
 ### Automated Testing
 
@@ -210,7 +238,7 @@ Static assertions within modules are very useful for automated testing. However,
 
 To support this, we can express tests as arity 0--Any Glas programs with access to 'fork' effect for non-deterministic choice input. 
 
-* **fork** - Response is a non-deterministic boolean - i.e. a '0' or '1' single edge bitstring.
+* **fork** - Response is a non-deterministic boolean - i.e. a '0' or '1' single-edge bitstring.
 * **log:Message** - Response is unit. Write an arbitrary message to support debugging of tests.
 
 Non-deterministic choice doesn't mean random choice. A good test system should support incremental computing with backtracking on fork choices, and apply heuristics, memory, and program analysis to focus attention on forks that are more likely to discover a failed test.
@@ -308,33 +336,3 @@ A challenge will be achieving effective performance from search in context of de
 ### Provenance Tracking
 
 I'm very interested in automatic provenance tracking, i.e. such that we can robustly trace a value to its contributing sources. I still don't have a good idea about how to approach this without huge overheads.
-
-## Change Proposals
-
-### Bitstring Operators? Removal Accepted.
-
-Each node in a bitstring has one or zero outbound edges, each labeled 0 or 1, forming a string such as `01100101` to represent a byte. Initially, I defined list ops for bitstrings, blen, bjoin, bsplit. Additionally, a few bitwise ops, e.g. bmax is bitwise-or, bmin is bitwise-and, bneg negates each bit, and beq is a negated bitwise-exclusive-or. Seven ops total.
-
-However, in practice I almost never want these operators. The conventional uses of bitwise ops are for representing, observing, and manipulating flags, or possibly bit-banging for cryptography. In Glas systems, flags are instead represented as a record of labels, one label per flag. The list ops aren't very useful since I still need to construct or process bitstrings using loops. Cryptography needs acceleration anyways.
-
-### Simplifying Arithmetic? Accepted.
-
-Originally the arithmetic operators will preserve sizes of bitstring inputs, i.e. producing sum and carry or product and overflow. If we multiply a 16-bit number by a 32-bit number, then product is 16 bits and overflow is 32 bits. If we add an 8-bit number to a 32-bit number, sum is 8 bits and carry is 32 bits. If we divide  32-bit by 16-bit, the quotient is 32-bit and remainder is 16-bits. Subtraction was a weird exception, perhaps should have reduced smaller number to zero and reduce the other equally.
-
-In theory, this might simplify static allocation of memory. But I found it too awkward to be dealing with arbitrary boundaries on numbers within Glas, especially in context of list 'len' not having a fixed width. I've decided to use variable-sized numbers by default, and leave fixed-width arithmetic to acceleration of abstract CPUs.
-
-I'm interested in removing arithmetic operators entirely, leave this to user-defined code and accelerators.
-
-### Eliminating List Operators? Accepted.
-
-Instead of list operators as primitives, use accelerators. Make this a default example for accelerators while we're at it. This also enables elimination of arithmetic ops.
-
-### Eliminating Arithmetic Operators? Accepted.
-
-Let's use accelerators for these, too. 
-
-This leaves the primitive data manipulations as get, put, and del - all very simple to comprehend and implement.
-
-### Reorder 'put'? Accepted.
-
-Prior order of 'put' arguments was `Record Value Label -- Record`. Now is `Value Record Label -- Record`. This significantly reduces the amount of dip and swap operations required for common patterns using 'put'.

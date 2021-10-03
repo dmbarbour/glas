@@ -304,11 +304,18 @@ module Zero =
             let cte' = { cte with Errors = eArity ||| cte.Errors }
             struct(cte', p)
 
-        // unwraps 'prog:do:P' to 'P' when annotations are empty
-        let unwrapProg p =
-            match p with
-            | Prog (anno, pDo) when (Value.unit = anno) -> pDo
-            | _ -> p
+        // The resulting values tend to be a little messy. Trying to prettify
+        // them heuristically. Removing extraneous 'prog' headers. Flattening
+        // tree-structured 'seq' calls. But only at the surface layer.
+        //
+        //   prog:do:Program                        non-annotated prog ops.
+        //   seq:[seq:[...], op, seq:[...], ...]    deep sequences
+        //
+        let rec expandOp op =
+            match op with
+            | Prog (anno, pDo) when (Value.unit = anno) -> expandOp pDo
+            | PSeq l -> l
+            | _ -> FTList.singleton op
 
         // Compile a program block into a value. 
         let rec compileBlock (cte:CTE) (b:Block) =
@@ -322,7 +329,7 @@ module Zero =
             | Some ds' ->
                 _compileBlock cte revOps ds' b
             | None ->
-                let revOps' = (unwrapProg p) :: (addDataOpsRev revOps ds)
+                let revOps' = p :: (addDataOpsRev revOps ds)
                 _compileBlock cte revOps' [] b
         and private _compileFailedCall cte revOps ds w eType b =
             let revOps' = (Op lFail) :: addDataOpsRev revOps ds
@@ -368,8 +375,8 @@ module Zero =
             | [] -> 
                 let p = 
                     match List.rev (addDataOpsRev revOps ds) with
-                    | [op] -> op
-                    | ops -> PSeq (FTList.ofList ops)
+                    | [op] -> op // single op is promoted. 
+                    | ops -> PSeq (FTList.collect expandOp ops)
                 checkArity (struct(cte,p))
 
         let loadModule (ll:IEffHandler) (m:string) = 

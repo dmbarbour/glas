@@ -1,25 +1,48 @@
 open prims
 
+# LIST OPERATIONS
+#
+# Lists in Glas are logically constructed of pairs, terminating in a single-node
+# tree (aka unit, represented in g0 by value 0).  
+#
+# However, Glas systems are *expected* to accelerate the representation of lists,
+# hopefully using finger-trees, rope structures, and stowage to work efficiently
+# with very large lists. This supports high-performance access to both ends, join,
+# and slicing. 
+
+# list      Value -- List | FAIL
+#  Fails if input is not a valid list. Otherwise returns input. In context
+#  of acceleration, the returned list may have the optimized representation.
+prog list-impl [[[unpair [drop] dip] loop 0 eq] verify]
+prog list [[list-impl] 'type p-anno-accel apply]
+
+assert [ 2 1 0 pair pair copy list eq]
+assert [ 3 2 1 pair pair copy [list] verify-not eq ]
+
 # pushl (V L -- V:L)
-prog pushl [pair]
+#  same as pair except fails if L is a non-list value.
+prog pushl [[list pair] 'list p-anno-accel apply]
 
 # popl (V:L -- V L)
-prog popl [unpair]
+#  same as unpair except fails for a non-list value.
+prog popl [[list unpair] 'popl p-anno-accel apply]
 
 # each ([Op] => (ABC -- A Op B Op C Op))
-prog p-each [p-dip [popl] swap p-while-do [0 eq] p-seq]
+prog p-each [[popl] swap p-dip p-while-do [0 eq] p-seq]
 macro each [p-each]
 
-# rev-append (CBA DEF -- ABCDEF)
-prog rev-append [swap [swap pushl] each]
+# rev-app (CBA DEF -- ABCDEF)
+prog rev-app [swap [swap pushl] each]
 
 # rev  (ABCDEF -- FEDCBA)
-prog rev [0 rev-append]
+#  list reverse is not accelerated.
+prog rev [0 rev-app]
 assert ["hello" rev "olleh" eq]
 
 # append (ABC DEF -- ABCDEF)
-prog append [[rev] dip rev-append]
-assert ["abc" "def" append "abcdef" eq]
+prog append-impl [[rev] dip rev-app]
+assert ["abc" "def" append-impl "abcdef" eq]
+prog append [[append-impl] 'append p-anno-accel apply]
 
 data l0 [0]
 prog l1 [l0 pushl]
@@ -43,19 +66,23 @@ prog unl7 [popl unl6]
 assert ["omn-nom" unl7 0x6d eq 0x6f eq 0x6e eq 0x2d eq 0x6e eq 0x6d eq 0x6f eq]
 
 # pushr (L V -- L:V)
-prog pushr-raw [l1 append]
-assert ["pin" 0x67 pushr-raw "ping" eq]
+prog pushr-impl [swap rev pushl rev]
+assert ["pin" 0x67 pushr-impl "ping" eq]
+prog pushr [[pushr-impl] 'list-pushr p-anno-accel apply]
 
 # popr (L:V -- L V)
-prog popr-raw [rev popl rev swap]
-assert ["pint" popr-raw 0x74 eq "pin" eq]
+prog popr-impl [rev popl rev swap]
+assert ["pint" popr-impl 0x74 eq "pin" eq]
+prog popr [[popr-impl] 'list-popr p-anno-accel apply]
 
-prog pushr [[pushr-raw] 'list-pushr p-anno-accel apply]
-prog popr [[popr-raw] 'list-popr p-anno-accel apply]
-
+# li
+#  For pseudo-literal construction of lists.
+#
+#   l0 "this was a triumph"
+#   li "making a note here,"
+#   li "  huge success!"
+#   li " -- GlaDOS" 
+#   li unlines
+#
 prog li [pushr]
 
-# todo: 
-#  (requires natural numbers)
-#  split, slice
-#  
