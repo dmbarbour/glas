@@ -1,6 +1,6 @@
 # Glas Applications
 
-The conventional application model is the procedural loop, where an application initializes then enters a main loop. However, this is a poor fit for my vision of live coding and reactive systems. There is no mechanism to access state hidden within the loop during a software update, nor to robustly inform the application when its observations or assumptions have been invalidated. 
+The conventional application model is a procedural loop. An application initializes then enters a main loop. However, this is a poor fit for my visions of live coding and reactive systems. There is no mechanism to access state hidden within the loop during a software update, nor to robustly inform the application when its observations or assumptions have been invalidated. 
 
 An intriguing alternative is the *transaction machine* model of applications. Transaction machines have many nice properties for concurrency, process control, live coding, reactive behavior, and real-time systems. They are also a good fit for Glas programs, where the 'try' clauses are essentially hierarchical transactions.
 
@@ -69,6 +69,14 @@ Transaction machines greatly simplify live coding or continuous deployment. Ther
 * preview execution for a few cycles without commit
 
 A complete solution for live coding requires additional support from the development environment. Transaction machines only lower a few barriers.
+
+## Glas Programs as Transaction Machines?
+
+Glas programs use backtracking conditionals: every 'try' or 'while' or 'until' clause is a transaction. A long-running loop of form `loop:(while:A, do:cond:try:B)` can feasibly be optimized and evaluated as a transaction machine. With fine-grained dependency analysis, the data stack can be compiled into a collection of transaction variables.
+
+The main issue with this is that the effects API - especially handling of waits (for sleeps, read timeouts, etc.) - must be suitable for use both within the loop and outside of it. This is difficult to achieve. At least, I haven't figured it out yet.
+
+For now, it is easier to express declaratively that a Glas program should run as a repeating transaction.
 
 ## Abstract Design
 

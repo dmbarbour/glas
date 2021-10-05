@@ -191,15 +191,25 @@ module ProgEval =
         // This gave me quite some trouble, trying to trace down why tailcalls were not
         // working as expected. I eventually solved by adding <Tailcalls>True</Tailcalls>
         // to the property group in the fsproj.
-        let loop (opWhile:Op) (opDoLazy:Lazy<Op>) cte cc0 =
+        let loopWhile (opWhile:Op) (opDoLazy:Lazy<Op>) cte cc0 =
             let cycleRef = ref cc0
-            let ccLoopRepeat rte = (!cycleRef) rte
-            let ccLoopDoLazy = lazy (commitTX cte ((opDoLazy.Force()) cte ccLoopRepeat))
-            let ccLoopDo rte = (ccLoopDoLazy.Force()) rte
-            let ccLoopHalt = abortTX cte cc0
-            let ccLoopWhile = beginTX cte (opWhile { cte with FK = ccLoopHalt } ccLoopDo)
-            cycleRef := ccLoopWhile // close the loop
-            ccLoopWhile
+            let ccWhileRepeat rte = (!cycleRef) rte
+            let ccWhileDoLazy = lazy (commitTX cte ((opDoLazy.Force()) cte ccWhileRepeat))
+            let ccWhileDo rte = (ccWhileDoLazy.Force()) rte
+            let ccWhileHalt = abortTX cte cc0
+            let ccWhileLoop = beginTX cte (opWhile { cte with FK = ccWhileHalt } ccWhileDo)
+            cycleRef := ccWhileLoop // close the loop
+            ccWhileLoop
+
+        let loopUntil (opUntil:Op) (opDoLazy:Lazy<Op>) cte cc0 =
+            let cycleRef = ref cc0
+            let ccUntilRepeat rte = (!cycleRef) rte
+            let ccUntilDoLazy = lazy (abortTX cte ((opDoLazy.Force()) cte ccUntilRepeat))
+            let ccUntilDo rte = (ccUntilDoLazy.Force()) rte
+            let ccUntilHalt = commitTX cte cc0
+            let ccUntilLoop = beginTX cte (opUntil { cte with FK = ccUntilDo } ccUntilHalt)
+            cycleRef := ccUntilLoop // close the loop
+            ccUntilLoop
 
         // special operator to retrieve data from the eff-state stack.
         let effStatePop cte cc rte =
@@ -239,8 +249,10 @@ module ProgEval =
             | PSeq ps -> pseq (FTList.map (compile) ps)
             | Cond (pTry, pThen, pElse) ->
                 cond (compile pTry) (lazy (compile pThen)) (lazy (compile pElse))
-            | Loop (pWhile, pDo) ->
-                loop (compile pWhile) (lazy (compile pDo))
+            | While (pWhile, pDo) ->
+                loopWhile (compile pWhile) (lazy (compile pDo))
+            | Until (pUntil, pDo) ->
+                loopUntil (compile pUntil) (lazy (compile pDo))
             | Env (pWith, pDo) ->
                 env (compile pWith) (compile pDo) 
             | Prog (_, p') -> 

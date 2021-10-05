@@ -32,25 +32,21 @@ module LoadModule =
         | [] -> [Path.Combine(subdir, "public.g0")] // missing file
         | files -> files
 
-    let findModuleLocal (m:ModuleName) (dir:FolderPath) : FilePath list =
-        List.append (findModuleFile m dir) (findModuleFolder m dir)
+    let rec private moduleSearch (m:ModuleName) (searchPath:FolderPath list) : FilePath list =
+        match searchPath with
+        | [] -> []
+        | (dir::searchPath') ->
+            let inDir = List.append (findModuleFile m dir) (findModuleFolder m dir)
+            if not (List.isEmpty inDir) then inDir else
+            moduleSearch m searchPath'
 
-    let findModuleGlobal (m:ModuleName) : FilePath list =
+    let private readGlasPath () = 
         let envPath = Environment.GetEnvironmentVariable("GLAS_PATH")
         if isNull envPath then [] else
-        let rec searchPath ds =
-            match ds with
-            | [] -> []
-            | (d::ds') ->
-                match findModuleFolder m d with
-                | [] -> searchPath ds'
-                | files -> files
-        envPath.Split(';', StringSplitOptions.None) |> List.ofArray |> searchPath
-    
-    let findModule (m:ModuleName) (dir0:FolderPath) : FilePath list =
-        match findModuleLocal m dir0 with
-        | [] -> findModuleGlobal m
-        | files -> files
+        envPath.Split(';', StringSplitOptions.None) 
+            |> Array.map (fun s -> s.Trim())
+            |> List.ofArray
+   
 
     // wrap a compiler function for arity 1--1
     let private _compilerFn (p:Program) (ll:IEffHandler) =
@@ -168,7 +164,7 @@ module LoadModule =
                 match ll.Loading with
                 | [] -> Directory.GetCurrentDirectory()
                 | (hd::_) -> Path.GetDirectoryName(hd)
-            match findModule m localDir with
+            match moduleSearch m (localDir :: readGlasPath()) with
             | [] -> 
                 logWarn ll (sprintf "module %s not found" m)
                 None
@@ -227,7 +223,7 @@ module LoadModule =
         Loader(_builtInG0, nle)
 
     let private _findG0 ll =
-        match findModuleGlobal "language-g0" with
+        match moduleSearch "language-g0" (readGlasPath()) with
         | [fp] -> Some fp
         | [] -> 
             None

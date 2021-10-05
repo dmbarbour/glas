@@ -202,23 +202,37 @@ let test_ops =
                         let expect = if (i = j) then t else f
                         Expect.equal s' [expect] "boolean equality"
 
-            testCase "loop" <| fun () ->
-                // removed arithmetic operators, so fibonacci function is out.
-                // new loop test: reverse a bitstring.
+            testCase "loop while" <| fun () ->
+                // test is to reverse a large random bitstring
                 let b0 = Bits.ofList [false] |> Value.ofBits
                 let b1 = Bits.ofList [true] |> Value.ofBits
                 let pPopPrefix = mkSeq[Op lCopy; Dip(Op lGet)]
                 let pPopBit = Cond(mkSeq[Data b0; pPopPrefix], Nop, mkSeq[Data b1; pPopPrefix])
                 let pTag = mkSeq[Dip(Data Value.unit); Op lPut]
                 let pRevBits = mkSeq [ Data (Value.unit)
-                                     ; Loop( Dip(pPopBit), mkSeq [ Op lSwap; pTag ])
+                                     ; While( Dip(pPopBit), mkSeq [ Op lSwap; pTag ])
                                      ; Op lSwap
                                      ; Data (Value.unit); Op lEq
                                      ]
-                // want to detect stack overflow if it will happen
                 let bits = randomBits 10000 |> Bits.append (Value.label "hello there")
                 let s' = doEval pRevBits noEff [Value.ofBits bits]
                 Expect.equal s' [Value.ofBits (Bits.rev bits)] "reversed bits"
+
+            testCase "loop until" <| fun () ->
+                // test is to reverse a large random bitstring
+                let b0 = Bits.ofList [false] |> Value.ofBits
+                let b1 = Bits.ofList [true] |> Value.ofBits
+                let pPopPrefix = mkSeq[Op lCopy; Dip(Op lGet)]
+                let pPopBit = Cond(mkSeq[Data b0; pPopPrefix], Nop, mkSeq[Data b1; pPopPrefix])
+                let pTag = mkSeq[Dip(Data Value.unit); Op lPut]
+                let pRevBits = mkSeq [ Data (Value.unit)
+                                     ; Until( Dip(mkSeq [Data Value.unit; Op lEq])
+                                            , mkSeq [Dip(pPopBit); Op lSwap; pTag ])
+                                     ]
+                let bits = randomBits 10000 |> Bits.append (Value.label "hello there")
+                let s' = doEval pRevBits noEff [Value.ofBits bits]
+                Expect.equal s' [Value.ofBits (Bits.rev bits)] "reversed bits"
+
 
             testCase "toplevel eff" <| fun () ->
                 let varSym s = mkSeq [Data Value.unit; Data (Value.symbol s); Op lPut]

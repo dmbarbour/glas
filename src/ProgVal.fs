@@ -47,6 +47,7 @@ module ProgVal =
     let lElse = label "else"
     let lLoop = label "loop"
     let lWhile = label "while"
+    let lUntil = label "until"
     let lDo = label "do"
     let lEnv = label "env"
     let lWith = label "with"
@@ -95,15 +96,27 @@ module ProgVal =
         | _ -> None
 
 
-    let Loop (pWhile, pDo) =
+    let While (pWhile, pDo) =
         unit |> record_insert lWhile pWhile
              |> record_insert_unless_nop lDo pDo
              |> lv lLoop
-    let (|Loop|_|) v =
+    let (|While|_|) v =
         match v with
         | Stem lLoop (RecL [lWhile;lDo] ([Some pWhile; optDo], U)) ->
             let pDo = Option.defaultValue Nop optDo 
             Some (pWhile, pDo)
+        | _ -> None
+
+    let Until (pUntil, pDo) =
+        unit |> record_insert lUntil pUntil
+             |> record_insert_unless_nop lDo pDo
+             |> lv lLoop
+
+    let (|Until|_|) v =
+        match v with
+        | Stem lLoop (RecL [lUntil; lDo] ([Some pUntil; optDo], U)) ->
+            let pDo = Option.defaultValue Nop optDo
+            Some (pUntil, pDo)
         | _ -> None
 
     let Env (pWith, pDo) =
@@ -158,8 +171,8 @@ module ProgVal =
                 yield! invalidProgramComponents pTry
                 yield! invalidProgramComponents pThen
                 yield! invalidProgramComponents pElse
-            | Loop (pWhile, pDo) ->
-                yield! invalidProgramComponents pWhile
+            | While (pCond, pDo) | Until(pCond, pDo) ->
+                yield! invalidProgramComponents pCond
                 yield! invalidProgramComponents pDo
             | Env (pWith, pDo) ->
                 yield! invalidProgramComponents pWith
@@ -176,9 +189,12 @@ module ProgVal =
         Seq.isEmpty (invalidProgramComponents v)
         
     type StackArity =
+        // valid subprograms
         | Arity of int * int
-        | ArityFail // arity of subprogram that always Fails
-        | ArityDyn // arity of inconsistent subprogram
+        // observes X stack items then always fails.
+        | ArityFail of int 
+        // inconsistent subprograms
+        | ArityDyn 
 
     let private compSeqArity a b =
         match a, b with
@@ -187,33 +203,63 @@ module ProgVal =
             let ia' = ia + d
             let oa' = oa + d
             Arity (ia', oa' + (ob - ib))
-        | Arity _, _ -> b
+        | Arity (ia, oa), ArityFail ib -> 
+            let d = max 0 (ib - oa)
+            ArityFail (ia + d)
+        | Arity _, ArityDyn -> ArityDyn
         | _ -> a
 
     let private compCondArity c a b =
-        let ca = compSeqArity c a
-        match ca, b with
-        | Arity (li, lo), Arity (ri, ro) when ((li - lo) = (ri - ro)) ->
-            Arity (max li ri, max lo ro)
-        | _, ArityFail -> ca
-        | ArityFail, Arity (ri, ro) ->
-            match c with
-            | ArityFail -> b
-            | Arity (ci, _) ->
-                let d = (max ci ri) - ri
-                Arity (ri + d, ro + d)
+        match c with
+        | ArityFail ci ->
+            match b with
+            | Arity (bi, bo) ->
+                let d = max 0 (ci - bi)
+                Arity (bi + d, bo + d)
+            | ArityFail bi ->
+                ArityFail (max ci bi)
             | ArityDyn -> ArityDyn
-        | _ -> ArityDyn
-
-    let private compLoopArity c a =
-        // dynamic if not stack invariant.
-        match compSeqArity c a with
-        | Arity (i,o) when (i = o) -> Arity(i,o)
-        | ArityFail -> 
-            match c with
-            | ArityFail -> Arity(0,0)
+        | Arity(ci, co) ->
+            let ca = compSeqArity c a
+            match ca, b with
+            | Arity (li, lo), Arity (ri, ro) when ((li - lo) = (ri - ro)) ->
+                Arity (max li ri, max lo ro)
+            | Arity (li, lo), ArityFail ri ->
+                let d = max 0 (ri - li)
+                Arity (li + d, lo + d)
+            | ArityFail li, Arity (ri, ro) ->
+                let d = max 0 (li - ri)
+                Arity (ri + d, ro + d)
+            | ArityFail li, ArityFail ri ->
+                ArityFail (max li ri)
             | _ -> ArityDyn
-        | _ -> ArityDyn
+        | ArityDyn -> ArityDyn
+
+    let private compWhileLoopArity c a =
+        match c with
+        | ArityFail ci -> Arity(ci,ci)
+        | Arity (ci, co) ->
+            let ca = compSeqArity c a 
+            match ca with
+            | Arity(li,lo) when (li = lo) -> Arity(li,li)
+            | ArityFail li -> Arity(li, li)
+            | Arity _ | ArityDyn -> ArityDyn
+        | ArityDyn -> ArityDyn
+
+    let private compUntilLoopArity c a =
+        match c with
+        | ArityFail _ | ArityDyn ->
+            // if 'until' always fails, we have a forever loop 
+            ArityDyn
+        | Arity (ci, co) ->
+            match a with
+            | Arity (ai, ao) when (ai = ao) ->
+                let d = max 0 (ai - ci)
+                Arity (ci + d, co + d)
+            | ArityFail ai ->
+                let d = max 0 (ai - ci)
+                Arity (ci + d, co + d)
+            | Arity _ | ArityDyn -> ArityDyn
 
     /// Computes arity of program. If there are 'arity:(i:Nat, o:Nat)' annotations
     /// under 'prog' operations, requires that annotations are consistent.
@@ -227,7 +273,7 @@ module ProgVal =
         | Stem lPut U -> Arity (3,1)
         | Stem lDel U -> Arity (2,1)
         | Stem lEff U -> ef0
-        | Stem lFail U -> ArityFail
+        | Stem lFail U -> ArityFail 0
         | Dip p ->
             match stackArity ef0 p with
             | Arity (a,b) -> Arity (a+1, b+1)
@@ -238,8 +284,10 @@ module ProgVal =
             FTList.fold fn (Arity (0,0)) lP
         | Cond (c, a, b) -> 
             compCondArity (stackArity ef0 c) (stackArity ef0 a) (stackArity ef0 b)
-        | Loop (c, a) -> 
-            compLoopArity (stackArity ef0 c) (stackArity ef0 a)
+        | While (c, a) -> 
+            compWhileLoopArity (stackArity ef0 c) (stackArity ef0 a)
+        | Until (c, a) ->
+            compUntilLoopArity (stackArity ef0 c) (stackArity ef0 a)
         | Env (e, p) -> 
             // we can allow imbalanced effects, but e must have one output 
             // for handler state.
@@ -248,8 +296,8 @@ module ProgVal =
             match efArity with
             | Arity(i,o) when ((i > 0) && (o > 0)) -> 
                 stackArity (Arity(i-1,o-1)) p'
-            | ArityFail -> 
-                stackArity ArityFail p'
+            | ArityFail i -> 
+                stackArity (ArityFail i) p'
             | _ ->
                 stackArity ArityDyn p'
         | Prog (anno, p) ->

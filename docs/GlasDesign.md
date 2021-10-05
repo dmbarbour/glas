@@ -6,11 +6,11 @@ Glas is now a backronym for 'General LAnguage System'. It was originally named i
 
 Glas modules are typically represented by files and folders. Dependencies between Glas modules must be acyclic (i.e. a directed acyclic graph), and dependencies across folder boundaries are structurally restricted. Every module will deterministically compute a value. 
 
-To compute the value for a file `foo.ext`, the Glas system will compile the file binary using a program defined in module `language-ext`. To bootstrap, the [g0](GlasZero.md) language is predefined. File extensions compose. For example, to compute the value for `foo.xyz.json` we first compile using `language-json` then compile using `language-xyz`. If a file has no extension, its value is simply the binary. Files and folders whose names start with `.` are hidden from the Glas module system.
+To compute the value for a file `foo.ext`, the Glas system will compile the file binary using a program defined in module `language-ext`. To bootstrap, the [g0](GlasZero.md) language (a Forth variant) is predefined. File extensions compose. For example, to compute the value for `foo.xyz.json` we first compile using `language-json` then compile using `language-xyz`. If a file has no extension, its value is simply the binary. Files and folders whose names start with `.` are hidden from the Glas module system.
 
 To compute the value for a folder `foo/`, we use the value from its contained `public` file. Folders are implicit boundaries for dependencies: a file can only reference global modules or those within the same folder as itself. 
 
-Global modules are found using the GLAS_PATH environment variable, whose value should be a list of folders separated by semicolons. If there is no local module with a given name, we'll search for the first matching folder (not file) on GLAS_PATH. Later, we may extend module search to the network by some means, perhaps including a URL on GLAS_PATH.
+Global modules are currently found using the GLAS_PATH environment variable, whose value should be a list of folders separated by semicolons. If there is no local module with a given name, we'll search for the first matching module on GLAS_PATH. By convention, modules on GLAS_PATH should be folders. Later, we might extend module search to include network resources.
 
 *Note:* Glas does not specify a package manager. We can start with Nix or Guix, then later develop something more specialized. 
 
@@ -35,17 +35,18 @@ Glas uses lists to encode sequential structures. Logically, a list has type `typ
 
 To work with very large trees, Glas systems will offload subtrees into content-addressed storage. I call this pattern *stowage*. Of course, Glas applications may also use effects to interact with external storage. Stowage has a benefit of working nicely with pure computations, serves as a virtual memory and compression layer, and has several benefits for incremental computation and communication. Stowage is guided by program annotations.
 
-## Binary Extraction
+## Command Line
 
-Binary extraction replaces the conventional command-line compiler. 
+The Glas command line interface supports practical use of the Glas module system. The command line is extensible with user-defined verbs via naming modules with a `glas-cli-*` prefix. The following two commands are equivalent:
 
-In concrete terms, a command line for binary extraction might be `glas print Value -p Printer`, where Value and Printer are references into the module system such as `std.print`, and Printer must represent a Glas program that uses limited effects. The Printer receives the Value as an input then is evaluated to produce a binary stream on stdout. The caller can redirect output to a file.
+        glas foo Parameters 
+        glas --run glas-cli-foo.run Parameters
 
-The binary in question could represent a jpeg image, PDF document, zipfile, or executable. With suitable printers, it might also represent a summary such as program arity or type, though for these roles it might be nicer to develop a new command.
+The glas executable will bootstrap the g0 language and build all transitive dependencies to compile the glas-cli-foo module. A cache can help avoid unnecessary rework.
 
-In any case, the logic for producing a useful binary will be represented in the module system. The command-line tool may maintain a private cache for performance, but such byproducts should not be exposed to the client. Ideally, extracted binaries are deterministic based on module system state with no extraneous input from tooling or environment.
+The glas-cli-foo module should compute a record of form `(run:Program, ...)`. Aside from 'run', other fields in this record could provide help messages or support tab completion. When run, the program is interpreted or JIT-compiled with an effects handler provided by the glas executable. Any warnings or errors are logged to stderr.
 
-See also *Command Line* and *Data Printer* under *Application Models*.
+The effects handler provides access to filesystem and network. A useful subset of applications can be implemented directly, such as a web-based IDE or a package manager. However, Glas systems should also develop verbs that reproducibly extract data from the module system in a useful binary forms, including compilation of independent executables. The Glas system is bootstrapped when we can compile and extract a glas command line executable from the module system.
 
 ## Glas Programs
 
@@ -85,8 +86,9 @@ The stack in Glas is really an intermediate data plumbing model. User syntax cou
 ### Control Operators
 
 * **seq:\[List, Of, Operators\]** - sequential composition of operators. Empty sequence serves as nop.
-* **cond:(try:P, then:Q, else:R)** - run P; if P does not fail, run Q; if P fails, undo P then run R.
-* **loop:(while:P, do:Q)** - run P. If successful, run Q then repeat. Otherwise, terminate loop.
+* **cond:(try:P, then:Q, else:R)** - run P; if P does not fail, run Q; if P fails, undo P then run R. The 'then' and 'else' clauses are optional, if absent equivalent to nop.
+* **loop:(while:P, do:Q)** - run P. If successful, run Q then repeat. Otherwise, exit loop. The 'do' clause is optional, defaulting to nop.
+* **loop:(until:P, do:Q)** - run P. If that fails, run Q then repeat. Otherwise, exit loop. The 'do' clause is optional, defaulting to nop.
 * **eq** - Remove two items from data stack. If identical, continue, otherwise fail.
 * **fail** - always fail
 
@@ -102,11 +104,16 @@ The stack in Glas is really an intermediate data plumbing model. User syntax cou
             R ⊲ S → S''
             -------------------
             COND ⊲ S → S''
-        loop:(while:P, do:Q)    (as LOOP)
+        loop:(while:P, do:Q)    (as LOOP-WHILE)
             P ⊲ S → S' | FAIL
             Q ⊲ S' → S
             -------------------
-            LOOP ⊲ S → S
+            LOOP-WHILE ⊲ S → S
+        loop:(until:P, do:Q)    (as LOOP-UNTIL)
+            P ⊲ S → S' | FAIL
+            Q ⊲ S → S
+            ------------------
+            LOOP-UNTIL ⊲ S → S'
         eq : ∀S,A,B . ((S * A) * B) → S | FAIL
         fail : ∀S . S → FAIL
 
@@ -189,51 +196,31 @@ Load failures may occur due to missing modules, ambiguous files (e.g. if we have
 
 A language may expose these effects to the programmer in context of compile-time metaprogramming. For example, these effects are explicitly supported by language-g0 macro calls.
 
-### Command Line
-
-The Glas command line interface is oriented around a glas executable with user-defined verbs.
-
-        glas (verb) Parameters ...
-
-The glas command line interface is extensible by defining modules with name `glas-cli-(verb)`. This module shall compile to a record value of form `(run:Program, ...)`. Aside from 'run' this record may include properties to support help messages, tab completion, effects API version, etc..
-
-The glas executable must know enough to bootstrap the g0 language, compile language modules and dependencies, then eventually compile the verb. Logically, this process is performed every time the executable runs. However, for performance, the executable should privately cache computations to avoid unnecessary rework. The executable can provide fallback implementations for critical verbs such as 'help' and 'print'.
-
-Essentially, the glas executable provides a runtime environment for its verbs.
-
-The program should be arity 1--0, receiving Parameters as a list of strings on the data stack then mostly interacting with the world via the *Console Applications* effects API described in [Glas Apps](GlasApps.md), albeit extended with module loading to leverage the executable's bootstrap effort and private cache.
-
 ### Data Printer 
 
-Relating to *Binary Extraction*. Printers must have arity 1--0 and implement a function from a printed value to a written binary. The output is written as an stdout stream to simplify production of very large binaries. Log messages are a secondary output, useful for progress or debugging, and are normally written to stderr. Effects API:
+To support reproducible extraction of useful binaries from the module system, we might introduce a verb `glas print Value with Printer`, where Value and Printer are dotted path references into the module system. The printer should reference a program with arity 1--0 (receiving the value) and very limited access to effects. Effects API:
 
 * **write:Binary** - Write binary data (a list of bytes) to stdout. Response is unit. Fails if argument is not a binary.
-* **log:Message** - Arbitrary log message. Texts will usually be written to stderr. 
+* **log:Message** - Arbitrary log message for debugging or progress. Will be pretty-printed to stderr. 
 
-Writes at the top-level are immediate unless under a 'try' or 'while' clause. Thus, it is possible to produce several megabytes of data before failing, or to buffer everything and print at the end, depending on how the printer is defined.
-
-### Transaction Machines
-
-Transaction machines have many benefits as an application architecture. They are an excellent foundation for my visions of live coding reactive systems. I describe this concept further in the [Glas Apps](GlasApps.md) document. 
-
-Glas programs use backtracking conditionals: every 'try' or 'while' clause is a transaction. A long-running top-level 0--0 arity loop of form `loop:(while:A, do:cond:try:B)` can run as a transaction machine. Annotations can indicate which transaction machine optimizations are expected. It is feasible to extend to higher arity by compiling the data stack into a collection of fine-grained transaction variables.
-
-Conveniently, a distinct evaluation mode is not required. We only need support for optimizations and a suitable effects API. A Glas command line verb could support transaction machines with live coding by loading Glas modules within the loop and implicitly watching for changes to loaded modules.
+It is possible that a printer will fail partway through the job. In that case, we'll still print the stream to that point, then halt with a non-zero error code.
 
 ### Automated Testing
 
 Static assertions within modules are very useful for automated testing. However, build-time tests are deterministic and under pressure to resolve swiftly. There leaves open a niche for long-running or non-deterministic tests, such as fuzz-testing.
 
-To support this, we can express tests as arity 0--Any Glas programs with access to 'fork' effect for non-deterministic choice input. 
+To support this, we might express tests as arity 0--Any Glas programs with access to 'fork' effect for non-deterministic choice input. 
 
 * **fork** - Response is a non-deterministic boolean - i.e. a '0' or '1' single-edge bitstring.
 * **log:Message** - Response is unit. Write an arbitrary message to support debugging of tests.
 
-Non-deterministic choice doesn't mean random choice. A good test system should support incremental computing with backtracking on fork choices, and apply heuristics, memory, and program analysis to focus attention on forks that are more likely to discover a failed test.
+The primary output from a test is pass/fail of evaluation. Log messages are a secondary output for debugging. With forks, the non-deterministic choice isn't fair or random. A good test system will apply heuristics and program analysis to more effectively search for failed tests, and we can also use forks as checkpoints for backtracking and incremental computing.
 
-The primary output from a test is pass/fail of evaluation. Log messages are a secondary output mostly to support debugging of failed tests.
+A glas command line verb, `glas test ...`, could support automated testing based on this simplified effects API.
 
-A glas command line verb could support automated testing based on this simplified effects API to encourage simulation of effects and guarantee reproducibility of failures (assuming we record the fork path).
+### User Applications
+
+This is the subject of the [Glas Apps](GlasApps.md) document.
 
 ## Performance
 
@@ -326,3 +313,4 @@ A challenge will be achieving effective performance from search in context of de
 ### Provenance Tracking
 
 I'm very interested in automatic provenance tracking, i.e. such that we can robustly trace a value to its contributing sources. I still don't have a good idea about how to approach this without huge overheads.
+ 

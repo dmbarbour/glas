@@ -23,11 +23,13 @@ prog del ['del apply]
 
 prog p-dip [0 'dip put]
 prog p-while-do [0 'do put 'while put 0 'loop put]
+prog p-until-do [0 'do put 'until put 0 'loop put]
 prog p-try-then-else [0 'else put 'then put 'try put 0 'cond put]
 prog p-with-do [0 'do put 'with put 0 'env put]
 
 macro dip [p-dip]
 macro while-do [p-while-do]
+macro until-do [p-until-do]
 macro try-then-else [p-try-then-else]
 macro with-do [p-with-do]
 
@@ -103,27 +105,14 @@ prog p-loop [0 'while put 0 'loop put]
 macro loop [p-loop]
 
 # do-while      ([Body][Cond]do-while)
-#  run body before checking condition. Equivalent: 
+#  run Body before checking condition. Equivalent: 
 #    Body [Cond] [Body] while-do
 prog p-do-while [[copy] dip swap p-while-do p-seq]
 macro do-while [p-do-while]
 
-# until-do      ([Cond][Body]until-do)
-#
-#  loop until a condition evaluates successfully. Equivalent:
-#
-#    [[Cond] [fail] try-then] [Body] while-do Cond
-#
-#  Currently evaluates Cond twice upon final success. Not sure how to
-#  avoid this while preserving arity checks. Avoid use with expensive
-#  conditions until this can be optimized.
-#
-prog p-until-do [[copy [fail] p-try-then] dip p-while-do swap p-seq]
-macro until-do [p-until-do]
-
 # do-until      ([Body][Cond]do-until)
-#  run Body before checking condition. Loop halts when condition evaluates
-#  successfully. Inherits some issues from until-do.
+#  run Body before checking condition. Equivalent:
+#    Body [Cond] [Body] until-do
 prog p-do-until [[copy] dip swap p-until-do p-seq]
 macro do-until [p-do-until]
 
