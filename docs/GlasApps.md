@@ -1,26 +1,28 @@
 # Glas Applications
 
-The conventional application model is a procedural loop. An application initializes then enters a main loop. However, this is a poor fit for my visions of live coding and reactive systems. There is no mechanism to access state hidden within the loop during a software update, nor to robustly inform the application when its observations or assumptions have been invalidated. 
+Glas programs have algebraic effects, which greatly simplifies exploration of different application models. In conjunction with access to programs as values, it is feasible to implement robust adapters layers between models.
 
-An intriguing alternative is the *transaction machine* model of applications. Transaction machines have many nice properties for concurrency, process control, live coding, reactive behavior, and real-time systems. They are also a good fit for Glas programs, where the 'try' clauses are essentially hierarchical transactions.
+The most conventional application model is the procedural loop, i.e. the application code is some variation of `void main() { init; loop { do stuff }; cleanup }`. State and behavior are both private to the application loop, not accessible for extension or inspection. Concurrency is very awkward and error-prone in this model. The only *generic* operation on the running application is to kill it. Glas systems will use this conventional model for command line verbs (i.e. `glas-cli-verb.run` programs) because it's easy to implement due to conventions.
 
-The disadvantage of transaction machines is development overhead. Transactions do not support synchronous interaction, thus many APIs must be redesigned. This is a non-trivial effort. This document discusses transaction machines and suitable APIs to get started with this model.
+An intriguing alternative is the *transaction machine*, where an application is a dynamic set of transactions that run repeatedly. The loop is implicit, and state is maintained outside the loop, which significantly improves extensibility and enables orthogonal persistence. Concurrent coordination is very natural in this program model. It is feasible to update code atomically at runtime. Transaction machines are a good foundation for my visions of robust live coding as a basis for user-interfaces.
+
+This document explores my vision for the development of applications in Glas systems.
 
 ## Transaction Machines
 
-Transaction machines model software systems as a set of repeating transactions on a shared environment. Individual transactions are deterministic, while the set is scheduled fairly but non-deterministically. 
+Transaction machines model software systems as a dynamic set of repeating transactions on a shared environment. Individual transactions are deterministic, while the set is scheduled fairly but non-deterministically. 
 
 This model is conceptually simple, easy to implement naively, and has very many nice emergent properties that cover a wide variety of systems-level concerns. The cost is that a high-performance implementation is non-trivial, requiring optimizations from incremental computing, replication on fork, and cached routing.
 
 ### Process Control
 
-Deterministic, unproductive transactions will also be unproductive when repeated unless there is a relevant change in the environment. The system can optimize by waiting for relevant changes. 
+Deterministic, unproductive transactions will be unproductive when repeated unless there is a relevant change in the environment. Thus, the system can optimize a busy-wait loop by directly waiting for relevant changes. Aborted transactions are obviously unproductive. Thus, aborting a transaction serves as an implicit request to wait for changes. Explicit waits, such as waiting for an external input or on a clock, are also feasible. In context of transaction machines, explicit waits are implicitly be canceled and recomputed in case of concurrent changes to values read earlier within the same transaction. Thus, waits and interrupts are implicit and natural for transaction machines.
 
-Aborted transactions are obviously unproductive. Thus, aborting a transaction serves as an implicit request to wait for changes. For example, we could abort to wait for data on a channel, or abort to wait on time to reach a threshold condition. This supports process control.
+However, a consequence is that transactions should not 'sleep'. They can wait on a specific future timestamp, but reading the current time then waiting is a problem because the current time is continuously changing.
 
 ### Reactive Dataflow
 
-A successful transaction that reads and writes variables is unproductive if the written values are equal to the original content. If there is no cyclic data dependency, then repeating the transaction will always produce the same output. If there is a cyclic data dependency, it is possible to explicitly detect change to check for a stable fixpoint.
+A successful transaction that reads and writes variables (no external effects) is unproductive if the written values are equal to the original content. If there is no cyclic data dependency, then repeating the transaction will always produce the same output. If there is a cyclic data dependency, it is possible to explicitly detect change to check for a stable fixpoint.
 
 A system could augment reactive dataflow by scheduling transactions in a sequence based on the observed topological dependency graph. This would minimize 'glitches' where two variables are inconsistent due to the timing of an observation.
 
@@ -36,13 +38,11 @@ Stable prefix and attention from the programmer is adequate for transaction mach
 
 ### Task-Based Concurrency and Parallelism
 
-Task-based concurrency for transaction machines can be supported by a fair non-deterministic fork operation, combined with incremental computing and a replication optimization. 
+Relevant observations: A non-deterministic transactions is equivalent to choosing from a set of deterministic transactions, one per choice. For isolated transactions, repetition and replication are logically equivalent. When a non-deterministic choice is stable, replication reduces recomputation and latency. 
 
-Relevant observations: A non-deterministic transaction is equivalent to choosing from a set of deterministic transactions, one per choice. For isolated transactions, repetition and replication are logically equivalent. When the choice is stable, replication reduces recomputation and latency. 
+It is feasible for a transaction machine to start as a single transaction then introduce a non-deterministic 'fork' effect to represent the set of transactions. This has the advantage of making the set much more dynamic and reactive to observed needs and configurations.
 
-Stable forks enable a single transaction to model a concurrent transaction machine. Forks are dynamic and reactive. For example, if we fork based on configuration data, any change to the configuration will rollback the fork and rebuild a new set.
-
-Transactions evaluate in parallel only insofar as conflict is avoided. When conflict occurs between two transactions, one must be aborted by the scheduler. Progress is still guaranteed, and a scheduler can also guarantee fairness for transactions that respect a compute quota. A scheduler heuristically avoids conflict based on known conflict history. Programmers avoid conflict based on design patterns and fine-grained state manipulations.
+Transactions evaluate in parallel only insofar as conflict is avoided. When conflict occurs between two transactions, one must be aborted by the scheduler. Progress is still guaranteed, and a scheduler can also guarantee fairness for transactions that respect a compute quota. A scheduler can heuristically avoid most conflict based on tracking conflict history. Programmers can avoid conflict based on design patterns, e.g. using channels to separate tasks from high-contention state variables.
 
 ### Real-Time Systems 
 
@@ -62,59 +62,69 @@ Cached routing can partially be supported by dedicated copy/forward APIs, where 
 
 ### Live Program Update
 
-Transaction machines greatly simplify live coding or continuous deployment. There are several contributing features: 
+Transaction machines greatly simplify live coding or continuous deployment. There are several contributing factors: 
 
 * code can be updated atomically between transactions
-* application state is accessible for transition code
-* preview execution for a few cycles without commit
+* application state is accessible for transition
+* feasible to simulate several cycles without commit
 
 A complete solution for live coding requires additional support from the development environment. Transaction machines only lower a few barriers.
 
-## Glas Programs as Transaction Machines?
+## Embeddings
 
-Glas programs use backtracking conditionals: every 'try' or 'while' or 'until' clause is a transaction. A long-running loop of form `loop:(while:A, do:cond:try:B)` can feasibly be optimized and evaluated as a transaction machine. With fine-grained dependency analysis, the data stack can be compiled into a collection of transaction variables.
+### Procedural Embedding of Transaction Machines
 
-The main issue with this is that the effects API - especially handling of waits (for sleeps, read timeouts, etc.) - must be suitable for use both within the loop and outside of it. This is difficult to achieve. At least, I haven't figured it out yet.
+It is feasible to compile a transactional loop, such as a Glas program of form `loop:(until:Halt, do:cond:try:Step)`, to run as a transaction machine within a procedural context. The data stack can be compiled into a set of transaction variables. Static analysis and runtime instrumentation supporting fine-grained read-write conflict detection. A non-deterministic fork within Step would support task-based concurrency. 
 
-For now, it is easier to express declaratively that a Glas program should run as a repeating transaction.
+The embedding loses implicit live coding, but we still benefit from implicit process control, incremental computing, reactive dataflow, etc.. I intend to use this procedural embedding in context of [Glas command line interface](GlasCLI.md).
 
-## Abstract Design
+### Transaction Machine Embedding of Procedural
 
-### Application Objects
+A transaction machine cannot directly evaluate procedural code within a transaction. However, it is feasible to create a concurrent task that repeatedly evaluates the procedural code by a step then yields, saving the procedure's continuation for a future transaction. 
 
-A transaction machine can be usefully viewed as an object with private memory and transactional step method. The scheduler repeatedly calls 'step', resulting in the essential transaction machine behavior. However, additional methods might be called under suitable conditions to simplify extension of the application integration between the application and its host.
+This embedding is essentially the same as multi-threading. We could kill the procedural thread or spawn new ones. However, the transaction machine substrate does offer a few benefits: lightweight support for transactional memory, an implicit 'select' behavior via fork-read within a transaction, and a more robust foundation to integrate with other paradigms.
 
-For example, we can introduce an 'icon' method that computes a small PNG icon based on application state. This potentially indicates whether the application is busy or has pending notifications. The icon might be infrequently requested by the system, and forbid some effects such as await, fork, and write. We could similarly have a 'status' method that provides a lightweight summary of what the application is doing or whether it requires administrative attention.
-
-Applications that do not require passive background behavior could potentially define the 'step' method to fail, then rely on other methods to handle system requests or user interaction.
-
-I propose to model applications as Glas programs of type `Method -[Eff]- Result` - a single parameter representing the method, a single result for the method return value, and suitable effects. This is is a lightweight dependent type: effects and result types may depend on the method variant.
-
-*Aside:* Methods are unsuitable for remote procedure calls (RPC) because RPC will often require some asynchronous computation, such as RPC to other apps, to produce a result. RPC should instead be supported explicitly via channels or network connections.
+## Abstract Design Thoughts
 
 ### Robust References
 
-There are a lot of benefits to having applications allocate their own references. For example, instead of `open file` returning a system-allocated reference, we express `open file as foo` to specify that symbol 'foo' will be our reference to the new file. 
+References are essentially required for concurrent interaction. For example, an app will interact with *more than one* file or tcp connection at a time.
 
-This supports static allocation of references. The references can be descriptive and meaningful for debugging, reflection, and extension. Dynamic allocation of references is easily partitioned, reducing contention on a central allocator. There are no security risks related to potential forgery of system references.
+Applications should allocate their own references. For example, instead of `open file` returning a system-allocated handle, effect APIs should favor the format `open file as foo` where `foo` is an arbitrary value allocated by the application as a handle for future interactions with the file.
 
-### State
+This design has a lot of benefits: References can be descriptive and locally meaningful for debugging. Static allocation of references is easily supported. Dynamic allocation can be partitioned and decentralized, reducing contention. We avoid an implicit source of observable non-determinism. There is no security risk related to leaky abstraction or forgery of references.
 
-Most applications require state. In context of transaction machines, it's preferable that state manipulation is fine-grained in an easily recognized way, such that concurrent transactions on different parts of state can avoid read-write conflicts.
+The application host will generally maintain a lookup table to associate references with external resources. Garbage collection is feasible if the application can fetch lists of live references.
 
-Additionally, state is external to the transaction, like a database. In context of live coding, a transaction machine's program may be updated at runtime, and we'll often need to update state for the new program. This may benefit from special attention to versioning and conversion of state resources.
+### Procedural APIs
 
-### Specialized APIs
+I do not recommend an object-oriented API, i.e. where file streams and TCP streams share an interface. The main reason for this is that it becomes difficult to track which values represent references. Additionally, it is inconvenient to ensure consistency between interfaces. An application should implement its own resource abstraction layers as needed, no need to handle this at the host-app boundary.
 
-An application primarily interacts with its host via algebraic effects. The application can indirectly interact with other applications via host-provided communications APIs. Communications could be based on channels, publish-subscribe, databuses, databases, tuple spaces, etc.. Transaction machines restrict synchronous communications but there are many workarounds.
+### Regarding Timeouts
 
-However, a general API for communications is too difficult to integrate with existing systems and applications. It's much easier to integrate a specialized API that aligns tightly with the limitations of the target host. For example, an API based on XMLHttpRequest and DOM for a web app, or based on TCP connections and file streams for a console app.
+It is logically inconsistent to have explicit timeouts for individual effects within a transaction. Instead, timeouts are expressed by racing concurrent transactions, e.g. where one fork waits on data and another waits on the clock before we have committed to either fork. Alternatively, a repeating transaction that queries whether data is available then later fails would implicitly wait for change in availability of data.
 
-Given a specialized API, we can still develop an adapter framework exposing a more general API, e.g. a framework for a webserver might support generalized applets that don't directly interact with TCP.
+However, implicit waits require some advanced optimizers to implement, and may be unavailable in some contexts. At least for early implementations, to resist busy-wait loops, we might implicily introduce a timeout when, for example, a TCP socket has been queried twice in a short time-frame by failed transactions. This timeout might be applied to the next transaction failure instead of directly to the effect.
+
+### Hierarchical Composition and State
+
+An application should be composable as a subprogram of a larger application. Effects handlers already support hierarchical composition of effects. However, the state of a subprogram should also be accessible to its parent program to support debugging, invariants, extensions, checkpoints, and other generic host features. 
+
+My preferred choice is to represent input and output on the data stack. This is consistent with procedural embedding of transaction machines, and benefits from abstract interpretation and other static analysis of dataflow to compile a record into many fine-grained transaction variables. The consequence is that state composes in several ways, e.g. we can easily model partial sharing of state, wrappers, sequential composition.
+
+### Extensible Interfaces
+
+Applications should be extensible with new interfaces. For example, we might extend an application with intefaces to obtain an icon or present an administrative GUI.
+
+In context of Glas programs, we might represent method selectors as part of program input on the data stack, e.g. `method:Args`. Result type and available effects may depend on the selected method. This technique has the advantage of being cheap, with negligible overhead if unused.
+
+### Specialized Host APIs
+
+An application directly interacts with its host via effects, and indirectly with other applications. It is feasible to develop an API for communications based on channels, publish-subscribe, etc.. However, a general API for communications is often difficult to integrate with existing systems and applications. It is wiser to focus on an effects model that is specialized to its host, easily implemented, then build effects adapters within the Glas program layer.
 
 ## Common Effects
 
-Most effects are performed indirectly via channels. But we still need an env/eff API layer to manage these communications.
+Effects should be designed for transaction machines yet suitable for procedural code to simplify embeddings.
 
 ### Concurrency
 
@@ -122,42 +132,7 @@ For isolated transactions, a non-deterministic choice is equivalent to taking bo
 
 * **fork** - response is a non-deterministic boolean (bitstring '0' or '1'). 
 
-Fork effects are subject to backtracking, i.e. if a 'try' clause forks then fails, a subsequent fork will read the same response. Ideally, fork is implemented by replication. However, if the fork is unstable or if replication is unavailable for other reasons, we can implement fork by fair random choice.
-
-### Timing
-
-Transactions are logically instantaneous. The relevant time of a transaction is when it commits. It is troublesome to observe commit time directly, but we can constrain commit time to control scheduling. Effects API:
-
-* **await:TimeStamp** - Response is unit if time-of-commit will be equal or greater than TimeStamp, otherwise fails.
-
-The system does not know exact time-of-commit before committing. At best, it can make a heuristic estimate. It's preferable to estimate a just little high: the system can easily delay commit by a few milliseconds to make an 'await' valid. 
-
-When await fails and the transaction aborts, the timestamp serves as a hint for when the transaction should be recomputed. It is feasible to precompute the future transaction and have them prepared to commit almost exactly on time. This can support real-time systems programming.
-
-Timestamps will initially support `nt:Number` referring to Windows NT time - a number of 0.1 microsecond intervals since midnight Jan 1, 1601 UT. This could be extended with other variants.
-
-### Memory
-
-Applications need private memory to carry information across transactions. For convenience and simplicity, memory is modeled as a set of key-value pairs, where a MemRef is a key value. Keys and values are arbitrary Glas data, but keys should be 'small' values to support efficient lookup.
-
-* **mem:(on:MemRef, op:MemOp)** - MemRef is an arbitrary value. The MemOp represents an operation to observe or modify the associated value.
- * **get** - Response is value currently associated with MemRef.
- * **put:Value** - Modify memory so Value is subsequently associated with MemRef.
- * **swap:Value** - Combines get and put. 
- * **read:(count:N, exact?, tail?, peek?)** - take 1 to N elements from head of list, or fail if value in memory is not a list with at least one element. Elements read are removed from the list. Returns list of elements read. Options:
-  * *exact* - flag. if set, fail if would return fewer than N elements. Does nothing if count is 1.
-  * *tail* - flag. if set, read from tail of list instead of head.
-  * *peek* - flag. if set, do not remove elements read from list.
- * **write:(data:\[List, Of, Values\], head?)** - addend data to tail of list in memory. Fails if element is not a valid list. Options:
-  * *head* - flag. if set, addend to head of list instead of tail.
- * **path:(on:Path, op:(del|MemOp))** - manipulate a record field or volume reached by following Path. The operator 'del' can erase the path from a record.
- * **elem:(at:Index, op:MemOp)** - manipulate a list element in-place at a zero-based index (range `[0,N)`). Fails if index is out of range.
-
-Get and put are a sufficient pair of operators. Other operators are opportunities for optimization such as fine-grained conflict analysis to improve concurrency.
-
-Memory will be managed manually. Assigning unit to a MemRef can release memory resources. To recover storage resources, an application should explicitly delete associations that it no longer requires. Garbage collection is feasible with application methods to report roots and trace or dispose of data, but won't be fully automated unless we have a program model that can implicitly construct these methods.
-
-*Aside:* Iteration and browsing of memory deserves some future attention. A suitable API for this might be closer to an event stream 'watching' for certain memory events, with options to report a compatible history.
+Fork effects are subject to backtracking in cases where this is visible, i.e. if a 'try' clause forks then fails, a subsequent fork will read the same response. Ideally, fork is implemented by replication. However, if the fork is unstable or if replication is unavailable for other reasons, we can implement fork by fair random choice.
 
 ### Logging
 
@@ -165,167 +140,36 @@ Almost any application model will benefit from a simple logging mechanism to sup
 
 * **log:Message** - Response is unit. Arbitrary output message, useful for progress reports or debugging.
 
-In context of transaction machines, each valid transaction's log messages are logically independent and terminating. With incremental computing we'll often have a stable prefix of log messages, and an unstable suffix. This suggests log messages shouldn't be presented as a stream, but rather a window allows scrubbing the log over time. 
+By convention, a log message should be a record of ad-hoc values, such as `(lv:warn, text:"I'm sorry, Dave. I'm afraid I can't do that.", from:"HAL")`. This enables the record to be extended with metadata or new features.
 
-Even if a transaction or subprogram is aborted, it can be useful to observe log messages printed before abort. The environment might indicate these using a distinct color or wrapper.
+In context of transaction machines, a forking set of transactions would essentially maintain a forking tree of log messages, the prefix of which might be stable. There is a lot of flexibility regarding how this might be rendered to the user.
 
-## Console Applications
+### Time
 
-Console applications minimally require access to:
+Transactions are logically instantaneous, but it is not a problem to delay a transaction to commit later. Effects API:
 
-* environment variables and command line arguments
-* standard input and output
-* filesystem
-* network - UDP and TCP
+* **time:now** - Response is the estimated time of commit, as a TimeStamp. 
+* **time:await:TimeStamp** - Wait until the specified time or later, then continue. Response is unit.
 
-Log output may bind stderr by default.
+Reading time will destabilize the transaction. This isn't a significant problem if time is read after the transaction would be destabilized anyways, e.g. after reading from an input channel. Estimated times might be a little high or low within heuristic tolerances, but there is increased risk of read-write conflicts when several transactions are reading the unstable time variable.
+
+Await does not observe time. It is important to note that observing time T then awaiting time T+1 within a single transaction is inconsistent and results in a transaction that deadlocks, similar to attempting synchronous request-response. This should be avoided statically, or reported as a programmer error if it appears. It is feasible to precompute a transaction after await so it is ready-to-commit almost exactly on time; this might simplify real-time programming.
+
+The proposed default TimeStamp type is Windows NT time - a natural number of 100ns intervals since midnight Jan 1, 1601 UT. If an alternative is used, just document it clearly.
 
 ### Environment Variables
 
-Environment variables can provide a flexible shared-memory interface between an application and its host. In some cases, the host might compute requested fields on demand, or process updates immediately. Some variables may be read-only, or restrict which sorts of reads or writes or data types are permitted.
+The initial use-case for environment variables is to provide access to OS-provided environment variables, such as GLAS_PATH. This can be expressed as `env:get:"GLAS_PATH"`, or `env:get:list` to obtain a list of defined variable names. However, this API is easy to generalize. An environment can provide access to arbitrary variables. It is possible for variables to be computed upon get, or validated upon set (i.e. runtime type checks). Some may be read-only, others write-only. 
 
-* **env:(on:EnvVar, op:MemOp)** - response depends on the target and operation. May fail. Possible EnvVars:
- * *var:String* - an environment variable with a string name and value
- * *vars* - read-only list of defined 'var' names
- * *cmd* - request command-line as a list of strings.
- * *exit* - put-only; application halts after setting exit code and committing.
- * *strace* - get the current stack trace, suitable for debugging
- * *tty* - get succeeds for interactive console apps (via stdin/stdout). Value may describe console height and width.
- * *signal* - read head (or write tail) for OS signals to this process.
- * *user* - username for the current user
- * *cwd* - working directory for relative filesystem paths
+* **env:get:Variable** - response is a value for the variable, or failure if the variable is unrecognized or undefined. 
+* **env:set:(var:Variable, val?Value)** - update a variable. The value field may be excluded to represent an undefined or default state. This operation may fail, e.g. if environment doesn't recognize variable or fails to validate a value. 
 
-Environment variables are not suitable for all interactions, but are convenient where they work.
+The environment controls environment variables, thier types, and opportunity for extension. Programs should not rely on environment variables for private state; use a structure managed on the data stack for this role.
 
-### Standard IO
+## Console Applications
 
-Standard input and output can be modeled as initially open file references, following convention. However, instead of integers, I propose to reserve `std:in` and `std:out` as file references, and to reserve the `std:` reference prefix for the system in general. Access to `std:err` reference may be unavailable, implicitly used for log output. 
-
-### Filesystem
-
-Glas applications support a relatively direct translation of the conventional filesystem API. The main differences are that reads cannot directly wait for data, and the application must allocate file references.
-
-* **file:FileOp** - namespace for file operations. An open file is essentially a cursor into a file resource, with access to buffered data. 
- * **open:(name:FileName, as:FileRef, for:(read | write | append | create | delete))** - Create a new system object to interact with the specified file resource. Fails if FileRef is already in use, otherwise returns unit. Whether the file is successfully opened is observable via 'state' a short while after request is committed. The intended interaction must be specified:
-  * *read* - read file as stream.
-  * *write* - erase current content of file or start a new file.
-  * *append* - extend current content of file.
-  * *create* - same as write, except fails if the file already exists.
-  * *delete* - removes a file. Use 'state' to observe progress and potential error.
- * **close:FileRef** - Delete the system object associated with this reference. FileRef is no longer in-use, and operations (except open) will fail.
- * **read:(from:FileRef, count:N, exact?)** - read 1 to N bytes, limited by available data, returned as a list. Fails if no bytes are available - see 'state' to diagnose. Option:
-  * *exact* - flag. If set, fail if fewer than N bytes are available.
- * **write:(to:FileRef, data:Binary)** - write a list of bytes to file. This fails if the file is read-only or is in an error state, otherwise returns unit. It is permitted to write while in a 'wait' state.
- * **move:(from:FileRef, to:FileRef)** - rename a reference. Fails if 'to' ref already in use, or 'from' ref is unused. Returns unit. After move, the roles of these references is reversed.
- * **state:FileRef** - Return a representation of the state of the system object. 
-  * *init* - state immediately after 'open' until request is committed and processed.
-  * *ok* - seems to be in a good state. 
-  * *done* - requested interaction is complete. This currently applies to read or delete modes. 
-  * *error:Value* - any error state, with ad-hoc details. 
-
-* **dir:DirOp** - filesystem directory (aka folder) operations.
- * **open:(name:DirName, as:DirRef, for:(read | create | delete))** - Create a new system object to interact with a directory resource. Fails if DirRef is already in use, otherwise returns unit. Whether the directory is successfully opened is observable via 'state' a short while after the request is committed. Intended interactions must be specified:
-  * *read* - supports iteration through elements in the directory.
-  * *create* - creates a new directory. Use 'state' to observe progress.
-  * *delete* - remove an empty directory. Use 'state' to observe progress.
- * **close:DirRef** - Delete the associated system object. DirRef is no longer in-use, and operations (except open) will fail. 
- * **read:DirRef** - Read an entry from the directory table. An entry is a record of form `(name:String, type:(dir | file | ...), ...)` allowing ad-hoc extension with attributes or new types. The "." and ".." entries will be hidden from this read operation. Fails if no entry can be read, see 'state' for reason. 
- * **move:(from:DirRef, to:DirRef)** - rename a reference. Fails if 'to' ref already in use, or 'from' ref is unused. Returns unit. After move, the roles of these references is reversed.
- * **state:DirRef** - Return a representation of the state of the associated system object. 
-  * *init* - state immediately after 'open' until processed.
-  * *ok* - seems to be in a good state
-  * *done* - requested interaction is complete. This applies to 'read' after reading the final entry, or after a successful create or delete.
-  * *error:Value* - any error state, with ad-hoc details.
-
-File and directory APIs could feasibly be extended with additional modes. However, the API as described is sufficient for developing many useful Glas applications.
-
-### Network
-
-We can cover the needs of most applications with support for TCP and UDP protocol layers. Instead of touching the mess that is sockets, I propose to specialize the API for each protocol required. Later, we might add raw IP sockets support. 
-
-* **tcp:TcpOp** - namespace for TCP operations
- * **listener:ListenerOp** - namespace for TCP listener operations.
-  * **create:(port?Port, addrs?[List, Of, Addr], as:ListenerRef)** - Create a new ListenerRef. Return unit. Whether listener is successfully created is observable via 'state' a short while after the request is committed.
-   * *port* - indicates which local TCP port to bind; if excluded, leaves dynamic allocation to OS. 
-   * *addrs* - indicates which local network cards or ethernet interfaces to bind; if excluded, attempts to bind all of them.
-  * **accept:(from:ListenerRef, as:TcpRef)** - Receive an incoming connection, and bind the new connection to the specified TcpRef. This operation will fail if there is no pending connection. 
-  * **move:(from:ListenerRef, to:ListenerRef)** - rename a reference. Fails if 'to' ref already in use, or 'from' ref is unused. Returns unit. After move, the roles of these references is reversed.
-  * **state:ListenerRef**
-   * *init* - create request hasn't been fully processed yet.
-   * *ok* - normal state
-   * *error:Value* - failed to create or detached, with details. 
-  * **info:ListenerRef** - After successful creation of listener, returns `(port:Port, addrs:[List , Of, Addr])`. Fails if listener is not successfully created.
-  * **close:ListenerRef** - Release listener reference and associated resources.
- * **connect:(dst:(port:Port, addr:Addr), src?(port?Port, addr?Addr), as:TcpRef)** - Create a new connection to a remote TCP port. Fails if TcpRef is already in use, otherwise returns unit. Whether the connection is successful is observable via 'state' a short while after the request is committed. Destination port and address must be specified, but source port and address are usually unspecified and determined dynamically by the OS.
- * **read:(from:TcpRef, count:N, exact?)** - read 1 to N bytes, limited by available data, returned as a list. Fails if no bytes are available - see 'state' to diagnose. Option:
-  * *exact* - flag. If set, fail if fewer than N bytes are available.
- * **write:(to:TcpRef, data:Binary)** - write binary data to the TCP connection. The binary is represented by a list of bytes.
- * **move:(from:TcpRef, to:TcpRef)** - rename a reference. Fails if 'to' ref already in use, or 'from' ref is unused. Returns unit. After move, the roles of these references is reversed.
- * **state:TcpRef**
-  * *init* 
-  * *ok*
-  * *error:Value*
- * **info:TcpRef** - For a successful TCP connection (whether via 'tcp:connect' or 'tcp:listener:accept'), returns `(dst:(port:Port, addr:Addr), src:(port:Port, addr:Addr))`. Fails if TCP connection is not successful.
- * **close:TcpRef**
-
-* **udp:UdpOp** - namespace for UDP operations.
- * **connect:(port?Port, addrs?[List, Of, Addr], as:UdpRef)** - Bind a local UDP port, potentially across multiple ethernet interfaces. Fails if UdpRef is already in use, otherwise returns unit. Whether binding is successful is observable via 'state' after the request is committed. Options:
-  * *port* - normally included to determine which port to bind, but may be left to dynamic allocation. 
-  * *addr* - indicates which local ethernet interfaces to bind; if unspecified, binds all of them.
- * **read:(from:UdpRef)** - returns the next available Message value, consisting of `(port:Port, addr:Addr, data:Binary)`. This refers to the remote UDP port and address, and the binary data payload. Fails if there is no available message.
- * **write(to:UdpRef, data:Message)** - output a message using same `(port, addr, data)` record as messages read. Returns unit. Write may fail if the connection is in an error state, and attempting to write to an invalid port or address or oversized packets may result in an error state.
- * **move:(from:UdpRef, to:UdpRef)** - rename a reference. Fails if 'to' ref already in use, or 'from' ref is unused. Returns unit. After move, the roles of these references is reversed.
- * **state:UdpRef**
-  * *init*
-  * *ok*
-  * *error:Value*
- * **info:UdpRef** - For a successfully connected UDP connection, returns a `(port:Port, addrs:[List, Of, Addr])` pair. Fails if still initializing, or if there was an error during initialization.
- * **close:UdpRef** - Return reference to unused state, releasing system resources.
-
-An Addr could be a 32-bit number (IPv4), a 128-bit number (IPv6), or a string such as "www.google.com" or "192.168.1.42". Similarly, a Port can be a 16-bit number or a string such as "ftp" that is externally associated with a port (cf. `/etc/services` in Linux). 
-
-An API for DNS access would also be convenient, but its implementation isn't critical at this time. In theory, we could implement this using network access to DNS servers (potentially including a localhost DNS) and file access to DNS configurations (e.g. `/etc/resolv.conf`). But most apps won't need direct use of lookup services if we integrate it implicitly into the addressing.
-
-I've excluded the half-close TCP feature because too many routers disable this feature by applying a short timeout after half-close. A TCP connection should be closed when the full TCP interaction is complete.
-
-I'm very interested the raw network socket API, but I've decided to elide this for now.
+See [Glas command line interface](GlasCLI.md).
 
 ## Web Applications
 
-Another promising target for Glas is web applications, compiling apps to JavaScript and using effects based on Document Object Model, XMLHttpRequest, WebSockets, and Local Storage. Compilation to JavaScript should be written as a function within Glas.
-
-### Document Object Model
-
-We can almost directly model the DOM for browsers with all the normal methods. The main difference is that we'll want to adjust the API for robust references, i.e. such that references are provided to the DOM, never returned from the DOM.
-
-### Local Storage
-
-Local storage could easily be modeled as a specialized memory or integrated with DOM.
-
-### HTTP Requests
-
-HTTP requests must be modeled as asynchronous, but they're a lot simpler than web sockets. We only need a reference for the new request.
-
-### Web Sockets
-
-
-## Miscellaneous
-
-### Procedural Programming
-
-Request-response interactions with external services must be split across two transactions, such that the request is committed before we wait on the response. It is convenient to express this behavior procedurally, then implicitly interpret the procedure across multiple transactions.
-
-Fortunately, it is not difficult for transaction machines to evaluate procedural programs. They simply need to commit after each atomic step, storing the continuation for the next steps in addition to any results. If the step would fail due to external conditions (e.g. reading an empty channel) then the transaction machine may implicitly wait for those conditions to change. 
-
-Conveniently, we could extend our procedural program with transactional steps to provide a simple basis for concurrency and process control - mutexes, timeouts, semaphores, etc. can be composed and handled by small transactions.
-
-The main cost for procedural programming is that it hinders live coding and reactive systems. The program's continuation state captures a lot of historical information that becomes outdated. Of course, there are still conventional solutions for this such as kill and restart.
-
-In any case, I'd prefer to build procedural programming above transactions. It's much nicer there.
-
-### GUI
-
-Transaction machines are neutral towards retained vs. immediate mode graphical user interface APIs. Retained mode is more prevalent today, but immediate mode seems a better fit for my vision of live coding and reactive systems.
-
-Most hosts are more likely to provide a retained-mode API. The motive is that retained-mode requires less communication when things are mostly standing still. But we could provide a retained-mode API as an abstraction layer above many retained-mode APIs. 
-
+Another promising near-term target for Glas is web applications, compiling apps to JavaScript and using effects oriented around on Document Object Model, XMLHttpRequest, WebSockets, and Local Storage. 

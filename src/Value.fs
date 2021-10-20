@@ -212,18 +212,24 @@ module Value =
     let inline u8 (n : uint8) : Value = 
         Bits.ofByte n |> ofBits
     
-    let inline (|U8|_|) v =
+    let (|U8|_|) v =
         if isBits v then Bits.(|Byte|_|) v.Stem else None
 
     let inline nat n =
         Bits.ofNat64 n |> ofBits
     
-    let inline (|Nat|_|) v =
-        if isBits v then Bits.(|Nat64|_|) v.Stem else None
+    let (|Nat|_|) v =
+        match v with
+        | Bits b when (Bits.isEmpty b) || (Bits.head b) ->
+            Bits.(|Nat64|_|) b
+        | _ -> None
 
     let ofI = Bits.ofI >> ofBits
-    let inline (|I|_|) v =
-        if isBits v then Some (Bits.toI v.Stem) else None
+    let (|I|_|) v =
+        match v with
+        | Bits b when (Bits.isEmpty b) || (Bits.head b) ->
+            Some (Bits.toI b)
+        | _ -> None
 
     // factored from 'label' and 'variant'
     let private consLabel (s : string) (b : Bits) : Bits =

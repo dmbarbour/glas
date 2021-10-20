@@ -2,18 +2,11 @@
 // The Glas command line utility finally has a proper design.
 //
 //   glas verb parameters
+//      rewrites to
+//   glas --run glas-cli-verb.run -- parameters
 //
-// This operation will attempt to compile module `glas-cli-verb`,
-// extract the 'run' program, then evaluate it with parameters on
-// the data stack.
-//
-// For a few special cases, we'll provide default implementations
-// of the verb. These cases include 'print' and 'help' and perhaps
-// a 'run' verb that runs a referenced program as an application. 
-//
-//   glas print [-p Printer] Value 
-//
-// If printer is unspecified, we'll use a pretty-print by default.
+// This supports user-defined verbs as the default mode of interaction.
+// Meanwhile, we can introduce new built-in operations starting with '-'.
 //
 
 open Glas
@@ -29,8 +22,9 @@ let helpMsg = String.concat "\n" [
     ""
     "Available Operations:"
     ""
-    "    --run Program Parameters"
+    "    --run Program -- Parameters"
     "        run a Glas program from the module system"
+    "        parameters after '--' are passed to Program"
     "    --arity Program"
     "        print arity for a referenced program"
     "    --print Value"
@@ -44,7 +38,7 @@ let helpMsg = String.concat "\n" [
     ""
     "    glas foo Parameters "
     "        (is equivalent to) "
-    "    glas --run glas-cli-foo.run Parameters "
+    "    glas --run glas-cli-foo.run -- Parameters "
     ""
     "The expectation is that user-defined verbs should be the"
     "normal mode of use."
@@ -100,7 +94,7 @@ let getProgram (ll : Loader) (ai,ao) (vstr : string) : Program option =
             logError ll (sprintf "program %s does not have static arity" vstr)
             None
         | None ->
-            logError ll (sprintf "value %s does not have AST of a Glas program" vstr)
+            logError ll (sprintf "value %s does not represent a Glas program" vstr)
             None
     | None ->
         // reason for failure is already logged. 
@@ -128,18 +122,19 @@ let print (vstr:string) : int =
 
 let arity (pstr:string) : int =
     let logger = consoleErrLogger ()
+    // logInfo logger (sprintf "--arity %s" pstr)
     let loader = getLoader logger
     match getValue loader pstr with
     | Some p when isValidProgramAST p -> 
-        match stackArity (Arity(1,1)) p with
+        match stackArity p with
         | Arity(a,b) ->
             printfn "%d--%d" a b
             EXIT_OK
-        | ArityDyn ->
-            printfn "dynamic"
-            EXIT_FAIL
         | ArityFail i ->
             printfn "%d--FAIL" i
+            EXIT_FAIL
+        | ArityDyn ->
+            printfn "dynamic"
             EXIT_FAIL
     | Some _ -> 
         printfn "not a program"
@@ -148,25 +143,47 @@ let arity (pstr:string) : int =
         // reason for failure is already logged. 
         EXIT_FAIL
 
-let run (p:string) (args:string list): int =
+let mkFullEff (ll:Loader) = 
+    (ll :> IEffHandler)
+
+let run (pstr:string) (args:string list): int =
     let logger = consoleErrLogger ()
-    logInfo logger (sprintf "run %s" p)
-    logError logger "run not yet implemented"
-    //let loader = getLoader logger
-    EXIT_FAIL
+    // logInfo logger (sprintf "--run %s -- %s" pstr (String.concat " " args))
+    let loader = getLoader logger
+    match getProgram loader (1,1) pstr with
+    | Some p ->
+        let argVals =
+            args |> List.map (Value.ofString) 
+                 |> FTList.ofList |> Value.ofFTList 
+                 |> Value.variant "cmd"
+        let io = mkFullEff loader 
+        match eval p io [argVals] with
+        | Some [Value.Nat n] when ((uint64 System.Int32.MaxValue) >= n) ->
+            (int n) // exit code.
+        | Some vs ->
+            let vsStr = vs |> List.map (Value.prettyPrint) |> String.concat ";;;" // should be singleton
+            logError logger (sprintf "evaluation of %s exited with unrecognized value %s" pstr vsStr)
+            EXIT_FAIL
+        | None ->
+            logError logger (sprintf "evaluation of %s halted in failure" pstr) 
+            EXIT_FAIL
+    | None -> 
+        // error message already logged
+        EXIT_FAIL
+        
 
-[<EntryPoint>]
-let rec main argv =
-    //use stdin = System.Console.OpenStandardInput()
-    //stdin.ReadTimeout <- 1000
-    //printfn "Console Timeouts: %A" (System.Console.OpenStandardInput().CanTimeout)
 
-    match Array.toList argv with
+let rec main' (args : string list) : int =
+    match args with
     | (verb::args) when not (verb.StartsWith("-")) ->
-        main (Array.ofList ("--run" :: ("glas-cli-" + verb + ".run") :: args))
-    | [ "--print"; v ] -> print v 
-    | [ "--arity"; p ] -> arity p
-    | ( "--run" :: p :: args) -> run p args
+        main' ("--run" :: ("glas-cli-" + verb + ".run") :: "--" :: args)
+    | ( "--run" :: p :: "--" :: args) ->
+        // todo: process extra run options, if we add them. 
+        run p args
+    | [ "--print"; v ] -> 
+        print v
+    | [ "--arity"; p ] -> 
+        arity p
     | ( "--version" :: _) -> 
         System.Console.WriteLine(ver)
         EXIT_OK
@@ -176,4 +193,8 @@ let rec main argv =
     | args -> 
         eprintfn "unrecognized command: %A; try '--help'" args
         EXIT_FAIL
+
+[<EntryPoint>]
+let main args = 
+    main' (Array.toList args)
 

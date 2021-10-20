@@ -116,6 +116,12 @@ macro do-while [p-do-while]
 prog p-do-until [[copy] dip swap p-until-do p-seq]
 macro do-until [p-do-until]
 
+# await         ([Op] await)
+#  run subprogram repeatedly until it succeeds.
+#  Only useful in contexts with non-deterministic concurrency.
+prog p-await [0 'until put 0 'loop put]
+macro await [p-await]
+
 # DATA PLUMBING SUPPORT
 # 
 # rot3      (X Y Z -- Y Z X)        rotate 3rd item to top

@@ -263,7 +263,7 @@ module ProgVal =
 
     /// Computes arity of program. If there are 'arity:(i:Nat, o:Nat)' annotations
     /// under 'prog' operations, requires that annotations are consistent.
-    let rec stackArity (ef0:StackArity) (p0:Value) : StackArity =
+    let rec stackArity (p0:Value) : StackArity =
         match p0 with 
         | Stem lCopy U -> Arity (1,2)
         | Stem lSwap U -> Arity (2,2)
@@ -272,36 +272,31 @@ module ProgVal =
         | Stem lGet U -> Arity (2,1)
         | Stem lPut U -> Arity (3,1)
         | Stem lDel U -> Arity (2,1)
-        | Stem lEff U -> ef0
+        | Stem lEff U -> Arity (1,1)
         | Stem lFail U -> ArityFail 0
         | Dip p ->
-            match stackArity ef0 p with
+            match stackArity p with
             | Arity (a,b) -> Arity (a+1, b+1)
             | ar -> ar
         | Data _ -> Arity(0,1)
         | PSeq lP  -> 
-            let fn ar op = compSeqArity ar (stackArity ef0 op)
+            let fn ar op = compSeqArity ar (stackArity op)
             FTList.fold fn (Arity (0,0)) lP
         | Cond (c, a, b) -> 
-            compCondArity (stackArity ef0 c) (stackArity ef0 a) (stackArity ef0 b)
+            compCondArity (stackArity c) (stackArity a) (stackArity b)
         | While (c, a) -> 
-            compWhileLoopArity (stackArity ef0 c) (stackArity ef0 a)
+            compWhileLoopArity (stackArity c) (stackArity a)
         | Until (c, a) ->
-            compUntilLoopArity (stackArity ef0 c) (stackArity ef0 a)
-        | Env (e, p) -> 
-            // we can allow imbalanced effects, but e must have one output 
-            // for handler state.
-            let efArity = compSeqArity (Arity(1,1)) (stackArity ef0 e)
-            let p' = Dip p
-            match efArity with
-            | Arity(i,o) when ((i > 0) && (o > 0)) -> 
-                stackArity (Arity(i-1,o-1)) p'
-            | ArityFail i -> 
-                stackArity (ArityFail i) p'
-            | _ ->
-                stackArity ArityDyn p'
+            compUntilLoopArity (stackArity c) (stackArity a)
+        | Env (w, p) -> 
+            let okHandlerArity =
+                match stackArity w with
+                | ArityFail i -> (i <= 2)
+                | Arity (i,o) -> (i = o) && (i <= 2)
+                | ArityDyn -> false
+            if okHandlerArity then stackArity p else ArityDyn
         | Prog (anno, p) ->
-            let arInfer = stackArity ef0 p
+            let arInfer = stackArity p
             let arAnno = 
                 match anno with
                 | FullRec ["arity"] ([FullRec ["i";"o"] ([Nat i; Nat o], _)], _) ->
@@ -317,7 +312,7 @@ module ProgVal =
             failwithf "not a valid program %s" (prettyPrint p0)
 
     let static_arity p =
-        match stackArity (Arity (1,1)) p with
+        match stackArity p with
         | Arity (a,b) -> Some struct(a,b) 
         | _ -> None
 

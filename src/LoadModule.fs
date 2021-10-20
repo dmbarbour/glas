@@ -22,23 +22,26 @@ module LoadModule =
     let private matchModuleName (m:ModuleName) (fullPath:FilePath) : bool =
         Path.GetFileName(fullPath).Split('.').[0] = m
 
-    let private findModuleFile (m:ModuleName) (dir:FolderPath) : FilePath list =
+    let private findModuleAsFile (m:ModuleName) (dir:FolderPath) : FilePath list =
         Directory.EnumerateFiles(dir) |> Seq.filter (matchModuleName m) |> List.ofSeq
 
-    let private findModuleFolder (m:ModuleName) (dir:FolderPath) : FilePath list =
+    let private findModuleAsFolder (m:ModuleName) (dir:FolderPath) : FilePath list =
         let subdir = Path.Combine(dir,m)
         if not (Directory.Exists(subdir)) then [] else
-        match findModuleFile "public" subdir with
+        match findModuleAsFile "public" subdir with
         | [] -> [Path.Combine(subdir, "public.g0")] // missing file
         | files -> files
+
+    let private findModule (m:ModuleName) (dir:FolderPath) : FilePath list =
+        List.append (findModuleAsFolder m dir) (findModuleAsFile m dir)
 
     let rec private moduleSearch (m:ModuleName) (searchPath:FolderPath list) : FilePath list =
         match searchPath with
         | [] -> []
         | (dir::searchPath') ->
-            let inDir = List.append (findModuleFile m dir) (findModuleFolder m dir)
-            if not (List.isEmpty inDir) then inDir else
-            moduleSearch m searchPath'
+            match findModule m dir with
+            | [] -> moduleSearch m searchPath'
+            | files -> files 
 
     let private readGlasPath () = 
         let envPath = Environment.GetEnvironmentVariable("GLAS_PATH")
@@ -50,21 +53,17 @@ module LoadModule =
 
     // wrap a compiler function for arity 1--1
     let private _compilerFn (p:Program) (ll:IEffHandler) =
-        let linkedEval = eval p ll 
+        let preLinkedEval = eval p ll 
         fun v ->
-            match linkedEval [v] with
-            | Some [r] -> Some r 
-            | None -> None
-            | Some _ ->
-                // did we miss a static arity check?
-                logError ll "invalid arity for compiler function"
-                None
+            match preLinkedEval [v] with
+            | Some (r::_) -> Some r 
+            | _ -> None
     
     // factored out some error handling
     let private _expectCompiler (ll:IEffHandler) (src:FilePath) (vOpt:Value option) =
         match vOpt with
         | Some (Value.FullRec ["compile"] ([pCompile], _)) ->
-            match stackArity (Arity(1,1)) pCompile with
+            match stackArity pCompile with
             | ProgVal.Arity (a,b) when (a = b) && (1 >= a) -> 
                 Some pCompile
             | ar ->
@@ -99,7 +98,7 @@ module LoadModule =
             ; Loading = []
             ; Cache = Map.empty  
             ; CompilerCache = Map.empty
-            } then 
+            } then // link the g0 compiler 
             ll.CompileG0 <- linkG0 (ll :> IEffHandler)
 
         member private ll.GetCompiler (fileSuffix : string) : (Value -> Value option) option =
@@ -145,6 +144,7 @@ module LoadModule =
                 logInfo ll (sprintf "using cached result for file %s" fp)
                 r
             | None when List.contains fp (ll.Loading) -> 
+                // report error, leave to programmers to solve.
                 let cycle = List.rev <| fp :: List.takeWhile ((<>) fp) ll.Loading
                 logError ll (sprintf "dependency cycle detected! %s" (String.concat ", " cycle))
                 None
@@ -241,18 +241,18 @@ module LoadModule =
             match _expectCompiler ll0 "language-g0 via built-in g0" (ll0.LoadFile fp) with
             | None -> None
             | Some p0 ->
-                logInfo nle "bootstrap: language-g0 compiled using built-in g0"
+                // logInfo nle "bootstrap: language-g0 compiled using built-in g0"
                 let ll1 = Loader(_compilerFn p0, nle)
                 match _expectCompiler ll1 "language-g0 via language-g0" (ll1.LoadFile fp) with
                 | None -> None 
                 | Some p1 -> 
-                    logInfo nle "bootstrap: language-g0 compiled using language-g0"
+                    // logInfo nle "bootstrap: language-g0 compiled using language-g0"
                     let ll2 = Loader(_compilerFn p1, nle)
                     match ll2.LoadFile fp with
                     | None -> None
                     | Some p2 when (p1 <> p2) ->
-                        logError nle "bootstrap failed: language-g0 does not rebuild itself exactly"
+                        logError nle "language-g0 compile fails to exactly rebuild itself"
                         None
                     | Some _ ->
-                        logInfo nle "bootstrap success! now building via language-g0"
+                        // logInfo nle "language-g0 bootstrap successful!"
                         Some ll2 

@@ -296,7 +296,7 @@ module Zero =
             List.append (List.map (ProgVal.Data) ds) revOps
 
         let private checkArity (struct(cte,p)) =
-            let ar = stackArity (Arity(1,1)) p
+            let ar = stackArity p
             let eArity =
                 if ArityDyn <> ar then ErrorFlags.NoError else 
                 logError (cte.LogLoad) (sprintf "%s does not have static arity" (cte.DbgCx))
@@ -313,7 +313,7 @@ module Zero =
         //
         let rec expandOp op =
             match op with
-            | Prog (anno, pDo) when (Value.unit = anno) -> expandOp pDo
+            | Prog (U, pDo) -> expandOp pDo
             | PSeq l -> l
             | _ -> FTList.singleton op
 
@@ -373,10 +373,11 @@ module Zero =
                     // no need to report undefined words here, reported on 'open' or 'import'
                     _compileFailedCall cte revOps ds w (ErrorFlags.WordUndefined) b'
             | [] -> 
+                let ops = addDataOpsRev revOps ds |> List.rev |> FTList.collect expandOp 
                 let p = 
-                    match List.rev (addDataOpsRev revOps ds) with
-                    | [op] -> op // single op is promoted. 
-                    | ops -> PSeq (FTList.collect expandOp ops)
+                    match ops.T with
+                    | FT.Single op -> op.V
+                    | _ -> PSeq ops
                 checkArity (struct(cte,p))
 
         let loadModule (ll:IEffHandler) (m:string) = 

@@ -257,6 +257,14 @@ module Effects =
         TXLogSupport(consoleErrLogOut) :> IEffHandler
 
 
+    /// Transactional Stream Adapter
+    ///
+    /// The main challenge with a transactional stream is working with reads.
+    /// If a read times out, there should be no further reads within the tx.
+
+
+
+
     (*
     /// Transactional Stream (Wrapper)
     /// 
