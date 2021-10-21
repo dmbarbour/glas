@@ -10,9 +10,9 @@ The *Logging*, *Time*, *Concurrency*, and *Environment Variable* effects describ
 
 ### Regarding Concurrency
 
-See *Procedural Embedding of Transaction Machines* in [Glas Apps](GlasApps.md). A transactional loop such as `loop:(until:Halt, do:cond:try:Step)` can be compiled as a transaction machine. This will be the future foundation for concurrency in Glas command line interface. When eventually implemented, this will be very expressive.
+See *Procedural Embedding of Transaction Machines* in [Glas Apps](GlasApps.md). A transactional loop such as `loop:(until:Halt, do:cond:try:Step)` can be compiled as a transaction machine. Before the runtime can properly implement the transaction machine, we can heuristically slow down a loop that polls file or network inputs too frequently.
 
-However, concurrency won't be implemented immediately. Returning a random result would inevitably result in confusion and deadlock. Before it is properly implemented, at least with backtracking wait within transactions, the 'fork' effect should fail. 
+Early implementation of 'fork' will essentially return a probabilistic random choice. Although correct, this is not efficient for task-based concurrency because there are no guarantees that a fork will be evaluated in a timely manner. Until this is properly implemented, Glas verbs should avoid relying on 'fork', instead favoring a central polling loop.
 
 ### Regarding Time
 
@@ -48,7 +48,10 @@ The conventional API for filesystems is painful, IMO, but I'd rather not invite 
   * *create* - same as write, except fails if the file already exists.
   * *delete* - remove a file. Use status to observe potential error.
  * **close:FileRef** - Delete the system object associated with this reference. FileRef is no longer in-use, and operations (except open) will fail.
- * **read:(from:FileRef, count?Nat)** - read a byte, or fail if at end of file or error status.
+ * **read:(from:FileRef, count:Nat, exact?)** - read a list of count bytes or fewer if not enough data is available. Fails if the fileref is in an error state. Options:
+  * *exact* - fail if fewer than count bytes available.
+r 
+ read a byte, or fail if at end of file or error status.
   * *count* - if specified, return a list of N bytes, or fewer if at end of file, or fail if error status.
  * **write:(to:FileRef, data:Binary)** - write a list of bytes to file. This fails if the file is read-only or is in an error state, otherwise returns unit. It is permitted to write while in a 'wait' state.
  * **status:FileRef** - Return a representation of the state of the system object. 
@@ -64,8 +67,7 @@ The conventional API for filesystems is painful, IMO, but I'd rather not invite 
 
 ### Standard IO
 
-Standard input and output can be modeled as initially open file references, following convention. However, instead of integers, I propose to reserve `std:in` and `std:out` as file references, and to reserve the `std:` reference prefix for the system in general. Access to `std:err` reference may be unavailable, implicitly used for log output. 
-
+Following convention, standard input and output are modeled as initially open file references. However, instead of integers, I propose to use `std:in` and `std:out` to identify these file references. (Standard error is used for logging, and is not accessible within applications.)
 
 ### Network
 

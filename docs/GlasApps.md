@@ -16,9 +16,7 @@ This model is conceptually simple, easy to implement naively, and has very many 
 
 ### Process Control
 
-Deterministic, unproductive transactions will be unproductive when repeated unless there is a relevant change in the environment. Thus, the system can optimize a busy-wait loop by directly waiting for relevant changes. Aborted transactions are obviously unproductive. Thus, aborting a transaction serves as an implicit request to wait for changes. Explicit waits, such as waiting for an external input or on a clock, are also feasible. In context of transaction machines, explicit waits are implicitly be canceled and recomputed in case of concurrent changes to values read earlier within the same transaction. Thus, waits and interrupts are implicit and natural for transaction machines.
-
-However, a consequence is that transactions should not 'sleep'. They can wait on a specific future timestamp, but reading the current time then waiting is a problem because the current time is continuously changing.
+Deterministic, unproductive transactions will be unproductive when repeated unless there is a relevant change in the environment. Thus, the system can optimize a busy-wait loop by directly waiting for relevant changes. Aborted transactions are obviously unproductive. Thus, aborting a transaction serves as an implicit request to wait for changes. 
 
 ### Reactive Dataflow
 
@@ -74,17 +72,21 @@ A complete solution for live coding requires additional support from the develop
 
 ### Procedural Embedding of Transaction Machines
 
-It is feasible to compile a transactional loop, such as a Glas program of form `loop:(until:Halt, do:cond:try:Step)`, to run as a transaction machine within a procedural context. The data stack can be compiled into a set of transaction variables. Static analysis and runtime instrumentation supporting fine-grained read-write conflict detection. A non-deterministic fork within Step would support task-based concurrency. 
+It is feasible to compile a top-level transactional loop, such as a Glas program of form `loop:(until:Halt, do:cond:try:Step)`, to run as a transaction machine within a procedural context. The data stack can be compiled into a set of transaction variables. Static analysis and runtime instrumentation supporting fine-grained read-write conflict detection. 
 
-The embedding loses implicit live coding, but we still benefit from implicit process control, incremental computing, reactive dataflow, etc.. I intend to use this procedural embedding in context of [Glas command line interface](GlasCLI.md).
+The embedding loses implicit live coding, but we still benefit from convenient process control, incremental computing, task-based concurrency, reactive dataflow, etc.. It is a very nice concurrency model compared to conventional multi-threading. I intend to use this procedural embedding in context of [Glas command line interface](GlasCLI.md).
+
+Ideally, the procedural embedding should operate correctly (albeit inefficiently) when naively implemented with random forks and without transaction machine optimizations. This is feasible if effects do not explicitly wait (i.e. the loop continues), and fork is implicitly a function of time (i.e. we backtrack fork only within a transaction). To avoid a busy-wait loop, an implementation might implicitly use short timeouts when a resource is polled.
 
 ### Transaction Machine Embedding of Procedural
 
-A transaction machine cannot directly evaluate procedural code within a transaction. However, it is feasible to create a concurrent task that repeatedly evaluates the procedural code by a step then yields, saving the procedure's continuation for a future transaction. 
+A transaction machine cannot directly evaluate procedural code within a transaction. However, it is feasible to create a concurrent task that repeatedly interprets the procedural code for a few steps then yields, saving the procedure's continuation for a future transaction. 
 
-This embedding is essentially the same as multi-threading. We could kill the procedural thread or spawn new ones. However, the transaction machine substrate does offer a few benefits: lightweight support for transactional memory, an implicit 'select' behavior via fork-read within a transaction, and a more robust foundation to integrate with other paradigms.
+This embedding is essentially the same as multi-threading. We could manipulate state to kill the procedural thread or spawn new ones. However, the transaction machine substrate does offer a few benefits, such as lightweight support for transactional memory, and a robust foundation to integrate with dataflow paradigms.
 
-## Abstract Design Thoughts
+Conveniently, these embeddings interleave. When the procedure contains a transaction loop as described for *Procedural Embedding of Transaction Machines*, the continuation will be stable until the loop halts, thus will not destabilize incremental computing or replication of forks. Interleave of the procedural and transaction machine styles can simplify integration of paradigms.
+
+## Abstract Design
 
 ### Robust References
 
@@ -96,21 +98,27 @@ This design has a lot of benefits: References can be descriptive and locally mea
 
 The application host will generally maintain a lookup table to associate references with external resources. Garbage collection is feasible if the application can fetch lists of live references.
 
-### Procedural APIs
+### Specialized Effects
 
-I do not recommend an object-oriented API, i.e. where file streams and TCP streams share an interface. The main reason for this is that it becomes difficult to track which values represent references. Additionally, it is inconvenient to ensure consistency between interfaces. An application should implement its own resource abstraction layers as needed, no need to handle this at the host-app boundary.
+Effects APIs should be specialized at the host-app layer. For example, `tcp:read:(...)` request is distinct from `file:read:(...)`. The host-app layer should not conflate the responsibility of resource interface abstraction. Applications may introduce their own resource abstraction layer if one is desired.
 
-### Regarding Timeouts
+The host-app boundary is an awkward location for interface abstraction because it only supports abstraction of host objects, whereas within the application we can abstract over both host interfaces and application objects. Additionally, extracting a common interface is a lot of design work, and the resulting one-size-fits-all interface is almost always a little awkward for every use case.
 
-It is logically inconsistent to have explicit timeouts for individual effects within a transaction. Instead, timeouts are expressed by racing concurrent transactions, e.g. where one fork waits on data and another waits on the clock before we have committed to either fork. Alternatively, a repeating transaction that queries whether data is available then later fails would implicitly wait for change in availability of data.
+### Asynchronous Effects 
 
-However, implicit waits require some advanced optimizers to implement, and may be unavailable in some contexts. At least for early implementations, to resist busy-wait loops, we might implicily introduce a timeout when, for example, a TCP socket has been queried twice in a short time-frame by failed transactions. This timeout might be applied to the next transaction failure instead of directly to the effect.
+In context of Glas programs, effects are `Request -- Response` thus fit a procedural style. However, in context of transactions or backtracking conditional behavior, external effects will usually be asynchronous because it is much easier to defer messages until commit than it is to implement a distributed transaction. There is a possible exception for 'safe' operations with negligible side-effects (e.g. read and cache a remote value).
 
-### Hierarchical Composition and State
+### Waits and Timeouts
 
-An application should be composable as a subprogram of a larger application. Effects handlers already support hierarchical composition of effects. However, the state of a subprogram should also be accessible to its parent program to support debugging, invariants, extensions, checkpoints, and other generic host features. 
+It is conceptually inconsistent to have explicit timeouts within a logically 'instantaneous' transaction. And explicit waits are troublesome for procedural embedding. Thus, waits will ultimately rely on implicit process control of transaction machines: when a repeating transaction is unproductive, the system may wait for a relevant change before recomputing. 
 
-My preferred choice is to represent input and output on the data stack. This is consistent with procedural embedding of transaction machines, and benefits from abstract interpretation and other static analysis of dataflow to compile a record into many fine-grained transaction variables. The consequence is that state composes in several ways, e.g. we can easily model partial sharing of state, wrappers, sequential composition.
+However, implicit process control requires non-trivial optimizations that will not be implemented early in the development of Glas systems. Without these optimizations, we essentially have an inefficient busy-wait loop. An interim solution is to introduce implicit delays when resources are polled too frequently, slowing down the loop. This is easily implemented and adequate for many applications.
+
+### Application State
+
+I propose that application state is represented as a value on the data stack instead of using an effects API. This is consistent with a procedural embedding of transaction machines, makes it clear (structurally and semantically) what state is 'owned' by the transaction (e.g. in contrast to environment variables), and simplifies composition of apps compared to managing a heap. State as one big value is also very convenient for accessibility and reflection.
+
+This design does place a heavier burden on an optimizer to support precise conflict detection, e.g. abstract analysis to partition state into small transaction variables, recognition that certain functions such as list append do not fully observe the values they manipulate.
 
 ### Extensible Interfaces
 
@@ -118,9 +126,7 @@ Applications should be extensible with new interfaces. For example, we might ext
 
 In context of Glas programs, we might represent method selectors as part of program input on the data stack, e.g. `method:Args`. Result type and available effects may depend on the selected method. This technique has the advantage of being cheap, with negligible overhead if unused.
 
-### Specialized Host APIs
-
-An application directly interacts with its host via effects, and indirectly with other applications. It is feasible to develop an API for communications based on channels, publish-subscribe, etc.. However, a general API for communications is often difficult to integrate with existing systems and applications. It is wiser to focus on an effects model that is specialized to its host, easily implemented, then build effects adapters within the Glas program layer.
+*Aside:* Together with placing application state on the data stack, applications might be viewed as objects.
 
 ## Common Effects
 
@@ -128,11 +134,11 @@ Effects should be designed for transaction machines yet suitable for procedural 
 
 ### Concurrency
 
-For isolated transactions, a non-deterministic choice is equivalent to taking both paths then committing one. For repeating transactions, this becomes equivalent to replicating the transaction and repeating for every choice. Replication, together with incremental computing, enables non-deterministic choice to support task-based concurrency. Effects API:
+Repetition and replication are equivalent for isolated transactions. In context of a transaction machine, within the stable prefix of a transaction, fork can be implemented efficiently by replication, essentially spawning a thread for each stable choice. Outside this context, fork can be implemented as a fair random choice.
 
-* **fork** - response is a non-deterministic boolean (bitstring '0' or '1'). 
+* **fork** - non-deterministic behavior, respond with '0' or '1' bitstring.
 
-Fork effects are subject to backtracking in cases where this is visible, i.e. if a 'try' clause forks then fails, a subsequent fork will read the same response. Ideally, fork is implemented by replication. However, if the fork is unstable or if replication is unavailable for other reasons, we can implement fork by fair random choice.
+Conceptually, fork reads an unknown function of type `Time -> Index -> Bool` where `Index` advances statefully upon fork, and `Time` advances implicitly between top-level transactions. Relevantly, when a hierarchical sub-transaction forks then fails, we'll also backtrack the index and forks will recompute the same values. However, advancement of time between top-level transactions means we don't need a history, and is relevant for procedural embedding.
 
 ### Logging
 
@@ -140,22 +146,22 @@ Almost any application model will benefit from a simple logging mechanism to sup
 
 * **log:Message** - Response is unit. Arbitrary output message, useful for progress reports or debugging.
 
-By convention, a log message should be a record of ad-hoc values, such as `(lv:warn, text:"I'm sorry, Dave. I'm afraid I can't do that.", from:"HAL")`. This enables the record to be extended with metadata or new features.
+By convention, a log message should be a record of ad-hoc fields whose meanings are de-facto standardized, such as `(lv:warn, text:"I'm sorry, Dave. I'm afraid I can't do that.", from:hal)`. This enables the record to be extended with metadata or new features.
 
-In context of transaction machines, a forking set of transactions would essentially maintain a forking tree of log messages, the prefix of which might be stable. There is a lot of flexibility regarding how this might be rendered to the user.
+In context of transaction machines and task-based concurrency, the concept and presentation of logging should ideally be adjusted to account for stable forks. Instead of a stream of log messages, an optimal view is something closer to live tree of log messages with access to history via timeline.
+
+Although messages logged by failed transactions are not observable within the program, they can be observed indirectly through reflection APIs which operate on runtime state. A debug view presented to a developer should almost always be based on a reflection API. Aborted messages might be distinguished by rendering in a different color, yet should be accessible for debugging purposes.
 
 ### Time
 
 Transactions are logically instantaneous, but it is not a problem to delay a transaction to commit later. Effects API:
 
-* **time:now** - Response is the estimated time of commit, as a TimeStamp. 
-* **time:await:TimeStamp** - Wait until the specified time or later, then continue. Response is unit.
+* **time:now** - Response is the estimated time of commit, as a TimeStamp value. 
+* **time:after:TimeStamp** - If 'now' is equal or greater to TimeStamp, respond with unit. Otherwise fail.
 
-Reading time will destabilize the transaction. This isn't a significant problem if time is read after the transaction would be destabilized anyways, e.g. after reading from an input channel. Estimated times might be a little high or low within heuristic tolerances, but there is increased risk of read-write conflicts when several transactions are reading the unstable time variable.
+Reading 'now' will always destabilize the transaction. This is not a concern if the transaction is already unstable, e.g. after reading from a channel. Use of 'after' supports stable observations on time, and provides a convenient hint for how long a runtime should wait before retrying a transaction. 
 
-Await does not observe time. It is important to note that observing time T then awaiting time T+1 within a single transaction is inconsistent and results in a transaction that deadlocks, similar to attempting synchronous request-response. This should be avoided statically, or reported as a programmer error if it appears. It is feasible to precompute a transaction after await so it is ready-to-commit almost exactly on time; this might simplify real-time programming.
-
-The proposed default TimeStamp type is Windows NT time - a natural number of 100ns intervals since midnight Jan 1, 1601 UT. If an alternative is used, just document it clearly.
+The default TimeStamp type is Windows NT time - a natural number of 100ns intervals since midnight Jan 1, 1601 UT.
 
 ### Environment Variables
 
