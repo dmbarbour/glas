@@ -1,18 +1,18 @@
 # Glas Command Line Interface
 
-The [Glas Design](GlasDesign.md) document describes a Glas command-line interface (CLI) that is extensible with user-defined verbs, e.g. `glas foo a b c` is rewritten to `glas --run glas-cli-foo.run -- a b c`, then we extract `glas-cli-foo.run`, which should be a Glas program. 
+The [Glas Design](GlasDesign.md) document describes a Glas command-line interface (CLI) that is extensible with user-defined verbs, e.g. `glas foo a b c` is rewritten to `glas --run glas-cli-foo.run -- a b c`, then we extract program 'run' from module 'glas-cli-foo'. This should be a Glas program. 
 
 The program is run in a procedural style, albeit with 'try', 'while', and 'until' clauses forming implicit transactions. Input to the data stack is `cmd:["a", "b", "c"]` in the above case. The 'cmd' method selector here provides room for extension, and is followed by the command line parameters as strings. The final data stack should have a natural number exit code. If the program fails or returns an invalid number (outside range 0..2**31-1), exit code is implicitly -1.
 
 ## Common Effects
 
-The *Logging*, *Time*, *Concurrency*, and *Environment Variable* effects described in [Glas Apps](GlasApps.md) can be readily applied to procedural code. We simply treat each top-level operation as a separate transaction. 
+The *Logging*, *Time*, *Concurrency*, and *Environment Variable* effects described in [Glas Apps](GlasApps.md) can be readily applied to CLI. The *Distribution* effect will probably not be supported.
 
 ### Regarding Concurrency
 
-See *Procedural Embedding of Transaction Machines* in [Glas Apps](GlasApps.md). A transactional loop such as `loop:(until:Halt, do:cond:try:Step)` can be compiled as a transaction machine. Before the runtime can properly implement the transaction machine, we can heuristically slow down a loop that polls file or network inputs too frequently.
+See *Procedural Embedding of Transaction Machines* in [Glas Apps](GlasApps.md). A transactional loop such as `loop:(until:Halt, do:cond:try:Step)` can be compiled as a transaction machine. Before the runtime can properly implement the transaction machine, we can simply slow down a polling loop based on recognizing when a file or network resource is polled too frequently.
 
-Early implementation of 'fork' will essentially return a probabilistic random choice. Although correct, this is not efficient for task-based concurrency because there are no guarantees that a fork will be evaluated in a timely manner. Until this is properly implemented, Glas verbs should avoid relying on 'fork', instead favoring a central polling loop.
+Early implementation of 'fork' will simply return a random choice. Although correct, this is not effective for task-based concurrency, which assumes optimizations for replication and incremental computing. Where needed, we can manually implement concurrency as a central event processing loop. 
 
 ### Regarding Time
 
@@ -38,32 +38,47 @@ We might later add ops to browse a module system without reference to the filesy
 
 The Glas CLI needs enough access to the filesystem to support bootstrap and live-coding. This includes reading and writing files, browsing the filesystem, and watching for changes. The API must also be adapted for asynchronous interaction. File handles should be provided by the app, per description of 'robust references' in [Glas Apps](GlasApps.md).
 
-The conventional API for filesystems is painful, IMO, but I'd rather not invite trouble so I'll try to adapt a portable filesystem API relatively directly.
+The conventional API for filesystems is painful, IMO. But I'd rather not invite trouble so I'll try to adapt a portable filesystem API relatively directly. Operations needed:
+
+* read and write files; detect eof when reading
+* rename and delete files; determine success/fail status
+* list or watch or delete a folder (optionally recursive)
 
 * **file:FileOp** - namespace for file operations. An open file is essentially a cursor into a file resource, with access to buffered data. 
- * **open:(name:FileName, as:FileRef, for:(read | write | append | create | delete))** - Create a new system object to interact with the specified file resource. Fails if FileRef is already in use, otherwise returns unit. Whether the file is successfully opened is observable via 'state' a short while after request is committed. The intended interaction must be specified:
+ * **open:(name:FileName, as:FileRef, for:Interaction)** - Create a new system object to interact with the specified file resource. Fails if FileRef is already in open, otherwise returns unit. Use 'status' The intended interaction must be specified:
   * *read* - read file as stream.
   * *write* - erase current content of file or start a new file.
-  * *append* - extend current content of file.
   * *create* - same as write, except fails if the file already exists.
+  * *append* - extend current content of file.
   * *delete* - remove a file. Use status to observe potential error.
- * **close:FileRef** - Delete the system object associated with this reference. FileRef is no longer in-use, and operations (except open) will fail.
+  * *rename:NewFileName* - rename a file. 
+ * **close:FileRef** - Release the file reference.
  * **read:(from:FileRef, count:Nat, exact?)** - read a list of count bytes or fewer if not enough data is available. Fails if the fileref is in an error state. Options:
   * *exact* - fail if fewer than count bytes available.
-r 
- read a byte, or fail if at end of file or error status.
-  * *count* - if specified, return a list of N bytes, or fewer if at end of file, or fail if error status.
- * **write:(to:FileRef, data:Binary)** - write a list of bytes to file. This fails if the file is read-only or is in an error state, otherwise returns unit. It is permitted to write while in a 'wait' state.
+ * **write:(to:FileRef, data:Binary, flush?)** - write a list of bytes to file. Writes are buffered, so this doesn't necessarily fail even if the write will eventually fail.
  * **status:FileRef** - Return a representation of the state of the system object. 
-  * *init* - state immediately after 'open' until initial request is committed and processed.
-  * *ok* - seems to be in a good state. 
-  * *done:Value* - requested interaction is complete. This currently applies to read or delete modes. 
-  * *error:Value* - any error state, with ad-hoc details.
- * **refs** - return list of open file references.
+  * *init* - initial status before 'open' request has been fully processed.
+  * *wait* - empty read buffer or a full write buffer, either way program should wait.
+  * *ready* - seems to be in a valid state to read or write data.
+  * *done* - final status if file has been fully read, deleted, renamed, etc.
+  * *error:Value* - any error state, description provided.
+ * **refl** - return a list of open file references.
 
 **dir:DirOp** - namespace for directory/folder operations. This includes browsing files, watching files. 
- * **open:(name:)
-
+ * **open:(name:DirName, as:DirRef, for:Interaction)** - create new system objects to interact with the specified directory resource in a requested manner. Fails if DirRef is already in use, otherwise returns unit. Interactions:
+  * *list:(recursive?)* - one-off read a list of entries from the directory. The 'recursive' flag may be included to list all child directories, too.
+  * *watch:(list?, recursive?)* - watch for changes in a directory. If 'list' flag is set, we'll provide an initial set of events as if every file and folder was created just after watching. 
+  * *rename:NewDirName* - rename or move a directory
+  * *delete* - remove an empty directory.
+ * **close:DirRef** - release the directory reference.
+ * **read:DirRef** - read a file system entry. This is a record with ad-hoc fields, similar to a log message. Some defined fields:
+  * *type:Symbol* (always) - usually a symbol 'file' or 'dir'
+  * *name:Path* (always) - a full filename or directory name, usually a string
+  * *deleted* (conditional) - flag, indicates this entry was deleted (mostly for 'watch').
+  * *mtime:TimeStamp* (if available) - modify-time, uses Windows NT timestamps 
+ * **status:FileRef**
+ * **refl** - return a list of open directory references.
+ 
 
 ### Standard IO
 

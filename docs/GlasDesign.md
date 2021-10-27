@@ -4,15 +4,11 @@ Glas is now a backronym for 'General LAnguage System'. It was originally named i
 
 ## Module System and Syntax
 
-Glas modules are typically represented by files and folders. Dependencies between Glas modules must be acyclic (i.e. a directed acyclic graph), and dependencies across folder boundaries are structurally restricted. Every module will deterministically compute a value. 
+Glas modules are typically represented by files and folders. Dependencies between Glas modules must form a directed acyclic graph. Every module will deterministically compute a value depending on file extension, file content, and definition of language modules.
 
-To compute the value for a file `foo.ext`, the Glas system will compile the file binary using a program defined in module `language-ext`. To bootstrap, the [g0](GlasZero.md) language (a Forth variant) is predefined. File extensions compose. For example, to compute the value for `foo.xyz.json` we first compile using `language-json` then compile using `language-xyz`. If a file has no extension, its value is simply the binary. Files and folders whose names start with `.` are hidden from the Glas module system.
+To compute the value for a file `foo.ext`, the Glas system will compile the file binary using a program defined in module `language-ext`. To bootstrap, the [g0](GlasZero.md) language (a Forth variant) is predefined. File extensions compose, e.g. for `foo.xyz.json` we apply `language-json` then `language-xyz`. The value for a folder `foo/` is the value from its contained public file, such as `foo/public.g0`. Modules cannot reference across folder boundaries. Files and folders whose names start with `.` are hidden from the Glas module system.
 
-To compute the value for a folder `foo/`, we use the value from its contained `public` file. Folders are implicit boundaries for dependencies: a file can only reference global modules or those within the same folder as itself. 
-
-Global modules are currently found using the GLAS_PATH environment variable, whose value should be a list of folders separated by semicolons. If there is no local module with a given name, we'll search for the first matching module on GLAS_PATH. By convention, modules on GLAS_PATH should be folders. Later, we might extend module search to include network resources.
-
-*Note:* The module system could be shifted to alternative media such as a wiki or Nix. Any medium should support the same general features: user-defined syntax and notation, hiding syntactic details from module clients, module names as identity for change over time. 
+Global filesystem modules should be subfolders found using the GLAS_PATH environment variable, whose value should be a list of folders separated by semicolons. Additionally, files can reference local modules within the same folder. By default, this uses a simple fallback: search locally, then globally if a local resource is not specified. Later, we might extend module search to use network resources, such as a package distribution.
 
 ## Data Model
 
@@ -188,10 +184,10 @@ Language modules have a module name of form `language-(ext)`, binding to files w
 
 The compile program must have arity 1--1 and implements a function from source (usually a file binary) to a compiled value on the stack. The compile program can also access other module values and generate some log outputs. Effects API:
 
-* **load:ModuleID** - Modules are usually identified by UTF-8 strings such as `"foo"`. File extension is elided. We search for the named module locally then on `GLAS_PATH`. 
+* **load:ModuleID** - Modules are usually identified by UTF-8 strings such as `"foo"`. File extension is elided. By default, we search for the named module locally then on `GLAS_PATH`. 
 * **log:Message** - Response is unit. Arbitrary output message, useful for progress reports, debugging, code change proposals, etc.. 
 
-Load failures may occur due to missing modules, ambiguous files (e.g. if we have both `foo.g0` and subdirectory `foo/`), detected dependency cyles, failure of the compiler function, etc. A compiler can continue in presence of most load failures. The cause of failure is not visible to the language module, but should be logged for visibility byl developers.
+Load failures may occur due to missing modules, ambiguous names (e.g. if we have both `foo.g0` and subdirectory `foo/`), detection of dependency cyles, failure of the compiler function, etc. A compiler can continue in presence of most load failures. The cause of failure is not visible to the client module but should be visible to developers, e.g. via log. 
 
 A language may expose these effects to the programmer in context of compile-time metaprogramming. For example, these effects are explicitly supported by language-g0 macro calls.
 
@@ -247,21 +243,21 @@ Further, annotations can indicate where partial evaluation is assumed so we can 
 
 ### Acceleration
 
-Acceleration is an optimization pattern. The general idea to annotate subprograms for accelerated evaluation, then a compiler or interpreter should recognize the annotation and silently substitute an optimized implementation called an accelerator. If the acceleration is not supported, the compiler raises warnings to prevent silent performance degradation.
+Acceleration is an optimization pattern. The idea to annotate specific subprograms for accelerated evaluation, then a compiler or interpreter should recognize the annotation then silently substitute a specialized implementation. Essentially, the provided code is a reference implementation for a built-in.
 
-Abstract CPUs are a useful pattern for acceleration. Instead of accelerating twenty floating-point math functions independently, accelerate evaluation of a bytecode for an abstract CPU that features floating-point registers. Use the bytecode to implement those twenty functions, and perhaps many more. The accelerator may optionally require that bytecode is a static parameter support ahead-of-time compilation or non-local evaluation on a GPGPU.
+Glas will accelerate basic list functions to use a finger-tree representation for lists under-the-hood, enabling efficient list split, append, length, array indexing, and deque operations. Glas programs don't have a primitive eval operator, but it is feasible to accelerate an eval function; together with JIT compilation and caching, we can effectively support first-class functions. To leverage a GPGPU, we can develop a specialized program model for the GPGPU then accelerate its evaluation using an actual GPGPU.
 
-Beyond the abstract CPU, it is feasible to accelerate distributed computation models, such as Kahn Process Networks, to actually use distributed processors. A compiler may introduce specialized data representations to avoid redundant data validation and access overheads. By accelerating an eval function and memoizing JIT compilation, a runtime can effectively support first-class functions. Ultimately, accelerators extend a compiler or runtime with new performance primitives without extending semantics.
+Accelerators extend performance primitives without affecting formal semantics. Of course, performance is an important part of correctness for most programs. To resist silent performance degradation, the compiler must complain when acceleration is not recognized or cannot be implemented. Also, the compiler must never apply acceleration where not explicitly annotated. 
 
-The cost of acceleration is implementation complexity, greater entanglement with the compiler or runtime implementation, and related risks to correctness, security, and portability. This tradeoff is worthwhile when it enables Glas to be used in a domain that is otherwise performance prohibitive. Glas programs will rely on acceleration for bit banging, number crunching, physics simulations, machine learning, and many other problem domains.
+The cost of acceleration is implementation complexity and risk to correctness, security, and portability. This risk is mitigated by the reference implementation, which can be compared in fuzz testing or analyzed for model-based tests, and provides a fallback implementation (albeit with warnings). The complexity tradeoff is most worthy when it enables use of Glas in a problem domain that is otherwise performance prohibitive. 
 
-*Aside:* It is acceptable to use unchecked accelerators, e.g. `prog:(do:fail, accel:list-append)`, for short-term development. Not recommended for long-term use. The reference implementation is valuable for verification of the compiler, user-defined transpilation, etc..
+*Aside:* It is feasible to support accelerators without a valid reference implementation, e.g. `prog:(do:fail, accel:list-append)`. This might be convenient short-term for development of experimental accelerators, but is not recommended long-term.
 
 ### Distributed Computation
 
-For computation at larger scales, it is feasible to *accelerate* evaluation of observably deterministic concurrency models such as [Kahn Process Networks](https://en.wikipedia.org/wiki/Kahn_process_networks) or [Lafont Interaction Nets](https://en.wikipedia.org/wiki/Interaction_nets). The accelerator would distribute the computation across multiple processors, perhaps across a mesh network. Some processes within the network would have access to other accelerators. 
+For computation at large scales, it is feasible to accelerate evaluation of confluent concurrency models such as [Kahn Process Networks](https://en.wikipedia.org/wiki/Kahn_process_networks) or [Lafont Interaction Nets](https://en.wikipedia.org/wiki/Interaction_nets). The accelerator would distribute the computation across multiple processors, e.g. leveraging cloud or mesh as needed. Processes within the network would have access to local accelerators. 
 
-Accelerated subprograms don't need to be pure. However, in context of a distributed systems, channeling all effects through the 'eff' operator is awkward and easily becomes a synchronization bottleneck. Fortunately, for build-time computations (e.g. language modules, data printers) the effects are very limited and this is unlikely to become a problem. If we want concurrent external interaction at runtime, we will solve it in the application model.
+Of course, we can also use effects for non-deterministic concurrency and distribution. See [Glas Apps](GlasApps.md) for more on this subject.
 
 ## Thoughts
 

@@ -40,7 +40,27 @@ Relevant observations: A non-deterministic transactions is equivalent to choosin
 
 It is feasible for a transaction machine to start as a single transaction then introduce a non-deterministic 'fork' effect to represent the set of transactions. This has the advantage of making the set much more dynamic and reactive to observed needs and configurations.
 
-Transactions evaluate in parallel only insofar as conflict is avoided. When conflict occurs between two transactions, one must be aborted by the scheduler. Progress is still guaranteed, and a scheduler can also guarantee fairness for transactions that respect a compute quota. A scheduler can heuristically avoid most conflict based on tracking conflict history. Programmers can avoid conflict based on design patterns, e.g. using channels to separate tasks from high-contention state variables.
+Transactions may evaluate in parallel insofar as conflict is avoided. When conflict occurs between two transactions, one must be aborted. Progress is guaranteed, and a good scheduler can guarantee fairness for transactions that meet reasonable time-quota limits. A scheduler can reduce rework by organizing transactions with a history of conflict to evaluate in separate time-slots.
+
+Programmers can avoid conflict by software architecture and design patterns.
+
+### Distributed Computation 
+
+Transaction machines can support distributed computation, but attention to application architecture is required. 
+
+Effects in a distributed system may be host-specific, such as access to a local filesystem. Access to host-specific effects must be exposed in the effects API. Transactions that interact with multiple hosts, aka distributed transactions, should be avoided because they are too difficult to implement correctly or efficiently. Instead, we should arrange that each repeating transaction interacts with a specific host, or at least migrates between hosts in a stable manner. Distributed transaction avoidance might be enforced.
+
+If a repeating transaction does not use use any host-specific effects, it can be freely distributed based on performance concerns, such as load balancing or minimizing network communication. In practice, a distributed transaction machine will have many cliques, where each clique is a subset of repeating transactions that are difficult to efficiently distribute for reasons such as shared state. Cliques will be distributed together with their shared state.
+
+Communication between machines can be based on channels. Channels are essentially list variables where a reader takes from list head and the writer appends to list tail. Reader and writer can be evaluated in parallel without conflict because they observe and manipulate different regions of the list. Values buffered in the list also help abstract over network latency. 
+
+### Transaction Fusion
+
+Concurrent transactions can easily be fused into larger transactions. For example, instead of scheduling A and B independently, we can construct and schedule a combined transaction AB. This is most useful when AB enables optimizations that A and B independently do not support, or eliminates scheduling overheads for lightweight data-plumbing transactions. 
+
+In context of live coding or open systems, it is very useful if fusion optimizations are performed at runtime, as a sort of just-in-time compilation. Together with distributed computation techniques, this enables transaction machines to effectively overlay and patch a system without compromising performance, modularity, or security.
+
+*Note:* Relatedly, we can also fuse a transaction with itself. This is effectively a form of loop unrolling. Given transaction A, we produce AA then check if useful optimizations are exposed.
 
 ### Real-Time Systems 
 
@@ -49,14 +69,6 @@ It is feasible for a transaction to compare estimated time of commit with a comp
 Usefully, a system can precompute transactions slightly ahead of time so they are ready to commit at the earliest timing boundary, in contrast to starting computation at that time. It is also feasible to predict several transactions based on prior predictions. It is feasible to implement real-time systems with precise control of time-sensitive outputs.
 
 Transaction machines can flexibly mix opportunistic and scheduled behavior by having only a subset of concurrent transactions observe time. In case of conflict, a system can prioritize the near-term predictions.
-
-### Cached Routing
-
-A subset of transactions may focus on data plumbing - i.e. moving or copying data without observing it. If these transactions are stable, it is feasible for the system to cache the route and move data directly to its destination, skipping the intermediate transactions. 
-
-Designing around cached routing can improve latency without sacrificing visibility, revocability, modularity, or reactivity to changes in configuration or code. In contrast, stateful bindings of communication can improve latency but lose most of these other properties.
-
-Cached routing can partially be supported by dedicated copy/forward APIs, where a transaction blindly moves the currently available data from a source to a destination. However, it can be difficult to use such APIs across abstraction layers. In general, we could rely on abstract interpretation or lazy evaluation to track which data is observed within a transaction.
 
 ### Live Program Update
 
@@ -72,9 +84,9 @@ A complete solution for live coding requires additional support from the develop
 
 ### Procedural Embedding of Transaction Machines
 
-It is feasible to compile a top-level transactional loop, such as a Glas program of form `loop:(until:Halt, do:cond:try:Step)`, to run as a transaction machine within a procedural context. The data stack can be compiled into a set of transaction variables. Static analysis and runtime instrumentation supporting fine-grained read-write conflict detection. 
+It is feasible to compile a top-level transactional loop, such as a Glas program of form `loop:(until:Halt, do:cond:try:Step)`, to run as a transaction machine within a procedural context. The data stack can be compiled into a set of transaction variables. Static analysis and runtime instrumentation can support fine-grained read-write conflict detection. It is feasible to recognize *channels* as a patterned use of list variables.
 
-The embedding loses implicit live coding, but we still benefit from convenient process control, incremental computing, task-based concurrency, reactive dataflow, etc.. Use of loops to express waits is more composable and extensible than explicit wait effects. I intend to use this procedural embedding in context of [Glas command line interface](GlasCLI.md).
+The embedding loses implicit live coding, but we still benefit from convenient process control, incremental computing, task-based concurrency, reactive dataflow, potential distribution, etc.. Use of loops to express waits is more composable and extensible than explicit wait effects. I intend to use this procedural embedding in context of [Glas command line interface](GlasCLI.md).
 
 ### Transaction Machine Embedding of Procedural
 
@@ -94,7 +106,7 @@ Transaction machines rely on sophisticated optimizations. Implementation of thes
 
 Without optimizations, implicit process control reduces to a busy-wait loop. We can mitigate this by simply slowing down the loop. I propose to do so by limiting the polling frequency for external resources. For example, we might limit polling of a TCP channel to 40Hz (a 25ms period). After we fail to read data 7ms ago, the next read would have an 18ms timeout to avoid observing a failed read twice within 25ms. We can poll multiple TCP channels within a 25ms cycle.
 
-Without optimizations, forks are random. There is no replication, parallel evaluation, or incremental computing of forked tasks. Forks will randomly be evaluated even when there is nothing to do. This results in unpredictable latency, reduced scalability, and unnecessary rework. Before optimizations are available, concurrent applications should manually manage their own schedule and cache. A simple case is to run every subtask on every cycle, but allow some tasks to short-circuit based on dirty bits.
+Without optimizations, forks are random. There is no replication, parallel evaluation, or incremental computing of forked tasks. Forks will often be evaluated even when there is nothing to do. This results in unpredictable latency, reduced scalability, and unnecessary rework. Before optimizations are available, concurrent applications should manually manage their own schedule and cache. A simple case is to run every subtask on every cycle, but allow some tasks to short-circuit based on dirty bits.
 
 These interim solutions are adequate for many applications, especially at small scales. Importantly, they do not pollute the effects API with explicit timeouts, waits, or multi-threading. And they work equally well for procedural interpretation. 
 
@@ -146,6 +158,31 @@ Repetition and replication are equivalent for isolated transactions. In context 
 
 Fork is abstractly a function of time, e.g. `Time -> Index -> Bool`, advancing index on each fork. Deep within a hierarchical transaction, because time is logically frozen, 'fork' should backtrack and re-read the same values like other effects. Between top-level transactions, including between steps in a procedural embedding, time advances and a fresh sequence of fork values will be read.
 
+### Time
+
+Transactions are logically instantaneous, so we cannot model explicit timeouts or sleeps. However, we can constrain a transaction to commit later instead of immediately. Proposed effects API:
+
+* **time:now** - Response is the estimated time of commit, as a TimeStamp value.
+* **time:check:TimeStamp** - If 'now' is equal or greater to TimeStamp, respond with unit. Otherwise fail.
+
+Reading 'now' will destabilize a transaction and is unsuitable for waits or incremental computing. The use-case for 'now' is adding timestamps to observed events, such as messages received on a channel. In these cases, the transaction should already be in an unstable state so no harm is done.
+
+Use of 'check' provides a stable option to indirectly observe time. If a transaction fails after a time check fails, the provided timestamp informs the system of how long it should wait. It is feasible to precompute the future transaction, have it ready to commit.
+
+The default TimeStamp type is Windows NT time - a natural number of 100ns intervals since midnight Jan 1, 1601 UT. 
+
+### Distribution
+
+Distribution is mostly about saying *where* we evaluate code, with different tasks potentially indicating different locations. To avoid polluting our effects APIs with location parameters, I propose a generic 'move' effect.
+
+* **move:Location** - Response is unit or failure. If this does not fail, subsequent effects are performed in context of the indicated Location. 
+
+Locations can potentially be references (like 'home') or directions (like 'west'). Move fails if a location is unrecognized or unreachable. Distributed transactions are troublesome, so move might also fail if moving would implicitly require a distributed transaction.
+
+In transaction machines, the location should be specific to the transaction. We implicitly start transactions at origin. For a procedural embedding, move might model mobile agents, and the reset would need to be explicit.
+
+*Note:* No need for a channels API. Glas systems should recognize when lists are used as channels, and optimize. Recognition can be simplified by use of annotations.
+
 ### Logging
 
 Almost any application model will benefit from a simple logging mechanism to support debugging, observability of computations, etc..
@@ -157,19 +194,6 @@ By convention, a log message should be a record of ad-hoc fields whose meanings 
 In context of transaction machines and task-based concurrency, the concept and presentation of logging should ideally be adjusted to account for stable forks. Instead of a stream of log messages, an optimal view is something closer to live tree of log messages with access to history via timeline.
 
 Although messages logged by failed transactions are not observable within the program, they can be observed indirectly through reflection APIs which operate on runtime state. A debug view presented to a developer should almost always be based on a reflection API. Aborted messages might be distinguished by rendering in a different color, yet should be accessible for debugging purposes.
-
-### Time
-
-Transactions are logically instantaneous, so we cannot model explicit timeouts or sleeps. However, we could wait on a clock by aborting a transaction until a given time is observed. Proposed effects API:
-
-* **time:now** - Response is the estimated time of commit, as a TimeStamp value.
-* **time:check:TimeStamp** - If 'now' is equal or greater to TimeStamp, respond with unit. Otherwise fail.
-
-Reading 'now' will destabilize a transaction and is unsuitable for waits or incremental computing. The use-case for 'now' is adding timestamps to observed events, such as messages received on a channel. In these cases, the transaction should already be in an unstable state so no harm is done.
-
-Use of 'check' provides a stable option to indirectly observe time. If a transaction fails after a time check fails, the provided timestamp informs the system of how long it should wait. It is feasible to precompute the future transaction, have it ready to commit.
-
-The default TimeStamp type is Windows NT time - a natural number of 100ns intervals since midnight Jan 1, 1601 UT. 
 
 ### Environment Variables
 
