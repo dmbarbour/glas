@@ -134,26 +134,15 @@ There is currently no dedicated syntax for annotations in g0. However, if progra
 
 It is also feasible to annotate programs via export function, post-hoc. However, if you're free to invasively modify code, it's usually better to annotate programs internally. 
 
-## Stable Partial Evaluation for Macros
-
-For simplicity of comprehension and implementation, partial evaluation in g0 should have granularity of full words. Each word is either fully evaluated or not. This is simple to comprehend and to implement. But a concern remains regarding stability. Consider the following g0 program:
-
-        macro apply []
-        prog swap ['swap apply]
-        prog await2 [swap swap]
-        prog foo [[swap] await2 apply]
-
-Naively, whether this program compiles depends on whether `swap swap` is eliminated by the optimizer. However, it is not a good thing for compilation to depend on the optimizer because it raises the burden for compiling g0. 
-
-To solve this, a g0 optimizing compiler should introduce arity annotations into defined programs based on behavior prior to optimizations. For example, the definition of 'await2' might be annotated with `arity:(i:2, o:2)`. Then, input arity is checked prior to partial evaluation of the 'await2' word. Because there are not two items on the data stack prior to calling 'await2', we'd also have zero inputs to 'apply' and thus consistently fail to compile foo regardless of optimizations.
-
 ## Compilation Strategy for Programs
 
-The AST for g0 programs after parse is a simple list of 'call:word', 'block:G0', and 'data:Value' operators. 
+The AST for g0 programs after parse is essentially a simple list of 'call:word', 'block:G0', and 'data:Value' operators. 
 
-To compile a program, we'll find definitions of called words, partially evaluate each word when feasible (always whole words), if not capture the current data stack and the word's definition into the program. A macro must be evaluated, or compilation fails. Static arity should be computed for each program and included in the program annotations to stabilize partial evaluation. Then, programs may freely be optimized.
+A call is replaced by the associated prog or macro. A macro is evaluated, with access to prior data entries and compile-time effects, then the top data entry becomes a prog. A prog is evaluated if there is sufficient input data and evaluation does require any top-level effects, otherwise it is not further compiled. A block is recursively compiled then becomes a 'data:Program' entry. Data is not further compiled.
 
-A g0 compiler may use quotas to guard against non-termination. Quotas will necessarily be deterministic, e.g. based on loop counters instead of CPU time. 
+The compiler may further optimize programs, but should carefully stabilize how compilation interacts with macro expansion. Relevantly, with respect to subsequent macro evaluation, prior calls are either fully evaluated or not at all, and arity should be stable. For example, `[swap swap]` might optimize to `[]` but the compiler could add an annotation to preserve original 2--2 arity.
+
+A g0 compiler might impose quotas for compile-time computation. Any such quotas must be deterministic, e.g. based on loop counters instead of CPU time. However, quotas could be tunable via annotation.
 
 ## Bootstrap 
 
@@ -171,15 +160,15 @@ Extensions accepted so far: data definitions, static assertions, export function
 
 ### Variables? Rejected.
 
-Variables are often more convenient than manual data-plumbing with swap, drop, etc.. However, full support for variables requires the ability to use variables from within loops or conditionals, mutate variables, pass by reference, etc.. Abstracting the data stack and adjusting the calling convention for functions within the language (e.g. supporting keyword parameters and results) would be a useful step. My decision is to defer this feature for a later language module.
+Variables are often more convenient than manual data-plumbing with swap, drop, etc.. However, full support for variables (mutation, pass by reference, etc.) is more sophisticated than I'd prefer to support in the g0 compiler. This is left to a future post-g0 language. 
 
 ### User-Defined Operators? Rejected.
 
-We could implicitly rewrite '=>' to 'op-x3d-x3e' based on the ascii hexadecimal, and similar for other ops. Then we could define this word normally. However, I think ops won't fit the aesthetic of a postfix language, especially without type-driven overloads. Of course, ops should be supported by other language modules.
+Without variables or support for overloading, use of operators is relatively awkward. So, this should be added to a post-g0 language.
 
-### Staged Macros? Tentative.
+### Multi-Stage Macros? Tentative.
 
-Macros currently produce a program as the first result. However, we could extend macros to permit a `macro:Program` result such that the result may be another macro call. The main use-case for this would be support for variable-arity macros; however, I'm not convinced this is a good idea or necessary. I've decided to defer this extension; if needed, adding it later won't break existing code.
+Macros currently must produce a `data:Program` value at the top of the stack. We could extend this to permit `data:macro:Program`, further evaluating the result as a macro. This is more expressive than single-stage macros, but also more difficult to reason about. I don't see a strong use-case at this time. I've decided to defer this extension until a strong use-case is discovered.
 
 ### Lists of Programs? Rejected.
 
@@ -187,12 +176,12 @@ Idea is `{ foo, bar, baz }` syntax produces a list of program blocks, which a ma
 
 ### Macro State? Rejected.
 
-A compiler could enable macros to communicate via compile-time effects, e.g. through variables. This has many potential use-cases. However, I'd prefer flexible communication models when I eventually pursue this concept - bidirectional within a file, and even communications between modules, likely based on soft constraint systems and assignment of constraint/logic variables. Essentially, the complete version of this feature should be deferred to a higher 'layer' of programming languages than g0 is intended to serve or represent.
+A compiler could enable macros to communicate via compile-time effects, e.g. through variables. This has many potential use-cases. However, I'd prefer to avoid coupling the idea of compile-time communication to module boundaries. Later, we might create modules based on soft constraint systems and assignment of constraint/logic variables, where even modules represent partial constraints and solutions. 
 
 ### Assertion Parameter? Rejected.
 
-Similar to export, we could provide the dictionary as an input to assertions. This would allow more flexible analysis, but may also complicate reasoning and refactoring insofar as our dictionary exposes symbols that will be shadowed later. I've decided to avoid this complication; assertions are still useful, and any special analysis on the whole dictionary may be deferred to export function.
+Similar to export, we could provide the dictionary as an input to assertions. This would allow more flexible analysis, but may also reasoning and refactoring insofar as our dictionary might expose symbols that will be shadowed later. I've decided to avoid this complication; assertions are still useful as is, but any special analysis on the whole dictionary may be deferred to export function.
 
 ### Aggregate Definitions? Rejected.
 
-It is feasible to extend g0 with special symbols that support implicit aggregation on 'open' and 'from', preferably monotonic and idempotent such as set union or graph unification. However, this idea has the same problems as macro state, just at a different layer. Similarly, it should be left to higher layer language modules.
+It is feasible to extend g0 with special symbols that support implicit aggregation on 'open' and 'from', preferably monotonic and idempotent such as set union or graph unification. However, this idea has the same problems as macro state, just at a different layer. It should probably be solved at the macro state layer, too.

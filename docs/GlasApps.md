@@ -38,21 +38,19 @@ Stable prefix and attention from the programmer is adequate for transaction mach
 
 Relevant observations: A non-deterministic transactions is equivalent to choosing from a set of deterministic transactions, one per choice. For isolated transactions, repetition and replication are logically equivalent. When a non-deterministic choice is stable, replication reduces recomputation and latency. 
 
-It is feasible for a transaction machine to start as a single transaction then introduce a non-deterministic 'fork' effect to represent the set of transactions. This has the advantage of making the set much more dynamic and reactive to observed needs and configurations.
+It is feasible for a transaction machine to start as a single transaction then introduce a non-deterministic 'fork' effect to represent the set of transactions. In contrast to explicit threading, use of fork results in a reactive set of tasks, no need to explicitly 'kill' tasks. Additionally, this does not conflict with effects handlers.
 
-Transactions may evaluate in parallel insofar as conflict is avoided. When conflict occurs between two transactions, one must be aborted. Progress is guaranteed, and a good scheduler can guarantee fairness for transactions that meet reasonable time-quota limits. A scheduler can reduce rework by organizing transactions with a history of conflict to evaluate in separate time-slots.
+Concurrent transactions can evaluate in parallel insofar as they operate on different parts of memory, or do not modify shared dependencies. When a read-write conflict occurs between parallel transactions, one must be aborted. Progress can be guaranteed, and a good scheduler can additionally guarantee fairness for transactions that meet reasonable time-quota limits. 
 
-Programmers can avoid conflict by software architecture and design patterns.
+Programmers can improve parallelism by software architecture and design patterns that avoid read-write conflict. For example, using channels or buffers to communicate between tasks.
 
 ### Distributed Computation 
 
-Transaction machines can support distributed computation, but attention to application architecture is required. 
+An effects API can explicitly model effects at different locations, e.g. filesystem per machine. Distributed transactions, which evaluate effects at multiple locations, are difficult to make robust and efficient. Ideally, programmers should arrange for tasks to either be location-independent (allowing migration for performance) or location-specific (stable evaluation on a specific machine).
 
-Effects in a distributed system may be host-specific, such as access to a local filesystem. Access to host-specific effects must be exposed in the effects API. Transactions that interact with multiple hosts, aka distributed transactions, should be avoided because they are too difficult to implement correctly or efficiently. Instead, we should arrange that each repeating transaction interacts with a specific host, or at least migrates between hosts in a stable manner. Distributed transaction avoidance might be enforced.
+Channels are convenient for communication between locations, avoiding synchronization. A basic channel can be modeled as a list variable where the reader takes from list head and the writer appends to list tail. Because reader and writer operate abstractly on different parts of the list, read-write conflicts are avoided. Messages buffered in the list abstract over network latency.
 
-If a repeating transaction does not use use any host-specific effects, it can be freely distributed based on performance concerns, such as load balancing or minimizing network communication. In practice, a distributed transaction machine will have many cliques, where each clique is a subset of repeating transactions that are difficult to efficiently distribute for reasons such as shared state. Cliques will be distributed together with their shared state.
-
-Communication between machines can be based on channels. Channels are essentially list variables where a reader takes from list head and the writer appends to list tail. Reader and writer can be evaluated in parallel without conflict because they observe and manipulate different regions of the list. Values buffered in the list also help abstract over network latency. 
+Distributed computation of transaction machines should be based around forking stable tasks to evaluate on remote machines, then communicate between tasks on different machines via channels. Effectively, a transaction machine will represent an overlay network on a distributed system.
 
 ### Transaction Fusion
 
@@ -84,31 +82,29 @@ A complete solution for live coding requires additional support from the develop
 
 ### Procedural Embedding of Transaction Machines
 
-It is feasible to compile a top-level transactional loop, such as a Glas program of form `loop:(until:Halt, do:cond:try:Step)`, to run as a transaction machine within a procedural context. The data stack can be compiled into a set of transaction variables. Static analysis and runtime instrumentation can support fine-grained read-write conflict detection. It is feasible to recognize *channels* as a patterned use of list variables.
+It is feasible to compile a top-level transactional loop, such as a Glas program of form `loop:(until:Halt, do:cond:try:Step)`, to run as a transaction machine within a procedural context. In the interest of predictable performance, a compiler should require an explicit hint to recognize and optimize the loop as a transaction machine, e.g. `prog:(do:loop:(...), accel:txloop, ...)`.
 
-The embedding loses implicit live coding, but we still benefit from convenient process control, incremental computing, task-based concurrency, reactive dataflow, potential distribution, etc.. Use of loops to express waits is more composable and extensible than explicit wait effects. I intend to use this procedural embedding in context of [Glas command line interface](GlasCLI.md).
+In context of this loop, the data stack might be compiled into a set of transaction variables. Abstract interpretation together with runtime instrumentation can feasibly support fine-grained read-write conflict detection. It is feasible to recognize *channels* as a patterned use of list variables, i.e. channels are just lists on the data stack that we optimize based on usage. 
+
+The embedding loses implicit live coding, but we still benefit from convenient process control, incremental computing, task-based concurrency, reactive dataflow, potential for parallelism and distribution, etc.. I intend to initially use this procedural embedding in context of [Glas command line interface](GlasCLI.md).
 
 ### Transaction Machine Embedding of Procedural
 
-A transaction machine cannot directly evaluate procedural code within a transaction. However, it is feasible to create a concurrent task that repeatedly interprets the procedural code for a few steps then yields, saving the procedure's continuation for a future transaction. 
-
-This embedding is essentially the same as multi-threading. We could manipulate state to kill the procedural thread or spawn new ones. However, the transaction machine substrate does offer a few benefits, such as lightweight support for transactional memory, and a robust foundation to integrate with dataflow paradigms.
+It is feasible to create a concurrent task where each transaction steps through procedural code, interpreting it and waiting for data as needed. Evaluating a collection of procedural continuations essentially models multi-threaded systems within a transaction machine, albeit with benefits of transactional memory. Evaluation of individual steps could be accelerated for performance.
 
 ### Interleave of Embeddings
 
-Conveniently, these embeddings interleave. Relevantly, if we evaluate a procedure containing a transaction loop, we do not need to update the continuation for that procedure until the loop halts. While the continuation variable is not updated, the loop will be stable for incremental computing and forks.
-
-This supports a flexible integration of programming styles.
+Conveniently, these embeddings interleave. Relevantly, when a transaction loop evaluates a procedure that contains another transaction loop, we can evaluate the loop without updating the continuation state until the loop halts. This allows for a 'stable' loop with respect to incremental computing and replication of forks. No need for special optimizations.
 
 ## Before Optimization
 
 Transaction machines rely on sophisticated optimizations. Implementation of these optimizations is non-trivial, and they certainly will not be available during early development of Glas systems. A transition plan is required.
 
-Without optimizations, implicit process control reduces to a busy-wait loop. We can mitigate this by simply slowing down the loop. I propose to do so by limiting the polling frequency for external resources. For example, we might limit polling of a TCP channel to 40Hz (a 25ms period). After we fail to read data 7ms ago, the next read would have an 18ms timeout to avoid observing a failed read twice within 25ms. We can poll multiple TCP channels within a 25ms cycle.
+Without incremental computing optimizations, implicit process control reduces to a busy-wait loop. We can mitigate this by simply slowing down an unproductive loop. For example, we could limit a loop that fails to do anything to 40Hz, adjustable via annotation. This might apply only to the 'txloop' accelerator in a procedural embedding.
 
-Without optimizations, forks are random. There is no replication, parallel evaluation, or incremental computing of forked tasks. Forks will often be evaluated even when there is nothing to do. This results in unpredictable latency, reduced scalability, and unnecessary rework. Before optimizations are available, concurrent applications should manually manage their own schedule and cache. A simple case is to run every subtask on every cycle, but allow some tasks to short-circuit based on dirty bits.
+Without replication and incremental computing optimizations, use of 'fork' for task-based concurrency results in unpredictable latency and unnecessary rework. We can mitigate this by simply avoiding 'fork' until later, instead using a centralized event polling loop.
 
-These interim solutions are adequate for many applications, especially at small scales. Importantly, they do not pollute the effects API with explicit timeouts, waits, or multi-threading. And they work equally well for procedural interpretation. 
+These interim solutions are adequate for many applications, especially at smaller scales. Importantly, they do not pollute the effects API and also work for procedural embeddings.
 
 ## Abstract Design
 
@@ -158,6 +154,12 @@ Repetition and replication are equivalent for isolated transactions. In context 
 
 Fork is abstractly a function of time, e.g. `Time -> Index -> Bool`, advancing index on each fork. Deep within a hierarchical transaction, because time is logically frozen, 'fork' should backtrack and re-read the same values like other effects. Between top-level transactions, including between steps in a procedural embedding, time advances and a fresh sequence of fork values will be read.
 
+### Distribution
+
+There is no generic API for location-specific effects. Those must be modeled as part of other effects APIs with attention to the system context. However, even without location-specific effects, it is feasible to distribute location-independent tasks for performance reasons. 
+
+Glas does not use a separate effects API for channels. Instead, channels should be modeled as list values on the data stack. Between annotations and abstract interpretation, a compiler can recognize, analyze, and optimize use of channels.
+
 ### Time
 
 Transactions are logically instantaneous, so we cannot model explicit timeouts or sleeps. However, we can constrain a transaction to commit later instead of immediately. Proposed effects API:
@@ -170,18 +172,6 @@ Reading 'now' will destabilize a transaction and is unsuitable for waits or incr
 Use of 'check' provides a stable option to indirectly observe time. If a transaction fails after a time check fails, the provided timestamp informs the system of how long it should wait. It is feasible to precompute the future transaction, have it ready to commit.
 
 The default TimeStamp type is Windows NT time - a natural number of 100ns intervals since midnight Jan 1, 1601 UT. 
-
-### Distribution
-
-Distribution is mostly about saying *where* we evaluate code, with different tasks potentially indicating different locations. To avoid polluting our effects APIs with location parameters, I propose a generic 'move' effect.
-
-* **move:Location** - Response is unit or failure. If this does not fail, subsequent effects are performed in context of the indicated Location. 
-
-Locations can potentially be references (like 'home') or directions (like 'west'). Move fails if a location is unrecognized or unreachable. Distributed transactions are troublesome, so move might also fail if moving would implicitly require a distributed transaction.
-
-In transaction machines, the location should be specific to the transaction. We implicitly start transactions at origin. For a procedural embedding, move might model mobile agents, and the reset would need to be explicit.
-
-*Note:* No need for a channels API. Glas systems should recognize when lists are used as channels, and optimize. Recognition can be simplified by use of annotations.
 
 ### Logging
 
@@ -202,7 +192,7 @@ The initial use-case for environment variables is to provide access to OS-provid
 * **env:get:Variable** - response is a value for the variable, or failure if the variable is unrecognized or undefined. 
 * **env:set:(var:Variable, val?Value)** - update a variable. The value field may be excluded to represent an undefined or default state. This operation may fail, e.g. if environment doesn't recognize variable or fails to validate a value. 
 
-The environment controls environment variables, their types, and opportunity for extension. Programs should not rely on environment variables for private state - that role is handled by the data stack.
+The environment controls environment variables, their types, and opportunity for extension. Programs should not rely on environment variables for private state. That role is handled by the data stack. 
 
 ## Console Applications
 
@@ -211,5 +201,4 @@ See [Glas command line interface](GlasCLI.md).
 ## Web Applications
 
 Another promising near-term target for Glas is web applications, compiling apps to JavaScript and using effects oriented around on Document Object Model, XMLHttpRequest, WebSockets, and Local Storage. 
-
 
