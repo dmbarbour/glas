@@ -21,11 +21,11 @@ The top-level of a g0 file consists of imports, definitions, assertions, and an 
 
         export [ Program ]
 
-The g0 language assumes imported modules have compiled values of form `(qux:prog:Program, baz:macro:Program, ...)`. The default output from a g0 module is the dictionary visible at the bottom of the file, e.g. `(bar-baz:(...), word1:prog:(do:Program, ...), word2:macro:Program, word3:data:Value, qux:(...), other symbols from foo)`. 
+The g0 language assumes opened and imported modules compile into dictionary values of form `(word1:prog:(do:GlasProgram, ...), word2:macro:GlasProgram, word3:data:Value, ...)`. A g0 module produces a similar dictionary value by default. All definitions are already linked into the GlasProgram, with no latent reference to the g0 namespace. This design relies on structure sharing of common subtrees to compress the representation.
 
-If 'open' appears, it must be the first entry, inheriting an initial dictionary. If unspecified, the g0 module starts with an empty dictionary. Within the module, words may only be explicitly defined once, and a word that is explicitly defined cannot be used before its definition. If 'export' appears, it must be the final entry, describing a function to rewrite or replace the final dictionary.
+If 'open' appears, it must be the first entry, inheriting an initial dictionary. If unspecified, a g0 module starts with an empty dictionary. Each word may only be explicitly defined once, and a word may not be used until after its final definition within the module. If 'export' appears, it must be the final entry, describing a function to rewrite or replace the final dictionary. 
 
-In case of error, a g0 compiler should attempt to report other errors where feasible before failing compilation. Assertions can help programmers detect errors that the g0 compiler won't normally catch.
+In case of obvious error, a g0 compiler should attempt to report other errors where feasible then fail compilation. Assertions can help programmers detect errors that the g0 compiler won't normally catch.
 
 ## Words
 
@@ -112,27 +112,31 @@ The g0 ecosystem will usually start with a module to define the primitives and o
 
 ### Data Definitions
 
-Data is defined using a program of arity 0--1. After macro evaluation, this program is evaluated at compile-time with access to compile-time effects. The generated value on the data stack becomes a `data:Value` definition in the dictionary. Failure to evaluate a data definition causes the whole module to fail.
+Data is defined using a program of arity 0--1. After macro evaluation, this program is evaluated at  compile-time, with access to compile-time effects. The generated value on the data stack becomes a `data:Value` definition in the dictionary. Failure to evaluate a data definition causes the whole module to fail.
 
 ## Static Assertions
 
-Assertions must be 0--Any static arity programs, favoring 0--0. After macro evaluation, assertions are evaluated with an empty data stack and access to compile-time effects. If 0--N arity where N is non-zero, an info message is implicitly written to the log describing the final data stack. On failure, an error is emitted and the entire module will fail to evaluate.
+Assertions are 0--Any static arity programs, favoring 0--0. After macro evaluation, assertions are evaluated with an empty data stack and access to compile-time effects. The primary output is pass/fail; if evaluation of an assertion fails, the module also fails to compile. However, secondary output includes the compile-time log. If an assertion has a non-empty stack output, that is logged implicitly.
 
-Static assertions within g0 programs are a convenient basis for lightweight unit tests. They will run every time the program is built, but memoization can  
+Static assertions within g0 programs are a convenient basis for lightweight unit and integration tests. They can also be used for user-defined static analysis. For example, with suitable definitions, `assert [[foo] type-check]` could analyze whether `foo` has a type consistent with internal annotations. 
 
-## Export Function
-
-The export function is a program of static arity 1--1, the final entry in a g0 file. If left unspecified, is equivalent to `export []`. After compiling the export program, it is evaluated with access to compile-time effects. The dictionary of definitions is input on the data stack. The value output from the export function becomes the compiled value of the g0 module.
-
-Export functions enable g0 to define words programmatically, flexibly merge dictionaries, analyze dictionaries for errors, produce module values suitable for non-g0 import contexts, and extract or compile definitions from non-g0 module sources. However, the g0 module will not be able to directly use the words it is defining via export.
-
-*Aside:* For export control, instead of using an export function, it will often be simpler and better to use a 'public.g0' module within a folder to explicitly whitelist the exposed symbols.
+*Note:* We don't want assertions for typechecks to become boilerplate. It is preferable if the compiler verifies easily checked *Annotations* implicitly. Assertions should mostly be used where annotations or implicit compiler checks are lacking for whatever reason.
 
 ## Annotations
 
-There is currently no dedicated syntax for annotations in g0. However, if programs construct `prog:(do:P, Annotations)` programs, e.g. by adding annotations to a block before applying it, a g0 compiler should avoid burying the annotations below other prog headers. Instead, the compiler should check recognized annotations for consistency, and add its own annotations as needed, e.g. for stable partial evaluation. 
+There is no dedicated syntax for annotations in g0. However, it is feasible to programmatically build and macro-apply annotations, and a compiler should not erase or bury user-provided annotations. With suitable definitions, `prog foo [[P] Annotations annotate apply]` might result in a dictionary with `(foo:prog:(do:P, Annotations), ...)`, perhaps extending with compiler-provided annotations.
 
-It is also feasible to annotate programs via export function, post-hoc. However, if you're free to invasively modify code, it's usually better to annotate programs internally. 
+The compiler is free to verify user-provided annotations that it recognizes, perhaps failing a module based on an invalid stack-arity or type annotation. 
+
+*Aside:* External annotations are also feasible, e.g. one module could wrap another with annotated definitions, either manually or programmatically via 'export'.
+
+## Export Function
+
+The export function is a program of static arity 1--1. It is either the final entry in a g0 file or, if left unspecified, is equivalent to `export []`. After compiling the export program, it is evaluated with access to compile-time effects. The dictionary of definitions is input on the data stack. The value output from the export function becomes the compiled value of the g0 module.
+
+Export functions enable g0 to define words programmatically, merge dictionaries, or produce values suitable for non-g0 contexts. Or when accessing non-g0 programs from g0, we could use an intermediate module with an export function to compile the target into something g0 can use.
+
+*Aside:* For export control, a more convenient option in many cases is treat the 'public' module within a folder as the whitelist for exported symbols, a file with only `from ... import ...` entries. 
 
 ## Compilation Strategy for Programs
 
@@ -156,11 +160,11 @@ A remaining goal is bootstrap of the executable for the command-line tool. This 
 
 The g0 syntax should not be extended very much because a significant goal is to preserve simplicity of bootstrap. However, if there are any features that simplify bootstrap or at least do not significantly complicate compilation, we can consider them. In many cases, it is wiser to design an alternative language module that implements the desired features.
 
-Extensions accepted so far: data definitions, static assertions, export function.
+Proposed extensions accepted so far: data definitions, static assertions, export function.
 
 ### Variables? Rejected.
 
-Variables are often more convenient than manual data-plumbing with swap, drop, etc.. However, full support for variables (mutation, pass by reference, etc.) is more sophisticated than I'd prefer to support in the g0 compiler. This is left to a future post-g0 language. 
+Variables are often more convenient than manual data-plumbing with swap, drop, etc.. However, proper support for variables (mutation, pass by reference, safe interaction with hygienic macros, etc.) is more sophisticated than I'd prefer to support in the g0 compiler. This is left to a future post-g0 language. 
 
 ### User-Defined Operators? Rejected.
 
@@ -168,20 +172,32 @@ Without variables or support for overloading, use of operators is relatively awk
 
 ### Multi-Stage Macros? Tentative.
 
-Macros currently must produce a `data:Program` value at the top of the stack. We could extend this to permit `data:macro:Program`, further evaluating the result as a macro. This is more expressive than single-stage macros, but also more difficult to reason about. I don't see a strong use-case at this time. I've decided to defer this extension until a strong use-case is discovered.
+Macros currently must produce a `data:Program` value at the top of the stack. We could extend this to specially handle `data:macro:Program`, further evaluating the result as a macro. This is slightly more expressive than single-stage macros, but most use cases I can think of would also be bad practices. I've decided to defer this extension at least until a strong, sensible use-case is discovered.
 
 ### Lists of Programs? Rejected.
 
 Idea is `{ foo, bar, baz }` syntax produces a list of program blocks, which a macro could process. This could simplify concise expression of lists or dicts, e.g. as `{1, 2, 3}` or `{'x 1, 'y 2, 'z 3}`. However, it would interact awkwardly with data abstraction and complicates construction of data, so I've decided against this feature.
 
-### Macro State? Rejected.
+### Macro State or Aggregation? Rejected.
 
-A compiler could enable macros to communicate via compile-time effects, e.g. through variables. This has many potential use-cases. However, I'd prefer to avoid coupling the idea of compile-time communication to module boundaries. Later, we might create modules based on soft constraint systems and assignment of constraint/logic variables, where even modules represent partial constraints and solutions. 
+A compiler could enable macros to communicate via compile-time effects, e.g. through shared compile-time tables or variables. This has many potential use-cases. However, I'd prefer to avoid coupling the concept of compile-time communication to local module boundaries. Further, I want to preserve a very declarative style at the higher program layers, e.g. where order of imports and definitions is irrelevant, and this requires some careful API design.
+
+I think it's better to defer this feature to after g0. We might build a syntax from ground up to work well with overloading definitions, ambiguity and probable meaning, preferences, and constraints via compile-time search and shared constraint models.
 
 ### Assertion Parameter? Rejected.
 
-Similar to export, we could provide the dictionary as an input to assertions. This would allow more flexible analysis, but may also reasoning and refactoring insofar as our dictionary might expose symbols that will be shadowed later. I've decided to avoid this complication; assertions are still useful as is, but any special analysis on the whole dictionary may be deferred to export function.
+Similar to export, we could provide the dictionary as an input to assertions. This would allow more flexible analysis, but will also complicate reasoning because the dictionary would be specific to each assert (depending on following definitions) instead of a stable value. 
 
-### Aggregate Definitions? Rejected.
+I've decided to avoid this complication. Assert serves a useful role as-is. Any assertions on the full dictionary are better performed by 'export'. 
 
-It is feasible to extend g0 with special symbols that support implicit aggregation on 'open' and 'from', preferably monotonic and idempotent such as set union or graph unification. However, this idea has the same problems as macro state, just at a different layer. It should probably be solved at the macro state layer, too.
+### Hierarchical Definitions? Tentative.
+
+        from basics import dip
+        import math as m
+        prog dist [ [m.square] dip m.square m.add m.sqrt ]
+
+The proposal here is to support hierarchical imports and dotted-path naming. In this case, our dictionary should roughly consist of `(m:data:ModuleValue, dist:prog:(...), dip:macro:(...))`, and use of dotted paths such as 'm.sqrt' would extract a program from the data. Using 'data' for this role, we retain limited compositionality, i.e. 'm.sqrt' can be decomposed as two actions 'm .sqrt'. Use of 'import math' alone would be equivalent to 'import math as math'. 
+
+However, use of deep hierarchical references is a bad practice. It violates Law of Demeter. Access to 'sqrt' using different prefixes from different files, such as 'm.sqrt' and 'math.sqrt', is an awkward user experience compared to flat dictionary per project. Readability takes a hit when trying to parse dotted paths.
+
+I hope to fill this role with other solutions, such as developing an intermediate module that aggregates external and utility definitions into a flat dictionary. However, I might revisit use of hierarchical references depending on how things work in practice.

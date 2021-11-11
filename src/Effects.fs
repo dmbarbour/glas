@@ -4,6 +4,10 @@ module Effects =
 
     /// Support for hierarchical transactions. This mostly applies to the external
     /// effects handler in context of Glas programs.
+    ///
+    /// Note: This API is incompatible with *parallel* transactions, which require
+    /// multi-stage commit with potential failure so we can backtrack and retry. We
+    /// ultimately use locks to control background effects. 
     type ITransactional = 
         interface
             /// The 'Try' operation is called to start a hierarchical transaction. This
@@ -61,7 +65,7 @@ module Effects =
         end
 
 
-    /// No effects. Requests fail and transactions are ignored.
+    /// No effects. PRequests fail and transactions are ignored.
     let noEffects =
         { new IEffHandler with
             member __.Eff _ = None
@@ -112,34 +116,208 @@ module Effects =
     //  However, I doubt that effects will become the performance bottleneck
     //  in context of bootstrap, so there isn't much need to implement this.
     //  Also, behavior would be incorrect if there is any shared IEffHandler.
-       
+
+    /// Non-Deterministic Fork Effect
+    ///
+    /// This effect provides random bits on demand. Most local complexity is related
+    /// to handling transactions correctly. Acquiring random bits is punted to the
+    /// dotnet crypto random provider. 
+    ///
+    /// Fork is logically 'time varying' to enable procedural embedding of transaction 
+    /// machines. In practice, this means we only need to keep a history to backtrack
+    /// within a hierarchical transaction. We can forget history upon commit or abort. 
+    ///
+    /// Ideally, fork would be more deeply integrated with a runtime as a special effect
+    /// to support optimization of top-level transaction loops as transaction machines.
+    /// However, those optimizations are difficult to achieve at this layer, so will be
+    /// left for bootstrap of the Glas command line.
+    type ForkEff =
+        val mutable private Buffer : Bits       // bits currently available for reading
+        val mutable private StaleBits : int     // count of recycled bits from backtracking
+        val mutable private TXHist : Bits list  // bits remembered for future backtracking
+
+        new () = 
+            { Buffer = Bits.empty
+            ; StaleBits = 0
+            ; TXHist = List.empty
+            }
+
+        member inline private self.Remember b =
+            match self.TXHist with
+            | (bs::txs) -> 
+                // remember choices in case of backtracking 
+                self.TXHist <- ((Bits.cons b bs)::txs)
+            | [] -> () // no need for memory outside of transactions
+
+        // forget observed bits over time, keep the buffer fresh
+        member inline private self.ExitTX () =
+            self.TXHist <- []
+            self.Buffer <- Bits.skip self.StaleBits self.Buffer
+            self.StaleBits <- 0
+
+        member self.ReadBit () =
+            if Bits.isEmpty self.Buffer then
+                // take random bits from dotnet
+                self.Buffer <- Bits.random 4096
+            let b = Bits.head self.Buffer
+            self.Buffer <- Bits.tail self.Buffer
+            self.StaleBits <- max 0 (self.StaleBits - 1)
+            self.Remember b
+            b
+
+        interface ITransactional with
+            member self.Try () =
+                self.TXHist <- (Bits.empty :: self.TXHist)
+            member self.Commit () =
+                match self.TXHist with
+                | [_] -> self.ExitTX()
+                | (tx0::tx1::txs) -> 
+                    // remember tx0 in parent transaction
+                    self.TXHist <- ((Bits.append tx0 tx1)::txs)
+                | [] ->
+                    failwith "commit outside of transaction" 
+            member self.Abort () =
+                match self.TXHist with
+                | [_] -> self.ExitTX()
+                | (tx0::txs) ->
+                    // backtrack tx0 in parent transaction
+                    self.TXHist <- txs
+                    self.Buffer <- Bits.append (Bits.rev tx0) self.Buffer
+                    self.StaleBits <- Bits.length tx0 + self.StaleBits
+                | [] ->
+                    failwith "abort outside of transaction"
+
+        interface IEffHandler with
+            member self.Eff req =
+                match req with
+                | Value.Variant "fork" Value.U ->
+                    self.ReadBit() |> Bits.singleton |> Value.ofBits |> Some
+                | _ -> None
+
+    /// Shared State Communications for Background Effects 
+    ///
+    /// We can use a value reference as a shared-state interchange between a program and a
+    /// runtime's background task. The effects API will abstract state from the program to
+    /// protect invariants. The runtime can lock the reference to exchange data, or wait on
+    /// an update from the program if there is nothing else to do. 
+    ///
+    /// This design is simplistic and not optimal for parallelism, scalability, or efficiency.
+    /// But it is adequate for many use cases, including bootstrap of the Glas system. I intend
+    /// to build network and filesystem effects above shared state exchange.
+    type SharedStateEff<'I, 'O, 'S> =
+        val private State       : 'S ref
+        val private ParseReq    : Value -> 'I option
+        val private Action      : 'I -> 'S -> ('O * 'S) option
+        val private PrintResp   : 'O -> Value 
+        // The 'ParseReq' can filter some requests. Until a relevant request is observed, we
+        // use an integer to track logical stack depth. Together, these allow locking to be
+        // deferred until necessary.
+        val mutable private TXStack : Choice<int, (struct('S * 'S list))>
+
+        new(state, parser, action, writer) = 
+            { State = state
+            ; ParseReq = parser
+            ; Action = action
+            ; PrintResp = writer
+            ; TXStack = Choice1Of2 0
+            }
+
+        member private self.ReadState () =
+            match self.TXStack with
+            | Choice1Of2 n when (n > 0) ->
+                // unlock later, on transaction commit/abort
+                System.Threading.Monitor.Enter(self.State) 
+                let s = !self.State
+                self.TXStack <- Choice2Of2 struct(s, List.replicate (n - 1) s)
+                s
+            | Choice2Of2 struct(s,_) ->
+                s
+            | _ -> 
+                // internal error (should not occur)
+                failwith "must read from inside a transaction"
+
+        member private self.WriteState s =
+            match self.TXStack with
+            | Choice2Of2 struct(_, ss) ->
+                self.TXStack <- Choice2Of2 struct(s,ss)
+            | _ ->
+                // internal error (should not occur)
+                failwith "must write after read within transaction"
+
+        interface ITransactional with
+            member self.Try () =
+                match self.TXStack with
+                | Choice1Of2 n ->
+                    self.TXStack <- Choice1Of2 (n + 1)
+                | Choice2Of2 struct(s,ss) ->
+                    self.TXStack <- Choice2Of2 struct(s,s::ss)
+            member self.Commit () =
+                match self.TXStack with
+                | Choice1Of2 n ->
+                    assert (n > 0)
+                    self.TXStack <- Choice1Of2 (n - 1)
+                | Choice2Of2 struct(s,(_::ss)) ->
+                    self.TXStack <- Choice2Of2 struct(s,ss)
+                | Choice2Of2 struct(s,[]) ->
+                    self.State := s
+                    System.Threading.Monitor.PulseAll(self.State)
+                    System.Threading.Monitor.Exit(self.State)
+                    self.TXStack <- Choice1Of2 0
+            member self.Abort () =
+                match self.TXStack with
+                | Choice1Of2 n ->
+                    assert (n > 0)
+                    self.TXStack <- Choice1Of2 (n - 1)
+                | Choice2Of2 struct(_, (s::ss)) ->
+                    self.TXStack <- Choice2Of2 struct(s,ss)
+                | Choice2Of2 struct(_, []) ->
+                    System.Threading.Monitor.Exit(self.State)
+                    self.TXStack <- Choice1Of2 0
+
+        interface IEffHandler with
+            member self.Eff v =
+                match self.ParseReq v with
+                | None -> None
+                | Some i ->
+                    use tx = withTX self
+                    let s = self.ReadState()
+                    match self.Action i s with
+                    | Some (o, s') ->
+                        self.WriteState s'
+                        tx.Commit()
+                        Some (self.PrintResp o)
+                    | None ->
+                        tx.Abort()
+                        None
+
 
     /// Transactional Logging Support
     /// 
-    /// This wraps a naive logging IEffHandler with some code to support
-    /// transactional capture of logged messages. 
-    /// 
-    /// Logging requires special attention in context of hierarchical
-    /// transactions and backtracking. We should keep the log messages
-    /// from the abort path because they are precious for debugging. 
+    /// Logging requires special attention in context of hierarchical transactions
+    /// and backtracking. We want to keep log messages from the aborted path because
+    /// they remain valuable for debugging. However, we also must distinguish them,
+    /// e.g. by wrapping or flagging the messages.
+    ///
+    /// Due to the special processing for incomplete transactions, this 
     ///
     /// However, it should be clear that certain messages are from the
-    /// aborted message path. To support this, by default I'll add the
-    /// 'recant' label to all messages that were from a failure path. 
+    /// aborted message path. To support this, currently I'll add a
+    /// 'recant' flag to messages emitted from a failure path, and this
+    /// will affect color when message is rendered to console.
     ///
     /// At the top-level, a function can be provided to receive the 
     /// logged messages when they become available.
     type TXLogSupport =
         val private WriteLog : Value -> unit
-        val private Recanted : FTList<Value> -> FTList<Value>
+        val private Recant : FTList<Value> -> FTList<Value>
         val mutable private TXStack : FTList<Value> list
 
-        /// Set the committed output destination. Default behavior for 
-        /// handling aborted messages - add 'recant' to every message.
+        /// Set the committed output destination. Default behavior for aborted
+        /// transactions is to add a 'recant' flag to every message.
         new (out) = 
             let recantMsg = Value.record_insert (Value.label "recant") (Value.unit)
             { WriteLog = out
-            ; Recanted = FTList.map recantMsg
+            ; Recant = FTList.map recantMsg
             ; TXStack = [] 
             }
 
@@ -147,7 +325,7 @@ module Effects =
         /// rewriting logged messages upon abort. 
         new (out, recantFn) = 
             { WriteLog = out
-            ; Recanted = recantFn
+            ; Recant = recantFn
             ; TXStack = [] 
             }
 
@@ -166,7 +344,7 @@ module Effects =
             match self.TXStack with
             | [] -> invalidOp "pop empty transaction stack"
             | (tx0::tx0Rem) ->
-                let tx0' = if bCommit then tx0 else self.Recanted tx0
+                let tx0' = if bCommit then tx0 else self.Recant tx0
                 match tx0Rem with
                 | (tx1::txs) -> // commit into lower transaction
                     self.TXStack <- (FTList.append tx1 tx0')::txs 
@@ -187,10 +365,19 @@ module Effects =
             member self.Commit () = self.PopTX true
             member self.Abort () = self.PopTX false
 
+    /// Option for TXLogSupport in case we want to wrap messages instead of flagging them. 
+    /// Wrapping is more efficient and preserves some information about transaction structure.
+    /// OTOH, it's more difficult to read or process compared to a flat stream of messages.
+    let recantWrap vs =
+        let isRecanted = Value.record_lookup (Value.label "recant") >> Option.isSome 
+        let allRecanted = not (Seq.exists (isRecanted >> not) (FTList.toSeq vs))
+        if allRecanted then vs else
+        FTList.singleton (Value.variant "recant" (Value.ofFTList vs))
+
     /// The convention for log messages is an ad-hoc record where fields
     /// are useful for routing, filtering, etc. and ad-hoc standardized.
     /// 
-    ///   (lv:warn, text:"something happened")
+    ///   (lv:warn, text:"something bad happened")
     ///
     /// This design is intended for extensibility of text with new context
     /// and of log events with new variants.
@@ -254,4 +441,5 @@ module Effects =
 
     let consoleErrLogger () : IEffHandler =
         TXLogSupport(consoleErrLogOut) :> IEffHandler
+
 

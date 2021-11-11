@@ -102,7 +102,7 @@ Transaction machines rely on sophisticated optimizations. Implementation of thes
 
 Without incremental computing optimizations, implicit process control reduces to a busy-wait loop. We can mitigate this by simply slowing down an unproductive loop. For example, we could limit a loop that fails to do anything to 40Hz, adjustable via annotation. This might apply only to the 'txloop' accelerator in a procedural embedding.
 
-Without replication and incremental computing optimizations, use of 'fork' for task-based concurrency results in unpredictable latency and unnecessary rework. We can mitigate this by simply avoiding 'fork' until later, instead using a centralized event polling loop.
+Without replication and incremental computing optimizations, use of 'fork' for task-based concurrency results in unpredictable latency and unnecessary rework. We can mitigate this by avoiding 'fork' until later. Early applications can be designed around a centralized event polling loop instead of concurrent tasks.
 
 These interim solutions are adequate for many applications, especially at smaller scales. Importantly, they do not pollute the effects API and also work for procedural embeddings.
 
@@ -152,26 +152,26 @@ Repetition and replication are equivalent for isolated transactions. In context 
 
 * **fork** - non-deterministic behavior, respond with '0' or '1' bitstring.
 
-Fork is abstractly a function of time, e.g. `Time -> Index -> Bool`, advancing index on each fork. Deep within a hierarchical transaction, because time is logically frozen, 'fork' should backtrack and re-read the same values like other effects. Between top-level transactions, including between steps in a procedural embedding, time advances and a fresh sequence of fork values will be read.
+Fork is abstractly a function of time. Relevantly, a hierarchical transaction may observe 'fork' backtracking within logically frozen time, but there is no history maintained between transactions or procedural steps.
 
 ### Distribution
 
-There is no generic API for location-specific effects. Those must be modeled as part of other effects APIs with attention to the system context. However, even without location-specific effects, it is feasible to distribute location-independent tasks for performance reasons. 
+There is no generic API for location-specific effects. Those can only be modeled as part of other effects APIs. Even without location-specific effects, it is feasible to distribute location-independent tasks for performance reasons. 
 
-Glas does not use a separate effects API for channels. Instead, channels should be modeled as list values on the data stack. Between annotations and abstract interpretation, a compiler can recognize, analyze, and optimize use of channels.
+Glas does not define an effects API for channels. Instead, channels will be modeled as list values on the data stack. Between annotations and abstract interpretation, a compiler can recognize, analyze, and optimize use of channels.
 
 ### Time
 
-Transactions are logically instantaneous, so we cannot model explicit timeouts or sleeps. However, we can constrain a transaction to commit later instead of immediately. Proposed effects API:
+Transactions are logically instantaneous. The concept of 'timeout' or 'sleep' is incompatible with transactions. However, we can constrain a transaction to commit before or after a given time. We can also estimate time of commit then abort if the estimate is too far off. Proposed effects API:
 
-* **time:now** - Response is the estimated time of commit, as a TimeStamp value.
+* **time:now** - Response is an estimated, logical time of commit, as a TimeStamp value.
 * **time:check:TimeStamp** - If 'now' is equal or greater to TimeStamp, respond with unit. Otherwise fail.
 
-Reading 'now' will destabilize a transaction and is unsuitable for waits or incremental computing. The use-case for 'now' is adding timestamps to observed events, such as messages received on a channel. In these cases, the transaction should already be in an unstable state so no harm is done.
+Use of 'check' represents stable, monotonic, indirect observation of time. If a transaction aborts after a failed time check, the runtime can implicitly wait for specified time (or other relevant changes) to retry. Time check is very useful for scheduling future activity, such as timeouts.
 
-Use of 'check' provides a stable option to indirectly observe time. If a transaction fails after a time check fails, the provided timestamp informs the system of how long it should wait. It is feasible to precompute the future transaction, have it ready to commit.
+Reading 'now' will destabilize a transaction. To avoid a busy-wait loop, reading time should be performed only by transactions that are already unstable for other reasons, such as reading a channel. This is useful for adding timestamps to received events or data.
 
-The default TimeStamp type is Windows NT time - a natural number of 100ns intervals since midnight Jan 1, 1601 UT. 
+The default TimeStamp is Windows NT time - a natural number of 100ns intervals since midnight Jan 1, 1601 UT. 
 
 ### Logging
 

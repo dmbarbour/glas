@@ -389,4 +389,12 @@ module Bits =
     
     // todo: more efficient matching on a prefix, more efficient take.
     // presumably we can match on chunks instead of one bit at a time.
-    
+
+    // utility
+    let random nBits =
+        assert(nBits >= 0)
+        let nBytes = (nBits + 7) / 8
+        let arr = Array.zeroCreate nBytes
+        use rng = new System.Security.Cryptography.RNGCryptoServiceProvider()
+        rng.GetBytes(arr)
+        Array.foldBack consByte arr empty |> skip ((8 * nBytes) - nBits)

@@ -2,20 +2,17 @@
 
 The [Glas Design](GlasDesign.md) document describes a Glas command-line interface (CLI) that is extensible with user-defined verbs, e.g. `glas foo a b c` is rewritten to `glas --run glas-cli-foo.run -- a b c`. Module 'glas-cli-foo' should compile to a record value of form `(run:Program, ...)`. 
 
-The program is then evaluated in a procedural style, albeit with 'try', 'while', and 'until' clauses representing implicit transactions.
+This program is then evaluated in a procedural style, with access to filesystem and network effects. Input on the data stack is `cmd:["a", "b", "c"]`. The 'cmd' header supports potential extension of applications with new methods or modes. Final value on the data stack for the cmd method should be a bitstring of up to 32 bits, which will be cast to an exit code (a 32-bit int). Failure results in a -1 exit code.
 
-
- two inputs and two outputs on the data stack. The inputs represent a meth
-
-Input to the data stack is `cmd:["a", "b", "c"]` in the above case. The 'cmd' header provides room for extension, and is followed by the command line parameters as strings. The final data stack should be a natural number representing exit-code (range 0..2**31-1).
+Unlike conventional procedural code, this procedure has implicit access to hierarchical transactions via 'try', 'until', and 'while' clauses. Access to concurrency is via optimization of transaction loops. Glas command line interface verbs are very flexible within constraints of the effects API.
 
 ## Common Effects
 
-The *Logging*, *Time*, *Concurrency*, and *Environment Variable* effects described in [Glas Apps](GlasApps.md) can be readily applied to CLI. The CLI might eventually support distributed computation, but it's very low priority.
+The *Logging*, *Time*, *Concurrency*, and *Environment Variable* effects described in [Glas Apps](GlasApps.md) can be readily applied to CLI. No effects API for distributed computation at this layer, though an implementation could feasibly distribute calculations while centralizing effects.
 
 ### Regarding Concurrency
 
-A transaction loop such as `loop:(until:Halt, do:cond:try:Step)` can theoretically be compiled as a transaction machine. See *Procedural Embedding of Transaction Machines* in [Glas Apps](GlasApps.md). Early implementations of Glas CLI verbs will also want to use interim solutions described at *Before Optimizations*. 
+See *Procedural Embedding of Transaction Machines* in [Glas Apps](GlasApps.md). Early implementations of Glas CLI verbs will also use interim solutions described at *Before Optimizations*. 
 
 ### Regarding Time
 
@@ -23,7 +20,7 @@ Use Windows NT time for timestamps, including file times.
 
 ### Regarding Environment Variables
 
-The Glas CLI will support environment variables with string variable names and string values. Additionally, a special read-only variable, indicated by the empty string, will return a list of defined variables. 
+The Glas CLI will support environment variables with string variable names and string values. Additionally, a special read-only variable 'list' will return a list of defined string variables. 
 
 Later, I might introduce special environment variables to view OS version, Glas runtime version, check whether the console is interactive, etc.. However, this is low priority.
 
@@ -39,7 +36,9 @@ We might later add ops to browse a module system without reference to the filesy
 
 ### Filesystem
 
-The Glas CLI needs enough access to the filesystem to support bootstrap and live-coding. This includes reading and writing files, browsing the filesystem, and watching for changes. The API must also be adapted for asynchronous interaction. File handles should be provided by the app, per description of 'robust references' in [Glas Apps](GlasApps.md).
+The Glas CLI needs enough access to the filesystem to support bootstrap and live-coding. This includes reading and writing files, browsing the filesystem, and watching for changes. The API must also be adapted for asynchronous interaction. 
+
+File handles should be provided by the app, per description of 'robust references' in [Glas Apps](GlasApps.md).
 
 The conventional API for filesystems is painful, IMO. But I'd rather not invite trouble so I'll try to adapt a portable filesystem API relatively directly. Operations needed:
 
@@ -49,11 +48,9 @@ The conventional API for filesystems is painful, IMO. But I'd rather not invite 
 
 * **file:FileOp** - namespace for file operations. An open file is essentially a cursor into a file resource, with access to buffered data. 
  * **open:(name:FileName, as:FileRef, for:Interaction)** - Create a new system object to interact with the specified file resource. Fails if FileRef is already in open, otherwise returns unit. Use 'status' The intended interaction must be specified:
-  * *read* - read file as stream.
-  * *write:(create?, no-create?, append?)* - erase current content of file or start a new file.
-   * *create* - flag. Causes open to fail if the file already exists.
-   * *no-create* - flag. Causes open to fail if file does not exist.
-   * *append* - flag. Start writing at end of file.
+  * *read* - read file as stream. Remains open until final byte is read.
+  * *write* - delete content of file if it already exists, write from beginning.
+  * *append* - open file and write starting at end of file.
   * *delete* - remove a file. Use status to observe potential error.
   * *rename:NewFileName* - rename a file. 
  * **close:FileRef** - Release the file reference.
@@ -68,10 +65,10 @@ The conventional API for filesystems is painful, IMO. But I'd rather not invite 
  * **refl** - return a list of open file references.
 
 **dir:DirOp** - namespace for directory/folder operations. This includes browsing files, watching files. 
- * **open:(name:DirName, as:DirRef, for:Interaction)** - create new system objects to interact with the specified directory resource in a requested manner. Fails if DirRef is already in use, otherwise returns unit. Interactions:
-  * *list:(recursive?)* - one-off read a list of entries from the directory. The 'recursive' flag may be included to list all child directories, too.
-  * *watch:(list?, recursive?)* - watch for changes in a directory. If 'list' flag is set, we'll provide an initial set of events as if every file and folder was created just after watching. 
-  * *rename:NewDirName* - rename or move a directory
+ * **open:(name:DirName, as:DirRef, for:Interaction)** - create new system objects to interact with the specified directory resource in a requested manner. Fails if DirRef is already in use, otherwise returns unit. Potential Interactions:
+  * *list* - read a list of entries from the directory. Reaches Done state after all items are read.
+  * *watch* - read will return change information instead of entries. Remains open indefinitely.
+  * *rename:NewDirName* - rename or move a directory. Remains open until attempted by runtime.
   * *delete* - remove an empty directory.
  * **close:DirRef** - release the directory reference.
  * **read:DirRef** - read a file system entry. This is a record with ad-hoc fields, similar to a log message. Some defined fields:
@@ -81,7 +78,9 @@ The conventional API for filesystems is painful, IMO. But I'd rather not invite 
   * *mtime:TimeStamp* (if available) - modify-time, uses Windows NT timestamps 
  * **status:FileRef**
  * **refl** - return a list of open directory references.
- 
+
+I might later support watching directories for changes.
+
 
 ### Standard IO
 
@@ -134,11 +133,11 @@ I'm very interested the raw network socket API, but I've decided to elide this f
 
 ## Rejected Effects
 
-### Eval? Use Accelerator!
+### Eval Effect? Use Accelerator!
 
-I find it tempting to provide 'eval' as an effect for convenient access to host accelerators and just-in-time compilation. However, I believe it wiser to instead support 'eval' itself as an accelerated function. Acceleration of eval effectively extends Glas programs with first-class functions, especially assuming we can memoize the computation.
+I believe it wiser to support 'eval' as an accelerated function rather than as an effect. Acceleration of eval, together with some memoization, effectively extends Glas programs with first-class functions.
 
 ### Runtime Info? Defer.
 
-The glas executable and the verbs are updated independently. It may be useful for verbs to gather some metadata about the executable's version or effects API. OTOH, this is not critical short-term, and I'm uncertain exactly how to represent this metadata. Perhaps return to this when we've developed some conventions for representation of annotated program types as values.
+It might be useful to provide some reflection on the environment via environment variables or special methods. However, no need to rush this.
 

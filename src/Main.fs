@@ -1,12 +1,12 @@
 
-// The Glas command line utility finally has a proper design.
+// The Glas command line utility finally has a proper design!
 //
 //   glas verb parameters
 //      rewrites to
 //   glas --run glas-cli-verb.run -- parameters
 //
-// This supports user-defined verbs as the default mode of interaction.
-// Meanwhile, we can introduce new built-in operations starting with '-'.
+// This supports user-definable verbs as the default mode of interaction.
+// Meanwhile, we can introduce new built-in operations (with --op).
 //
 
 open Glas
@@ -108,10 +108,7 @@ let getLoader (logger:IEffHandler) =
 
 let print (vstr:string) : int =
     let logger = consoleErrLogger ()
-    // logInfo logger (sprintf "--print %s" vstr) 
     let loader = getLoader logger
-    let printer = Printing.printStdout ()
-    let ioEff = composeEff printer logger
     match getValue loader vstr with
     | None ->
         logError logger (sprintf "value %s not loaded; aborting" vstr)
@@ -158,8 +155,8 @@ let run (pstr:string) (args:string list): int =
                  |> Value.variant "cmd"
         let io = mkFullEff loader 
         match eval p io [argVals] with
-        | Some [Value.Nat n] when ((uint64 System.Int32.MaxValue) >= n) ->
-            (int n) // exit code.
+        | Some [Value.Bits b] when (32 >= Bits.length b) ->
+            (int (Bits.toU32 b)) // user-provided exit code
         | Some vs ->
             let vsStr = vs |> List.map (Value.prettyPrint) |> String.concat ";;;" // should be singleton
             logError logger (sprintf "evaluation of %s exited with unrecognized value %s" pstr vsStr)

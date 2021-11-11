@@ -2,72 +2,107 @@
 namespace Glas
 
 module FileSystemEff = 
-    // Adapter for single-threaded transactional access to filesystem.
+    open System.Threading
 
-    // Design Concerns:
+    // Design Overview:
     //
-    // Reference Updates within Transactions.
+    // I'm planning to build upon the SharedStateEff framework from Effects.
+    // This means I need:
     //
-    //  It is possible for a transaction to close one file reference and open another,
-    //  or perhaps to move references around. We'll need to handle this correctly, i.e.
-    //  the set of references itself is a transactional memory of some sort.
-    //  should fail, even if the reference is reopened by transaction failure. 
+    // - a request type and parser (Value -> Maybe Request)
+    // - a response type and printer (Response -> Value). Could use Value and id.
+    // - a state type (State) and ref, State should be value type.
+    // - a request handler `Request -> State -> (Response * State) option`.
+    // - a background thread that operates entirely on the State reference.
     //
-    //  In any case, this suggests references must be tracked per-transaction. 
-    //  
-    //  When freshly opened, most ops except 'close' and 'status' should fail. This
-    //  might simplify our implementation a little compared to trying to queue
-    //  up writes.
-    //
-    // Deferred Writes and Undo Reads.
-    //  
-    //  When reading a file, we either allow the reader to track transactions or we
-    //  track in the environment only. 
-    //  or we can wrap the file stream with an 'unread' feature. An unread might
-    //  be more convenient in other contexts, and reduces need to 'try' every open
-    //  file. 
-    //
-    //  OTOH, if readers are transactional, they can more directly track status, 
-    //  wait on read, and defer close-on-commit operations. Without this, we can
-    //  still close a file as a generic deferred operation, but it's awkward for
-    //  to track whether a reader has failed to read already.
-    //
-    //  If readers are not directly transactional, we'll also need to track when
-    //  a read fails or has partial results within a transaction.
-    //
-    //
-    // Writer Transactions?
-    //
-    //  When writing a file, we can either have the writer track transactions, or we
-    //  can defer writes until final commit. The latter option is more convenient for
-    //  most use-cases.
-    //
-    // Transaction Tasks:
-    //  
-    //  In general, when we 
-    //  
+    // We can optionally wait on the State reference; it will be pulsed upon
+    // update. 
+
+    // Just building up an API.
+    
+    // Aliases to integrate some documentation into the types.
+    type FileRef = Value
+    type FilePath = String
+    type DirRef = Value
+    type DirPath = String
+
+    /// Recognized errors. Shared for files and directories.
+    type EType =
+        | EDoesNotExist
+        | EAlreadyExists
+        | ENotAFile 
+        | ENotADir 
+        | EUnauthorizedAccess 
+        | EPathTooLong 
+
+    /// Status is reused for files and directories.
+    type Status = 
+        | Init
+        | Wait 
+        | Ready
+        | Done
+        | Error of EType
+
+    /// Different ways of opening a file.
+    type FileInteraction = 
+        // interactions for files
+        | FileWrite
+        | FileRead
+        | FileAppend
+        | FileDelete
+        | FileRename of FilePath
+    
+    type FileAction =
+        | FileRead of { Ref: FileRef; Count: int }
+        | FileStatus of FileRef
+        | FileWrite of FileRef * FTList<byte>
+        | FileClose of FileRef
+        | FileOpen of FileRef * FilePath * FileInteraction
+        | FileRefl // list open file refs.
+
+    /// Different ways of opening a directory.
+    type DirInteraction =
+        // interactions for directories
+        | DirList
+        | DirWatch
+        | DirDelete
+        | DirRename of DirPath
+
+    type DirAction =
+        | DirRead of DirRef
+        | DirOpen of DirRef * DirPath * DirInteraction
+        | DirStatus of DirRef
+        | DirRefl
+
+    type Action =
+        | OnFile of FileAction
+        | OnDir of DirAction 
+
+    /// The Shared State
+    ///
+    /// The state in this case consists of:
+    ///
+    ///  - a todo list of tasks to be executed by runtime thread; includes writes
+    ///  - input buffers for available input data. A runtime can observe whether
+    ///    these need to be refilled as basis for pushback. It might be useful to
+    ///    add an 'unread' operation.
+    ///  - status information for all open files and directories.
+    ///
+    ///
+
+
+
+
+    /// Shared state is mostly a list of tasks for the background thread to run
+    /// after the transaction is committed, plus a record for status information
+    /// provided by the runtime. 
+
+
+
 
 
 
     (*
-* **file:FileOp** - namespace for file operations. An open file is essentially a cursor into a file resource, with access to buffered data. 
- * **open:(name:FileName, as:FileRef, for:Interaction)** - Create a new system object to interact with the specified file resource. Fails if FileRef is already in open, otherwise returns unit. Use 'status' The intended interaction must be specified:
-  * *read* - read file as stream.
-  * *write* - erase current content of file or start a new file.
-  * *create* - same as write, except fails if the file already exists.
-  * *append* - extend current content of file.
-  * *delete* - remove a file. Use status to observe potential error.
-  * *rename:NewFileName* - rename a file. 
- * **close:FileRef** - Release the file reference.
- * **read:(from:FileRef, count:Nat, exact?)** - read a list of count bytes or fewer if not enough data is available. Fails if the fileref is in an error state. Options:
-  * *exact* - fail if fewer than count bytes available.
- * **write:(to:FileRef, data:Binary, flush?)** - write a list of bytes to file. Writes are buffered, so this doesn't necessarily fail even if the write will eventually fail.
- * **status:FileRef** - Return a representation of the state of the system object. 
-  * *init* - initial status before 'open' request has been fully processed.
-  * *wait* - empty read buffer or a full write buffer, either way program should wait.
-  * *ready* - seems to be in a valid state to read or write data.
-  * *done* - final status if file has been fully read, deleted, renamed, etc.
-  * *error:Value* - any error state, description provided.
  * **refl** - return a list of open file references.
 
 **dir:DirOp** - namespace for directory/folder operations. This includes browsing files, watching files. 

@@ -206,7 +206,7 @@ Static assertions when compiling modules are very useful for automated testing. 
 
 To support this, we might express tests as arity 0--Any Glas programs with access to 'fork' effect for non-deterministic choice input. 
 
-* **fork** - Response is a non-deterministic boolean - i.e. a '0' or '1' single-edge bitstring.
+* **fork** - Response is a non-deterministic boolean - i.e. a '0' or '1' bitstring.
 * **log:Message** - Response is unit. Write an arbitrary message to support debugging of tests.
 
 The primary output from a test is pass/fail of evaluation. Log messages are a secondary output for debugging. In context of testing, non-deterministic fork should not be fair or random. A good test system will apply heuristics and program analysis to more effectively search for failing tests. We can also use forks as checkpoints for backtracking and incremental computing.
