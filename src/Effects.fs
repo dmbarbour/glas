@@ -88,6 +88,11 @@ module Effects =
             member __.Abort () = io.Abort ()
         }
 
+    /// Given a header, only accept effects of form `header:Request`, then
+    /// remove the header before passing the request to the next effect handler.
+    let selectHeader (header : string) =
+        rewriteEffects (Value.(|Variant|_|) header)
+
     /// Apply effects to a, then fallback to b only if a fails.
     /// Transactions apply to both effect handlers.
     ///
@@ -105,17 +110,126 @@ module Effects =
             member __.Abort () = try a.Abort() finally b.Abort()
         }
 
-    // Thoughts:
-    //  I could improve composeEff with a variation that routes based on 
-    //  label, e.g. 'log' vs. 'load'. 
-    // 
-    //  Additionally, I could manage transactions more efficiently. Instead
-    //  of sending 'Try()' to all effects, just send to those used. If our
-    //  stack depth is 3 deep, we can send Try 3 times for effect on label.
-    //
-    //  However, I doubt that effects will become the performance bottleneck
-    //  in context of bootstrap, so there isn't much need to implement this.
-    //  Also, behavior would be incorrect if there is any shared IEffHandler.
+    /// This is intended as a lightweight optimization for effects in
+    /// a context where a lot of transactions are effect-free. The 
+    /// transaction overhead for a pure transaction is reduced to the
+    /// increment or decrement of a number.
+    type DeferTry =
+        val private WrappedEff : IEffHandler
+        val mutable private TXDepth : int 
+        new(eff) = 
+            { WrappedEff = eff
+            ; TXDepth = 0
+            }
+        interface ITransactional with
+            member self.Try () =
+                self.TXDepth <- self.TXDepth + 1
+            member self.Commit () =
+                if (self.TXDepth > 0)
+                    then self.TXDepth <- self.TXDepth - 1
+                    else self.WrappedEff.Commit ()
+            member self.Abort () =
+                if (self.TXDepth > 0)
+                    then self.TXDepth <- self.TXDepth - 1
+                    else self.WrappedEff.Abort ()
+        interface IEffHandler with
+            member self.Eff msg =
+                while 0 < self.TXDepth do
+                    self.TXDepth <- self.TXDepth - 1
+                    self.WrappedEff.Try()
+                self.WrappedEff.Eff msg
+
+    /// Environment Variables (Read Only)
+    ///
+    /// Exposure of environment variables via 'env:get:"VARIABLE"' and 'env:list'.
+    /// This is mostly useful for GLAS_PATH and HOME (e.g. to find config files). 
+    ///
+    /// This presents a read-only API, which avoids complicated questions such as
+    /// how module lookup and caching should be affected by changes to GLAS_PATH. 
+    /// I'm not aware of any strong use-case for mutation of environment variables.
+    let envVarEff =
+        { new IEffHandler with
+            member __.Eff req =
+                match req with
+                | Value.Variant "env" envOp ->
+                    match envOp with
+                    | Value.Variant "get" (Value.String k) ->
+                        let v = System.Environment.GetEnvironmentVariable(k)
+                        if isNull v then None else 
+                        Some (Value.ofString v)
+                    | Value.Variant "list" Value.U ->
+                        System.Environment.GetEnvironmentVariables().Keys 
+                        |> Seq.cast<string>
+                        |> Seq.map (Value.ofString)
+                        |> FTList.ofSeq
+                        |> Value.ofFTList
+                        |> Some
+                    // Note: could potentially support 
+                    //  current directory (could add to dir or file)
+                    //  machine name
+                    //  process ID
+                    //  ...
+                    | _ -> None
+                | _ -> None
+         interface ITransactional with
+            member __.Try() = ()
+            member __.Commit() = ()
+            member __.Abort() = ()
+        }
+
+    /// Time Effects
+    ///
+    /// Transactions are logically instantaneous thus cannot sleep or wait, but they can
+    /// observe time and abort if run too early or too late. In context of a transaction
+    /// loop, with incremental computing optimizations, use of 'check' can support waits
+    /// and timeouts.
+    ///
+    /// In this case, we'll just use the value observed upon first request within each
+    /// transaction, or obtain a fresh value outside of a transaction. No optimizations
+    /// are available yet, so 'check' just has the naive implementation.
+    type TimeEff =
+        val mutable private TXTime : uint64 option
+        val mutable private TXDepth : int
+        new () = 
+            { TXTime = None
+            ; TXDepth = 0
+            }
+
+        member private self.PushTX() =
+            self.TXDepth <- self.TXDepth + 1
+        member private self.PopTX() =
+            assert(0 < self.TXDepth)
+            self.TXDepth <- self.TXDepth - 1
+            if(0 = self.TXDepth) then
+                self.TXTime <- None
+        member private self.Now() =
+            match self.TXTime with
+            | Some tNow -> tNow // time is frozen within transaction 
+            | None -> 
+                let tNow = System.DateTime.UtcNow.ToFileTime() |> uint64
+                if (0 < self.TXDepth) then
+                    self.TXTime <- Some tNow
+                tNow
+
+        interface ITransactional with
+            member self.Try () = self.PushTX()
+            member self.Commit () = self.PopTX()
+            member self.Abort () = self.PopTX()
+        
+        interface IEffHandler with
+            member self.Eff req =
+                match req with
+                | Value.Variant "time" timeReq ->
+                    match timeReq with
+                    | Value.Variant "now" Value.U ->
+                        Some (self.Now() |> Value.nat)
+                    | Value.Variant "check" (Value.Nat tMin) ->
+                        if self.Now() >= tMin 
+                            then Some Value.unit 
+                            else None
+                    | _ -> None
+                | _ -> None
+
 
     /// Non-Deterministic Fork Effect
     ///
@@ -290,23 +404,12 @@ module Effects =
                         tx.Abort()
                         None
 
-
     /// Transactional Logging Support
     /// 
     /// Logging requires special attention in context of hierarchical transactions
     /// and backtracking. We want to keep log messages from the aborted path because
-    /// they remain valuable for debugging. However, we also must distinguish them,
-    /// e.g. by wrapping or flagging the messages.
-    ///
-    /// Due to the special processing for incomplete transactions, this 
-    ///
-    /// However, it should be clear that certain messages are from the
-    /// aborted message path. To support this, currently I'll add a
-    /// 'recant' flag to messages emitted from a failure path, and this
-    /// will affect color when message is rendered to console.
-    ///
-    /// At the top-level, a function can be provided to receive the 
-    /// logged messages when they become available.
+    /// they remain valuable for debugging. However, we should distinguish recanted
+    /// messages, e.g. by wrapping or flagging them.
     type TXLogSupport =
         val private WriteLog : Value -> unit
         val private Recant : FTList<Value> -> FTList<Value>
@@ -441,5 +544,9 @@ module Effects =
 
     let consoleErrLogger () : IEffHandler =
         TXLogSupport(consoleErrLogOut) :> IEffHandler
+
+
+
+
 
 

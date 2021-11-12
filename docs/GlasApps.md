@@ -158,7 +158,7 @@ Fork is abstractly a function of time. Relevantly, a hierarchical transaction ma
 
 There is no generic API for location-specific effects. Those can only be modeled as part of other effects APIs. Even without location-specific effects, it is feasible to distribute location-independent tasks for performance reasons. 
 
-Glas does not define an effects API for channels. Instead, channels will be modeled as list values on the data stack. Between annotations and abstract interpretation, a compiler can recognize, analyze, and optimize use of channels.
+Glas does not define an effects API for channels. Instead, channels will be modeled as list values on the data stack. Between annotations and abstract interpretation, a compiler can recognize, analyze, enforce, and optimize use of lists as channels.
 
 ### Time
 
@@ -184,15 +184,6 @@ By convention, a log message should be a record of ad-hoc fields whose meanings 
 In context of transaction machines and task-based concurrency, the concept and presentation of logging should ideally be adjusted to account for stable forks. Instead of a stream of log messages, an optimal view is something closer to live tree of log messages with access to history via timeline.
 
 Although messages logged by failed transactions are not observable within the program, they can be observed indirectly through reflection APIs which operate on runtime state. A debug view presented to a developer should almost always be based on a reflection API. Aborted messages might be distinguished by rendering in a different color, yet should be accessible for debugging purposes.
-
-### Environment Variables
-
-The initial use-case for environment variables is to provide access to OS-provided environment variables, such as GLAS_PATH. This can be expressed as `env:get:"GLAS_PATH"`, or `env:get:list` to obtain a list of defined variable names. However, this API is easy to generalize. An environment can provide access to arbitrary variables. It is possible for variables to be computed upon get, or validated upon set (i.e. runtime type checks). Some may be read-only, others write-only. 
-
-* **env:get:Variable** - response is a value for the variable, or failure if the variable is unrecognized or undefined. 
-* **env:set:(var:Variable, val?Value)** - update a variable. The value field may be excluded to represent an undefined or default state. This operation may fail, e.g. if environment doesn't recognize variable or fails to validate a value. 
-
-The environment controls environment variables, their types, and opportunity for extension. Programs should not rely on environment variables for private state. That role is handled by the data stack. 
 
 ## Console Applications
 

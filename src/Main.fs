@@ -140,8 +140,18 @@ let arity (pstr:string) : int =
         // reason for failure is already logged. 
         EXIT_FAIL
 
-let mkFullEff (ll:Loader) = 
-    (ll :> IEffHandler)
+
+// build the runtime environment, given initial access to log and load. 
+let mkRuntime (logger : IEffHandler) (loader : Loader) = 
+    let handlers =
+        [ logger
+        ; ForkEff() :> IEffHandler 
+        ; TimeEff() :> IEffHandler
+        ; selectHeader "m" (loader :> IEffHandler)
+        ; envVarEff 
+        // todo: filesystem, network
+        ] 
+    List.foldBack composeEff handlers noEffects
 
 let run (pstr:string) (args:string list): int =
     let logger = consoleErrLogger ()
@@ -153,8 +163,8 @@ let run (pstr:string) (args:string list): int =
             args |> List.map (Value.ofString) 
                  |> FTList.ofList |> Value.ofFTList 
                  |> Value.variant "cmd"
-        let io = mkFullEff loader 
-        match eval p io [argVals] with
+        let io = mkRuntime logger loader 
+        match eval p (DeferTry io) [argVals] with
         | Some [Value.Bits b] when (32 >= Bits.length b) ->
             (int (Bits.toU32 b)) // user-provided exit code
         | Some vs ->

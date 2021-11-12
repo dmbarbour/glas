@@ -18,12 +18,6 @@ See *Procedural Embedding of Transaction Machines* in [Glas Apps](GlasApps.md). 
 
 Use Windows NT time for timestamps, including file times. 
 
-### Regarding Environment Variables
-
-The Glas CLI will support environment variables with string variable names and string values. Additionally, a special read-only variable 'list' will return a list of defined string variables. 
-
-Later, I might introduce special environment variables to view OS version, Glas runtime version, check whether the console is interactive, etc.. However, this is low priority.
-
 ## Module System Access
 
 Many command-line verbs require lightweight access to the module system, e.g. `glas print myApp.x with std.print` might access modules `myApp` and and `std` respectively. Although it is feasible to do this via filesystem operations, it is inconvenient (doesn't reuse bootstrap or compilation cache, doesn't implicitly extend to package managers, etc.). So we'll provide access via effects.
@@ -34,17 +28,18 @@ We might later add ops to browse a module system without reference to the filesy
 
 ## Console Application Effects
 
+### Environment Variables
+
+In addition to command-line arguments, a console application usually has access to environment variables where variables and values are both strings. An API can provide relatively lightweight access to these variables, e.g. `env:get:"GLAS_PATH"`. And `env:list` could provide a list of defined variables.
+
+* **env:get:Variable** - response is a value for the variable, or failure if the variable is unrecognized or undefined. 
+* **env:list** - response is a list of defined Variables
+
+We could add 'env:set' but I'll defer for now because I don't want the complication of correctly handling mutation of GLAS_PATH and similar variables. 
+
 ### Filesystem
 
 The Glas CLI needs enough access to the filesystem to support bootstrap and live-coding. This includes reading and writing files, browsing the filesystem, and watching for changes. The API must also be adapted for asynchronous interaction. 
-
-File handles should be provided by the app, per description of 'robust references' in [Glas Apps](GlasApps.md).
-
-The conventional API for filesystems is painful, IMO. But I'd rather not invite trouble so I'll try to adapt a portable filesystem API relatively directly. Operations needed:
-
-* read and write files
-* rename and delete files; determine success/fail status
-* list or watch or delete a folder (optionally recursive)
 
 * **file:FileOp** - namespace for file operations. An open file is essentially a cursor into a file resource, with access to buffered data. 
  * **open:(name:FileName, as:FileRef, for:Interaction)** - Create a new system object to interact with the specified file resource. Fails if FileRef is already in open, otherwise returns unit. Use 'status' The intended interaction must be specified:
@@ -78,9 +73,6 @@ The conventional API for filesystems is painful, IMO. But I'd rather not invite 
   * *mtime:TimeStamp* (if available) - modify-time, uses Windows NT timestamps 
  * **status:FileRef**
  * **refl** - return a list of open directory references.
-
-I might later support watching directories for changes.
-
 
 ### Standard IO
 
