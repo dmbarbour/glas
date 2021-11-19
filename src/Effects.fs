@@ -179,14 +179,10 @@ module Effects =
 
     /// Time Effects
     ///
-    /// Transactions are logically instantaneous thus cannot sleep or wait, but they can
-    /// observe time and abort if run too early or too late. In context of a transaction
-    /// loop, with incremental computing optimizations, use of 'check' can support waits
-    /// and timeouts.
-    ///
-    /// In this case, we'll just use the value observed upon first request within each
-    /// transaction, or obtain a fresh value outside of a transaction. No optimizations
-    /// are available yet, so 'check' just has the naive implementation.
+    /// Transactions are logically instantaneous thus cannot sleep or wait. But they can
+    /// observe time and abort if run too early or too late. This handler implements the
+    /// 'time:now' and 'time:check' effects. After time is requested within a transaction,
+    /// all further requests return the same value until the transaction completes.
     type TimeEff =
         val mutable private TXTime : uint64 option
         val mutable private TXDepth : int
@@ -312,17 +308,21 @@ module Effects =
     ///
     /// We can use a value reference as a shared-state interchange between a program and a
     /// runtime's background task. The effects API will abstract state from the program to
-    /// protect invariants. The runtime can lock the reference to exchange data, or wait on
-    /// an update from the program if there is nothing else to do. 
+    /// protect invariants. 
     ///
-    /// This design is simplistic and not optimal for parallelism, scalability, or efficiency.
-    /// But it is adequate for many use cases, including bootstrap of the Glas system. I intend
-    /// to build network and filesystem effects above shared state exchange.
+    /// Synchronization uses the dotnet Monitor class: the reference is locked (via Enter,
+    /// Exit) when used within a transaction, and is Pulsed upon commit. The assumption is
+    /// that a background thread occasionally interacts with the shared state to receive
+    /// requests and provide responses.
+    ///
+    /// This design is simplistic. No backtracking is required, but scalability is limited.
+    /// Despite some limits, this design is adequate for bootstrap of Glas systems and will
+    /// be used for network and filesystem effects.
     type SharedStateEff<'I, 'O, 'S> =
         val private State       : 'S ref
         val private ParseReq    : Value -> 'I option
         val private Action      : 'I -> 'S -> ('O * 'S) option
-        val private PrintResp   : 'O -> Value 
+        val private PrintResp   : 'O -> Value
         // The 'ParseReq' can filter some requests. Until a relevant request is observed, we
         // use an integer to track logical stack depth. Together, these allow locking to be
         // deferred until necessary.
@@ -499,7 +499,6 @@ module Effects =
     // Thus, IEffHandler support for logging is optional.
     let log (ll:IEffHandler) (msg:Value) : unit =
         ignore <| ll.Eff(Value.variant "log" msg)
-
 
     let logInfo ll msg = log ll (logText info msg)
     let logWarn ll msg = log ll (logText warn msg)

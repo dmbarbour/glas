@@ -372,6 +372,19 @@ module Value =
         Some (List.map Option.get vs, r')
 
 
+    let private isFlagField opt = 
+        match opt with
+        | Some U | None -> true
+        | _ -> false
+
+    /// Extract flags as booleans. A flag is a label within a record whose only data
+    /// is presence vs. absence.  
+    let (|Flags|_|) ks r =
+        let (vs, r') = (|Record|) ks r
+        if List.exists (isFlagField >> not) vs then None else
+        Some (List.map Option.isSome vs, r')
+
+
     // edge is `01` for left, `10` for right. accum in reverse order
     let inline private _key_edge acc e =
         if e 
