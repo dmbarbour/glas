@@ -12,24 +12,25 @@ Global filesystem modules should be subfolders found using the GLAS_PATH environ
 
 ## Data Model
 
-Glas data is immutable binary trees. A naive representation is:
+Glas data logically consists of immutable binary trees. A naive representation is:
 
-        type T0 = ((1+T0) * (1+T0))
+        type T = ((1+T) * (1+T))
 
 However, for extensibility and self-documentation, Glas encourages use of *labeled* data structures. Labels are encoded as paths through a sparse tree. For example, the label 'data' will normally be represented by path `01100100 01100001 01110100 0110001 00000000`, using null-terminated UTF-8 text. The labeled data is the data we reach by following this path. A 'variant' has a single label followed by data, while a 'record' forms a [radix tree](https://en.wikipedia.org/wiki/Radix_tree) with different labels sharing path prefixes.
 
 To efficiently represent labeled data, Glas systems favor a tree representation that compact non-branching paths, such as:
 
-        type BitString = (compact) Bool list
-        type T1 = (BitString * (1 + (T1*T1)))
+        type Bits = (compact) Bool list
+        type T = (Bits * (1 + (T*T)))
 
-Glas systems can also work with fixed-width labels. For example, `(A * B)` pairs and `(A + B)` sum types are essentially records and variants with one-bit fixed-width labels, while a 32-bit address space can be modeled by a record with 32-bit fixed-width labels.
+The details of underlying representation are not directly exposed to programs. But programs do have full access to the tree representation of other structures such as lists. Logically, a list has type `type List a = (a * List a) | ()`, i.e. constructed of `(Head * Tail)` pairs (nodes with two children) terminating in unit `()` (a node with no children). However, to support efficient split, concat, and double-ended queue operations, Glas systems will *accelerate* lists under-the-hood using a [finger tree](https://en.wikipedia.org/wiki/Finger_tree) representation. See *Acceleration* below.
 
-Unit `()` is the tree with no children. By Glas conventions, a bitstring terminating in unit will encode bytes, words, numbers, and symbols. For example, `00010111` encodes byte 23, and `10111` encodes natural number 23.
+the tree represented is fully observable as a tree. There is no data hiding ensuring values cannot hide data or structure.
+Beyond this, an implementation could apply additional extensions for optimized representations of other useful patterns, e.g. optimizing lists, binaries, matrices. 
 
-Glas uses lists to encode most sequential structures. A binary is a list of bytes, and texts are usually UTF-8 binaries. Logically, a list has type `type List a = (a * List a) | ()`, i.e. constructed of `(Head * Tail)` pairs and terminating in unit. However, to support efficient split, concat, and double-ended queue operations, Glas systems often *accelerate* lists under-the-hood using a [finger tree](https://en.wikipedia.org/wiki/Finger_tree) representation.
+Symbols and numbers are often encoded as simple bitstrings. For example, `00010111` encodes byte 23, and `10111` encodes natural number 23. Glas uses lists to encode most sequential structures. A binary is a list of bytes, and texts are usually UTF-8 binaries. 
 
-To work with very large trees, Glas systems may offload subtrees into content-addressed storage. I call this pattern *stowage*. Of course, Glas applications may also use effects to interact with external storage. Stowage has a benefit of working nicely with pure computations, serves as a virtual memory and compression layer, and has several benefits for incremental computation and communication. Stowage can be guided by program annotations.
+To work with very large trees, Glas systems may offload subtrees into content-addressed storage. I call this pattern *Stowage*. Of course, Glas applications may also use effects to interact with external storage. Stowage has a benefit of working nicely with pure computations, serves as a virtual memory and compression layer, and has several benefits for incremental computation and communication. Stowage can be guided by program annotations.
 
 ## Command Line
 
@@ -127,7 +128,7 @@ User syntax can extend the effective set of control operators, e.g. compiling a 
 
 ### Effects Handler
 
-Use of 'env' enables a program to conveniently implement a sandbox or effects adapter for a subprogram. User-defined effects handlers must have static arity `Request State -- Response State`. Initial handler state is captured by the 'env' call.
+Use of 'env' enables a program to conveniently implement a sandbox or effects adapter for a subprogram. User-defined effects handlers must have static arity `Request State -- Response State`, also allowing failure. Initial handler state is captured by the 'env' call.
 
 * **env:(do:P, with:H)** - arranges for operator 'eff' within subprogram P to call handler H. Top item from data stack is captured for use as handler state, and is returned upon exiting env.
 * **eff** - invoke current effects handler, taking top stack item as Request and returning a Response.
@@ -276,6 +277,12 @@ Almost every application model will support a **log:Message** effect to support 
 This allows gradual and ad-hoc structured extension to log messages, e.g. with provenance metadata, without breaking existing routes or filters. It is feasible to extend log messages with images or even applets to better explain issues.
 
 *Note:* Efficient logging with large values require support for structure sharing within the log storage, e.g. using the stowage model.
+
+### Bracketed Effects
+
+A useful pattern for effects is bracketed effects, e.g. increment-operation-decrement, where some operation is performed in context of a background effect. This can always be modeled by explicit push and pop effects, but explicit modeling makes it difficult to reason about balance of operations.
+
+Structurally, this might be represented by extending `eff` to `eff:P`, and also extending `env` include effects prior to P and after. Alternatively, we could use a session types to analyze balanced use of effects.
 
 ### Database Modules
 

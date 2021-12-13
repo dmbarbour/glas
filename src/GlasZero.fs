@@ -119,7 +119,7 @@ module Zero =
         let parseBlock : P<Block> = 
             between (pchar '[' .>> ws) (pchar ']' .>> ws) (many parseAction)
 
-        parseActionRef := 
+        parseActionRef.Value <- 
             choice [
                 parseData |>> Const
                 parseBlock |>> Block

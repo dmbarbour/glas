@@ -108,35 +108,31 @@ These interim solutions are adequate for many applications, especially at smalle
 
 ## Abstract Design
 
+### Application State
+
+Application state should be represented as a value on the normal data stack (in a loop) instead of using the effects API. This design is consistent with a procedural embedding of transaction machines and makes it semantically clear what state is 'owned' by the application vs. the runtime. 
+
+The cost is that this design places a heavy burden on the optimizer, e.g. precise conflict detection requires abstract analysis to partition state into small transaction variables, and recognition that certain functions such as list append do not fully observe the values they manipulate.
+
 ### Robust References
 
-References are essentially required for concurrent interaction. For example, an app will interact with *more than one* file or tcp connection at a time.
+A robust API design for references is to have applications allocate their own references. For example, `open file as foo` where `foo` is an arbitrary user-provided value. Then further operations (read, write, close) would also use the `foo` value to reference this object. 
 
-Applications should allocate their own references. For example, instead of `open file` returning a system-allocated handle, effect APIs should favor the format `open file as foo` where `foo` is an arbitrary value allocated by the application as a handle for future interactions with the file.
+There are several benefits to this design when compared to system allocation of references. It becomes much easier to control references, e.g. a program can use effects handlers to add a prefix to all references used by a subprogram. This design avoids security risks related to forgery or leaky abstraction of system-meaningful references. Debugging and reflection are greatly simplified because references can easily carry metadata about purpose or provenance within the program. Allocation of references is easily stabilized and decentralized, simplifying concurrency and distribution.
 
-This design has a lot of benefits: Abstraction of reference types is optional. References can be descriptive and locally meaningful for debugging. Static allocation of references is easily supported. Dynamic allocation can be partitioned and decentralized, reducing contention. We can avoid centralized allocation as an implicit source of observable non-determinism. There is no security risk related to leaky abstraction or forgery of references. 
-
-The application host will generally maintain a lookup table to associate references with external resources. Garbage collection is feasible if the application can fetch lists of live references.
+The system can maintain lookup tables between reference values and underlying resources. It is feasible to support reflection APIs that return lists of allocated references or rename references. Applications can feasibly use reflection to implement their own garbage collection. 
 
 ### Specialized Effects
 
-Effects APIs should be specialized at the host-app layer. For example, `tcp:read:(...)` request is distinct from `file:read:(...)`. The host-app layer should not conflate the responsibility of resource interface abstraction. Applications may introduce their own resource abstraction layer if one is desired.
-
-The host-app boundary is an awkward location for interface abstraction because it only supports abstraction of host objects, whereas within the application we can abstract over both host interfaces and application objects. Additionally, extracting a common interface is a lot of design work, and the resulting one-size-fits-all interface is almost always a little awkward for every use case.
+Runtime effects APIs should be specialized. For example, although file streams and TCP streams are remarkably similar, `tcp:read:(...)` request should be distinct from `file:read:(...)`. Attempting to generalize over similar streams too easily complicates future introduction or use of specialized features. It is better for the runtime to provide a more specialized API then let the application provide its own abstraction layers as desired.
 
 ### Asynchronous Effects 
 
-In context of Glas programs, effects are `Request -- Response` thus fit a procedural style. However, in context of transactions or backtracking conditional behavior, external effects will usually be asynchronous because it is much easier to defer messages until commit than it is to implement a distributed transaction. There is a possible exception for 'safe' operations with negligible side-effects (e.g. read and cache a remote value).
-
-### Application State
-
-I propose that application state is represented as a value on the data stack instead of using an effects API. This is consistent with a procedural embedding of transaction machines, makes it clear (structurally and semantically) what state is 'owned' by the transaction (e.g. in contrast to environment variables), and simplifies composition of apps compared to managing a heap. State as one big value is also very convenient for accessibility and reflection.
-
-This design does place a heavier burden on an optimizer to support precise conflict detection, e.g. abstract analysis to partition state into small transaction variables, recognition that certain functions such as list append do not fully observe the values they manipulate.
+In context of Glas programs, effects are `Request -- Response | Failure` thus fit a procedural style. However, in context of transactions or backtracking conditional behavior, external effects will usually be asynchronous because it is much easier to defer messages until commit than it is to implement a distributed transaction. There is a possible exception for 'safe' operations with negligible side-effects (e.g. read and cache a remote value).
 
 ### Extensible Interfaces
 
-Applications should be extensible with new interfaces. For example, we might extend an application with intefaces to obtain an icon or present an administrative GUI.
+Applications should be extensible with new interfaces. Instead of a simple step function, we might extend an application with intefaces to obtain an icon or present an administrative GUI.
 
 In context of Glas programs, we might represent method selectors as part of program input on the data stack, e.g. `method:Args`. Result type and available effects may depend on the selected method. This technique has the advantage of being cheap, with negligible overhead if unused.
 
@@ -145,20 +141,6 @@ In context of Glas programs, we might represent method selectors as part of prog
 ## Common Effects
 
 Effects should be designed for transaction machines yet suitable for procedural code to simplify embeddings.
-
-### Concurrency
-
-Repetition and replication are equivalent for isolated transactions. In context of a transaction machine, within the stable prefix of a transaction, fork can be implemented efficiently by replication, essentially spawning a thread for each stable choice. Outside this context, fork can be implemented as probabilistic choice.
-
-* **fork** - non-deterministic behavior, respond with '0' or '1' bitstring.
-
-Fork is abstractly a function of time. Relevantly, a hierarchical transaction may observe 'fork' backtracking within logically frozen time, but there is no history maintained between transactions or procedural steps.
-
-### Distribution
-
-There is no generic API for location-specific effects. Those can only be modeled as part of other effects APIs. Even without location-specific effects, it is feasible to distribute location-independent tasks for performance reasons. 
-
-Glas does not define an effects API for channels. Instead, channels will be modeled as list values on the data stack. Between annotations and abstract interpretation, a compiler can recognize, analyze, enforce, and optimize use of lists as channels.
 
 ### Time
 
@@ -172,6 +154,20 @@ Use of 'check' represents stable, monotonic, indirect observation of time. If a 
 Reading 'now' will destabilize a transaction. To avoid a busy-wait loop, reading time should be performed only by transactions that are already unstable for other reasons, such as reading a channel. This is useful for adding timestamps to received events or data.
 
 The default TimeStamp is Windows NT time - a natural number of 100ns intervals since midnight Jan 1, 1601 UT. 
+
+### Concurrency
+
+Repetition and replication are equivalent for isolated transactions. In context of a transaction machine, within the stable prefix of a transaction, fork can be implemented efficiently by replication, essentially spawning a thread for each stable choice. Outside this context, fork can be implemented as probabilistic choice.
+
+* **fork** - non-deterministic behavior, respond with '0' or '1' bitstring.
+
+Fork is abstractly a function of time. Relevantly, a hierarchical transaction may observe 'fork' backtracking within logically frozen time, but there is no history maintained between transactions or procedural steps.
+
+### Distribution
+
+Channels should be modeled as lists in application state, annotated and accelerated as needed. Network disruption can be detected using timeouts, much as it would be for network channels. Actual distribution is an optimization of a stable, forking transaction machine. Location-specific effects can be part of the normal effects API. Different locations may have access to different effects.
+
+*Notes:* Stateful expression of location results in a mobile process instead of a stable distributed process. Thus, we should favor APIs of form 'open file at X' instead of 'move to X; open file'. 
 
 ### Logging
 

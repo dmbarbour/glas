@@ -341,7 +341,7 @@ module Effects =
             | Choice1Of2 n when (n > 0) ->
                 // unlock later, on transaction commit/abort
                 System.Threading.Monitor.Enter(self.State) 
-                let s = !self.State
+                let s = self.State.Value
                 self.TXStack <- Choice2Of2 struct(s, List.replicate (n - 1) s)
                 s
             | Choice2Of2 struct(s,_) ->
@@ -373,7 +373,7 @@ module Effects =
                 | Choice2Of2 struct(s,(_::ss)) ->
                     self.TXStack <- Choice2Of2 struct(s,ss)
                 | Choice2Of2 struct(s,[]) ->
-                    self.State := s
+                    self.State.Value <- s
                     System.Threading.Monitor.PulseAll(self.State)
                     System.Threading.Monitor.Exit(self.State)
                     self.TXStack <- Choice1Of2 0

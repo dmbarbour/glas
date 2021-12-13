@@ -193,22 +193,22 @@ module ProgEval =
         // to the property group in the fsproj.
         let loopWhile (opWhile:Op) (opDoLazy:Lazy<Op>) cte cc0 =
             let cycleRef = ref cc0
-            let ccWhileRepeat rte = (!cycleRef) rte
+            let ccWhileRepeat rte = (cycleRef.Value) rte
             let ccWhileDoLazy = lazy (commitTX cte ((opDoLazy.Force()) cte ccWhileRepeat))
             let ccWhileDo rte = (ccWhileDoLazy.Force()) rte
             let ccWhileHalt = abortTX cte cc0
             let ccWhileLoop = beginTX cte (opWhile { cte with FK = ccWhileHalt } ccWhileDo)
-            cycleRef := ccWhileLoop // close the loop
+            cycleRef.Value <- ccWhileLoop // close the loop
             ccWhileLoop
 
         let loopUntil (opUntil:Op) (opDoLazy:Lazy<Op>) cte cc0 =
             let cycleRef = ref cc0
-            let ccUntilRepeat rte = (!cycleRef) rte
+            let ccUntilRepeat rte = (cycleRef.Value) rte
             let ccUntilDoLazy = lazy (abortTX cte ((opDoLazy.Force()) cte ccUntilRepeat))
             let ccUntilDo rte = (ccUntilDoLazy.Force()) rte
             let ccUntilHalt = commitTX cte cc0
             let ccUntilLoop = beginTX cte (opUntil { cte with FK = ccUntilDo } ccUntilHalt)
-            cycleRef := ccUntilLoop // close the loop
+            cycleRef.Value <- ccUntilLoop // close the loop
             ccUntilLoop
 
         // special operator to retrieve data from the eff-state stack.

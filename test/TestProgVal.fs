@@ -206,9 +206,9 @@ let test_ops =
                 // test is to reverse a large random bitstring
                 let b0 = Bits.ofList [false] |> Value.ofBits
                 let b1 = Bits.ofList [true] |> Value.ofBits
-                let pPopPrefix = mkSeq[Op lCopy; Dip(Op lGet)]
-                let pPopBit = Cond(mkSeq[Data b0; pPopPrefix], Nop, mkSeq[Data b1; pPopPrefix])
-                let pTag = mkSeq[Dip(Data Value.unit); Op lPut]
+                let pPopPrefix = mkSeq [Op lCopy; Dip(Op lGet)]
+                let pPopBit = Cond(mkSeq [Data b0; pPopPrefix], Nop, mkSeq [Data b1; pPopPrefix])
+                let pTag = mkSeq [Dip(Data Value.unit); Op lPut]
                 let pRevBits = mkSeq [ Data (Value.unit)
                                      ; While( Dip(pPopBit), mkSeq [ Op lSwap; pTag ])
                                      ; Op lSwap
@@ -222,9 +222,9 @@ let test_ops =
                 // test is to reverse a large random bitstring
                 let b0 = Bits.ofList [false] |> Value.ofBits
                 let b1 = Bits.ofList [true] |> Value.ofBits
-                let pPopPrefix = mkSeq[Op lCopy; Dip(Op lGet)]
-                let pPopBit = Cond(mkSeq[Data b0; pPopPrefix], Nop, mkSeq[Data b1; pPopPrefix])
-                let pTag = mkSeq[Dip(Data Value.unit); Op lPut]
+                let pPopPrefix = mkSeq [Op lCopy; Dip(Op lGet)]
+                let pPopBit = Cond(mkSeq [Data b0; pPopPrefix], Nop, mkSeq [Data b1; pPopPrefix])
+                let pTag = mkSeq [Dip(Data Value.unit); Op lPut]
                 let pRevBits = mkSeq [ Data (Value.unit)
                                      ; Until( Dip(mkSeq [Data Value.unit; Op lEq])
                                             , mkSeq [Dip(pPopBit); Op lSwap; pTag ])

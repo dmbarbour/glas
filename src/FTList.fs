@@ -105,9 +105,9 @@ module FT =
             match lv with
             | (b1::b2::rem) -> 
                 match rem with 
-                | [] -> (mkB2 b1 b2)::[] // 2 elems
-                | (b3::[]) -> (mkB3 b1 b2 b3)::[] // 3 elems
-                | (b3::b4::[]) -> (mkB2 b1 b2)::(mkB2 b3 b4)::[] // 4 elems
+                | [] -> [mkB2 b1 b2] // 2 elems
+                | [b3] -> [mkB3 b1 b2 b3] // 3 elems
+                | [b3;b4] -> [mkB2 b1 b2; mkB2 b3 b4] // 4 elems
                 | (b3::lv') -> (mkB3 b1 b2 b3)::(chunkify lv') // 5+ elems
             | _ -> invalidArg (nameof lv) "not enough data to chunkify" // 0 or 1 elems
 

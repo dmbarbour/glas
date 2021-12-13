@@ -50,6 +50,10 @@ In addition to command-line arguments, a console application usually has access 
 
 Currently this is a read-only API. I don't want the complication of correctly handling mutation of GLAS_PATH. The primary use of environment variables is to support ad-hoc configuration, such as access to GLAS_PATH, or to HOME where more configs might be kept.
 
+### Standard Input and Output
+
+Consoles start with streams open for standard input and output. 
+
 ### Filesystem
 
 The Glas CLI needs just enough access to the filesystem to support bootstrap and live-coding. This includes reading and writing files, browsing the filesystem, and watching for changes. The API must also be adapted for asynchronous interaction. 
