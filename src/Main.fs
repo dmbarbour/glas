@@ -145,10 +145,11 @@ let arity (pstr:string) : int =
 let mkRuntime (logger : IEffHandler) (loader : Loader) = 
     let handlers =
         [ logger
-        ; ForkEff() :> IEffHandler 
-        ; TimeEff() :> IEffHandler
+        ; timeEff ()
+        ; forkEff () 
+        ; randomEff ()
+        ; envVarEff ()
         ; selectHeader "m" (loader :> IEffHandler)
-        ; envVarEff 
         // todo: filesystem, network
         ] 
     List.foldBack composeEff handlers noEffects
@@ -164,7 +165,7 @@ let run (pstr:string) (args:string list): int =
                  |> FTList.ofList |> Value.ofFTList 
                  |> Value.variant "cmd"
         let io = mkRuntime logger loader 
-        match eval p (DeferTry io) [argVals] with
+        match eval p (deferTry io) [argVals] with
         | Some [Value.Bits b] when (32 >= Bits.length b) ->
             (int (Bits.toU32 b)) // user-provided exit code
         | Some vs ->

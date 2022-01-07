@@ -75,23 +75,54 @@ module Effects =
             member __.Abort () = ()
         }
 
-    /// Rewrite and/or filter effects functionally.
-    let rewriteEffects (fn : Value -> Value option) (io:IEffHandler) =
-        { new IEffHandler with
-            member __.Eff v0 =
-                match fn v0 with
-                | Some v' -> io.Eff v'
+    /// Rewrite and filter effects functionally. Also defers transactions
+    /// until an effect passes the filter.
+    type RewriteEff =
+        val private WrappedEff : IEffHandler
+        val private RewriteReq : Value -> Value option
+        val mutable private TXDepth : int 
+        new(io, rw) = 
+            { WrappedEff = io
+            ; RewriteReq = rw
+            ; TXDepth = 0
+            }
+        interface ITransactional with
+            member self.Try () =
+                self.TXDepth <- self.TXDepth + 1
+            member self.Commit () =
+                if (self.TXDepth > 0)
+                    then self.TXDepth <- self.TXDepth - 1
+                    else self.WrappedEff.Commit ()
+            member self.Abort () =
+                if (self.TXDepth > 0)
+                    then self.TXDepth <- self.TXDepth - 1
+                    else self.WrappedEff.Abort ()
+        interface IEffHandler with
+            member self.Eff req =
+                match self.RewriteReq req with
                 | None -> None
-          interface ITransactional with
-            member __.Try () = io.Try()
-            member __.Commit () = io.Commit()
-            member __.Abort () = io.Abort ()
-        }
+                | Some req' ->
+                    while 0 < self.TXDepth do
+                        self.TXDepth <- self.TXDepth - 1
+                        self.WrappedEff.Try ()
+                    self.WrappedEff.Eff req'
+
+    /// Rewrite and/or filter effects functionally. Defers transactions until an 
+    /// effect is processed. 
+    let rewriteEffects (fn : Value -> Value option) (io:IEffHandler) : IEffHandler =
+        RewriteEff(io,fn) :> IEffHandler
+
+    /// Defer transactions until any effect is requested. This can help optimize
+    /// performance in context of mostly-pure computations. However, it is not the
+    /// best way to optimize (which should involve static analysis of effects).
+    let deferTry io =
+        rewriteEffects Some io
 
     /// Given a header, only accept effects of form `header:Request`, then
     /// remove the header before passing the request to the next effect handler.
     let selectHeader (header : string) =
         rewriteEffects (Value.(|Variant|_|) header)
+
 
     /// Apply effects to a, then fallback to b only if a fails.
     /// Transactions apply to both effect handlers.
@@ -110,34 +141,6 @@ module Effects =
             member __.Abort () = try a.Abort() finally b.Abort()
         }
 
-    /// This is intended as a lightweight optimization for effects in
-    /// a context where a lot of transactions are effect-free. The 
-    /// transaction overhead for a pure transaction is reduced to the
-    /// increment or decrement of a number.
-    type DeferTry =
-        val private WrappedEff : IEffHandler
-        val mutable private TXDepth : int 
-        new(eff) = 
-            { WrappedEff = eff
-            ; TXDepth = 0
-            }
-        interface ITransactional with
-            member self.Try () =
-                self.TXDepth <- self.TXDepth + 1
-            member self.Commit () =
-                if (self.TXDepth > 0)
-                    then self.TXDepth <- self.TXDepth - 1
-                    else self.WrappedEff.Commit ()
-            member self.Abort () =
-                if (self.TXDepth > 0)
-                    then self.TXDepth <- self.TXDepth - 1
-                    else self.WrappedEff.Abort ()
-        interface IEffHandler with
-            member self.Eff msg =
-                while 0 < self.TXDepth do
-                    self.TXDepth <- self.TXDepth - 1
-                    self.WrappedEff.Try()
-                self.WrappedEff.Eff msg
 
     /// Environment Variables (Read Only)
     ///
@@ -147,7 +150,7 @@ module Effects =
     /// This presents a read-only API, which avoids complicated questions such as
     /// how module lookup and caching should be affected by changes to GLAS_PATH. 
     /// I'm not aware of any strong use-case for mutation of environment variables.
-    let envVarEff =
+    let envVarEff () =
         { new IEffHandler with
             member __.Eff req =
                 match req with
@@ -164,8 +167,8 @@ module Effects =
                         |> FTList.ofSeq
                         |> Value.ofFTList
                         |> Some
+                    // Note: file path separator moved to 'dir:sep' effect.
                     // Note: could potentially support 
-                    //  current directory (could add to dir or file)
                     //  machine name
                     //  process ID
                     //  ...
@@ -226,26 +229,14 @@ module Effects =
                     | _ -> None
                 | _ -> None
 
+    let timeEff () = 
+        TimeEff() :> IEffHandler
 
-    /// Non-Deterministic Fork Effect
-    ///
-    /// This effect provides random bits on demand. Most local complexity is related
-    /// to handling transactions correctly. Acquiring random bits is punted to the
-    /// dotnet crypto random provider. 
-    ///
-    /// Fork is logically 'time varying' to enable procedural embedding of transaction 
-    /// machines. In practice, this means we only need to keep a history to backtrack
-    /// within a hierarchical transaction. We can forget history upon commit or abort. 
-    ///
-    /// Ideally, fork would be more deeply integrated with a runtime as a special effect
-    /// to support optimization of top-level transaction loops as transaction machines.
-    /// However, those optimizations are difficult to achieve at this layer, so will be
-    /// left for bootstrap of the Glas command line.
-    type ForkEff =
+    /// Random bits, with fresh bits between transactions.
+    type RandomBits =
         val mutable private Buffer : Bits       // bits currently available for reading
         val mutable private StaleBits : int     // count of recycled bits from backtracking
         val mutable private TXHist : Bits list  // bits remembered for future backtracking
-
         new () = 
             { Buffer = Bits.empty
             ; StaleBits = 0
@@ -275,6 +266,12 @@ module Effects =
             self.Remember b
             b
 
+        member self.ReadBits n =
+            let mutable bs = Bits.empty
+            for _ in 1 .. n do
+                bs <- Bits.cons (self.ReadBit()) bs
+            bs
+
         interface ITransactional with
             member self.Try () =
                 self.TXHist <- (Bits.empty :: self.TXHist)
@@ -300,9 +297,26 @@ module Effects =
         interface IEffHandler with
             member self.Eff req =
                 match req with
-                | Value.Variant "fork" Value.U ->
-                    self.ReadBit() |> Bits.singleton |> Value.ofBits |> Some
+                | Value.Nat n when (n < uint64 System.Int32.MaxValue) ->
+                    self.ReadBits (int n) |> Value.ofBits |> Some
                 | _ -> None
+
+    let randomEff () =
+        selectHeader "random" (RandomBits())
+
+
+    /// Non-Deterministic Fork Effect
+    ///
+    /// Ideally, fork is optimized with incremental computing and replication. This allows
+    /// stable forks to represent multiple concurrent threads and tasks. Currently, just 
+    /// returns random bits. This has correct formal behavior, but lacks the performance
+    /// to effectively model concurrency.
+    let forkEff () =
+        let rw req =
+            match req with
+            | Value.Variant "fork" Value.U -> Some (Value.nat 1UL)
+            | _ -> None
+        rewriteEffects rw (RandomBits()) 
 
     /// Shared State Communications for Background Effects 
     ///
@@ -318,6 +332,8 @@ module Effects =
     /// This design is simplistic. No backtracking is required, but scalability is limited.
     /// Despite some limits, this design is adequate for bootstrap of Glas systems and will
     /// be used for network and filesystem effects.
+    ///
+    /// A finalizer may be provided to halt the background thread. 
     type SharedStateEff<'I, 'O, 'S> =
         val private State       : 'S ref
         val private ParseReq    : Value -> 'I option
@@ -357,6 +373,7 @@ module Effects =
             | _ ->
                 // internal error (should not occur)
                 failwith "must write after read within transaction"
+
 
         interface ITransactional with
             member self.Try () =

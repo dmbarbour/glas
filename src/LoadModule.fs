@@ -46,7 +46,7 @@ module LoadModule =
     let private readGlasPath () = 
         let envPath = Environment.GetEnvironmentVariable("GLAS_PATH")
         if isNull envPath then [] else
-        envPath.Split(';', StringSplitOptions.None) 
+        envPath.Split(Path.PathSeparator, StringSplitOptions.None) 
             |> Array.map (fun s -> s.Trim())
             |> List.ofArray
    

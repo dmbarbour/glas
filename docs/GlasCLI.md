@@ -43,12 +43,13 @@ The Glas CLI currently does not provide effects for opening windows, drawing but
 
 ### Environment Variables
 
-In addition to command-line arguments, a console application usually has access to environment variables where variables and values are both strings. An API can provide relatively lightweight access to these variables, e.g. `env:get:"GLAS_PATH"`. And `env:list` could provide a list of defined variables.
+In addition to command-line arguments, a console application usually has access to environment variables where variables and values are both strings. An API can provide relatively lightweight access to these variables, e.g. `env:get:"GLAS_PATH"`. And `env:list` provides a list of defined variables.
 
 * **env:get:Variable** - response is a value for the variable, or failure if the variable is unrecognized or undefined. 
 * **env:list** - response is a list of defined Variables
+* **env:path-sep** - response is a string representing the path separator for environment path variables, such as ":" for Linux or ";" for Windows.
 
-Currently this is a read-only API. I don't want the complication of correctly handling mutation of GLAS_PATH. The primary use of environment variables is to support ad-hoc configuration, such as access to GLAS_PATH, or to HOME where more configs might be kept.
+Currently this is a read-only API. I don't want complication of correctly handling runtime mutation of GLAS_PATH. The primary use of environment variables is to support ad-hoc configuration, such as access to GLAS_PATH, or to HOME where more configs might be kept.
 
 ### Standard Input and Output
 
@@ -70,7 +71,7 @@ The Glas CLI needs just enough access to the filesystem to support bootstrap and
  * **write:(to:FileRef, data:Binary)** - write a list of bytes to file. 
  * **status:FileRef** - Return a representation of the state of the system object. 
   * *init* - the 'open' request hasn't been fully processed yet.
-  * *live* - no obvious errors, and obviously not done. normal status for reading or writing data.
+  * *live* - no obvious errors, and not done. normal status for reading or writing data.
   * *done* - successful completion of task. Does not apply to all interactions.
   * *error:Value* - any error state. Value can be a record of ad-hoc fields describing the error (possibly empty).
  * **ref:list** - return a list of open file references. 
@@ -84,15 +85,17 @@ I'm uncertain how to best handle buffering and pushback. Perhaps buffer size cou
   * *rename:NewDirName* - rename or move a directory. Remains open until attempted by runtime.
   * *delete* - remove an empty directory.
  * **close:DirRef** - release the directory reference.
- * **read:DirRef** - read a file system entry, or fail if input buffer is empty. This is a record with ad-hoc fields, similar to a log message. Some defined fields:
+ * **read:DirRef** - read a file system entry, or fail if input buffer is empty. This is a record with ad-hoc fields including at least 'type' and 'name'. Some potential fields:
   * *type:Symbol* (always) - usually a symbol 'file' or 'dir'
   * *name:Path* (always) - a full filename or directory name, usually a string
-  * *mtime:TimeStamp* (if available) - modify-time, uses Windows NT timestamps 
+  * *mtime:TimeStamp* (optional) - modify time 
+  * *ctime:TimeStamp* (optional) - creation time 
+  * *size:Nat* (optional) - number of bytes
  * **status:FileRef** - ~ same as file status
  * **ref:list** - return a list of open directory references.
  * **ref:move:(from:DirRef, to:DirRef)** - reorganize directory references. Fails if 'to' ref is in use.
- * **cwd** - return the current working directory.
- * **sep** - return the directory separator string, usually "/" or "\".
+ * **cwd** - return current working directory. Non-rooted file references are relative to this.
+ * **sep** - return preferred directory separator substring for current OS, usually "/" or "\".
 
 Later, I might extend directory operations with option to watch a directory, or list content recursively. This might be extra flags on 'list'. However, my current goal is to get this into a usable state. Advanced features can wait until I'm trying to integrate live coding.
 
@@ -143,6 +146,7 @@ An API for DNS access would also be convenient, but its implementation isn't cri
 I've excluded the half-close TCP feature because too many routers disable this feature by applying a short timeout after half-close. A TCP connection should be closed when the full TCP interaction is complete.
 
 I'm very interested the raw network socket API, but I've decided to elide this for now.
+
 
 ## Rejected Effects
 

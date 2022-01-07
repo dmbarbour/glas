@@ -110,9 +110,9 @@ These interim solutions are adequate for many applications, especially at smalle
 
 ### Application State
 
-Application state should be represented as a value on the normal data stack (in a loop) instead of using the effects API. This design is consistent with a procedural embedding of transaction machines and makes it semantically clear what state is 'owned' by the application vs. the runtime. 
+Application state can and should be represented as a value on the normal data stack. No separate effects API for state. This design is consistent with a procedural embedding of transaction machines and makes it semantically clear what state is 'owned' by the application vs. owned by the runtime. 
 
-The cost is that this design places a heavy burden on the optimizer, e.g. precise conflict detection requires abstract analysis to partition state into small transaction variables, and recognition that certain functions such as list append do not fully observe the values they manipulate.
+The cost is that this design places a heavy burden on the optimizer, e.g. precise conflict detection requires abstract analysis to partition state into smaller fragments of a transactional memory. 
 
 ### Robust References
 
@@ -122,21 +122,19 @@ There are several benefits to this design when compared to system allocation of 
 
 The system can maintain lookup tables between reference values and underlying resources. It is feasible to support reflection APIs that return lists of allocated references or rename references. Applications can feasibly use reflection to implement their own garbage collection. 
 
+### Asynchronous Effects
+
+Top-level effects will operate on state shared with the runtime. This state will include queues for messaging and tables for working with multiple references. The details are abstracted from the program via the effects handler, but this does constrain the effects API. Synchronous effects are limited to local manipulation of shared state. External effects must be asynchronous.
+
+*Note:* An exception can be made for safe, cacheable reads. For example, it is feasible to support HTTP GET as a synchronous effect. However, I believe it wiser to support this indirectly via reflective effects APIs and manual caching.
+
 ### Specialized Effects
 
-Runtime effects APIs should be specialized. For example, although file streams and TCP streams are remarkably similar, `tcp:read:(...)` request should be distinct from `file:read:(...)`. Attempting to generalize over similar streams too easily complicates future introduction or use of specialized features. It is better for the runtime to provide a more specialized API then let the application provide its own abstraction layers as desired.
-
-### Asynchronous Effects 
-
-In context of Glas programs, effects are `Request -- Response | Failure` thus fit a procedural style. However, in context of transactions or backtracking conditional behavior, external effects will usually be asynchronous because it is much easier to defer messages until commit than it is to implement a distributed transaction. There is a possible exception for 'safe' operations with negligible side-effects (e.g. read and cache a remote value).
+Runtime effects APIs should be specialized. For example, although file streams and TCP streams are remarkably similar, `tcp:read:(...)` request should be separate and distinct from `file:read:(...)`. Attempting to generalize hinders domain specialized features. It is better for the runtime to provide a more specialized API then let the application implement its own abstraction layer as another effects handler if desired.
 
 ### Extensible Interfaces
 
-Applications should be extensible with new interfaces. Instead of a simple step function, we might extend an application with intefaces to obtain an icon or present an administrative GUI.
-
-In context of Glas programs, we might represent method selectors as part of program input on the data stack, e.g. `method:Args`. Result type and available effects may depend on the selected method. This technique has the advantage of being cheap, with negligible overhead if unused.
-
-*Aside:* Together with placing application state on the data stack, applications might be viewed as objects.
+Application input should use a variant type, i.e. `method:Args`. For example, a command-line application might use `cmd:[List, Of, Strings]`. Result and effect types may depend on the method. This design simplfies extension of applications with new methods or use in new contexts.
 
 ## Common Effects
 
@@ -181,6 +179,14 @@ In context of transaction machines and task-based concurrency, the concept and p
 
 Although messages logged by failed transactions are not observable within the program, they can be observed indirectly through reflection APIs which operate on runtime state. A debug view presented to a developer should almost always be based on a reflection API. Aborted messages might be distinguished by rendering in a different color, yet should be accessible for debugging purposes.
 
+### Random Data
+
+Due to different optimizations, a request for random data from operating system or hardware should be distinct from 'fork' effects. 
+
+* **random:Count** - response is requested count of secure random bits as a bitstring. E.g. `random:8` might return `00101010`.
+
+Programmers could use pseudo-random number generators if they do not require secure random bits.
+
 ## Console Applications
 
 See [Glas command line interface](GlasCLI.md).
@@ -188,4 +194,10 @@ See [Glas command line interface](GlasCLI.md).
 ## Web Applications
 
 Another promising near-term target for Glas is web applications, compiling apps to JavaScript and using effects oriented around on Document Object Model, XMLHttpRequest, WebSockets, and Local Storage. 
+
+## FFI-Based Applications
+
+It is feasible to support effects based on FFI, e.g. via C, .NET, or JVM. In these cases we must defer FFI calls until commit then return a result via promise pipelining or similar. Disadvantages include reducted portability and security, but we could use layers of effects handlers to mitigate the FFI.
+
+
 

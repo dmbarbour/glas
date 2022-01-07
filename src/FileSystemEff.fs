@@ -116,9 +116,10 @@ module FileSystemEff =
             | _ -> None
 
 
-        // EntryId is a stable reference between value references in the program and 
-        // the runtime object / activity. This indirection simplifies reorganization
-        // of program references.
+        // EntryId provides a stable reference for the runtime 'object', separate
+        // from the program's reference to the object. This avoids issues related  
+        // to exposing runtime allocations to the program or reorganizing program
+        // references.
         type EntryId = int
 
         // Record for an individual open file. 
@@ -153,6 +154,7 @@ module FileSystemEff =
         type State =
             { Bindings : Map<Ref, EntryId>      // program references to runtime objects
             ; Entries  : Map<EntryId, Ent>      // sparse table of runtime objects
+            //; Active   : Set<EntryId>
             }
 
 
@@ -189,12 +191,12 @@ module FileSystemEff =
                 let ent = Map.find entId (st.Entries) // never fails for valid state
                 match fn ent with
                 | None -> None // update canceled
-                | Some (ent', result) ->
+                | Some (result, ent') ->
                     let entries' = Map.add entId ent' (st.Entries)
                     let st' = { st with Entries = entries' }
-                    Some (st', result)
+                    Some (result, st')
 
-        let tryUpdate (op:Action) (st:State) : (State * Value) option =
+        let tryUpdate (op:Action) (st:State) : (Value * State) option =
             match op with
             | Read (vRef, ct) -> 
                 // Read from buffer of associated entry. 
@@ -205,17 +207,17 @@ module FileSystemEff =
                     let (bytesRead, buffer') = FTList.splitAt amtRead (ent.Buffer)
                     let ent' = { ent with Buffer = buffer' }
                     let result = Value.ofFTList <| FTList.map (Value.u8) bytesRead 
-                    Some (ent', result)
+                    Some (result, ent')
                 )
             | Write (vRef, bytes) -> 
                 tryUpdEntByRef st vRef (fun ent ->
                     if not (writeOK ent) then None else
                     let ent' = { ent with Buffer = FTList.append (ent.Buffer) bytes }
-                    Some (ent', Value.unit)
+                    Some (Value.unit, ent')
                 )
             | Status (vRef) -> 
                 tryUpdEntByRef st vRef (fun ent ->
-                    Some (ent, printStatus (ent.Status))
+                    Some (printStatus (ent.Status), ent)
                 )
             | Close (vRef) ->
                 // Detach reference from Bindings; background loop will clean up later.
@@ -227,7 +229,7 @@ module FileSystemEff =
                     let entries' = Map.add entId ent' (st.Entries)
                     let bindings' = Map.remove vRef (st.Bindings)
                     let st' = { st with Bindings = bindings'; Entries = entries' }
-                    Some (st', Value.unit)
+                    Some (Value.unit, st')
             | Open (vRef, p, ia) ->
                 // Create a new reference. Will be processed by background loop after commit.
                 if Map.containsKey vRef (st.Bindings) then None else
@@ -235,20 +237,20 @@ module FileSystemEff =
                 let entries' = Map.add entId (initEnt p ia) (st.Entries)
                 let bindings' = Map.add vRef entId (st.Bindings)
                 let st' = { st with Bindings = bindings'; Entries = entries' }
-                Some (st', Value.unit)
+                Some (Value.unit, st')
             | RefList ->
                 // return a list of open file references.
                 let keys = st.Bindings |> Map.toSeq |> Seq.map fst |> FTList.ofSeq |> Value.ofFTList
-                Some (st, keys)
+                Some (keys, st)
             | RefMove (srcRef, dstRef) ->
                 // linearly reorganize file references.
                 if Map.containsKey dstRef (st.Bindings) then None else
                 match Map.tryFind srcRef (st.Bindings) with
-                | None -> Some (st, Value.unit) // nop
+                | None -> Some (Value.unit, st) // nop
                 | Some entId ->
                     let bindings' = st.Bindings |> Map.remove srcRef |> Map.add dstRef entId
                     let st' = { st with Bindings = bindings' }
-                    Some (st', Value.unit)
+                    Some (Value.unit, st')
 
 
         let inline private detachEnt (st : State ref) entId ent =
@@ -312,7 +314,7 @@ module FileSystemEff =
                             assert(Option.isNone ent.Stream)
                             try 
                                 let fmode = if bAppend then FileMode.Append else FileMode.Create
-                                let fstream = File.Open(ent.Path, fmode, FileAccess.Write)
+                                let fstream = System.IO.File.Open(ent.Path, fmode, FileAccess.Write)
                                 let s = fstream :> Stream 
                                 let task0 = asyncWrite s (ent.Buffer) |> Async.StartAsTask
                                 updateEnt st entId { ent with Status = Live; Buffer = FTList.empty; Stream = Some s; Activity = task0 }
@@ -380,79 +382,72 @@ module FileSystemEff =
             let s_stdout = System.Console.OpenStandardOutput()
             let ent_stdin = { initEnt "(stdin)" ForRead with Status = Live; Stream = Some s_stdin }
             let ent_stdout = { initEnt "(stdout)" (ForWrite (append=true)) with Status = Live; Stream = Some s_stdout }
-            let st = 
-                { Bindings = Map.ofList [(REF_STDIN, eid_stdin); (REF_STDOUT, eid_stdout)]
-                ; Entries = Map.ofList [(eid_stdin, ent_stdin); (eid_stdout, ent_stdout)]
-                }
-            st
+            { Bindings = Map.ofList [(REF_STDIN, eid_stdin); (REF_STDOUT, eid_stdout)]
+            ; Entries = Map.ofList [(eid_stdin, ent_stdin); (eid_stdout, ent_stdout)]
+            }
 
+        let initEff () : Effects.IEffHandler =
+            let state = ref (initialState ())
+            let parser = (|Action|_|)
+            let action = tryUpdate
+            let writer = id
+            let bgThread () = mainLoop state
+            Thread(bgThread).Start()
+            Effects.SharedStateEff(state,parser,action,writer) |> Effects.selectHeader "file"
 
-
-
-
-
-
-
+        // TODO: Consider providing method to halt bg thread (low priority)
 
     module Dir = 
         type Ref = Value
         type Path = string
 
         type Interaction =
-            | ForList of recursive:bool * watch:bool
-            | ForDelete 
+            | ForList
+            | ForDelete of recursive:bool
             | ForRename of Path
+
+        let isReadInteraction ia =
+            match ia with
+            | ForList -> true
+            | ForDelete _ | ForRename _ -> false
 
         let (|Interaction|_|) v =
             match v with
-            | Variant "list" (Flags ["recursive"; "watch"] ([bRec; bWatch], U)) ->
-                Some (ForList (recursive=bRec, watch=bWatch))
-            | Variant "delete" U -> Some ForDelete
+            | Variant "list" U -> Some ForList
+            | Variant "delete" (Flags ["recursive"] ([bRec],U)) -> Some (ForDelete (recursive=bRec))
             | Variant "rename" (String p') -> Some (ForRename p')
             | _ -> None
 
-        type EType =
-            | EExist
-            | EType
-            | EAuth 
-            | EPath 
-
-        let printEType e =
-            match e with
-            | EExist -> symbol "exist"
-            | EType -> symbol "type"
-            | EAuth -> symbol "auth"
-            | EPath -> symbol "path"
-
         type Status =
             | Init
-            | Wait 
-            | Ready
+            | Live
             | Done
-            | Error of EType
+            | Error
 
         let printStatus s =
             match s with
             | Init -> symbol "init"
-            | Wait -> symbol "wait"
-            | Ready -> symbol "ready"
+            | Live -> symbol "live"
             | Done -> symbol "done"
-            | Error e -> variant "error" (printEType e)
+            | Error -> symbol "error"
 
         type Action = 
             | Read of Ref
             | Open of Ref * Path * Interaction
+            | Close of Ref
             | Status of Ref
             | CWD 
             | Sep
             | RefList 
             | RefMove of Ref * Ref
+            // support to rename or delete directories is deferred
 
         let (|Action|_|) v =
             match v with
             | Variant "read" vRef -> Some (Read vRef)
             | Variant "open" (FullRec ["name"; "as"; "for"] ([String p; vRef; Interaction di], U)) ->
                 Some (Open (vRef, p, di))
+            | Variant "close" vRef -> Some (Close vRef)
             | Variant "status" vRef -> Some (Status vRef)
             | Variant "cwd" U -> Some CWD
             | Variant "sep" U -> Some Sep
@@ -464,4 +459,196 @@ module FileSystemEff =
                 | _ -> None
             | _ -> None 
 
+        // EntryId provides a stable reference for the runtime 'object', separate
+        // from the program's reference to the object. This avoids issues related  
+        // to exposing runtime allocations to the program or reorganizing program
+        // references.
+        type EntryId = int
+
+        // Record for an individual open directory. 
+        [<Struct>]
+        type Ent =
+            { Path          : Path                  // filesystem reference (from open)
+            ; Interaction   : Interaction           // activity (from open)
+            ; ReadBuf       : Value list            // values available for reading
+            ; Status        : Status                // status for reporting to program
+            ; Detach        : bool                  // if true, no future interaction from program
+            } 
+
+
+        let initEnt p ia =
+            { Path = p
+            ; Interaction = ia
+            ; ReadBuf = []
+            ; Status = Init
+            ; Detach = false
+            }
+
+        // Tracking multiple open files. 
+        [<Struct>]
+        type State =
+            { Bindings : Map<Ref, EntryId>      // program references to runtime objects
+            ; Entries  : Map<EntryId, Ent>      // sparse table of runtime objects
+            }
+
+        let initialState () =
+            { Bindings = Map.empty
+            ; Entries = Map.empty
+            }
+
+        // Returns an unused EntryId. 
+        // O(N) where N is number of concurrently open files. This is not
+        // efficient, but is adequate in context of bootstrapping.
+        let private unusedEntId (st:State) : EntryId =
+            let rec searchLoop n =
+                if (n < 0) then failwith "open directory overflow" else
+                if not (Map.containsKey n (st.Entries)) then n else
+                searchLoop (n + 1)
+            searchLoop 1000
+
+        let inline private tryUpdEntByRef st vRef fn =
+            match Map.tryFind vRef (st.Bindings) with
+            | None -> None // entry is not open.
+            | Some entId -> 
+                let ent = Map.find entId (st.Entries) // never fails for valid state
+                match fn ent with
+                | None -> None // update canceled
+                | Some (result, ent') ->
+                    let entries' = Map.add entId ent' (st.Entries)
+                    let st' = { st with Entries = entries' }
+                    Some (result, st')
+
+        let inline private readBufStatus l =
+            if List.isEmpty l then Done else Live 
+
+
+
+        let tryUpdate (op:Action) (st:State) : (Value * State) option =
+            match op with
+            | Read vRef -> 
+                // Read from buffer of associated entry. 
+                tryUpdEntByRef st vRef (fun ent ->
+                    let readOk = not (List.isEmpty (ent.ReadBuf))
+                    if not readOk then None else
+                    let vRead = List.head (ent.ReadBuf)
+                    let rdBuf' = List.tail (ent.ReadBuf)
+                    let status' = readBufStatus rdBuf'
+                    let ent' = { ent with Status = status'; ReadBuf = rdBuf' }
+                    Some (vRead, ent')
+                )
+            | Status (vRef) -> 
+                tryUpdEntByRef st vRef (fun ent ->
+                    Some (printStatus (ent.Status), ent)
+                )
+            | Close (vRef) ->
+                // Detach reference from Bindings; background loop will clean up later.
+                match Map.tryFind vRef (st.Bindings) with
+                | None -> None
+                | Some entId ->
+                    let ent = Map.find entId (st.Entries)
+                    let ent' = { ent with Detach = true }
+                    let entries' = Map.add entId ent' (st.Entries)
+                    let bindings' = Map.remove vRef (st.Bindings)
+                    let st' = { st with Bindings = bindings'; Entries = entries' }
+                    Some (Value.unit, st')
+            | Open (vRef, p, ia) ->
+                // Create a new reference. Will be processed by background loop after commit.
+                if Map.containsKey vRef (st.Bindings) then None else
+                let entId = unusedEntId st
+                let entries' = Map.add entId (initEnt p ia) (st.Entries)
+                let bindings' = Map.add vRef entId (st.Bindings)
+                let st' = { st with Bindings = bindings'; Entries = entries' }
+                Some (Value.unit, st')
+            | CWD ->
+                let s = Directory.GetCurrentDirectory()
+                Some (ofString s, st)
+            | Sep ->
+                let s = Path.DirectorySeparatorChar |> System.Char.ToString
+                Some (ofString s, st)
+            | RefList ->
+                // return a list of open file references.
+                let keys = st.Bindings |> Map.toSeq |> Seq.map fst |> FTList.ofSeq |> Value.ofFTList
+                Some (keys, st)
+            | RefMove (srcRef, dstRef) ->
+                // linearly reorganize file references.
+                if Map.containsKey dstRef (st.Bindings) then None else
+                match Map.tryFind srcRef (st.Bindings) with
+                | None -> Some (Value.unit, st) // nop
+                | Some entId ->
+                    let bindings' = st.Bindings |> Map.remove srcRef |> Map.add dstRef entId
+                    let st' = { st with Bindings = bindings' }
+                    Some (Value.unit, st')
+
+        let inline private detachEnt (st : State ref) (entId : EntryId) : unit =
+            st.Value <- { st.Value with Entries = Map.remove entId (st.Value.Entries) }
+
+        let inline private updateEnt (st : State ref) (entId : EntryId) (ent : Ent) : unit =
+            st.Value <- { st.Value with Entries = Map.add entId ent (st.Value.Entries) }
+
+        let dirEntry (p : Path) =
+            let mtime = Directory.GetLastWriteTimeUtc(p).ToFileTime() |> uint64
+            let ctime = Directory.GetCreationTimeUtc(p).ToFileTime() |> uint64
+            //let di = System.IO.DirectoryInfo(p)
+            //attributes for tracing links might be useful
+            Value.asRecord ["type"; "name"; "mtime"; "ctime"] 
+                           [Value.symbol "dir"; Value.ofString p; Value.nat mtime; Value.nat ctime]
+
+        let fileEntry (p : File.Path) =
+            //let atime = File.GetLastAccessTimeUtc(p).ToFileTime()
+            let mtime = File.GetLastWriteTimeUtc(p).ToFileTime() |> uint64
+            let ctime = File.GetCreationTimeUtc(p).ToFileTime() |> uint64
+            // consider file attributes
+            // attributes for tracing links might be useful 
+            Value.asRecord ["type"; "name"; "mtime"; "ctime"]
+                           [Value.symbol "file"; Value.ofString p; Value.nat mtime; Value.nat ctime]
+
+        let readDir (p : Path) : Value list =
+            let subdirs = System.IO.Directory.EnumerateDirectories(p) |> Seq.map dirEntry
+            let files = System.IO.Directory.EnumerateFiles(p) |> Seq.map fileEntry
+            Seq.toList (Seq.append subdirs files)
+
+        // Note: Currently I simply scan all entries for activity. 
+        let mainLoop (st : State ref) : unit = lock st (fun () -> 
+            while true do 
+                ignore <| Monitor.Wait(st, 1000) // 1 Hz if not triggered by program.
+                for (entId, ent) in Map.toSeq (st.Value.Entries) do
+                    match ent.Interaction with
+                    | ForList ->
+                        match ent.Status with
+                        | _ when ent.Detach ->
+                            detachEnt st entId 
+                        | Init ->
+                            try
+                                let rdBuf = readDir (ent.Path)
+                                let status = readBufStatus rdBuf
+                                updateEnt st entId { ent with Status = status; ReadBuf = rdBuf }
+                            with
+                            | _ -> 
+                                updateEnt st entId { ent with Status = Error }
+                        | _ -> ()
+                    | ForDelete (recursive=bRec) ->
+                        match ent.Status with
+                        | Init ->
+                            try 
+                                Directory.Delete(ent.Path, bRec)
+                                updateEnt st entId { ent with Status = Done }
+                            with 
+                            | _ -> 
+                                updateEnt st entId { ent with Status = Error }
+                        | _ when ent.Detach ->
+                            detachEnt st entId
+                        | _ -> () // nop
+                    | ForRename (sNewName) ->
+                        match ent.Status with
+                        | Init ->
+                            try 
+                                Directory.Move(ent.Path, sNewName)
+                                updateEnt st entId { ent with Status = Done }
+                            with 
+                            | _ ->
+                                updateEnt st entId { ent with Status = Error } 
+                        | _ when ent.Detach ->
+                            detachEnt st entId
+                        | _ -> () // nop
+          ) // end lock
 
