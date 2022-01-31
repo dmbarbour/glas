@@ -327,83 +327,67 @@ module Effects =
     /// Synchronization uses the dotnet Monitor class: the reference is locked (via Enter,
     /// Exit) when used within a transaction, and is Pulsed upon commit. The assumption is
     /// that a background thread occasionally interacts with the shared state to receive
-    /// requests and provide responses.
-    ///
-    /// This design is simplistic. No backtracking is required, but scalability is limited.
-    /// Despite some limits, this design is adequate for bootstrap of Glas systems and will
-    /// be used for network and filesystem effects.
-    ///
-    /// A finalizer may be provided to halt the background thread. 
+    /// requests and provide responses. 
+    /// 
+    /// An advantage is that no backtracking is required. Scalability and parallelism are
+    /// limited, but that shouldn't be a significant concern in context of bootstrap.
     type SharedStateEff<'I, 'O, 'S> =
-        val private State       : 'S ref
+        val private SharedState : 'S ref    // shared state
         val private ParseReq    : Value -> 'I option
         val private Action      : 'I -> 'S -> ('O * 'S) option
         val private PrintResp   : 'O -> Value
-        // The 'ParseReq' can filter some requests. Until a relevant request is observed, we
-        // use an integer to track logical stack depth. Together, these allow locking to be
-        // deferred until necessary.
-        val mutable private TXStack : Choice<int, (struct('S * 'S list))>
+        val mutable private TXStack : 'S list
 
         new(state, parser, action, writer) = 
-            { State = state
+            { SharedState = state
             ; ParseReq = parser
             ; Action = action
             ; PrintResp = writer
-            ; TXStack = Choice1Of2 0
+            ; TXStack = []
             }
 
         member private self.ReadState () =
             match self.TXStack with
-            | Choice1Of2 n when (n > 0) ->
-                // unlock later, on transaction commit/abort
-                System.Threading.Monitor.Enter(self.State) 
-                let s = self.State.Value
-                self.TXStack <- Choice2Of2 struct(s, List.replicate (n - 1) s)
-                s
-            | Choice2Of2 struct(s,_) ->
-                s
-            | _ -> 
-                // internal error (should not occur)
+            | (s::_) -> s
+            | [] -> 
                 failwith "must read from inside a transaction"
 
         member private self.WriteState s =
             match self.TXStack with
-            | Choice2Of2 struct(_, ss) ->
-                self.TXStack <- Choice2Of2 struct(s,ss)
+            | (_::ss) -> 
+                self.TXStack <- (s::ss)
             | _ ->
-                // internal error (should not occur)
                 failwith "must write after read within transaction"
 
 
         interface ITransactional with
             member self.Try () =
                 match self.TXStack with
-                | Choice1Of2 n ->
-                    self.TXStack <- Choice1Of2 (n + 1)
-                | Choice2Of2 struct(s,ss) ->
-                    self.TXStack <- Choice2Of2 struct(s,s::ss)
+                | [] -> 
+                    System.Threading.Monitor.Enter(self.SharedState)
+                    self.TXStack <- [self.SharedState.Value]
+                | (s::_) as txs -> 
+                    self.TXStack <- (s::txs)
             member self.Commit () =
                 match self.TXStack with
-                | Choice1Of2 n ->
-                    assert (n > 0)
-                    self.TXStack <- Choice1Of2 (n - 1)
-                | Choice2Of2 struct(s,(_::ss)) ->
-                    self.TXStack <- Choice2Of2 struct(s,ss)
-                | Choice2Of2 struct(s,[]) ->
-                    self.State.Value <- s
-                    System.Threading.Monitor.PulseAll(self.State)
-                    System.Threading.Monitor.Exit(self.State)
-                    self.TXStack <- Choice1Of2 0
+                | [s'] ->
+                    self.TXStack <- []
+                    self.SharedState.Value <- s'
+                    System.Threading.Monitor.PulseAll(self.SharedState)
+                    System.Threading.Monitor.Exit(self.SharedState)
+                | (s'::_::ss) ->
+                    self.TXStack <- (s'::ss)
+                | [] ->
+                    failwith "commit outside of transaction"
             member self.Abort () =
                 match self.TXStack with
-                | Choice1Of2 n ->
-                    assert (n > 0)
-                    self.TXStack <- Choice1Of2 (n - 1)
-                | Choice2Of2 struct(_, (s::ss)) ->
-                    self.TXStack <- Choice2Of2 struct(s,ss)
-                | Choice2Of2 struct(_, []) ->
-                    System.Threading.Monitor.Exit(self.State)
-                    self.TXStack <- Choice1Of2 0
+                | [_] ->
+                    self.TXStack <- []
+                    System.Threading.Monitor.Exit(self.SharedState)
+                | (_::ss) ->
+                    self.TXStack <- ss
+                | [] ->
+                    failwith "abort outside of transaction"
 
         interface IEffHandler with
             member self.Eff v =

@@ -43,13 +43,12 @@ The Glas CLI currently does not provide effects for opening windows, drawing but
 
 ### Environment Variables
 
-In addition to command-line arguments, a console application usually has access to environment variables where variables and values are both strings. An API can provide relatively lightweight access to these variables, e.g. `env:get:"GLAS_PATH"`. And `env:list` provides a list of defined variables.
+In addition to command-line arguments, a console application typically has access to a set of 'environment variables'. The effects API can provide relatively lightweight read-only access to these variables:
 
-* **env:get:Variable** - response is a value for the variable, or failure if the variable is unrecognized or undefined. 
-* **env:list** - response is a list of defined Variables
-* **env:path-sep** - response is a string representing the path separator for environment path variables, such as ":" for Linux or ";" for Windows.
+* **env:get:Variable** - response is a value for variable, or failure if the variable is unrecognized or undefined. Variables are usually strings, e.g. `env:get:"GLAS_PATH"`.
+* **env:list** - response is the list of defined Variables
 
-Currently this is a read-only API. I don't want complication of correctly handling runtime mutation of GLAS_PATH. The primary use of environment variables is to support ad-hoc configuration, such as access to GLAS_PATH, or to HOME where more configs might be kept.
+Currently this is a read-only API because I don't want the complication of correctly handling runtime mutation of GLAS_PATH. 
 
 ### Standard Input and Output
 
@@ -83,7 +82,7 @@ I'm uncertain how to best handle buffering and pushback. Perhaps buffer size cou
  * **open:(name:DirName, as:DirRef, for:Interaction)** - create new system objects to interact with the specified directory resource in a requested manner. Fails if DirRef is already in use, otherwise returns unit. Potential Interactions:
   * *list* - read a list of entries from the directory. Reaches Done state after all items are read.
   * *rename:NewDirName* - rename or move a directory. Remains open until attempted by runtime.
-  * *delete* - remove an empty directory.
+  * *delete:(recursive?)* - remove an empty directory. Can be flagged for recursive deletion.
  * **close:DirRef** - release the directory reference.
  * **read:DirRef** - read a file system entry, or fail if input buffer is empty. This is a record with ad-hoc fields including at least 'type' and 'name'. Some potential fields:
   * *type:Symbol* (always) - usually a symbol 'file' or 'dir'
@@ -101,52 +100,56 @@ Later, I might extend directory operations with option to watch a directory, or 
 
 ### Standard IO
 
-Following convention, standard input and output are modeled as initially open file references. However, instead of integers, I propose to use `std:in` and `std:out` to identify these file references. 
-
-*Note:* Could also provide `std:err`, but it is currently claimed for logging.
+Following convention, standard input and output are modeled as initially open file references. However, instead of integers, I propose to use `std:in` and `std:out` to identify these initially open references. We could also allow `std:err` if it wasn't used for logging.
 
 ### Network
 
-We can cover the needs of most applications with support for TCP and UDP protocol layers. Instead of touching the mess that is sockets, I propose to specialize the API for each protocol required. Later, we might add raw IP sockets support. 
+I can cover needs of most applications with support for just the TCP and UDP protocols. Network operations are already mostly asynchronous in conventional code, so the adaption here is smaller than for filesystem API. Mostly, we need asynchronous initialization and lose synchronous reads.  For pushback on TCP connections, it might also be useful to provide some view of pending writes. Viable effects API:
 
 * **tcp:TcpOp** - namespace for TCP operations
  * **l:ListenerOp** - namespace for TCP listener operations.
-  * **create:(port?Port, addrs?[List, Of, Addr], as:ListenerRef)** - Create a new ListenerRef. Return unit. Whether listener is successfully created is observable via 'state' a short while after the request is committed.
-   * *port* - indicates which local TCP port to bind; if excluded, leaves dynamic allocation to OS. 
-   * *addrs* - indicates which local network cards or ethernet interfaces to bind; if excluded, attempts to bind all of them.
+  * **create:(port?Port, addr?Addr, as:ListenerRef)** - Create a new ListenerRef. Return unit. Whether listener is successfully created is observable via 'state' a short while after the request is committed.
+   * *port* - indicates which local TCP port to bind. If omitted, OS chooses port.
+   * *addr* - indicates which local network cards or ethernet interfaces to bind. If omitted, attempts to bind all addresses.
   * **accept:(from:ListenerRef, as:TcpRef)** - Receive an incoming connection, and bind the new connection to the specified TcpRef. This operation will fail if there is no pending connection. 
-  * **state:ListenerRef**
+  * **status:ListenerRef**
    * *init* - initial status, 'create' not yet processed by OS/runtime.
    * *live*
    * *error:Value* - indicates error. Value may be a record with ad-hoc fields describing the error, possibly empty. 
-  * **info:ListenerRef** - After successful creation of listener, returns `(port:Port, addrs:[List , Of, Addr])`. Fails if listener is not successfully created.
+  * **info:ListenerRef** - After successful creation of listener, returns `(port:Port, addr:Addr)`. Fails if listener is not successfully created.
   * **close:ListenerRef** - Release listener reference and associated resources.
+  * **ref:list** - returns list of open listener refs
+  * **ref:move:(from:ListenerRef, to:ListenerRef)** - reorganize references. Cannot move to an open ref.
  * **connect:(dst:(port:Port, addr:Addr), src?(port?Port, addr?Addr), as:TcpRef)** - Create a new connection to a remote TCP port. Fails if TcpRef is already in use, otherwise returns unit. Whether the connection is successful is observable via 'state' a short while after the request is committed. Destination port and address must be specified, but source port and address are usually unspecified and determined dynamically by the OS.
- * **read:(from:TcpRef, count:N)** - read 1 to N bytes, limited by available data, returned as a list. Fails if no bytes are available - see 'state' to diagnose.
+ * **read:(from:TcpRef, count:N)** - read 1 to N bytes, limited by available data, returned as a list. Fails if no bytes are available - see 'status' to diagnose error vs. end of input. 
  * **write:(to:TcpRef, data:Binary)** - write binary data to the TCP connection. The binary is represented by a list of bytes.
+ * **limit:(of:Ref, cap:Count)** - fails if number of bytes pending in the write buffer is greater than Count or if connection is closed, otherwise succeeds returning unit. Not necessarily accurate or precise. This method is useful for pushback, to limit a writer that is faster than a remote reader.
  * **status:TcpRef**
+  * *init* - initial status, 'create' not yet processed by OS/runtime.
+  * *live*
+  * *done* - remote has closed connection, but might still receive/send just a little more.
+  * *error:Value* - indicates error. Value may be a record with ad-hoc fields describing the error, possibly empty. 
  * **info:TcpRef** - For a successful TCP connection (whether via 'tcp:connect' or 'tcp:listener:accept'), returns `(dst:(port:Port, addr:Addr), src:(port:Port, addr:Addr))`. Fails if TCP connection is not successful.
  * **close:TcpRef**
+ * **ref:list** - returns list of open TCP refs
+ * **ref:move:(from:TcpRef, to:TcpRef)** - reorganize TCP refs. Fails if 'to' ref is in use.
 
 * **udp:UdpOp** - namespace for UDP operations.
- * **connect:(port?Port, addrs?[List, Of, Addr], as:UdpRef)** - Bind a local UDP port, potentially across multiple ethernet interfaces. Fails if UdpRef is already in use, otherwise returns unit. Whether binding is successful is observable via 'state' after the request is committed. Options:
+ * **connect:(port?Port, addr?Addr, as:UdpRef)** - Bind a local UDP port, potentially across multiple ethernet interfaces. Fails if UdpRef is already in use, otherwise returns unit. Whether binding is successful is observable via 'state' after the request is committed. Options:
   * *port* - normally included to determine which port to bind, but may be left to dynamic allocation. 
   * *addr* - indicates which local ethernet interfaces to bind; if unspecified, binds all of them.
  * **read:(from:UdpRef)** - returns the next available Message value, consisting of `(port:Port, addr:Addr, data:Binary)`. This refers to the remote UDP port and address, and the binary data payload. Fails if there is no available message.
  * **write(to:UdpRef, data:Message)** - output a message using same `(port, addr, data)` record as messages read. Returns unit. Write may fail if the connection is in an error state, and attempting to write to an invalid port or address or oversized packets may result in an error state.
- * **move:(from:UdpRef, to:UdpRef)** - rename a reference. Fails if 'to' ref already in use, or 'from' ref is unused. Returns unit. After move, the roles of these references is reversed.
  * **status:UdpRef**
- * **info:UdpRef** - For a successfully connected UDP connection, returns a `(port:Port, addrs:[List, Of, Addr])` pair. Fails if still initializing, or if there was an error during initialization.
+  * *init* - initial status, 'create' not yet processed by OS/runtime.
+  * *live*
+  * *error:Value* - indicates error. Value may be a record with ad-hoc fields describing the error, possibly empty. 
+ * **info:UdpRef** - For a live UDP connection, returns a `(port:Port, addr:Addr)` pair. Fails if still initializing, or if there was an error during initialization.
  * **close:UdpRef** - Return reference to unused state, releasing system resources.
+ * **ref:list** - returns list of open UDP refs.
+ * **ref:move:(from:UdpRef, to:UdpRef)** - reorganize UDP refs. Fails if 'to' ref is in use.
 
-An Addr could be a 32-bit number (IPv4), a 128-bit number (IPv6), or a string such as "www.google.com" or "192.168.1.42". Similarly, a Port can be a 16-bit number or a string such as "ftp" that is externally associated with a port (cf. `/etc/services` in Linux). 
-
-An API for DNS access would also be convenient, but its implementation isn't critical at this time. In theory, we could implement this using network access to DNS servers (potentially including a localhost DNS) and file access to DNS configurations (e.g. `/etc/resolv.conf`). But most apps won't need direct use of lookup services if we integrate it implicitly into the addressing.
-
-I've excluded the half-close TCP feature because too many routers disable this feature by applying a short timeout after half-close. A TCP connection should be closed when the full TCP interaction is complete.
-
-I'm very interested the raw network socket API, but I've decided to elide this for now.
-
+A port is a fixed-width 16-bit number. An addr is a fixed-width 128-bit or 32-bit number (IPv4 or IPv6) or optionally a string such as "www.google.com" or "192.168.1.42". Later, I might add a dedicated API for DNS lookup, and perhaps for 'raw' Ethernet.
 
 ## Rejected Effects
 
@@ -156,5 +159,9 @@ I believe it wiser to support 'eval' as an accelerated function rather than as a
 
 ### Runtime Info? Defer.
 
-It might be useful to provide some reflection on the environment via environment variables or special methods. However, no need to rush this.
+It might be useful to provide some reflection on the environment via environment variables or special methods. This could include call stacks, performance metrics, and traces of failed transactions. However, this is low priority.
+
+### Executables? Defer.
+
+It might be useful to write a full shell within Glas at some point. In this case, we'd need to start other processes with arguments, suitable environments, and access to open files representing stdin/stdout/etc.. However, this is low priority, and it might be better to defer this until we're compiling Glas applications from within Glas.
 

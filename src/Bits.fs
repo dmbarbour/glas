@@ -263,6 +263,9 @@ module Bits =
     let inline ofByte (n : uint8) : Bits =
         consByte n empty
 
+    let ofBinary (b : uint8[]) : Bits =
+        Array.foldBack consByte b empty
+
     let inline private matchHdLen hdlen n =
         let expect_hibit = (1UL <<< hdlen)
         let mask_hibits = ~~~(expect_hibit - 1UL)
@@ -394,7 +397,9 @@ module Bits =
     let random nBits =
         assert(nBits >= 0)
         let nBytes = (nBits + 7) / 8
+        let extraBits = (8 * nBytes) - nBits
+        assert(extraBits < 8)
         let arr = Array.zeroCreate nBytes
         use rng = new System.Security.Cryptography.RNGCryptoServiceProvider()
         rng.GetBytes(arr)
-        Array.foldBack consByte arr empty |> skip ((8 * nBytes) - nBits)
+        ofBinary arr |> skip extraBits

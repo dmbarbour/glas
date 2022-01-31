@@ -199,5 +199,9 @@ Another promising near-term target for Glas is web applications, compiling apps 
 
 It is feasible to support effects based on FFI, e.g. via C, .NET, or JVM. In these cases we must defer FFI calls until commit then return a result via promise pipelining or similar. Disadvantages include reducted portability and security, but we could use layers of effects handlers to mitigate the FFI.
 
+## Asynchronous External Effects? No
 
+An early design I had is essentially `send:(ch:Chan, msg:Request)` paired with `recv:Chan` effects as a common API for asynchronous request-response. A 'recv' request would fail if there is no data on the channel. Channels only control order of events: requests on separate channels may evaluate in parallel; requests on a single channel are evaluated in order. Each request produces a response on the same channel.
+
+This design simplifies runtime integration. However, it is unsuitable for mixed synchronous effects APIs. Additionally, the references in this case are independent of domain. For example, we'd still need another layer of references to represent multiple TCP connections. It seems wiser to just directly provide the TCP API that can support mixed synchronous elements where useful.
 

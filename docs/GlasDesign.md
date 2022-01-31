@@ -1,6 +1,6 @@
 # Glas Language Design
 
-Glas is now a backronym for 'General LAnguage System'. It was originally named in reference to transparency of glass, liquid and solid states to represent staged metaprogramming, and the human mastery over glass as a material. 
+Glas is now a backronym for 'General LAnguage System'. It was originally named in reference to transparency of glass, liquid and solid states to represent staged metaprogramming, and human mastery over glass as a material. 
 
 ## Module System and Syntax
 
@@ -20,7 +20,7 @@ However, for extensibility and self-documentation, Glas encourages use of *label
 
 The unit value can be represented by a singleton tree. Symbols and numbers will often be represented as variants terminating in unit. For example, `00010111` encodes byte 23, and `10111` encodes natural number 23. 
 
-To efficiently represent labeled data, Glas systems favor a tree representation that compact non-branching paths, such as:
+To efficiently represent labeled data and numbers, the underlying data representation may be closer to:
 
         type Bits = (compact) Bool list
         type T = (Bits * (1 + (T*T)))
@@ -164,13 +164,17 @@ Annotations can support performance (acceleration, stowage, memoization, optimiz
 The set of annotations is openly extensible and subject to de-facto standardization. If a Glas compiler or interpreter encounters any annotations it does not recognize, it can log a warning then ignore. Some annotations in use:
 
 * *accel:Model* - accelerate the program. The model is often a symbol indicating that the program implements a specific accelerated function that the compiler should recognize. However, more general models are feasible.
-* *arity:(i:Nat, o:Nat)* - effective arity, usually based on a program *before* it was optimized. This may be checked, ignored, or assumed to be correct depending on context.
+* *arity:(i:Nat, o:Nat)* - a simplistic stack-effect type, representing the number of values input from stack and output to stack. Also helps stabilize partial evaluation of macros, e.g. in context of the g0 language.
 
 The 'prog' header also serves as the primary variant for programs within a *Dictionary* value.
 
 ### List, Arithmetic, Bitwise Operators, Etc..
 
 Glas does not have operators for most data representations. Other than the few record operators, the idea is to implement these functions within Glas then annotate for *Acceleration*.
+
+## Type Checking
+
+Glas does not have a built-in type system. Runtime type errors simply cause evaluation to fail. However, many Glas language modules will support syntax to express programmer assumptions or static assertions. These can be checked when the module compiles, or embedded as program annotations for later verification. Redundant checks are mitigated by memoization.
 
 ## Application Models
 
@@ -180,7 +184,7 @@ Language modules have a module name of form `language-(ext)`, binding to files w
 
 The compile program must have arity 1--1, and has a limited effects API to guarantee deterministic compilation based on source and state of other modules. A relevant assumption is that dependencies between modules are acyclic (forming a directed acyclic graph). Effects API:
 
-* **load:ModuleID** - Response is compiled value for the indicated module, or the request may fail. Currently, modules are identified by strings (a list of bytes) such as `"foo"`, eliding file extension. We search for the named module locally then fallback to `GLAS_PATH`. 
+* **load:ModuleID** - Response is compiled value for the indicated module, or the request may fail. Currently, modules are usually identified by strings (a list of bytes) such as `"foo"`, eliding file extension. We search for the named module locally then fallback to `GLAS_PATH`. 
 * **log:Message** - Response is unit. Arbitrary output message, useful for progress reports, debugging, code change proposals, etc.. 
 
 Load failures may occur due to missing modules, ambiguous names (e.g. if we have both `foo.g0` and subdirectory `foo/`), detection of dependency cyles, failure of a compiler function, etc. A compiler can continue in presence of most load failures. The cause of failure is not visible to the client module but should be visible to developers, e.g. via log. 
@@ -198,20 +202,18 @@ It is possible that a printer will fail partway through the job. In that case, w
 
 ### Automated Testing
 
-Static assertions when compiling modules are very useful for automated testing. However, a build-time test is under pressure to resolve swiftly thus usually cannot explore a large search space. There leaves open a niche for long-running or non-deterministic tests, such as fuzz-testing.
+Static assertions when compiling modules are very useful for automated testing. However, build-time is deterministic and under pressure to resolve swiftly. This leaves an open niche for long-running or non-deterministic tests, such as overnight fuzz-testing.
 
-To support this, we might express tests as arity 0--Any Glas programs with access to 'fork' effect for non-deterministic choice input. 
+To support this, we might express tests as arity 0--Any Glas programs with access to 'fork' effect to represent non-deterministic choice and search for failing tests. Additionally, tests could include an output log for progress and debugging. Viable effects API:
 
-* **fork** - Response is a non-deterministic boolean - i.e. a '0' or '1' bitstring.
+* **fork** - Response is a non-deterministic boolean - i.e. a '0' or '1' bitstring. In context of testing, this response should not be far or random, but rather guided by heuristics, memory, and program analysis to search for failing tests.
 * **log:Message** - Response is unit. Write an arbitrary message to support debugging of tests.
 
-The primary output from a test is pass/fail of evaluation. Log messages are a secondary output for debugging. In context of testing, non-deterministic fork should not be fair or random. A good test system will apply heuristics and program analysis to more effectively search for failing tests. We can also use forks as checkpoints for backtracking and incremental computing.
-
-We could develp a command line verb, `glas test ...`, to manage running of tests. The limited effects would pressure developers to simulate the effects environment for testing.
+We might develop a command line verb, `glas test ...` to automate running of tests.
 
 ### User Applications
 
-This is the subject of the [Glas Apps](GlasApps.md) document.
+This is the subject of the [Glas Apps](GlasApps.md) document. Intriguingly, concurrency can be modeled by a non-deterministic transactional loop without need for explicit multi-threading effects.
 
 ## Performance
 
@@ -263,13 +265,13 @@ Glas does not have first-class functions. But it is not difficult to write an 'e
 
 Almost every application model will support a **log:Message** effect to support debugging. In general, we'll often want the ability to filter which messages we're seeing based on task, level, role, etc.. These properties are mostly independent of content. Instead of a variant type, log messages will normally use a record of ad-hoc fields, with de-facto standardization. For example:
 
-        (lv:warn, role:debug, text:"English message")
+        (lv:warn, role:debug, text:"message for developer")
 
 This allows gradual and ad-hoc structured extension to log messages, e.g. with provenance metadata, without breaking existing routes or filters. It is feasible to extend log messages with images or even applets to better explain issues.
 
 *Note:* Efficient logging with large values require support for structure sharing within the log storage, e.g. using the stowage model.
 
-### Bracketed Effects
+### Bracketed Effects? No.
 
 A useful pattern for effects is bracketed effects, e.g. increment-operation-decrement, where some operation is performed in context of a background effect. This can always be modeled by session types, but structural support would make it much easier to reason about. This might be represented by extending `eff` to `eff:P`, and also extending `env` with a clause to run after the bracketed subprogram P.
 
@@ -287,17 +289,9 @@ The idea is a standard language for stowage and sharing of Glas values at a larg
 
 See [Glas Object](GlasObject.md).
 
-### Gradual Types
-
-By default, Glas does lightweight static arity checkss, but there is no sophisticated type system built-in. Language modules can introduce their own type system, type annotations, and safety analyses. Thus, the type system is effectively user-defined.
-
-Glas should work very well with gradual types. Access to program definitions as data enables type checks to be performed post-hoc, e.g. via assertions in a later module, without invasive modification of existing modules to add annotations. It is also feasible to overlay several type systems, with independent analyses. Memoization and stowage can mitigate redundant checks.
-
 ### Program Search
 
-I'm very interested in a style of metaprogramming where programmers express hard and soft constraints and search tactics for a program. For example, each program component would declare constraint variables, describe how to compute a result (or fail) based on the values of those variables, and describe potential ways to assign those variables. Separately, we search for solutions. Glas provides a viable foundation, though the g0 syntax is not suitable for this role.
-
-A challenge will be achieving effective performance from search in context of deterministic computations. Memoization may help if applied carefully.
+I'm very interested in a style of metaprogramming where programmers express hard and soft constraints, search spaces, and search tactics for a program. This would include overloading definitions based on types, e.g. we might search for subprogram that matches the input and desired output types. But it also includes automatic layout of GUIs, stitching service APIs together, and so on. It is feasible to develop a higher level programming model and suitable language modules around this idea.
 
 ### Provenance Tracking
 

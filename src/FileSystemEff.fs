@@ -18,12 +18,16 @@ module FileSystemEff =
     // * The background loop touches every open file on every cycle, even when
     //   there is nothing to do for a file. Thus, the loop becomes inefficient
     //   if there are too many open files. I could fix this by introducing an
-    //   action queue if required, but it's low priority for the moment.
+    //   event queue if required, but it's low priority for the moment.
+    //
+    // * I do not track order of events. Operations are fully asynchronous. This
+    //   might be a problem when renaming multiple files, for example.
     //
     // * The .NET `System.Console.OpenStandardInput()` implementation has known
     //   bug in interactive mode, at least for Linux. It will raise an exception
     //   if it attempts to read a line larger than the read buffer. To mitigate,
-    //   I use a read buffer that is likely larger than interactive user input.
+    //   I use a very large read buffer. (I also reported the bug; it is fixed 
+    //   for some upcoming release of dotnet.)
     //
     // * The .NET Stream abstraction does not provide useful interfaces to express
     //   read or write timeouts. Thus, we're forced to dedicate async tasks or
@@ -607,7 +611,8 @@ module FileSystemEff =
             let files = System.IO.Directory.EnumerateFiles(p) |> Seq.map fileEntry
             Seq.toList (Seq.append subdirs files)
 
-        // Note: Currently I simply scan all entries for activity. 
+        // Note: Currently I simply scan all entries for activity. There is no background
+        // tasks in this case; I'll just run every operation in this loop. 
         let mainLoop (st : State ref) : unit = lock st (fun () -> 
             while true do 
                 ignore <| Monitor.Wait(st, 1000) // 1 Hz if not triggered by program.
@@ -651,4 +656,17 @@ module FileSystemEff =
                             detachEnt st entId
                         | _ -> () // nop
           ) // end lock
+
+        let initEff () : Effects.IEffHandler =
+            let state = ref (initialState ())
+            let parser = (|Action|_|)
+            let action = tryUpdate
+            let writer = id
+            let bgThread () = mainLoop state
+            Thread(bgThread).Start()
+            Effects.SharedStateEff(state,parser,action,writer) |> Effects.selectHeader "dir"
+
+
+    let fileSysEff () : Effects.IEffHandler =
+        Effects.composeEff (File.initEff()) (Dir.initEff())
 

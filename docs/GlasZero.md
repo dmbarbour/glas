@@ -55,7 +55,7 @@ The g0 program syntax has built-in support for numbers, symbols, strings, and pr
 
 The value `0` (or `""`) is the empty bitstring. 
 
-Currently, there is no dedicated syntax for structured data. We can only construct data on the stack, or process a string. Some clever word choice can mitigate this. For example, with suitable definitions, a multi-line text could be embedded as:
+Currently, there is no dedicated syntax for structured data. Some clever word choice can mitigate this. For example, with suitable definitions, a multi-line text could be embedded as:
 
         l0 "Blow, blow, thou winter wind,"
         li "Thou art not so unkind"
@@ -74,7 +74,7 @@ Currently, there is no dedicated syntax for structured data. We can only constru
         li "  -- William Shakespeare"
         li unlines
 
-We could similarly use 'd0' and 'di' to embed dictionaries. However, despite mitigation, the g0 syntax is awkward for significant data embeddings. It is wise to embed any significant volume of data into other files using either a syntax suitable for the data in question, or a generic syntax similar to JSON or MessagePack (perhaps extended with module references), then develop a language module to extract the structed data.
+However, despite mitigation, the g0 syntax is unsuitable for embedding large data. Programmers should develop dedicated language modules for bulk data entry. 
 
 ## Compile-Time Effects
 
@@ -92,13 +92,11 @@ Most words in a g0 dictionaries will be 'prog' words.
 
 A 'macro' definition is a program that will be statically evaluated in context of its caller, using static inputs based on partial evaluation. The first result from a macro must be a value representing a program. This program is applied inline just after the macro call. 
 
-When used together with g0's ability to embed programs as data, macros effectively support higher-order programming at compile-time. List processing, parser combinators, and many other program abstractions may be supported via macros.
-
-Macros have access to compile-time effects, and are useful when defining g0 primitives.
+When used together with g0's ability to embed programs as data, macros support higher-order programming limited to compile-time. List processing, parser combinators, and many other program abstractions may be supported via macros.
 
 ### Defining Primitives
 
-The g0 language does not have any built-in definitions. Macros are sufficient to define the Glas program operators:
+The g0 language does not have any built-in definitions. Macros and embedded data are sufficient to express all Glas programs, though we'll usually favor 'prog' definitions for performance reasons.
 
         macro apply [] # apply first parameter as program
         prog swap ['swap apply]
@@ -108,7 +106,7 @@ The g0 language does not have any built-in definitions. Macros are sufficient to
         macro while-do [0 'do put 'while put 0 'loop put]
         ...
 
-The g0 ecosystem will usually start with a module to define the primitives and other useful functions.
+The g0 ecosystem includes a module that defines primitives and other useful low-level functions.
 
 ### Data Definitions
 

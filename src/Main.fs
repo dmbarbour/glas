@@ -149,6 +149,7 @@ let mkRuntime (logger : IEffHandler) (loader : Loader) =
         ; forkEff () 
         ; randomEff ()
         ; envVarEff ()
+        ; FileSystemEff.fileSysEff ()
         ; selectHeader "m" (loader :> IEffHandler)
         // todo: filesystem, network
         ] 
@@ -168,11 +169,11 @@ let run (pstr:string) (args:string list): int =
         match eval p (deferTry io) [argVals] with
         | Some [Value.Bits b] when (32 >= Bits.length b) ->
             (int (Bits.toU32 b)) // user-provided exit code
-        | Some vs ->
-            let vsStr = vs |> List.map (Value.prettyPrint) |> String.concat ";;;" // should be singleton
+        | Some [v] ->
+            let vsStr = Value.prettyPrint v
             logError logger (sprintf "evaluation of %s exited with unrecognized value %s" pstr vsStr)
             EXIT_FAIL
-        | None ->
+        | _ ->
             logError logger (sprintf "evaluation of %s halted in failure" pstr) 
             EXIT_FAIL
     | None -> 
