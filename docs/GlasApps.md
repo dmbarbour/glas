@@ -1,12 +1,14 @@
 # Glas Applications
 
-Glas programs have algebraic effects, which greatly simplifies exploration of different application models. In conjunction with access to programs as values, it is feasible to implement robust adapters layers between models.
+Glas programs have algebraic effects, which simplifies exploration of different effects APIs. In conjunction with access to programs as values, it is feasible to implement robust adapters layers between APIs.
 
-The most conventional application model is the procedural loop, i.e. the application code is some variation of `void main() { init; loop { do stuff }; cleanup }`. State and behavior are both private to the application loop, not accessible for extension or inspection. Concurrency is very awkward and error-prone in this model. The only *generic* operation on the running application is to kill it. Glas systems will use this conventional model for command line verbs (i.e. `glas-cli-verb.run` programs) because it's easy to implement due to conventions.
+The most conventional application model is the procedural loop, i.e. the application code is some variation of `void main() { init; loop { do stuff }; cleanup }`. However, concurrency, reactivity, and distribution are awkward and error-prone in this model. The state is inaccessible, hidden within the loop, which hinders nice features such as live programming or orthogonal persistence.
 
-An intriguing alternative is the *transaction machine*, where an application is a dynamic set of transactions that run repeatedly. The loop is implicit, and state is maintained outside the loop, which significantly improves extensibility and enables orthogonal persistence. Concurrent coordination is very natural in this program model. It is feasible to update code atomically at runtime. Transaction machines are a good foundation for my visions of robust live coding as a basis for user-interfaces.
+An intriguing alternative is to encode applications directly as *Transaction Machines*. A transaction machine application is expressed as a transaction that is evaluated repeatedly. Application state is separated from transaction logic, and is much more accessible. Updates to the transaction logic can be deployed between transactions at runtime. We can leverage nice properties of transactions as a simple foundation for concurrency and reactivity. 
 
-This document explores my vision for the development of applications in Glas systems.
+Glas programs are a good fit for transaction machines because backtracking conditional behavior is already essentially transactional. This already imposes on the effects APIs. The [Glas Command Line Interface](GlasCLI.md) takes transaction machines as the standard application model in Glas systems. 
+
+This document explores my general vision for the development of applications in Glas systems.
 
 ## Transaction Machines
 
@@ -86,7 +88,7 @@ It is feasible to compile a top-level transactional loop, such as a Glas program
 
 In context of this loop, the data stack might be compiled into a set of transaction variables. Abstract interpretation together with runtime instrumentation can feasibly support fine-grained read-write conflict detection. It is feasible to recognize *channels* as a patterned use of list variables, i.e. channels are just lists on the data stack that we optimize based on usage. 
 
-The embedding loses implicit live coding, but we still benefit from convenient process control, incremental computing, task-based concurrency, reactive dataflow, potential for parallelism and distribution, etc.. I intend to initially use this procedural embedding in context of [Glas command line interface](GlasCLI.md).
+The embedding loses implicit live coding, but we still benefit from convenient process control, incremental computing, task-based concurrency, reactive dataflow, potential for parallelism and distribution, etc.. 
 
 ### Transaction Machine Embedding of Procedural
 
@@ -110,17 +112,17 @@ These interim solutions are adequate for many applications, especially at smalle
 
 ### Application State
 
-Application state can and should be represented as a value on the normal data stack. No separate effects API for state. This design is consistent with a procedural embedding of transaction machines and makes it semantically clear what state is 'owned' by the application vs. owned by the runtime. 
-
-The cost is that this design places a heavy burden on the optimizer, e.g. precise conflict detection requires abstract analysis to partition state into smaller fragments of a transactional memory. 
+Application state can (and should) be represented as normal values on the normal data stack within a program loop. No separate effects API for state. This design is consistent with a procedural embedding of transaction machines and makes it semantically clear what state is 'owned' by the application vs. owned by the runtime. The cost is that this design places a heavy burden on the optimizer, e.g. precise conflict detection requires abstract analysis to partition state into smaller fragments of a transactional memory. 
 
 ### Robust References
 
-A robust API design for references is to have applications allocate their own references. For example, `open file as foo` where `foo` is an arbitrary user-provided value. Then further operations (read, write, close) would also use the `foo` value to reference this object. 
+Conventional APIs return allocated references to the client, e.g. `open file` returns a file handle. However, this design is unstable under concurrency and difficult to secure. A more robust API design for references is to have applications allocate their own references. For example, `open file as foo` where `foo` is a user-provided value. 
 
-There are several benefits to this design when compared to system allocation of references. It becomes much easier to control references, e.g. a program can use effects handlers to add a prefix to all references used by a subprogram. This design avoids security risks related to forgery or leaky abstraction of system-meaningful references. Debugging and reflection are greatly simplified because references can easily carry metadata about purpose or provenance within the program. Allocation of references is easily stabilized and decentralized, simplifying concurrency and distribution.
+Further operations such as read and close would then use `foo` value to reference the open file. The host would maintain a translation table between application references and runtime objects. The application never has direct access to a runtime's internal reference, and cannot forge runtime references.
 
-The system can maintain lookup tables between reference values and underlying resources. It is feasible to support reflection APIs that return lists of allocated references or rename references. Applications can feasibly use reflection to implement their own garbage collection. 
+There are benefits to this design when compared to system allocation of references. It becomes much easier to secure which references a subprogram may use, e.g. based on prefix. References can be stable and meaningful, which should simplify debugging and reflection. Allocation of references can be decentralized within a concurrent application, reducing contention.
+
+This avoids any need for abstraction or opacity of reference values. This does shift the burden of garbage collection to the application, but that can be supported by including an effect to list all active references of a given type.
 
 ### Asynchronous Effects
 
@@ -199,9 +201,11 @@ Another promising near-term target for Glas is web applications, compiling apps 
 
 It is feasible to support effects based on FFI, e.g. via C, .NET, or JVM. In these cases we must defer FFI calls until commit then return a result via promise pipelining or similar. Disadvantages include reducted portability and security, but we could use layers of effects handlers to mitigate the FFI.
 
-## Asynchronous External Effects? No
+## Asynchronous External Effects? No.
 
-An early design I had is essentially `send:(ch:Chan, msg:Request)` paired with `recv:Chan` effects as a common API for asynchronous request-response. A 'recv' request would fail if there is no data on the channel. Channels only control order of events: requests on separate channels may evaluate in parallel; requests on a single channel are evaluated in order. Each request produces a response on the same channel.
+An early design I had is essentially `send:(ch:Chan, msg:Request)` paired with `recv:Chan` effects as a common API for asynchronous request-response. Channels help control order of events: requests on separate channels may evaluate concurrently, while requests on a single channel must evaluate in order. The requests available would be consistent across channels. Each request produces a response on the same channel, and 'recv' will fail until the response is available. 
 
-This design simplifies runtime integration. However, it is unsuitable for mixed synchronous effects APIs. Additionally, the references in this case are independent of domain. For example, we'd still need another layer of references to represent multiple TCP connections. It seems wiser to just directly provide the TCP API that can support mixed synchronous elements where useful.
+This design simplifies integration with FFI. For example, we could have requests for opening, reading, and writing files that almost directly adapt the existing APIs and fire up a background thread per active channel.
+
+However, this results in awkward APIs within the application. It isn't feasible to synchronously report current status of prior requests, for example. Additionally, it requires more arbitrary data conversions, e.g. to deal with signed integers and exceptions. I think it's wiser to develop a specialized API for desired effects, focusing on TCP and UDP for general integration.
 

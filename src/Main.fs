@@ -141,7 +141,7 @@ let arity (pstr:string) : int =
         EXIT_FAIL
 
 
-// build the runtime environment, given initial access to log and load. 
+// provide some useful effects to command line verbs 
 let mkRuntime (logger : IEffHandler) (loader : Loader) = 
     let handlers =
         [ logger
@@ -150,8 +150,8 @@ let mkRuntime (logger : IEffHandler) (loader : Loader) =
         ; randomEff ()
         ; envVarEff ()
         ; FileSystemEff.fileSysEff ()
+        ; NetworkEff.networkEff ()
         ; selectHeader "m" (loader :> IEffHandler)
-        // todo: filesystem, network
         ] 
     List.foldBack composeEff handlers noEffects
 

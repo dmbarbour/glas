@@ -1,14 +1,18 @@
-# Glas Language Design
+# Glas Design
 
-Glas is now a backronym for 'General LAnguage System'. It was originally named in reference to transparency of glass, liquid and solid states to represent staged metaprogramming, and human mastery over glass as a material. 
+Glas is named in reference to transparency of glass, liquid and solid states to represent staged metaprogramming, and human mastery over glass as a material. As a backronym, it can also be taken as 'General LAnguage System'.
+
+Design goals of Glas include: Easy reproduction, sharing, and integration of software artifacts. Flexible integration of text-based, graphical, and structural programming environments. Accessible staged metaprogramming so programmers can express logic at the correct level to reduce implementation details. An exploration of non-conventional application models to simplify concurrency, distribution, deployments, and live software update.
 
 ## Module System and Syntax
 
-Glas modules are typically represented by files and folders. Dependencies between Glas modules must form a directed acyclic graph. Every module will deterministically compute a value depending on file extension, file content, and definition of language modules.
+Glas modules are typically represented by files and folders. Dependencies between valid Glas modules must form a directed acyclic graph. Every module will deterministically compute a value depending only on other values from the module system.
 
-To compute the value for a file `foo.ext`, the Glas system will compile the file binary using a program defined in module `language-ext`. To bootstrap, the [g0](GlasZero.md) language (a Forth variant) is predefined. File extensions compose, e.g. for `foo.xyz.json` we apply `language-json` then `language-xyz`. The value for a folder `foo/` is the value from its contained public file, such as `foo/public.g0`. Modules cannot reference across folder boundaries. Files and folders whose names start with `.` are hidden from the Glas module system.
+To compute the value for a file `foo.ext`, the Glas system will compile the file binary using a program defined in module `language-ext`. The [g0](GlasZero.md) language (a Forth variant) is predefined to support bootstrap. File extensions compose, e.g. for `foo.xyz.json` we apply `language-xyz` to further compile the value output by `language-json`. The value for a folder `foo/` is the value of its contained 'public' module, such as `foo/public.g0`. 
 
-Global filesystem modules should be subfolders found using the GLAS_PATH environment variable, whose value should be a list of folders separated by semicolons. Additionally, files can reference local modules within the same folder. By default, this uses a simple fallback: search locally, then globally if a local resource is not specified. Later, we might extend module search to use network resources, such as a package distribution.
+Modules cannot reference across folder boundaries. Files can reference local modules defined in the same subfolder or global modules found via GLAS_PATH. Global modules should always be represented as folders. Later, we might extend module search or GLAS_PATH to include network resources.
+
+*Note:* Glas systems encourage modules to output fully linked values, i.e. directly inlining content of other modules or subprograms instead of using references to be linked later. This simplifies direct interpretation, metaprogramming, and staging, but it does result in redundant structure and computations. Performance can be mitigated by memoization, content-addressed storage (see *Stowage*), and compression pass by a compiler.
 
 ## Data Model
 
@@ -16,40 +20,34 @@ Glas data logically consists of immutable binary trees. A naive representation i
 
         type T = ((1+T) * (1+T))
 
-However, for extensibility and self-documentation, Glas encourages use of *labeled* data structures. Labels are encoded as paths through a sparse tree. For example, the label 'data' will normally be represented by path `01100100 01100001 01110100 0110001 00000000`, using null-terminated UTF-8 text. The labeled data is the data we reach by following this path. A 'variant' has a single label followed by data, while a 'record' forms a [radix tree](https://en.wikipedia.org/wiki/Radix_tree) with different labels sharing path prefixes.
-
-The unit value can be represented by a singleton tree. Symbols and numbers will often be represented as variants terminating in unit. For example, `00010111` encodes byte 23, and `10111` encodes natural number 23. 
+Glas encourages use of *labeled* data structures, encoding labels as a path through the tree. For example, the label 'data' is represented by path `01100100 01100001 01110100 0110001 00000000`, using null-terminated UTF-8 text, with `0` and `1` representing left and right branches respectively. Labeled data is data reached by following the label path. A 'variant' has a single label followed by data, while a 'record' forms a [radix tree](https://en.wikipedia.org/wiki/Radix_tree) (aka trie) with labels sharing common path prefixes. The unit value can be represented by a singleton tree. Symbols and numbers will often be represented as variants terminating in unit. For example, `00010111` encodes byte 23, and `10111` encodes natural number 23. 
 
 To efficiently represent labeled data and numbers, the underlying data representation may be closer to:
 
         type Bits = (compact) Bool list
         type T = (Bits * (1 + (T*T)))
 
-The details of underlying representation are not directly exposed to programs. But programs do have full access to the tree representation of other structures such as lists. Logically, a list has type `type List a = (a * List a) | ()`, i.e. constructed of `(Head * Tail)` pairs (nodes with two children) terminating in unit `()` (a node with no children). However, to support efficient split, concat, and double-ended queue operations, Glas systems will *accelerate* lists under-the-hood using a [finger tree](https://en.wikipedia.org/wiki/Finger_tree) representation. See *Acceleration* below.
+Details of underlying representation are not directly exposed to programs. Relatedly, a list has type `type List a = (a * List a) | ()`, i.e. constructed of `(Head * Tail)` pairs (nodes with two children) terminating in unit. However, to support efficient split, concat, and double-ended queue operations, Glas systems will *accelerate* lists under-the-hood using a [finger tree](https://en.wikipedia.org/wiki/Finger_tree) representation. See *Acceleration* below.
 
 To work with very large trees, Glas systems may offload subtrees into content-addressed storage. I call this pattern *Stowage*. Of course, Glas applications may also use effects to interact with external storage. Stowage has a benefit of working nicely with pure computations, serves as a virtual memory and compression layer, and has several benefits for incremental computation and communication. Stowage can be guided by program annotations.
 
 ## Command Line
 
-The Glas command line interface supports practical use of the Glas module system. The command line is extensible with user-defined verbs via naming modules (found via GLAS_PATH) with a `glas-cli-*` prefix. 
+The Glas command line interface supports practical use of the Glas module system. The command line is extensible with user-defined verbs via naming modules with a `glas-cli-*` prefix. 
 
         glas foo Parameters 
-            # rewrites to
+            # implicitly rewrites to
         glas --run glas-cli-foo.run -- Parameters
 
-The glas executable bootstraps the language-g0 module, builds all transitive dependencies to compile the glas-cli-foo module, extracts the 'run' label, verifies static arity, then evaluates the extracted program with access to ad-hoc effects. Unnecessary rework should be mitigated by maintaining a cache. 
+The glas executable must bootstrap the language-g0 module, build all transitive dependencies to compile the glas-cli-foo module, extracts the 'run' program, verifies arity, then evaluates the program with access to Parameters and ad-hoc effects. Unnecessary rework, such as bootstrapping language-g0 every time, can be mitigated by caching. See [Glas CLI](GlasCLI.md) for details.
 
-Effects available to verbs will include conventional access to filesystem, network, environment variables, and standard input and output. The standard error output stream is reserved for printing `log:Message` effects, including warnings or errors during bootstrap or build of the verb. See [Glas CLI](GlasCLI.md) for details.
-
-Some applications can be implemented using the command line's effects handler - including REPLs, package managers, language servers, or web-based IDEs. However, a primary intention is to develop verbs to deterministically and reproducibly extract useful binaries from the Glas module system, including compilation of independent executables. The command line interface should (eventually) be bootstrapped by extracting an executable binary.
-
-*Note:* Besides `--run`, the Glas command line interface will support `--version`, `--help`, and perhaps a few useful ad-hoc built-in functions. However, the intention is that most logic should be represented in the module system.
+*Note:* Besides `--run`, the Glas command line interface should support `--version`, `--help`, and perhaps a few other useful built-in functions. However, the intention is that most logic should be separated from the executable and instead represented within the module system.
 
 ## Glas Programs
 
 Glas programs are Glas values with a standard interpretation. The program model is designed for convenient composition, extension, staging, analysis, and simplicity of implementation. Glas programs are necessary when defining language modules or command-line verbs. User applications can optionally be represented by Glas programs, assuming command-line verbs to compile and extract a binary.
 
-Glas programs manipulate a data stack. Glas programs have an easily computed a static stack arity (e.g. 2--3 meaning 2 inputs, 3 outputs) and an effects API that describes expected requests and resulting behavior. Interaction with the outside world can be controlled or adapted via effects handlers. 
+Glas programs manipulate a data stack. Valid Glas programs have an easily computed a static stack arity (e.g. 2--3 meaning 2 inputs, 3 outputs) and an effects API that describes expected requests and resulting behavior. Interaction with the outside world can be controlled or adapted via effects handlers. 
 
 Glas conditionals are backtracking. If an operation fails within a conditional context, we undo the effects then evaluate the alternative branch. If a branch obviously always fails, it might be eliminated by a compiler. This backtracking behavior is convenient for composable pattern matching and transactional behavior, but does complicate integration with synchronous effects APIs (such as filesystem access).
 

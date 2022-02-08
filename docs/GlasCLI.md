@@ -1,45 +1,53 @@
 # Glas Command Line Interface
 
-The [Glas Design](GlasDesign.md) document describes a Glas command-line interface (CLI) that is extensible with user-defined verbs, e.g. `glas foo a b c` is rewritten to `glas --run glas-cli-foo.run -- a b c`. Module 'glas-cli-foo' should compile to a record value of form `(run:Program, ...)`. This program is then evaluated in a procedural style, with access to filesystem and network effects. 
+The [Glas Design](GlasDesign.md) document describes a Glas command-line interface (CLI) that is extensible with user-defined verbs, e.g. `glas foo a b c` is rewritten to `glas --run glas-cli-foo.run -- a b c`. Module 'glas-cli-foo' should compile to a record value of form `(run:Program, ...)`. 
 
-Input on the data stack is `cmd:["a", "b", "c"]`. The 'cmd' header supports potential extension of applications with new methods or modes. Final value on the data stack for the cmd method should be a bitstring of up to 32 bits, which will be cast to an exit code (a 32-bit int). Failure results in a -1 exit code.
+This program must have 1--1 arity and will be evaluated as the body of an implicit transactional loop. Concretely, initial input on the data stack is `cmd:["a", "b", "c"]` with the list of parameters. The program terminates by returning a value of form `halt:ExitCode`. If the program outputs a non-halt value or fails, it is implicitly evaluated again with prior output as next input, representing state. Effects from failed evaluations are canceled.
 
-The biggest difference from conventional procedural code is the approach to concurrency. A concurrent program should be expressed as a transaction loop. See *Procedural Embedding of Transaction Machines* in [Glas Apps](GlasApps.md). 
+This design simplifies future development related to reactive systems, live coding, concurrency and distribution, orthogonal persistence, debug views, application composition and extension, and other useful system-level properties. See *Transaction Machine* in [Glas Apps](GlasApps.md).
+
+## Bootstrap
+
+Glas systems will also bootstrap the command line executable from the module system. Minimizing the effects API required for bootstrap can reduce overheads for writing the initial executable. For example, it is sufficient to write bytes to standard output, no need for a complete filesystem API. Proposed effects API used during bootstrap:
+
+* **write:Binary** - write a list of bytes to standard output. 
+* **log:Message** - same as used by language modules. Usually writes to standard error.
+* **load:ModuleName** - same as used by language modules. Loads a value from module system, or fails. 
+
+Assuming suitable module definitions, bootstrap can be represented in a few lines of bash:
+
+    # build
+    glas bootstrap linux-x64 > glas
+    chmod +x glas
+
+    # verify
+    ./glas bootstrap linux-x64 | cmp glas
+
+    # install
+    sudo mv glas /usr/bin/
+
+The initial glas executable might support more effects, but the bootstrap process shouldn't use them.
 
 ## Useful Verbs
 
-I have a few vague ideas for `glas verb` options that should possibly exist. 
+I have a some thoughts for verbs that might be convenient to develop early on. 
 
-* **print** - support for querying and printing values from the module system. Deterministic. 
-* **test** - support for automated testing with 'log' and 'fork' effects.
-* *language server* - support for the [Language Server Protocol](https://en.wikipedia.org/wiki/Language_Server_Protocol).
+* **print** - support for module system values and printing to standard output. Deterministic. 
+* **arity** - report arity of a named Glas program.
+* **test** - support for automated testing. Relies mostly on 'log' and 'fork' effects.
+* **repl** - support for a read-eval-print loop using a syntax of choice. 
+* **type** - infer and report type of an indicated Glas program or value.
+* *language server* - support the [Language Server Protocol](https://en.wikipedia.org/wiki/Language_Server_Protocol).
 * **ide** - support for a web-based IDE. This might include the language server.
-* **repl** - support for a read-eval-print loop using a syntax of choice. Should also have available in IDE.
-* *notebook apps* - a graphical, incremental variation on REPLs, via web service. Perhaps part of IDE.
-* **arity** - report arity of Glas programs.
-* **type** - report type of Glas programs.
-* **boot** - use a bootstrap implementation of the command line interface
-* **shell** - consider developing a shell? Might focus on Glas programs instead of arbitrary binaries, or perhaps interpretation of binaries.
+* *notebook apps* - a graphical, incremental variation on REPLs, via web services. Perhaps part of IDE.
 
-In some of these cases, like the repl or notebook apps, we might require that language modules provide some additional options for operating in a more interactive mode.
+Some verbs such as print, type, arity can use the same effects as bootstrap. However, others such as test, repl, or web-based would require an extended effects API with access to standard input, network, filesystem, non-determinism, etc..
 
-## Effects API
+## Proposed Extended Effects API
 
 ### General Effects
 
-Access to time (now or check), fork, and log APIs as described in [Glas Apps](GlasApps.md). Use of 'log' replaces access to stderr, at least by default.
-
-### Module System Access
-
-Many command-line verbs such as printers or REPLs will require lightweight access to the module system, preferably reusing the bootstrap and caching implicit to the command line executable. So I provide access via effects.
-
-* **m:load:ModuleId** - load a module. Equivalent behavior as for language modules. May fail. Cause for failure is implicitly logged.
-
-I might later add ops to browse the module system without reference to the filesystem, e.g. 'm:list' or similar. I'm reserving the 'm:' prefix as a namespace for this purpose. Access to the module system might be omitted in certain contexts, e.g. if compiling a CLI app to run separately from a `glas` executable.
-
-### Graphical User Interface - Indirect
-
-The Glas CLI currently does not provide effects for opening windows, drawing buttons, etc.. A GUI can be supported indirectly via network, e.g. web applications or remote desktop. True GUI might eventually be supported when we're easily able to compile Glas apps into executables with GUI access, but is very low priority.
+See [Glas Apps](GlasApps.md) for discussion on some effects APIs that are suitable for transaction machine applications in general, such as 'fork' for concurrency and 'time' to model waits and sleeps.
 
 ### Environment Variables
 
@@ -47,12 +55,6 @@ In addition to command-line arguments, a console application typically has acces
 
 * **env:get:Variable** - response is a value for variable, or failure if the variable is unrecognized or undefined. Variables are usually strings, e.g. `env:get:"GLAS_PATH"`.
 * **env:list** - response is the list of defined Variables
-
-Currently this is a read-only API because I don't want the complication of correctly handling runtime mutation of GLAS_PATH. 
-
-### Standard Input and Output
-
-Consoles start with streams open for standard input and output. 
 
 ### Filesystem
 
@@ -98,9 +100,11 @@ I'm uncertain how to best handle buffering and pushback. Perhaps buffer size cou
 
 Later, I might extend directory operations with option to watch a directory, or list content recursively. This might be extra flags on 'list'. However, my current goal is to get this into a usable state. Advanced features can wait until I'm trying to integrate live coding.
 
-### Standard IO
+### Standard Input and Output
 
-Following convention, standard input and output are modeled as initially open file references. However, instead of integers, I propose to use `std:in` and `std:out` to identify these initially open references. We could also allow `std:err` if it wasn't used for logging.
+We already have top-level **write** effect for Bootstrap. For symmetry, perhaps include a corresponding top-level **read** effect for access to standard input. This would be convenient for defining a REPL, for example. Additionally, in context of a filesystem API, it may be useful to model 'read' and 'write' as aliases for file operations on references 'std:out' and 'std:in'.
+
+* **read:Count** - read 1..Count bytes from standard input, or fail.
 
 ### Network
 
@@ -151,17 +155,24 @@ I can cover needs of most applications with support for just the TCP and UDP pro
 
 A port is a fixed-width 16-bit number. An addr is a fixed-width 128-bit or 32-bit number (IPv4 or IPv6) or optionally a string such as "www.google.com" or "192.168.1.42". Later, I might add a dedicated API for DNS lookup, and perhaps for 'raw' Ethernet.
 
-## Rejected Effects
+## Rejected or Deferred Effects APIs
 
-### Eval Effect? Use Accelerator!
+### Extended Module System Access? Defer.
 
-I believe it wiser to support 'eval' as an accelerated function rather than as an effect. Acceleration of eval, together with some memoization, effectively extends Glas programs with first-class functions.
+The 'load' effect is sufficient for common module system access, but it might be convenient to provide more reflection on the module system - e.g. identify which modules are visible in the filesystem, identifying which files are used, finding which modules currently fail to build. 
 
-### Runtime Info? Defer.
+### Graphical User Interface? Defer.
 
-It might be useful to provide some reflection on the environment via environment variables or special methods. This could include call stacks, performance metrics, and traces of failed transactions. However, this is low priority.
+It might be useful to support a lightweight API for native GUI integration, perhaps something like TK. Seems difficult to make general across operating systems. Low priority.
 
-### Executables? Defer.
+### Runtime Reflection? Defer.
 
-It might be useful to write a full shell within Glas at some point. In this case, we'd need to start other processes with arguments, suitable environments, and access to open files representing stdin/stdout/etc.. However, this is low priority, and it might be better to defer this until we're compiling Glas applications from within Glas.
+It might be useful to provide some reflection on the environment. This could include call stacks, performance metrics, traces of failed transactions. However, I'm uncertain what this API should look like, and it is also low priority. 
 
+### OS Exec? Defer.
+
+If I ever want to express a command shell as a normal glas verb, I'll need an effects API that supports execution of OS commands, including integration with file streams and environments. However, there is no pressing need.
+
+### Eval Effect? Reject!
+
+I've repeatedly had the idea of supporting eval as an effect. However, acceleration of an eval subprogram seems the wiser choice. Only writing this down so I am reminded of it. Additionally, we might want to accelerate eval of other models, such as Kahn process networks.
