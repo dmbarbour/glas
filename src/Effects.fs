@@ -318,6 +318,57 @@ module Effects =
             | _ -> None
         rewriteEffects rw (RandomBits()) 
 
+    /// Simple Binary Writer
+    type BinaryWriter =
+        val private CommitWrite : byte array -> unit
+        val mutable private TXStack : FTList<byte array> list
+        new (cw) =
+            { CommitWrite = cw
+            ; TXStack = []
+            }
+
+        member private self.Write b =
+            if Array.isEmpty b then () else
+            match self.TXStack with
+            | (tx::txs) ->
+                self.TXStack <- ((FTList.snoc tx b) :: txs)
+            | [] ->
+                self.CommitWrite b
+        
+        interface ITransactional with
+            member self.Try () =
+                self.TXStack <- (FTList.empty :: self.TXStack)
+            member self.Commit () =
+                match self.TXStack with
+                | [bs] -> 
+                    self.TXStack <- []
+                    for b in FTList.toSeq bs do
+                        self.CommitWrite b
+                | (tx0::tx1::txs) -> 
+                    self.TXStack <- ((FTList.append tx1 tx0) :: txs)
+                | [] ->
+                    failwith "commit outside of transaction" 
+            member self.Abort () =
+                match self.TXStack with
+                | (_::txs) ->
+                    self.TXStack <- txs
+                | [] ->
+                    failwith "abort outside of transaction"
+
+        interface IEffHandler with
+            member self.Eff req =
+                match req with
+                | Value.Binary b ->
+                    self.Write b
+                    Some Value.unit // return value
+                | _ -> None
+    
+    /// The standard write effect, outputting data to standard output.
+    let writeEff () =
+        let s = System.Console.OpenStandardOutput()
+        let w b = s.Write(b, 0, b.Length)
+        BinaryWriter(w) |> selectHeader "write"
+
     /// Shared State Communications for Background Effects 
     ///
     /// We can use a value reference as a shared-state interchange between a program and a
@@ -404,6 +455,7 @@ module Effects =
                     | None ->
                         tx.Abort()
                         None
+
 
     /// Transactional Logging Support
     /// 

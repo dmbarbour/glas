@@ -1,20 +1,22 @@
 # Glas Command Line Interface
 
-The [Glas Design](GlasDesign.md) document describes a Glas command-line interface (CLI) that is extensible with user-defined verbs, e.g. `glas foo a b c` is rewritten to `glas --run glas-cli-foo.run -- a b c`. Module 'glas-cli-foo' should compile to a record value of form `(run:Program, ...)`. 
+The [Glas Design](GlasDesign.md) document describes a Glas command-line interface (CLI) that is extensible with user-defined verbs via simple syntactic sugar: `glas foo a b c` is rewritten to `glas --run glas-cli-foo.run -- a b c`. Module 'glas-cli-foo' should compile to a record value of form `(run:Program, ...)`. This program must be 1--1 arity and represents the body of a *transaction machine* application (see [Glas Apps](GlasApps.md)).
 
-This program must have 1--1 arity and will be evaluated as the body of an implicit transactional loop. Concretely, initial input on the data stack is `cmd:["a", "b", "c"]` with the list of parameters. The program terminates by returning a value of form `halt:ExitCode`. If the program outputs a non-halt value or fails, it is implicitly evaluated again with prior output as next input, representing state. Effects from failed evaluations are canceled.
+        type App = (init:Params | step:State) → [Effects] (halt:ExitCode | step:State | FAILURE)
 
-This design simplifies future development related to reactive systems, live coding, concurrency and distribution, orthogonal persistence, debug views, application composition and extension, and other useful system-level properties. See *Transaction Machine* in [Glas Apps](GlasApps.md).
+Concretely, for Glas CLI verbs, initial parameters is a list of strings such as `init:["a", "b", "c"]`, and the halting value should represent an exit code. If the application returns `step:State`, it will implicitly commit effects then loop. If evaluation fails, effects are transactionally aborted and evaluation retries, effectively waiting for changes.
+
+Under this design, application state is accessible for orthogonal persistence, debug views, live coding, and application composition or extension. Reactive, concurrent, and even distributed evaluation become performance optimizations of a sequential loop, which simplifies expression and reasoning. However, we'll also want an intermediate language to compile procedural scripts into state machines with transactional steps.
 
 ## Bootstrap
 
-Glas systems will also bootstrap the command line executable from the module system. Minimizing the effects API required for bootstrap can reduce overheads for writing the initial executable. For example, it is sufficient to write bytes to standard output, no need for a complete filesystem API. Proposed effects API used during bootstrap:
+Glas systems will bootstrap the command line executable from the module system. Minimizing the effects API required for bootstrap will reduce overheads for developing an initial executable. For example, it is sufficient to write bytes to standard output, no need to implement a complete filesystem API. Proposed bootstrap effects API:
 
 * **write:Binary** - write a list of bytes to standard output. 
-* **log:Message** - same as used by language modules. Usually writes to standard error.
-* **load:ModuleName** - same as used by language modules. Loads a value from module system, or fails. 
+* **log:Message** - same as used by language modules. For bootstrap, just write messages to stderr. 
+* **load:ModuleName** - same as used by language modules. For bootstrap, assume source is constant.
 
-Assuming suitable module definitions, bootstrap can be represented in a few lines of bash:
+Assuming suitable module definitions, bootstrap can be expressed in a few lines of bash:
 
     # build
     glas bootstrap linux-x64 > glas
@@ -26,7 +28,11 @@ Assuming suitable module definitions, bootstrap can be represented in a few line
     # install
     sudo mv glas /usr/bin/
 
-The initial glas executable might support more effects, but the bootstrap process shouldn't use them.
+The generated executable might provide access to different effects than the initial executable. But the three bootstrap effects are critical and should always be supported.
+
+## Values and Programs
+
+The program argument to `--run` is currently specified by dotted path into the module system, i.e. `ModuleName(.Label)*`, generally assuming ASCII module names and labels. This is sufficient for verbs, and should be adequate for most use-cases. But, if there is a strong use-case, I might later extend this to support a simple expression language.
 
 ## Useful Verbs
 
@@ -41,13 +47,24 @@ I have a some thoughts for verbs that might be convenient to develop early on.
 * **ide** - support for a web-based IDE. This might include the language server.
 * *notebook apps* - a graphical, incremental variation on REPLs, via web services. Perhaps part of IDE.
 
-Some verbs such as print, type, arity can use the same effects as bootstrap. However, others such as test, repl, or web-based would require an extended effects API with access to standard input, network, filesystem, non-determinism, etc..
+These verbs use `--run` via the Glas module system, but it might be useful to have built-in implementations simpler debugging verbs such as `--print` and `--arity` and `--test`. 
 
-## Proposed Extended Effects API
+Several verbs such as print, type, arity can use the same effects as bootstrap. However, others such as test, repl, or web-based would require an extended effects API.
+
+## Extended Effects API
 
 ### General Effects
 
 See [Glas Apps](GlasApps.md) for discussion on some effects APIs that are suitable for transaction machine applications in general, such as 'fork' for concurrency and 'time' to model waits and sleeps.
+
+### Standard Input and Output
+
+We need **write** for Bootstrap. For symmetry, perhaps include **read** effect for access to standard input. This would be convenient for defining a REPL, for example. 
+
+* **write:Binary** - write a list of bytes to standard output.
+* **read:Count** - read up to Count bytes from standard input as available.
+
+In context of a filesystem API, we might implicitly rewrite 'read' and 'write' effects into file operations on references 'std:out' and 'std:in'.
 
 ### Environment Variables
 
@@ -68,7 +85,7 @@ The Glas CLI needs just enough access to the filesystem to support bootstrap and
   * *delete* - remove a file. Use status to observe potential error.
   * *rename:NewFileName* - rename a file. 
  * **close:FileRef** - Release the file reference.
- * **read:(from:FileRef, count:Nat)** - Response is list of 1..Count bytes taken from input stream. Returns fewer than Count if input buffer is empty. Fails if would respond with empty list. 
+ * **read:(from:FileRef, count:Nat)** - Response is list of up to Count available bytes taken from input stream. Returns fewer than Count if input buffer is empty. 
  * **write:(to:FileRef, data:Binary)** - write a list of bytes to file. 
  * **status:FileRef** - Return a representation of the state of the system object. 
   * *init* - the 'open' request hasn't been fully processed yet.
@@ -99,12 +116,6 @@ I'm uncertain how to best handle buffering and pushback. Perhaps buffer size cou
  * **sep** - return preferred directory separator substring for current OS, usually "/" or "\".
 
 Later, I might extend directory operations with option to watch a directory, or list content recursively. This might be extra flags on 'list'. However, my current goal is to get this into a usable state. Advanced features can wait until I'm trying to integrate live coding.
-
-### Standard Input and Output
-
-We already have top-level **write** effect for Bootstrap. For symmetry, perhaps include a corresponding top-level **read** effect for access to standard input. This would be convenient for defining a REPL, for example. Additionally, in context of a filesystem API, it may be useful to model 'read' and 'write' as aliases for file operations on references 'std:out' and 'std:in'.
-
-* **read:Count** - read 1..Count bytes from standard input, or fail.
 
 ### Network
 

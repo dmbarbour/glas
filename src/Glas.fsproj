@@ -15,8 +15,8 @@
     <Compile Include="ProgEval.fs" />
     <Compile Include="GlasZero.fs" />
     <Compile Include="LoadModule.fs" />
-    <Compile Include="FileSystemEff.fs" />
-    <Compile Include="NetworkEff.fs" />
+    <!-- <Compile Include="FileSystemEff.fs" /> -->
+    <!-- <Compile Include="NetworkEff.fs" /> -->
     <Compile Include="Main.fs" />
   </ItemGroup>
 

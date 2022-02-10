@@ -16,7 +16,6 @@ open Glas.LoadModule
 open Glas.ProgVal
 open Glas.ProgEval
 
-
 let helpMsg = String.concat "\n" [
     "Pre-bootstrap implementation of Glas command line interface."
     ""
@@ -46,7 +45,7 @@ let helpMsg = String.concat "\n" [
     "Use GLAS_PATH to specify where modules are stored."
     ]
 
-let ver = "glas 0.1.0 (dotnet)"
+let ver = "glas 0.2.0 (dotnet)"
 
 let EXIT_OK = 0
 let EXIT_FAIL = -1
@@ -66,7 +65,7 @@ let indexValue v0 idx =
     List.fold fn (Some v0) idx
 
 let getValue (ll:Loader) (vstr : string): Value option =
-    match run parseValRef vstr with
+    match FParsec.CharParsers.run parseValRef vstr with
     | FParsec.CharParsers.Failure (msg, _, _) ->
         logError ll (sprintf "parse error in Value identifier:\n%s" msg)
         None
@@ -80,25 +79,6 @@ let getValue (ll:Loader) (vstr : string): Value option =
             if Option.isNone result then
                 logError ll (sprintf "value of module %s does not have path .%s" m (String.concat "." idx))
             result
-
-let getProgram (ll : Loader) (ai,ao) (vstr : string) : Program option =
-    match getValue ll vstr with
-    | Some p -> 
-        match static_arity p with
-        | Some struct(i,o) when ((i - o) = (ai - ao)) && (ai >= i) ->
-            Some p
-        | Some struct(i,o) ->
-            logError ll (sprintf "program %s has arity %d--%d; expecting %d--%d" vstr i o ai ao)
-            None
-        | None when isValidProgramAST p ->
-            logError ll (sprintf "program %s does not have static arity" vstr)
-            None
-        | None ->
-            logError ll (sprintf "value %s does not represent a Glas program" vstr)
-            None
-    | None ->
-        // reason for failure is already logged. 
-        None
 
 let getLoader (logger:IEffHandler) =
     match tryBootStrapLoader logger with
@@ -140,47 +120,57 @@ let arity (pstr:string) : int =
         // reason for failure is already logged. 
         EXIT_FAIL
 
-
-// provide some useful effects to command line verbs 
-let mkRuntime (logger : IEffHandler) (loader : Loader) = 
-    let handlers =
-        [ logger
-        ; timeEff ()
-        ; forkEff () 
-        ; randomEff ()
-        ; envVarEff ()
-        ; FileSystemEff.fileSysEff ()
-        ; NetworkEff.networkEff ()
-        ; selectHeader "m" (loader :> IEffHandler)
-        ] 
-    List.foldBack composeEff handlers noEffects
+let inline (|ProgOfArity|) p =
+    (p, stackArity p)
 
 let run (pstr:string) (args:string list): int =
     let logger = consoleErrLogger ()
     // logInfo logger (sprintf "--run %s -- %s" pstr (String.concat " " args))
     let loader = getLoader logger
-    match getProgram loader (1,1) pstr with
-    | Some p ->
-        let argVals =
-            args |> List.map (Value.ofString) 
-                 |> FTList.ofList |> Value.ofFTList 
-                 |> Value.variant "cmd"
-        let io = mkRuntime logger loader 
-        match eval p (deferTry io) [argVals] with
-        | Some [Value.Bits b] when (32 >= Bits.length b) ->
-            (int (Bits.toU32 b)) // user-provided exit code
-        | Some [v] ->
-            let vsStr = Value.prettyPrint v
-            logError logger (sprintf "evaluation of %s exited with unrecognized value %s" pstr vsStr)
-            EXIT_FAIL
-        | _ ->
-            logError logger (sprintf "evaluation of %s halted in failure" pstr) 
-            EXIT_FAIL
-    | None -> 
-        // error message already logged
+    match getValue loader pstr with
+    | None -> EXIT_FAIL // error already logged
+    | Some (ProgOfArity (_, ar)) when (Arity (1,1) <> ar) ->
+        logError logger (sprintf "program %s has incorrect arity %A" pstr ar)
         EXIT_FAIL
-        
+    | Some p ->
+        let io = deferTry <| composeEff (writeEff ()) loader    // minimal bootstrap effects
+        let appFn = eval p io                            // compile application body
+        let rec appLoop st =
+            io.Try () // defer effects via transaction
+            match appFn [st] with
+            | Some [st'] -> 
+                io.Commit () // successful return
+                match st' with
+                | Value.Variant "step" _ ->
+                    appLoop st'
+                | Value.Variant "halt" exitCode ->
+                    match exitCode with
+                    | Value.Bits b when (32 >= Bits.length b) -> 
+                        int (Bits.toU32 b) // cast to integer
+                    | _ ->
+                        logError logger (sprintf "evaluation of %s halted with unrecognized value %s" pstr (Value.prettyPrint exitCode))
+                        EXIT_FAIL
+                | _ ->
+                    logError logger (sprintf "unrecognized output from %s: %s" pstr (Value.prettyPrint st'))
+                    EXIT_FAIL
+            | Some vs ->
+                // this should never happen because we verify arity ahead of time.
+                io.Abort()
+                logError logger (sprintf "expecting 1--1 arity in %s; got %d outputs" pstr (List.length vs))
+                EXIT_FAIL
+            | None ->
+                io.Abort()
+                // for now, just fail. Ideally, we'd wait for relevant changes, but this
+                // bootstrap implementation doesn't have effects where waiting is relevant.
+                logError logger (sprintf "%s failed at %s; bootstrap currently doesn't support waiting" pstr (Value.prettyPrint st))
+                EXIT_FAIL
 
+        let st0 = 
+            args |> List.map (Value.ofString) 
+                    |> FTList.ofList 
+                    |> Value.ofFTList 
+                    |> Value.variant "init"
+        appLoop st0
 
 let rec main' (args : string list) : int =
     match args with
@@ -188,7 +178,13 @@ let rec main' (args : string list) : int =
         main' ("--run" :: ("glas-cli-" + verb + ".run") :: "--" :: args)
     | ( "--run" :: p :: "--" :: args) ->
         // todo: process extra run options, if we add them. 
-        run p args
+        try 
+            run p args
+        with
+        | e -> // handle uncaught exceptions
+            let msg = sprintf "halted with exception %s" (e.ToString())
+            System.Console.Error.WriteLine(msg)
+            EXIT_FAIL
     | [ "--print"; v ] -> 
         print v
     | [ "--arity"; p ] -> 

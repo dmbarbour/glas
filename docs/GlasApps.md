@@ -4,7 +4,7 @@ Glas programs have algebraic effects, which simplifies exploration of different 
 
 The most conventional application model is the procedural loop, i.e. the application code is some variation of `void main() { init; loop { do stuff }; cleanup }`. However, concurrency, reactivity, and distribution are awkward and error-prone in this model. The state is inaccessible, hidden within the loop, which hinders nice features such as live programming or orthogonal persistence.
 
-An intriguing alternative is to encode applications directly as *Transaction Machines*. A transaction machine application is expressed as a transaction that is evaluated repeatedly. Application state is separated from transaction logic, and is much more accessible. Updates to the transaction logic can be deployed between transactions at runtime. We can leverage nice properties of transactions as a simple foundation for concurrency and reactivity. 
+An intriguing alternative is to encode applications directly as *Transaction Machines*. A transaction machine application is expressed as a transaction that is evaluated repeatedly until reaching a halting state. Application state is separated from transaction logic, and is much more accessible. Updates to the transaction logic can be deployed between transactions at runtime. We can leverage nice properties of transactions as a simple foundation for concurrency and reactivity. 
 
 Glas programs are a good fit for transaction machines because backtracking conditional behavior is already essentially transactional. This already imposes on the effects APIs. The [Glas Command Line Interface](GlasCLI.md) takes transaction machines as the standard application model in Glas systems. 
 
@@ -98,21 +98,24 @@ It is feasible to create a concurrent task where each transaction steps through 
 
 Conveniently, these embeddings interleave. Relevantly, when a transaction loop evaluates a procedure that contains another transaction loop, we can evaluate the loop without updating the continuation state until the loop halts. This allows for a 'stable' loop with respect to incremental computing and replication of forks. No need for special optimizations.
 
-## Before Optimization
+## Concrete Design
 
-Transaction machines rely on sophisticated optimizations. Implementation of these optimizations is non-trivial, and they certainly will not be available during early development of Glas systems. A transition plan is required.
+### Application Behavior
 
-Without incremental computing optimizations, implicit process control reduces to a busy-wait loop. We can mitigate this by simply slowing down an unproductive loop. For example, we could limit a loop that fails to do anything to 40Hz, adjustable via annotation. This might apply only to the 'txloop' accelerator in a procedural embedding.
+Primary application behavior can be represented by a Glas program with 1--1 arity. 
 
-Without replication and incremental computing optimizations, use of 'fork' for task-based concurrency results in unpredictable latency and unnecessary rework. We can mitigate this by avoiding 'fork' until later. Early applications can be designed around a centralized event polling loop instead of concurrent tasks.
+        type App = (init:Params | step:State) → [Effects] (halt:ExitValue | step:State | Failure)
 
-These interim solutions are adequate for many applications, especially at smaller scales. Importantly, they do not pollute the effects API and also work for procedural embeddings.
+The application is initialized with some parameters and may explicitly halt by returning a halt value. If the application returns 'step', it will be evaluated again with its prior output after committing effects.  
+Long-running applications will spend most of their time in a 'step' loop, taking prior output as its next input after committing effects. If evaluation fails, effects are aborted but the application continues running, retrying with prior input, effectively waiting for changes in the environment. 
 
-## Abstract Design
+Aside from primary behavior, applications can be extended with methods to support system integration. For example, applications might handle inputs of form `render:(state:State, view:View)`. The render method can use an effects API specialized for drawing, such that rendering does not directly influence application state. This method would be useful for administrative views, debugging, notifications, live icons, and lightweight user interfaces.
+
+*Note:* Several optimizations are required to make waits efficient in this model, especially when used together with concurrency. A short-term solution is to avoid concurrency and wait a few milliseconds before retrying a failed transaction.
 
 ### Application State
 
-Application state can (and should) be represented as normal values on the normal data stack within a program loop. No separate effects API for state. This design is consistent with a procedural embedding of transaction machines and makes it semantically clear what state is 'owned' by the application vs. owned by the runtime. The cost is that this design places a heavy burden on the optimizer, e.g. precise conflict detection requires abstract analysis to partition state into smaller fragments of a transactional memory. 
+Application state is explicit in the behavior type, i.e. the `step:State` input or output is the current application state. Compared to referencing stateful variables, this design is more compositional and extensible, but also places a greater burden on the optimizer for parallel evaluation.
 
 ### Robust References
 
@@ -126,19 +129,15 @@ This avoids any need for abstraction or opacity of reference values. This does s
 
 ### Asynchronous Effects
 
-Top-level effects will operate on state shared with the runtime. This state will include queues for messaging and tables for working with multiple references. The details are abstracted from the program via the effects handler, but this does constrain the effects API. Synchronous effects are limited to local manipulation of shared state. External effects must be asynchronous.
+Effects must be aborted when evaluation fails. This has a huge impact on API design. For example, asynchronous writes are popular because we can simply not send anything if we abort. Synchronous operations are mostly limited to manipulating application or runtime state.
 
-*Note:* An exception can be made for safe, cacheable reads. For example, it is feasible to support HTTP GET as a synchronous effect. However, I believe it wiser to support this indirectly via reflective effects APIs and manual caching.
+A useful exception is stable, cacheable reads. For example, loading a module from the module system, or reading a file's content, or even HTTP GET could potentially be performed within a transaction.
 
 ### Specialized Effects
 
 Runtime effects APIs should be specialized. For example, although file streams and TCP streams are remarkably similar, `tcp:read:(...)` request should be separate and distinct from `file:read:(...)`. Attempting to generalize hinders domain specialized features. It is better for the runtime to provide a more specialized API then let the application implement its own abstraction layer as another effects handler if desired.
 
-### Extensible Interfaces
-
-Application input should use a variant type, i.e. `method:Args`. For example, a command-line application might use `cmd:[List, Of, Strings]`. Result and effect types may depend on the method. This design simplfies extension of applications with new methods or use in new contexts.
-
-## Common Effects
+## Common Effects APIs
 
 Effects should be designed for transaction machines yet suitable for procedural code to simplify embeddings.
 
@@ -175,11 +174,9 @@ Almost any application model will benefit from a simple logging mechanism to sup
 
 * **log:Message** - Response is unit. Arbitrary output message, useful for progress reports or debugging.
 
-By convention, a log message should be a record of ad-hoc fields whose meanings are de-facto standardized, such as `(lv:warn, text:"I'm sorry, Dave. I'm afraid I can't do that.", from:hal)`. This enables the record to be extended with metadata or new features.
+By convention, a log message should be a record of ad-hoc fields, whose meanings are de-facto standardized, such as `(lv:warn, text:"I'm sorry, Dave. I'm afraid I can't do that.", from:hal)`. This enables the record to be extended with metadata or new features.
 
-In context of transaction machines and task-based concurrency, the concept and presentation of logging should ideally be adjusted to account for stable forks. Instead of a stream of log messages, an optimal view is something closer to live tree of log messages with access to history via timeline.
-
-Although messages logged by failed transactions are not observable within the program, they can be observed indirectly through reflection APIs which operate on runtime state. A debug view presented to a developer should almost always be based on a reflection API. Aborted messages might be distinguished by rendering in a different color, yet should be accessible for debugging purposes.
+In context of transaction machines and fork-based concurrency, logs might be presented as a stable tree (aligned with forks) potentially with unstable leaf nodes. Logically, the entire tree updates, every frame, but log messages in the stable prefix of a fork will also be stable outputs. Further, messages logged by failed transactions might be observable indirectly via reflection, perhaps rendered in a distinct color.
 
 ### Random Data
 
