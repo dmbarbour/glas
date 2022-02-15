@@ -2,7 +2,7 @@
 
 Glas programs have algebraic effects, which simplifies exploration of different effects APIs. In conjunction with access to programs as values, it is feasible to implement robust adapters layers between APIs.
 
-The most conventional application model is the procedural loop, i.e. the application code is some variation of `void main() { init; loop { do stuff }; cleanup }`. However, concurrency, reactivity, and distribution are awkward and error-prone in this model. The state is inaccessible, hidden within the loop, which hinders nice features such as live programming or orthogonal persistence.
+The most conventional application model is the procedural loop, i.e. the application code is some variation on `void main() { init; loop { do stuff }; cleanup }`. However, concurrency, reactivity, and distribution are awkward and error-prone in this model. The state is inaccessible, hidden within the loop, which hinders nice features such as live programming or orthogonal persistence.
 
 An intriguing alternative is to encode applications directly as *Transaction Machines*. A transaction machine application is expressed as a transaction that is evaluated repeatedly until reaching a halting state. Application state is separated from transaction logic, and is much more accessible. Updates to the transaction logic can be deployed between transactions at runtime. We can leverage nice properties of transactions as a simple foundation for concurrency and reactivity. 
 
@@ -48,19 +48,17 @@ Programmers can improve parallelism by software architecture and design patterns
 
 ### Distributed Computation 
 
-An effects API can explicitly model effects at different locations, e.g. filesystem per machine. Distributed transactions, which evaluate effects at multiple locations, are difficult to make robust and efficient. Ideally, programmers should arrange for tasks to either be location-independent (allowing migration for performance) or location-specific (stable evaluation on a specific machine).
+It is possible to distribute state and computation across multiple physical machines. Distribution of state may include partitioning and mirroring, depending on how that state is used. However, distributed transactions are expensive and should be avoided. With careful application design, we can arrange for most transactions to be machine-local and implement many remaining transactions with efficient point-to-point message passing.
 
-Channels are convenient for communication between locations, avoiding synchronization. A basic channel can be modeled as a list variable where the reader takes from list head and the writer appends to list tail. Because reader and writer operate abstractly on different parts of the list, read-write conflicts are avoided. Messages buffered in the list abstract over network latency.
+Relevantly, when a transaction blindly updates state on a single remote machine, the transaction can be very efficiently implemented using an update message with acknowledgement. Blind updates could set a variable, increment a number, or extend a list. Basic channels can be modeled using a read buffer, a write buffer, and a repeating transaction that removes data from the write buffer and blindly adds it to the read buffer. Assuming optimization, performance will not be worse than imperative implementations.
 
-Distributed computation of transaction machines should be based around forking stable tasks to evaluate on remote machines, then communicate between tasks on different machines via channels. Effectively, a transaction machine will represent an overlay network on a distributed system.
+Transaction machines are naturally resilient to network disruption. Tasks local to each network partition may continue evaluating independently, but transactions that would communicate across network partitions must implicitly wait until communication is re-established. However, loss of control is a concern, e.g. the application cannot properly halt while the network is partitioned. Control could be mitigated by explicitly modeling heartbeats or network pushback within the application.
 
 ### Transaction Fusion
 
-Concurrent transactions can easily be fused into larger transactions. For example, instead of scheduling A and B independently, we can construct and schedule a combined transaction AB. This is most useful when AB enables optimizations that A and B independently do not support, or eliminates scheduling overheads for lightweight data-plumbing transactions. 
+It is possible to apply [loop optimizations](https://en.wikipedia.org/wiki/Loop_optimization) to repeating transactions in the transaction machine, especially loop unrolling and loop fusion. For example, if we have transactions `{ A, B }` then we can optionally add fused transactions `{ AA, AB, BA, BB }` without affecting the formal behavior of our transaction machine. Further, if we know `AB` succeeds whenever `A` would succeed, we can eliminate independent evaluation of `A`.
 
-In context of live coding or open systems, it is very useful if fusion optimizations are performed at runtime, as a sort of just-in-time compilation. Together with distributed computation techniques, this enables transaction machines to effectively overlay and patch a system without compromising performance, modularity, or security.
-
-*Note:* Relatedly, we can also fuse a transaction with itself. This is effectively a form of loop unrolling. Given transaction A, we produce AA then check if useful optimizations are exposed.
+Fusion can eliminate machine-local data plumbing (including a channel's network transactions), reduce context switching overheads, and provide opportunity for deep optimizations at the fusion boundary. Importantly, aggressive fusion allows programmers to use fine-grained tasks without worrying about how runtime performance is affected. This simplifies modular development.
 
 ### Real-Time Systems 
 
@@ -84,48 +82,37 @@ A complete solution for live coding requires additional support from the develop
 
 ### Procedural Embedding of Transaction Machines
 
-It is feasible to compile a top-level transactional loop, such as a Glas program of form `loop:(until:Halt, do:cond:try:Step)`, to run as a transaction machine within a procedural context. In the interest of predictable performance, a compiler should require an explicit hint to recognize and optimize the loop as a transaction machine, e.g. `prog:(do:loop:(...), accel:txloop, ...)`.
-
-In context of this loop, the data stack might be compiled into a set of transaction variables. Abstract interpretation together with runtime instrumentation can feasibly support fine-grained read-write conflict detection. It is feasible to recognize *channels* as a patterned use of list variables, i.e. channels are just lists on the data stack that we optimize based on usage. 
-
-The embedding loses implicit live coding, but we still benefit from convenient process control, incremental computing, task-based concurrency, reactive dataflow, potential for parallelism and distribution, etc.. 
+It is feasible to compile a transactional loop within a procedural program to run as a transaction machine. This embedding loses several benefits related to extensibility, composability, and live coding of applications. However, it could retain the benefits related to process control, reactive behavior, concurrency, distribution, incremental computing, etc..
 
 ### Transaction Machine Embedding of Procedural
 
-It is feasible to create a concurrent task where each transaction steps through procedural code, interpreting it and waiting for data as needed. Evaluating a collection of procedural continuations essentially models multi-threaded systems within a transaction machine, albeit with benefits of transactional memory. Evaluation of individual steps could be accelerated for performance.
+For some programs and subprograms, procedural code is a good fit. Procedural code can be interpreted as or compiled into a state machine that will evaluate over multiple transactional steps. In context of the transaction machine medium, the procedural language could be extended with transaction blocks, allowing for implicit waits or explicit fallbacks when the transaction would fail. 
 
 ### Interleave of Embeddings
 
-Conveniently, these embeddings interleave. Relevantly, when a transaction loop evaluates a procedure that contains another transaction loop, we can evaluate the loop without updating the continuation state until the loop halts. This allows for a 'stable' loop with respect to incremental computing and replication of forks. No need for special optimizations.
+Conveniently, these embeddings interleave. Relevantly, when a transaction loop evaluates a procedure that contains another transaction loop, we can evaluate the inner loop without updating continuation state until the loop halts. This allows for a 'stable' loop with respect to incremental computing and replication of forks. No need for special optimizations.
 
 ## Concrete Design
 
 ### Application Behavior
 
-Primary application behavior can be represented by a Glas program with 1--1 arity. 
+Application behavior will be represented by a Glas program with 1--1 arity and a transactional effects API. 
 
-        type App = (init:Params | step:State) → [Effects] (halt:ExitValue | step:State | Failure)
+        type App = (init:Params | step:State) → [Effects] (halt:Result | step:State | Failure)
 
-The application is initialized with some parameters and may explicitly halt by returning a halt value. If the application returns 'step', it will be evaluated again with its prior output after committing effects.  
-Long-running applications will spend most of their time in a 'step' loop, taking prior output as its next input after committing effects. If evaluation fails, effects are aborted but the application continues running, retrying with prior input, effectively waiting for changes in the environment. 
+The program is evaluated in an implicit transaction. The first evaluation inputs 'init' with parameters. Termination is indicated by returning 'halt' with a final result. If evaluation returns 'step', effects are committed then evaluation continues in another transaction, taking the step output as next input. If evaluation fails, effects are aborted then evaluation retries with prior input, implicitly waiting for changes or selecting another non-deterministic choice.
 
-Aside from primary behavior, applications can be extended with methods to support system integration. For example, applications might handle inputs of form `render:(state:State, view:View)`. The render method can use an effects API specialized for drawing, such that rendering does not directly influence application state. This method would be useful for administrative views, debugging, notifications, live icons, and lightweight user interfaces.
+Application state is explicit in the behavior type, and is accessible for composition or extension, including debug views. However, representing state as a single large value between steps is inefficient. An optimizer might use abstract interpretation to partition state into fine-grained variables under the hood.
 
-*Note:* Several optimizations are required to make waits efficient in this model, especially when used together with concurrency. A short-term solution is to avoid concurrency and wait a few milliseconds before retrying a failed transaction.
+### Mitigating Performance
 
-### Application State
-
-Application state is explicit in the behavior type, i.e. the `step:State` input or output is the current application state. Compared to referencing stateful variables, this design is more compositional and extensible, but also places a greater burden on the optimizer for parallel evaluation.
+Sophisticated optimizations are required to make waiting and fork-based concurrency acceptably efficient. Before those optimizations are available, programmers should either avoid concurrency or model it indirectly, e.g. using an event queue and centralized dispatch. Waits can be simplified to retrying after a few milliseconds, which is not optimal but is sufficient for many use cases.
 
 ### Robust References
 
 Conventional APIs return allocated references to the client, e.g. `open file` returns a file handle. However, this design is unstable under concurrency and difficult to secure. A more robust API design for references is to have applications allocate their own references. For example, `open file as foo` where `foo` is a user-provided value. 
 
-Further operations such as read and close would then use `foo` value to reference the open file. The host would maintain a translation table between application references and runtime objects. The application never has direct access to a runtime's internal reference, and cannot forge runtime references.
-
-There are benefits to this design when compared to system allocation of references. It becomes much easier to secure which references a subprogram may use, e.g. based on prefix. References can be stable and meaningful, which should simplify debugging and reflection. Allocation of references can be decentralized within a concurrent application, reducing contention.
-
-This avoids any need for abstraction or opacity of reference values. This does shift the burden of garbage collection to the application, but that can be supported by including an effect to list all active references of a given type.
+Further operations such as read and close would then use `foo` value to reference the open file. The host would maintain a translation table between application references and runtime objects. Compared to system allocation of references, it is much easier to secure which references a subprogram may use, e.g. based on prefix. References can be stable and meaningful, which should simplify debugging and reflection. Allocation of references can be decentralized, reducing contention on a central allocator.
 
 ### Asynchronous Effects
 
@@ -148,9 +135,9 @@ Transactions are logically instantaneous. The concept of 'timeout' or 'sleep' is
 * **time:now** - Response is an estimated, logical time of commit, as a TimeStamp value.
 * **time:check:TimeStamp** - If 'now' is equal or greater to TimeStamp, respond with unit. Otherwise fail.
 
-Use of 'check' represents stable, monotonic, indirect observation of time. If a transaction aborts after a failed time check, the runtime can implicitly wait for specified time (or other relevant changes) to retry. Time check is very useful for scheduling future activity, such as timeouts.
+Time 'check' provides stable, monotonic, indirect observation of time. If a transaction aborts after a failed time check, the runtime can implicitly wait for specified time (or other relevant changes) to retry. Time check is useful for scheduling future activity, such as timeouts.
 
-Reading 'now' will destabilize a transaction. To avoid a busy-wait loop, reading time should be performed only by transactions that are already unstable for other reasons, such as reading a channel. This is useful for adding timestamps to received events or data.
+Reading 'now' will destabilize a transaction because time is always advancing. To avoid a busy-wait loop, reading time should be performed only by transactions that are already unstable for other reasons, such as reading from a channel. This is useful for adding timestamps to received events or data.
 
 The default TimeStamp is Windows NT time - a natural number of 100ns intervals since midnight Jan 1, 1601 UT. 
 
@@ -164,9 +151,9 @@ Fork is abstractly a function of time. Relevantly, a hierarchical transaction ma
 
 ### Distribution
 
-Channels should be modeled as lists in application state, annotated and accelerated as needed. Network disruption can be detected using timeouts, much as it would be for network channels. Actual distribution is an optimization of a stable, forking transaction machine. Location-specific effects can be part of the normal effects API. Different locations may have access to different effects.
+Application state is represented in the `step:State` tree value. Instead of partitioning variables across machines, we'll partition stable branches of this tree. The read and write buffers for a channel can be represented by lists on two different machines. We can mirror stable regions of the tree for efficient read-only access. Distributed application programs should include annotations and types to support intelligent distribution and resist accidental performance degradation.
 
-*Notes:* Stateful expression of location results in a mobile process instead of a stable distributed process. Thus, we should favor APIs of form 'open file at X' instead of 'move to X; open file'. 
+Effects APIs should also be extended to work with machine-specific resources. A viable, non-invasive option is to wrap machine-local effects with an explicit location, e.g. `at:(loc:MachineRef, do:LocalEffect)`. Transactions that reference multiple locations can be useful and would be implemented as distributed transactions, but should be avoided in normal use cases. 
 
 ### Logging
 
@@ -180,11 +167,9 @@ In context of transaction machines and fork-based concurrency, logs might be pre
 
 ### Random Data
 
-Due to different optimizations, a request for random data from operating system or hardware should be distinct from 'fork' effects. 
+Due to different intention leading to different optimizations, requests for random data from operating system or hardware should be distinct from 'fork' effects. 
 
-* **random:Count** - response is requested count of secure random bits as a bitstring. E.g. `random:8` might return `00101010`.
-
-Programmers could use pseudo-random number generators if they do not require secure random bits.
+* **random:Count** - response is requested count of cryptographically random bits as a bitstring. E.g. `random:8` might return `00101010`. Treated as an unstable read for incremental computing.
 
 ## Console Applications
 

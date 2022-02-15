@@ -1,6 +1,14 @@
 namespace Glas
 
 module Effects = 
+    // NOTE: I originally intended to support all the effects needed to *interpret*
+    // an implementation of Glas command line from within the Glas command line. But
+    // to keep it simple I reduced scope to effects needed to compile Glas, i.e. just
+    // writing binary to standard output (plus a couple effects for language modules).
+    //
+    // This means I'll need to write a compiler within Glas before I produce a useful
+    // application (other than pure computations). But it also means this F# code is
+    // simpler and requires less testing and debugging. 
 
     /// Support for hierarchical transactions. This mostly applies to the external
     /// effects handler in context of Glas programs.
@@ -142,182 +150,6 @@ module Effects =
         }
 
 
-    /// Environment Variables (Read Only)
-    ///
-    /// Exposure of environment variables via 'env:get:"VARIABLE"' and 'env:list'.
-    /// This is mostly useful for GLAS_PATH and HOME (e.g. to find config files). 
-    ///
-    /// This presents a read-only API, which avoids complicated questions such as
-    /// how module lookup and caching should be affected by changes to GLAS_PATH. 
-    /// I'm not aware of any strong use-case for mutation of environment variables.
-    let envVarEff () =
-        { new IEffHandler with
-            member __.Eff req =
-                match req with
-                | Value.Variant "env" envOp ->
-                    match envOp with
-                    | Value.Variant "get" (Value.String k) ->
-                        let v = System.Environment.GetEnvironmentVariable(k)
-                        if isNull v then None else 
-                        Some (Value.ofString v)
-                    | Value.Variant "list" Value.U ->
-                        System.Environment.GetEnvironmentVariables().Keys 
-                        |> Seq.cast<string>
-                        |> Seq.map (Value.ofString)
-                        |> FTList.ofSeq
-                        |> Value.ofFTList
-                        |> Some
-                    // Note: file path separator moved to 'dir:sep' effect.
-                    // Note: could potentially support 
-                    //  machine name
-                    //  process ID
-                    //  ...
-                    | _ -> None
-                | _ -> None
-         interface ITransactional with
-            member __.Try() = ()
-            member __.Commit() = ()
-            member __.Abort() = ()
-        }
-
-    /// Time Effects
-    ///
-    /// Transactions are logically instantaneous thus cannot sleep or wait. But they can
-    /// observe time and abort if run too early or too late. This handler implements the
-    /// 'time:now' and 'time:check' effects. After time is requested within a transaction,
-    /// all further requests return the same value until the transaction completes.
-    type TimeEff =
-        val mutable private TXTime : uint64 option
-        val mutable private TXDepth : int
-        new () = 
-            { TXTime = None
-            ; TXDepth = 0
-            }
-
-        member private self.PushTX() =
-            self.TXDepth <- self.TXDepth + 1
-        member private self.PopTX() =
-            assert(0 < self.TXDepth)
-            self.TXDepth <- self.TXDepth - 1
-            if(0 = self.TXDepth) then
-                self.TXTime <- None
-        member private self.Now() =
-            match self.TXTime with
-            | Some tNow -> tNow // time is frozen within transaction 
-            | None -> 
-                let tNow = System.DateTime.UtcNow.ToFileTime() |> uint64
-                if (0 < self.TXDepth) then
-                    self.TXTime <- Some tNow
-                tNow
-
-        interface ITransactional with
-            member self.Try () = self.PushTX()
-            member self.Commit () = self.PopTX()
-            member self.Abort () = self.PopTX()
-        
-        interface IEffHandler with
-            member self.Eff req =
-                match req with
-                | Value.Variant "time" timeReq ->
-                    match timeReq with
-                    | Value.Variant "now" Value.U ->
-                        Some (self.Now() |> Value.nat)
-                    | Value.Variant "check" (Value.Nat tMin) ->
-                        if self.Now() >= tMin 
-                            then Some Value.unit 
-                            else None
-                    | _ -> None
-                | _ -> None
-
-    let timeEff () = 
-        TimeEff() :> IEffHandler
-
-    /// Random bits, with fresh bits between transactions.
-    type RandomBits =
-        val mutable private Buffer : Bits       // bits currently available for reading
-        val mutable private StaleBits : int     // count of recycled bits from backtracking
-        val mutable private TXHist : Bits list  // bits remembered for future backtracking
-        new () = 
-            { Buffer = Bits.empty
-            ; StaleBits = 0
-            ; TXHist = List.empty
-            }
-
-        member inline private self.Remember b =
-            match self.TXHist with
-            | (bs::txs) -> 
-                // remember choices in case of backtracking 
-                self.TXHist <- ((Bits.cons b bs)::txs)
-            | [] -> () // no need for memory outside of transactions
-
-        // forget observed bits over time, keep the buffer fresh
-        member inline private self.ExitTX () =
-            self.TXHist <- []
-            self.Buffer <- Bits.skip self.StaleBits self.Buffer
-            self.StaleBits <- 0
-
-        member self.ReadBit () =
-            if Bits.isEmpty self.Buffer then
-                // take random bits from dotnet
-                self.Buffer <- Bits.random 4096
-            let b = Bits.head self.Buffer
-            self.Buffer <- Bits.tail self.Buffer
-            self.StaleBits <- max 0 (self.StaleBits - 1)
-            self.Remember b
-            b
-
-        member self.ReadBits n =
-            let mutable bs = Bits.empty
-            for _ in 1 .. n do
-                bs <- Bits.cons (self.ReadBit()) bs
-            bs
-
-        interface ITransactional with
-            member self.Try () =
-                self.TXHist <- (Bits.empty :: self.TXHist)
-            member self.Commit () =
-                match self.TXHist with
-                | [_] -> self.ExitTX()
-                | (tx0::tx1::txs) -> 
-                    // remember tx0 in parent transaction
-                    self.TXHist <- ((Bits.append tx0 tx1)::txs)
-                | [] ->
-                    failwith "commit outside of transaction" 
-            member self.Abort () =
-                match self.TXHist with
-                | [_] -> self.ExitTX()
-                | (tx0::txs) ->
-                    // backtrack tx0 in parent transaction
-                    self.TXHist <- txs
-                    self.Buffer <- Bits.append (Bits.rev tx0) self.Buffer
-                    self.StaleBits <- Bits.length tx0 + self.StaleBits
-                | [] ->
-                    failwith "abort outside of transaction"
-
-        interface IEffHandler with
-            member self.Eff req =
-                match req with
-                | Value.Nat n when (n < uint64 System.Int32.MaxValue) ->
-                    self.ReadBits (int n) |> Value.ofBits |> Some
-                | _ -> None
-
-    let randomEff () =
-        selectHeader "random" (RandomBits())
-
-
-    /// Non-Deterministic Fork Effect
-    ///
-    /// Ideally, fork is optimized with incremental computing and replication. This allows
-    /// stable forks to represent multiple concurrent threads and tasks. Currently, just 
-    /// returns random bits. This has correct formal behavior, but lacks the performance
-    /// to effectively model concurrency.
-    let forkEff () =
-        let rw req =
-            match req with
-            | Value.Variant "fork" Value.U -> Some (Value.nat 1UL)
-            | _ -> None
-        rewriteEffects rw (RandomBits()) 
-
     /// Simple Binary Writer
     type BinaryWriter =
         val private CommitWrite : byte array -> unit
@@ -368,94 +200,6 @@ module Effects =
         let s = System.Console.OpenStandardOutput()
         let w b = s.Write(b, 0, b.Length)
         BinaryWriter(w) |> selectHeader "write"
-
-    /// Shared State Communications for Background Effects 
-    ///
-    /// We can use a value reference as a shared-state interchange between a program and a
-    /// runtime's background task. The effects API will abstract state from the program to
-    /// protect invariants. 
-    ///
-    /// Synchronization uses the dotnet Monitor class: the reference is locked (via Enter,
-    /// Exit) when used within a transaction, and is Pulsed upon commit. The assumption is
-    /// that a background thread occasionally interacts with the shared state to receive
-    /// requests and provide responses. 
-    /// 
-    /// An advantage is that no backtracking is required. Scalability and parallelism are
-    /// limited, but that shouldn't be a significant concern in context of bootstrap.
-    type SharedStateEff<'I, 'O, 'S> =
-        val private SharedState : 'S ref    // shared state
-        val private ParseReq    : Value -> 'I option
-        val private Action      : 'I -> 'S -> ('O * 'S) option
-        val private PrintResp   : 'O -> Value
-        val mutable private TXStack : 'S list
-
-        new(state, parser, action, writer) = 
-            { SharedState = state
-            ; ParseReq = parser
-            ; Action = action
-            ; PrintResp = writer
-            ; TXStack = []
-            }
-
-        member private self.ReadState () =
-            match self.TXStack with
-            | (s::_) -> s
-            | [] -> 
-                failwith "must read from inside a transaction"
-
-        member private self.WriteState s =
-            match self.TXStack with
-            | (_::ss) -> 
-                self.TXStack <- (s::ss)
-            | _ ->
-                failwith "must write after read within transaction"
-
-
-        interface ITransactional with
-            member self.Try () =
-                match self.TXStack with
-                | [] -> 
-                    System.Threading.Monitor.Enter(self.SharedState)
-                    self.TXStack <- [self.SharedState.Value]
-                | (s::_) as txs -> 
-                    self.TXStack <- (s::txs)
-            member self.Commit () =
-                match self.TXStack with
-                | [s'] ->
-                    self.TXStack <- []
-                    self.SharedState.Value <- s'
-                    System.Threading.Monitor.PulseAll(self.SharedState)
-                    System.Threading.Monitor.Exit(self.SharedState)
-                | (s'::_::ss) ->
-                    self.TXStack <- (s'::ss)
-                | [] ->
-                    failwith "commit outside of transaction"
-            member self.Abort () =
-                match self.TXStack with
-                | [_] ->
-                    self.TXStack <- []
-                    System.Threading.Monitor.Exit(self.SharedState)
-                | (_::ss) ->
-                    self.TXStack <- ss
-                | [] ->
-                    failwith "abort outside of transaction"
-
-        interface IEffHandler with
-            member self.Eff v =
-                match self.ParseReq v with
-                | None -> None
-                | Some i ->
-                    use tx = withTX self
-                    let s = self.ReadState()
-                    match self.Action i s with
-                    | Some (o, s') ->
-                        self.WriteState s'
-                        tx.Commit()
-                        Some (self.PrintResp o)
-                    | None ->
-                        tx.Abort()
-                        None
-
 
     /// Transactional Logging Support
     /// 
@@ -596,9 +340,5 @@ module Effects =
 
     let consoleErrLogger () : IEffHandler =
         TXLogSupport(consoleErrLogOut) :> IEffHandler
-
-
-
-
 
 
