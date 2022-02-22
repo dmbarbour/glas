@@ -6,7 +6,8 @@
 //   glas --run glas-cli-verb.run -- parameters
 //
 // This supports user-definable verbs as the default mode of interaction.
-// Meanwhile, we can introduce new built-in operations (with --op).
+// We can introduce ad-hoc built-in operations such as --arity, but in
+// theory they shouldn't be necessary.
 //
 
 open Glas
@@ -130,11 +131,11 @@ let run (pstr:string) (args:string list): int =
     match getValue loader pstr with
     | None -> EXIT_FAIL // error already logged
     | Some (ProgOfArity (_, ar)) when (Arity (1,1) <> ar) ->
-        logError logger (sprintf "program %s has incorrect arity %A" pstr ar)
+        logError logger (sprintf "program %s has unexpected arity %A" pstr ar)
         EXIT_FAIL
     | Some p ->
         let io = deferTry <| composeEff (writeEff ()) loader    // minimal bootstrap effects
-        let appFn = eval p io                            // compile application body
+        let appFn = eval p io                                   // compile application body
         let rec appLoop st =
             io.Try () // defer effects via transaction
             match appFn [st] with
@@ -153,17 +154,21 @@ let run (pstr:string) (args:string list): int =
                 | _ ->
                     logError logger (sprintf "unrecognized output from %s: %s" pstr (Value.prettyPrint st'))
                     EXIT_FAIL
-            | Some vs ->
+            | Some _ ->
                 // this should never happen because we verify arity ahead of time.
-                io.Abort()
-                logError logger (sprintf "expecting 1--1 arity in %s; got %d outputs" pstr (List.length vs))
-                EXIT_FAIL
+                failwith "dynamic arity failure despite static check"
             | None ->
                 io.Abort()
-                // for now, just fail. Ideally, we'd wait for relevant changes, but this
-                // bootstrap implementation doesn't have effects where waiting is relevant.
-                logError logger (sprintf "%s failed at %s; bootstrap currently doesn't support waiting" pstr (Value.prettyPrint st))
-                EXIT_FAIL
+                // Failed evaluation doesn't halt, just waits a little then retries.
+                // This models waiting on input sources, such as stdin or TCP. Ideally,
+                // we'd wait on actual event sources, and different non-deterministic
+                // choices would have their own waits. 
+                //
+                // We don't have input sources available at the moment, so an app
+                // that fails can only be killed via OS signal (e.g. Ctrl+C). But if
+                // we add the 'read' effect, this might be useful.
+                System.Threading.Thread.Sleep(25)
+                appLoop st
 
         let st0 = 
             args |> List.map (Value.ofString) 
@@ -175,14 +180,15 @@ let run (pstr:string) (args:string list): int =
 let rec main' (args : string list) : int =
     match args with
     | (verb::args) when not (verb.StartsWith("-")) ->
-        main' ("--run" :: ("glas-cli-" + verb + ".run") :: "--" :: args)
+        // trivial rewrite supports user-defined behavior
+        let p = "glas-cli-" + verb + ".run"
+        main' ("--run" :: p :: "--" :: args)
     | ( "--run" :: p :: "--" :: args) ->
-        // todo: process extra run options, if we add them. 
         try 
             run p args
         with
         | e -> // handle uncaught exceptions
-            let msg = sprintf "halted with exception %s" (e.ToString())
+            let msg = sprintf "halted %s with exception %s" p (e.ToString())
             System.Console.Error.WriteLine(msg)
             EXIT_FAIL
     | [ "--print"; v ] -> 

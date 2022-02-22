@@ -1,12 +1,12 @@
 # Glas Command Line Interface
 
-The [Glas Design](GlasDesign.md) document describes a Glas command-line interface (CLI) that is extensible with user-defined verbs via simple syntactic sugar: `glas foo a b c` is rewritten to `glas --run glas-cli-foo.run -- a b c`. Module 'glas-cli-foo' should compile to a record value of form `(run:Program, ...)`. This program must be 1--1 arity and represents the body of a *transaction machine* application (see [Glas Apps](GlasApps.md)).
+The [Glas Design](GlasDesign.md) document describes a Glas command-line interface (CLI) that is extensible with user-defined verbs via simple syntactic sugar: `glas foo a b c` is rewritten to `glas --run glas-cli-foo.run -- a b c`. Module 'glas-cli-foo' should compile to a record value of form `(run:AppProgram, ...)`. This program must be 1--1 arity and represents the body of a *transaction machine* application (see [Glas Apps](GlasApps.md)).
 
-        type App = (init:Params | step:State) → [Effects] (halt:ExitCode | step:State | FAILURE)
+        type App = (init:Args | step:State) → [Effects] (halt:ExitCode | step:State) | FAILURE
 
-Concretely, for Glas CLI verbs, initial parameters is a list of strings such as `init:["a", "b", "c"]`, and the halting value should represent an exit code. If the application returns `step:State`, it will implicitly commit effects then loop. If evaluation fails, effects are transactionally aborted and evaluation retries, effectively waiting for changes.
+For Glas CLI verbs, initial arguments is the list of strings such as `init:["a", "b", "c"]`, and the halting value should be a 32-bit exit code, cast to a signed integer. Exit code -1 is used if the glas command has any issues (e.g. not a defined verb, or cannot compile verb). Exit code 0 should represent successful termination. Returning `step:State` will commit effects then loop; the state type is application specific. If evaluation fails, effects are aborted and evaluation retries, waiting for changes.
 
-Under this design, application state is accessible for orthogonal persistence, debug views, live coding, and application composition or extension. Reactive, concurrent, and even distributed evaluation become performance optimizations of a sequential loop, which simplifies expression and reasoning. However, we'll also want an intermediate language to compile procedural scripts into state machines with transactional steps.
+Procedural programs can potentially be compiled into the Glas application type for use as verbs, i.e. producing a state machine to represent the program's defunctionalized continuation.
 
 ## Bootstrap
 
@@ -44,18 +44,24 @@ I have a some thoughts for verbs that might be convenient to develop early on.
 * **repl** - support for a read-eval-print loop using a syntax of choice. 
 * **type** - infer and report type of an indicated Glas program or value.
 * *language server* - support the [Language Server Protocol](https://en.wikipedia.org/wiki/Language_Server_Protocol).
-* **ide** - support for a web-based IDE. This might include the language server.
 * *notebook apps* - a graphical, incremental variation on REPLs, via web services. Perhaps part of IDE.
+* **ide** - maybe we can make it easy to run a web server that supports a browser based IDE.
 
-These verbs use `--run` via the Glas module system, but it might be useful to have built-in implementations simpler debugging verbs such as `--print` and `--arity` and `--test`. 
+These verbs use `--run` via the Glas module system. However, a Glas executable could integrate a few useful built-ins such as `--print`, `--arity`, and `--test` to ensure a minimal capability is always available.
 
-Several verbs such as print, type, arity can use the same effects as bootstrap. However, others such as test, repl, or web-based would require an extended effects API.
+## Live Coding via Live Loading
 
-## Extended Effects API
+My proposal is to make the **load:ModuleName** effect 'live' by default after bootstrap. That is, the result from 'load' is stable when module source isn't changing, but reacts swiftly to changes in source. Meanwhile, the program input to `--run` is loaded only once, and static by default.
+
+Under this design, it is feasible to define live applications that explicitly load logic at runtime, optionally continuous or triggered by event. Additionally, we can support liveness as a user-defined adverb, i.e. define module `glas-cli-live.run` such that `glas live verb Args` does almost the same thing as `glas verb Args` except that it updates the verb continuously from the module system. Stateful loads must be represented explicitly by recording loaded values into state.
+
+An accelerated interpreter for Glas programs can ensure full performance from live loaded code.
+
+## Effects API
 
 ### General Effects
 
-See [Glas Apps](GlasApps.md) for discussion on some effects APIs that are suitable for transaction machine applications in general, such as 'fork' for concurrency and 'time' to model waits and sleeps.
+See [Glas Apps](GlasApps.md) for discussion on some effects APIs that are suitable for transaction machine applications in general, such as 'fork' for concurrency and 'time' to model waits and sleeps. The 'log' effect will output to standard error, but this might be tweakable via reflection APIs. 
 
 ### Standard Input and Output
 
@@ -64,7 +70,7 @@ We need **write** for Bootstrap. For symmetry, perhaps include **read** effect f
 * **write:Binary** - write a list of bytes to standard output.
 * **read:Count** - read up to Count bytes from standard input as available.
 
-In context of a filesystem API, we might implicitly rewrite 'read' and 'write' effects into file operations on references 'std:out' and 'std:in'.
+In context of a filesystem API, these operations might implicitly rewrite into effects on 'std:out' and 'std:in' file references. 
 
 ### Environment Variables
 
@@ -183,7 +189,3 @@ It might be useful to provide some reflection on the environment. This could inc
 ### OS Exec? Defer.
 
 If I ever want to express a command shell as a normal glas verb, I'll need an effects API that supports execution of OS commands, including integration with file streams and environments. However, there is no pressing need.
-
-### Eval Effect? Reject!
-
-I've repeatedly had the idea of supporting eval as an effect. However, acceleration of an eval subprogram seems the wiser choice. Only writing this down so I am reminded of it. Additionally, we might want to accelerate eval of other models, such as Kahn process networks.
