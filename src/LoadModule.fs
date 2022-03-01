@@ -160,11 +160,12 @@ module LoadModule =
 
         /// Find a module.
         member ll.FindModule m : FilePath option = 
-            let localDir =  
+            let searchDirs =  
+                let gp = readGlasPath () 
                 match ll.Loading with
-                | [] -> Directory.GetCurrentDirectory()
-                | (hd::_) -> Path.GetDirectoryName(hd)
-            match moduleSearch m (localDir :: readGlasPath()) with
+                | [] -> gp
+                | (hd::_) -> Path.GetDirectoryName(hd) :: gp
+            match moduleSearch m searchDirs with
             | [] -> 
                 logWarn ll (sprintf "module %s not found" m)
                 None

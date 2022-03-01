@@ -1,12 +1,12 @@
 # Glas Applications
 
-Glas application behavior will be represented by a Glas program with 1--1 arity and a transactional effects API. 
+Glas applications, at least for [Glas CLI](GlasCLI.md) verbs, will be modeled by a 1--1 arity program that represents a multi-step process over time where each step is atomically evaluated within a transaction.
 
-        type App = (init:Params | step:State) → [Effects] (halt:Result | step:State) | Failure
+        type Process = (init:Params | step:State) → [Effects] (halt:Result | step:State) | Failure
 
-Initial input to the application program is 'init'. The application halts if 'halt' value is returned. If the program returns 'step', the system will evaluate the program again with the step value as input, modeling application state. Evaluation of the program is logically atomic and instantaneous, committing effects after evaluation successfully returns 'step' or 'halt'. When evaluation fails, effects are aborted and the system will later retry with the same initial input.
+An application process is started with 'init', voluntarily terminates by returning 'halt', or may return 'step' to continue in a future transaction, carrying state. Intermediate outputs and latent inputs can be modeled effectfully. Successful evaluation of steps may commit updates. Failure aborts the current transaction but will normally retry, implicitly waiting for changes or searching among non-deterministic options. 
 
-This application model, the *Transaction Machine*, has nice systemic properties regarding extensibility, composability, debuggability, administration, orthogonal persistence, concurrency, distribution, reactivity, and live coding. However, these benefits depend on optimizations that take advantage of repetition and isolation of transactions. The optimizer is a non-trivial barrier for this application model.
+This application model, which I call a *Transaction Machine*, has nice systemic properties regarding extensibility, composability, concurrency, distribution, reactivity, and live coding. Administrative control, debugging, and orthogonal persistence can be implemented as extensions that work with application state between steps. However, transaction machines depend on sophisticated optimizations. Implementation of the optimizer is the main development barrier for this model.
 
 ## Transaction Machines
 
@@ -38,9 +38,9 @@ Transaction machines are inherently resilient to network disruption. Operations 
 
 ### Transaction Fusion
 
-It is possible to apply [loop optimizations](https://en.wikipedia.org/wiki/Loop_optimization) to repeating transactions in the transaction machine, especially loop unrolling and loop fusion. For example, if we have transactions `{ A, B }` then we can optionally add fused transactions `{ AA, AB, BA, BB }` without affecting formal behavior. Further, if we know `AB` succeeds whenever `A` would succeed, we can eliminate independent evaluation of `A`.
+It is possible to apply [loop optimizations](https://en.wikipedia.org/wiki/Loop_optimization) to repeating transactions. Conceptually, we might view this as refining the non-deterministic transaction schedule. A random schedule isn't optimal because we must assume external updates to state between steps. By fusing transactions, we eliminate concurrent interference and enable optimization at the boundary. An optimizer can search for fusions that best improve performance. 
 
-Fusion can eliminate data plumbing tasks, reduce context switching overheads, and provide opportunity for deep optimizations at the fusion boundary. Importantly, aggressive fusion allows programmers to use fine-grained tasks without worrying about how runtime performance is affected. This simplifies modular development.
+Fusion could be implemented by a just-in-time compiler based on empirical observations, or ahead-of-time based on static analysis. Intriguingly, just-in-time fusions can potentially optimize communication between multiple independent applications and services. In context of distributed transaction machines, each application or service essentially becomes an patch on a network overlay without violating security abstractions.
 
 ### Real-Time Systems 
 
@@ -54,25 +54,13 @@ The application program can be updated at runtime between transactions. This wou
 
 Transaction machines are only a partial solution for live coding. The application must also include transition logic for the state value, as needed, or must be careful to use a stable state type across application versions. Thus, support from the development environment is the other major part of the solution.
 
-### Composition and Extension
+## Procedural Programming on Transaction Machines
 
-A large transaction machine application can be composed of smaller applications. 
+Procedural code is a good fit for some applications, especially scripts. In context of a transaction machine, a procedure is evaluated over multiple transactional steps. Blocking calls are implicitly modeled by retry on step failure. A procedure's call-by-value parameters and return value can be represented with init and halt. The implicit continuation and local variables will be represented in the procedure's continuation.
 
-Sequential composition will 'halt' one application before 'init' the next, and will track location for intermediate steps. Concurrent composition can either run both component applications to completion or race them, halting when the first component returns. Although limited to hierarchical structure (a concurrent child task does not survive its parent returning 'halt'), this is adequate for many applications.
+Concurrency keywords and atomic blocks are useful extensions for procedural programs. To model concurrent interaction between procedure calls, we use shared variables or channels. Syntactically this can be represented similarly to pass-by-reference in many PLs. Reads and writes of the shared variables is probably best represented effectfully.
 
-Concurrent composition will need a model for communication between component applications. For example, we could use effects to access a shared database, tuple space, databus, or publish-subscribe layer. Or we could associate each application with a set of labeled 'ports' for message passing that can be externally wired together. 
-
-Application private state, represented in the `step:State` value, can potentially be observed and manipulated on every step. This is where I draw the line between 'composition' and 'extension'. Extensions can support ad-hoc views, controls, behaviors, and other features based on access to state application private state.
-
-### Flexible Integration with Procedural Programming
-
-Procedural code is a good fit for some applications. In context of a transaction machine, a procedural program must be evaluated over multiple transactional steps. When a procedural step fails, it is logically retried until it succeeds, representing waits and blocking calls. A procedure's continuation will be represented in application state at the transaction machine layer, but syntax for procedural code should make the continuation implicit. 
-
-Procedures can be separately compiled into transaction machines, then joined procedurally using sequential composition. Relatedly, the procedural language could expose lightweight concurrency and atomic blocks, e.g. `atomic { ... }`. All conventional concurrency primitives, such as mutexes and condition waits, can be implemented by atomic blocks that fail if conditions aren't right. 
-
-For performance, we'll want to fuse small procedural steps into larger transactions. Doing so enables further optimizations because we eliminate external interference between fused steps. This is a form of *Transaction Fusion*, but it might be simpler to implement at the procedural layer, i.e. typefully tracking which procedures are blocking and heuristically joining non-blocking sequential operations into larger 'atomic' blocks.
-
-*Note:* An implicit continuation state is troublesome in context of live coding and non-invasive extensions. Ideally, the continuation should align with stable syntactic structure, such as explicit labels in source code.
+*Note:* Procedures can be separately compiled into transactional processes then composed. This is convenient for flexible integration. However, some optimizations will likely be easier to perform at the procedural layer. 
 
 ## Concrete Design
 
@@ -88,13 +76,9 @@ Further operations such as read and close would then use `foo` value to referenc
 
 ### Asynchronous Effects
 
-Effects must be aborted when evaluation fails. This has a huge impact on API design. For example, asynchronous writes are popular because we can simply not send anything if we abort. Synchronous operations are mostly limited to manipulating application or runtime state.
+Effects must be aborted when evaluation fails. Compared to distributed transactions, it's a lot easier to write messages into a local buffer then send on commit. Ease of implementation will impact API designs, favoring asynchronous effects.
 
-A useful exception is stable, cacheable reads. For example, loading a module from the module system, or reading a file's content, or even HTTP GET could potentially be performed within a transaction.
-
-### Specialized Effects
-
-Runtime effects APIs should be specialized. For example, although file streams and TCP streams are remarkably similar, `tcp:read:(...)` request should be separate and distinct from `file:read:(...)`. Attempting to generalize hinders domain specialized features. It is better for the runtime to provide a more specialized API then let the application implement its own abstraction layer as another effects handler if desired.
+A useful exception is stable, cacheable reads. For example, loading a module from the module system, or reading a file's content, or even HTTP GET could potentially be performed within a transaction. In some cases, we might also read the age or staleness of the cached value.
 
 ## Common Effects APIs
 
@@ -123,7 +107,9 @@ Fork is abstractly a function of time. Relevantly, a hierarchical transaction ma
 
 ### Distribution
 
-Application state is represented in the `step:State` tree value. Instead of partitioning variables across machines, we'll partition stable branches of this tree. The read and write buffers for a channel can be represented by lists on two different machines. We can mirror stable regions of the tree for efficient read-only access. Distributed application programs should include annotations and types to support intelligent distribution and resist accidental performance degradation.
+Application state is represented in the `step:State` tree value. Instead of partitioning and replicating variables across machines, we'll break the tree into stable component branches then distribute those. 
+
+The read and write buffers for a channel can be represented by lists on two different machines. We can mirror stable regions of the tree for efficient read-only access. Distributed application programs should include annotations and types to support intelligent distribution and resist accidental performance degradation.
 
 Effects APIs should also be extended to work with machine-specific resources. A viable, non-invasive option is to wrap machine-local effects with an explicit location, e.g. `at:(loc:MachineRef, do:LocalEffect)`. Transactions that reference multiple locations can be useful and would be implemented as distributed transactions, but should be avoided in normal use cases. 
 
@@ -139,11 +125,13 @@ In context of transaction machines and fork-based concurrency, logs might be pre
 
 ### Random Data
 
-Due to different intention leading to different optimizations, requests for random data from operating system or hardware should be distinct from 'fork' effects. 
+For optimization and security purposes, it's useful to distinguish non-deterministic choice from random data. Random reads are unstable for purpose of incremental computing. 
 
-* **random:Count** - response is requested count of cryptographically random bits as a bitstring. E.g. `random:8` might return `00101010`. Treated as an unstable read for incremental computing.
+* **random:Count** - response is requested count of cryptographically, uniformly random bits, represented as a bitstring. E.g. `random:8` might return `00101010`. 
 
-## Misc
+Applications should often use deterministic pseudo-random data or noise models (such as Perlin noise) instead of external random data. However, sometimes we need the closest thing to true random data.
+
+## Misc Thoughts
 
 ### Console Applications
 
@@ -152,3 +140,43 @@ See [Glas command line interface](GlasCLI.md).
 ### Web Applications
 
 Another promising near-term target for Glas is web applications, compiling apps to JavaScript and using effects oriented around on Document Object Model, XMLHttpRequest, WebSockets, and Local Storage. Transaction machines are a good fit for web apps, I think.
+
+### Process Networks
+
+We can model process networks or flow-based programming with a relatively simple effects API for operations on external channels:
+
+* **send:(over:ChannelRef, data:Value)** - write arbitrary data to a named channel.
+* **recv:(from:ChannelRef)** - read data from a named channel. Fails if read buffer is empty or next input is not data.
+
+References are local to each process in this API. Each process might begin with a set of open channels whose names are indicative of their role or purpose, and the channels of multiple processes could be externally wired to form a composite network process. 
+
+In some cases, we might want to model dynamic process networks, which statefully evolve from the initial configuration. This can be supported with some extensions to the API that make the configuration of channels clear to the composite process:
+
+* **attach:(over:ChannelRef, as:NewChannelRef)** - send one end of a new duplex channel over an existing channel. One end of the new channel is bound locally to the given new channel name.
+* **accept:(from:ChannelRef, as:NewChannelRef)** - receive a duplex channel from an existing channel, attach to specified local endpoint. Fails if read buffer is empty or next input is not a channel endpoint.
+* **close:ChannelRef** - tell system the process is done with specified channel.
+* **wire:(from:ChannelRef, to:ChannelRef)** - tell system to permanently connect two channels, forwarding any unhandled or future messages and events between them. Closes both channels as far as the process is concerned.
+
+Between attach, accept, and wire it is possible to establish new point-to-point connections between nodes in the network without ever directly sharing a channel reference.
+
+### Object-Oriented Programming in Glas Applications
+
+Conventional OOP with *synchronous* method calls is an awkward fit for Glas programs and processes. A parent process can provide an effects API with references to share objects with a child process, such as open file handles. But the child process cannot conveniently return objects to the parent.
+
+It is feasible to use dynamic process networks APIs to model asynchronous objects. For example:
+
+        Object Client:
+            attach:(over:ObjectRef, as:RequestRef)
+            send:(over:RequestRef, data:RequestValue)
+            (... commit to actually send data ...)
+            recv:(from:RequestRef)  // blocking read!
+            close:RequestRef
+
+        Object Server:
+            accept:(from:ObjectRef, as:RequestRef)
+            recv:(from:RequestRef) 
+            (... zero or more steps ...)
+            send:(over:RequestRef, data:ResponseValue)
+            close:RequestRef
+
+In this case, we have simple request and response values. More generally, we might use attach and accept to support fine-grained subtask interactions or model object-passing. However, this API would become very inefficient for fine-grained use compared to conventional OOP.

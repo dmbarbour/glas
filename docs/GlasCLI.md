@@ -1,12 +1,10 @@
 # Glas Command Line Interface
 
-The [Glas Design](GlasDesign.md) document describes a Glas command-line interface (CLI) that is extensible with user-defined verbs via simple syntactic sugar: `glas foo a b c` is rewritten to `glas --run glas-cli-foo.run -- a b c`. Module 'glas-cli-foo' should compile to a record value of form `(run:AppProgram, ...)`. This program must be 1--1 arity and represents the body of a *transaction machine* application (see [Glas Apps](GlasApps.md)).
+The [Glas Design](GlasDesign.md) document describes a Glas command-line interface (CLI) that is extensible with user-defined verbs via simple syntactic sugar: `glas foo a b c` is rewritten to `glas --run glas-cli-foo.run -- a b c`. This compiles module `glas-cli-foo`, which should produce a record value `(run:Program, ...)`. The program should represent a *transaction machine* process; see [Glas Apps](GlasApps.md) for details.
 
         type App = (init:Args | step:State) → [Effects] (halt:ExitCode | step:State) | FAILURE
 
-For Glas CLI verbs, initial arguments is the list of strings such as `init:["a", "b", "c"]`, and the halting value should be a 32-bit exit code, cast to a signed integer. Exit code -1 is used if the glas command has any issues (e.g. not a defined verb, or cannot compile verb). Exit code 0 should represent successful termination. Returning `step:State` will commit effects then loop; the state type is application specific. If evaluation fails, effects are aborted and evaluation retries, waiting for changes.
-
-Procedural programs can potentially be compiled into the Glas application type for use as verbs, i.e. producing a state machine to represent the program's defunctionalized continuation.
+For Glas CLI verbs, initial arguments is a list of strings from the command line such as `init:["a", "b", "c"]`, and the halting value should be a short bitstring, which is cast to 32-bit integer as the exit code. Potential effects APIs are described in this document. 
 
 ## Bootstrap
 
@@ -32,19 +30,20 @@ The generated executable might provide access to different effects than the init
 
 ## Values and Programs
 
-The program argument to `--run` is currently specified by dotted path into the module system, i.e. `ModuleName(.Label)*`, generally assuming ASCII module names and labels. This is sufficient for verbs, and should be adequate for most use-cases. But, if there is a strong use-case, I might later extend this to support a simple expression language.
+The program argument to `--run` is currently specified by dotted path into the module system, i.e. `ModuleName(.Label)*`, generally assuming ASCII module names and labels. This should be adequate for most use-cases. If there is need for something more sophisticated, the parser can always be represented as another verb.
 
 ## Useful Verbs
 
 I have a some thoughts for verbs that might be convenient to develop early on. 
 
 * **print** - support for module system values and printing to standard output. Deterministic. 
-* **arity** - report arity of a named Glas program.
-* **test** - support for automated testing. Relies mostly on 'log' and 'fork' effects.
-* **repl** - support for a read-eval-print loop using a syntax of choice. 
+* **arity** - report arity of any named Glas program.
+* **test** - develop support for automated testing.
+* **repl** - a read-eval-print loop using some syntax specified on the command line. 
 * **type** - infer and report type of an indicated Glas program or value.
+* **bootstrap** - compile the glas executable
 * *language server* - support the [Language Server Protocol](https://en.wikipedia.org/wiki/Language_Server_Protocol).
-* *notebook apps* - a graphical, incremental variation on REPLs, via web services. Perhaps part of IDE.
+* *notebook apps* - a graphical, incremental variation on REPLs, via web services. Perhaps part of IDE. Need a model for this, e.g. for how each statement is a little applications of its own.
 * **ide** - maybe we can make it easy to run a web server that supports a browser based IDE.
 
 These verbs use `--run` via the Glas module system. However, a Glas executable could integrate a few useful built-ins such as `--print`, `--arity`, and `--test` to ensure a minimal capability is always available.

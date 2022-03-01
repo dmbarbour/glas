@@ -174,44 +174,36 @@ Glas does not have operators for most data representations. Other than the few r
 
 Glas does not have a built-in type system. Runtime type errors simply cause evaluation to fail. However, many Glas language modules will support syntax to express programmer assumptions or static assertions. These can be checked when the module compiles, or embedded as program annotations for later verification. Redundant checks are mitigated by memoization.
 
-## Application Models
+## Language Modules
 
-### Language Modules
+Language modules have a module name of form `language-(ext)`, binding to files with extension `.(ext)`. For example, module `language-g` would be used to process file `foo.g`. The language module must compile to a record value of form `(compile:Program, ...)`. Other than 'compile', language modules might define functions for linting, code completion, repl, decompiler, documentation, interactive tutorials, etc..
 
-Language modules have a module name of form `language-(ext)`, binding to files with extension `.(ext)`. For example, module `language-g` would be used to process file `foo.g`. The language module must compile to a record value of form `(compile:Program, ...)`. The compile program will apply to the file binary to produce a Glas value. Other record fields can provide linters, decompiler, code completion support, [language server](https://en.wikipedia.org/wiki/Language_Server_Protocol) support, REPL support, documentation, etc. for the language.
+The compile program must be 1--1 arity. Input is usually a file binary (excepting files with multiple extensions), and output is the compiled value. Compile-time effects are limited to loading modules and logging messages:
 
-The compile program must have arity 1--1, and has a limited effects API to guarantee deterministic compilation based on source and state of other modules. A relevant assumption is that dependencies between modules are acyclic (forming a directed acyclic graph). Effects API:
-
-* **load:ModuleID** - Response is compiled value for the indicated module, or the request may fail. Currently, modules are usually identified by strings (a list of bytes) such as `"foo"`, eliding file extension. We search for the named module locally then fallback to `GLAS_PATH`. 
+* **load:ModuleID** - Response is compiled value for the indicated module, or the request may fail. Currently, modules are usually identified by strings (a list of bytes) such as `"foo"`, eliding file extension. We search for the named module locally (relative to current file) then fallback to `GLAS_PATH`. 
 * **log:Message** - Response is unit. Arbitrary output message, useful for progress reports, debugging, code change proposals, etc.. 
 
-Load failures may occur due to missing modules, ambiguous names (e.g. if we have both `foo.g0` and subdirectory `foo/`), detection of dependency cyles, failure of a compiler function, etc. A compiler can continue in presence of most load failures. The cause of failure is not visible to the client module but should be visible to developers, e.g. via log. 
+Load failure may occur due to missing modules, ambiguous module names, detection of cyclic dependencies, unhandled language extensions, a failed compile, etc.. The cause of load failure can be logged for programmers to see, but is not visible to the compile program.
 
-*Note:* To support bootstrap, a compile function for a Forth-like [language-g0](GlasZero.md) is built into the Glas command line interface. A language-g0 module should be defined using the g0 language.
+To support bootstrap, a compile function for a Forth-like [language-g0](GlasZero.md) is built into the Glas command line interface. The language-g0 module should ultimately be defined using the g0 language.
 
-### Data Printer 
+### Useful Languages
 
-To support reproducible extraction of useful binaries from the module system, we might introduce a verb `glas print Value with Printer`, where Value and Printer are dotted path references into the module system. The printer should reference a program with arity 1--0 (receiving the value) and limited access to effects to guarantee determinism. Proposed effects API:
+First, developing a few data-entry languages early on could be very convenient. For example, we could support `.txt` files that verify unicode input, remove the byte order mark, and convert to UTF-8 if needed. We could support JSON, MsgPack, Cap'n Proto, or SQLite files for structured data entry.
 
-* **write:Binary** - Write binary data (a list of bytes) to stdout. Response is unit. Fails if argument is not a binary.
-* **log:Message** - Arbitrary log message for debugging or progress. Will usually be pretty-printed to stderr. 
+For programming languages, we could develop something more Lisp-like, and also develop a good procedural language that compiles into multi-step [applications](GlasApps.md).
 
-It is possible that a printer will fail partway through the job. In that case, we'll still print the stream to that point, then halt with a non-zero error code.
+## Automated Testing
 
-### Automated Testing
+Static assertions when compiling modules are useful for automated testing. However, build-time is deterministic and under pressure to resolve swiftly. This leaves an open niche for long-running or non-deterministic tests, such as overnight fuzz-testing. Use of a non-deterministic 'fork' effect would be useful for testing:
 
-Static assertions when compiling modules are very useful for automated testing. However, build-time is deterministic and under pressure to resolve swiftly. This leaves an open niche for long-running or non-deterministic tests, such as overnight fuzz-testing.
+* **fork** - Response is a non-deterministic boolean - i.e. a '0' or '1' bitstring. In context of testing, the choice doesn't need to be fair or random. It can be guided by heuristics, memory, and program analysis to search for failing test cases.
 
-To support this, we might express tests as arity 0--Any Glas programs with access to 'fork' effect to represent non-deterministic choice and search for failing tests. Additionally, tests could include an output log for progress and debugging. Viable effects API:
+A test might be represented as a 0--0 arity program that is pass/fail. In addition to fork, a 'log' effect would be useful for generating messages to support debugging.
 
-* **fork** - Response is a non-deterministic boolean - i.e. a '0' or '1' bitstring. In context of testing, this response should not be far or random, but rather guided by heuristics, memory, and program analysis to search for failing tests.
-* **log:Message** - Response is unit. Write an arbitrary message to support debugging of tests.
+## Glas Applications
 
-We might develop a command line verb, `glas test ...` to automate running of tests.
-
-### User Applications
-
-This is the subject of the [Glas Apps](GlasApps.md) document. Intriguingly, concurrency can be modeled by a non-deterministic transactional loop without need for explicit multi-threading effects.
+This is a big discussion of its own. See the [Glas Applications](GlasApps.md) document. 
 
 ## Performance
 
@@ -243,13 +235,13 @@ Acceleration is an optimization pattern. The idea to annotate specific subprogra
 
 Essentially, accelerators extend performance primitives without affecting formal semantics. Of course, performance is an important part of correctness for most programs. To prevent silent performance degradation, a compiler must report when requested acceleration is not recognized or cannot be implemented. Also, the compiler must apply acceleration only where explicitly annotated. 
 
-The cost of acceleration is implementation complexity and risk to correctness, security, and portability. This risk is mitigated by the reference implementation, which can be verified in automatic tests and provides a fallback implementation. The complexity tradeoff is most worthy when acceleration enables use of Glas for problem domains that are otherwise performance prohibitive. 
+The cost of acceleration is implementation complexity and risk to correctness, security, and portability. This risk is mitigated by the reference implementation, which can be verified in automatic tests and provides a fallback implementation. The complexity tradeoff is most worthy when acceleration enables use of Glas for problem domains that are otherwise performance prohibitive.
 
 *Aside:* It is feasible to support accelerators without a valid reference implementation, e.g. `prog:(do:fail, accel:list-append)`. This might be convenient short-term for development of experimental accelerators, but is not recommended long-term.
 
 ### Distributed Computation
 
-For computation at large scales, it is feasible to accelerate evaluation of confluent concurrency models such as [Kahn Process Networks](https://en.wikipedia.org/wiki/Kahn_process_networks) or [Lafont Interaction Nets](https://en.wikipedia.org/wiki/Interaction_nets). The accelerator would distribute the computation across multiple processors, e.g. leveraging cloud or mesh as needed. Processes within the network would have access to local accelerators. 
+For computation at large scales, it is feasible to accelerate evaluation of confluent concurrency models such as [Kahn Process Networks](https://en.wikipedia.org/wiki/Kahn_process_networks) or [Lafont Interaction Nets](https://en.wikipedia.org/wiki/Interaction_nets). The accelerator would distribute the computation across multiple processors, e.g. leveraging cloud or mesh as needed. Processes within the network would have access to local accelerators.
 
 Of course, we can also use effects for non-deterministic concurrency and distribution. See [Glas Apps](GlasApps.md) for more on this subject.
 
@@ -259,15 +251,13 @@ Glas does not have first-class functions. But it is not difficult to write an 'e
 
 ## Thoughts
 
-## Logging Conventions
+### Logging Conventions
 
 Almost every application model will support a **log:Message** effect to support debugging. In general, we'll often want the ability to filter which messages we're seeing based on task, level, role, etc.. These properties are mostly independent of content. Instead of a variant type, log messages will normally use a record of ad-hoc fields, with de-facto standardization. For example:
 
-        (lv:warn, role:debug, text:"message for developer")
+        (lv:warn, role:debug, text:"message for developer", val:42)
 
-This allows gradual and ad-hoc structured extension to log messages, e.g. with provenance metadata, without breaking existing routes or filters. It is feasible to extend log messages with images or even applets to better explain issues.
-
-*Note:* Efficient logging with large values require support for structure sharing within the log storage, e.g. using the stowage model.
+This allows gradual and ad-hoc structured extension to log messages, e.g. with provenance metadata, without breaking existing routes or filters. 
 
 ### Bracketed Effects? No.
 

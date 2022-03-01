@@ -146,7 +146,7 @@ let run (pstr:string) (args:string list): int =
                     appLoop st'
                 | Value.Variant "halt" exitCode ->
                     match exitCode with
-                    | Value.Bits b when (32 >= Bits.length b) -> 
+                    | Value.Bits b when (32 >= Bits.length b) ->
                         int (Bits.toU32 b) // cast to integer
                     | _ ->
                         logError logger (sprintf "evaluation of %s halted with unrecognized value %s" pstr (Value.prettyPrint exitCode))
@@ -159,15 +159,11 @@ let run (pstr:string) (args:string list): int =
                 failwith "dynamic arity failure despite static check"
             | None ->
                 io.Abort()
-                // Failed evaluation doesn't halt, just waits a little then retries.
-                // This models waiting on input sources, such as stdin or TCP. Ideally,
-                // we'd wait on actual event sources, and different non-deterministic
-                // choices would have their own waits. 
-                //
-                // We don't have input sources available at the moment, so an app
-                // that fails can only be killed via OS signal (e.g. Ctrl+C). But if
-                // we add the 'read' effect, this might be useful.
-                System.Threading.Thread.Sleep(25)
+                // Failed evaluation doesn't halt the application. Instead, this models 
+                // waiting on external changes, such as user input. In theory, busy-wait
+                // can be optimized to waiting on relevant changes. But slowing the loop
+                // is adequate for simple single-threaded apps.
+                System.Threading.Thread.Sleep(25) 
                 appLoop st
 
         let st0 = 
