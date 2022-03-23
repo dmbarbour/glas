@@ -180,7 +180,7 @@ Language modules have a module name of form `language-(ext)`, binding to files w
 
 The compile program must be 1--1 arity. Input is usually a file binary (excepting files with multiple extensions), and output is the compiled value. Compile-time effects are limited to loading modules and logging messages:
 
-* **load:ModuleID** - Response is compiled value for the indicated module, or the request may fail. Currently, modules are usually identified by strings (a list of bytes) such as `"foo"`, eliding file extension. We search for the named module locally (relative to current file) then fallback to `GLAS_PATH`. 
+* **load:ModuleName** - Response is compiled value for the indicated module, or the request may fail. Module names are currently strings such as `"foo"`, eliding file extensions. We search for the named module locally (relative to current file) then fallback to searching for a folder in GLAS_PATH.
 * **log:Message** - Response is unit. Arbitrary output message, useful for progress reports, debugging, code change proposals, etc.. 
 
 Load failure may occur due to missing modules, ambiguous module names, detection of cyclic dependencies, unhandled language extensions, a failed compile, etc.. The cause of load failure can be logged for programmers to see, but is not visible to the compile program.

@@ -1,17 +1,30 @@
 # Glas Object
 
-## Overview
+Glas Object, or 'glob', is a compact binary data format for representing Glas data. Some use cases include content-addressed storage, caching modules, memoizing evaluation, and serializing data over networks.
 
-Glas Object, aka 'glob', will be a standard data format for representing Glas data in files, binaries, and stream processing. Glob will also support content-addressed storage for structure sharing at large scales. 
+## Design of Glas Object
 
-Desiderata:
+Design Desiderata:
 
-* indexing - avoid scan of large structures for components
-* sharing - reuse common subtrees, locally and globally
-* streaming - monotonically grow partial lists and trees
-* lists - use finger-tree representation for large lists 
-* binaries - efficient embedding of binary data and texts
-* extension - clear mechanism to introduce new features
+* *indexed* - efficient access to component data.
+* *sharing* - easy reuse of common tree structure.
+* *streaming* - monotonically grow and process trees.
+* *terminating* - trivial guarantee 
+
+* *logical lists* - finger-tree representation for list-like trees.
+* *binaries* - reasonably compact embedding for binaries and texts.
+* *simple* - structural guarantee of valid, non-cyclic tree structure.
+* *streamable* - monotonically grow and process partial trees and lists.
+* *directly usable* - ideally, glob would be an efficient runtime representation.
+
+Observations:
+
+* In context of streaming, minimum cost for indexing is O(N) for N updates. In the general case, we cannot avoid processing the whole value. What we can do is reduce coefficient overheads for indexing.
+* Streaming and templating can potentially use the same mechanism, i.e. modeling partial values as abstract values with holes in them.
+
+Of the desiderata, streaming is less essential
+
+
 
 ## Design Observations
 

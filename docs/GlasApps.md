@@ -1,16 +1,16 @@
 # Glas Applications
 
-Glas applications, at least for [Glas CLI](GlasCLI.md) verbs, will be modeled by a 1--1 arity program that represents a multi-step process over time where each step is atomically evaluated within a transaction.
+Glas applications, at least for [Glas CLI](GlasCLI.md) verbs, will be modeled by a 1--1 arity program that represents a multi-step process over time, where each step is evaluated atomically within a transaction.
 
         type Process = (init:Params | step:State) → [Effects] (halt:Result | step:State) | Failure
 
-An application process is started with 'init', voluntarily terminates by returning 'halt', or may return 'step' to continue in a future transaction, carrying state. Intermediate outputs and latent inputs can be modeled effectfully. Successful evaluation of steps may commit updates. Failure aborts the current transaction but will normally retry, implicitly waiting for changes or searching among non-deterministic options. 
+An application process is started with 'init', voluntarily terminates by returning 'halt', or may return 'step' to continue in a future transaction, carrying state. Intermediate outputs and latent inputs can be modeled effectfully. Failure aborts the transaction but does not halt the application, implicitly waiting for changes or (in context of non-deterministic choice effects) implicitly searching for a choice that does not result in failure.
 
 This application model, which I call a *Transaction Machine*, has nice systemic properties regarding extensibility, composability, concurrency, distribution, reactivity, and live coding. Administrative control, debugging, and orthogonal persistence can be implemented as extensions that work with application state between steps. However, transaction machines depend on sophisticated optimizations. Implementation of the optimizer is the main development barrier for this model.
 
 ## Transaction Machines
 
-Transaction machines model software systems as a set of repeating, atomic, isolated transactions in a shared environment. Scheduling of transactions is non-deterministic. This is a simple idea, but has many nice properties, especially when optimized.
+Transaction machines model software systems as an open set of repeating, atomic, isolated transactions in a shared environment. Scheduling of transactions is non-deterministic. This is a simple idea, but has many nice properties, especially when optimized. 
 
 ### Waiting and Reactivity
 
@@ -22,7 +22,7 @@ Further, incremental computing can be supported. Instead of fully recomputing ea
 
 ### Concurrency and Parallelism
 
-Repeating a single transaction that makes a non-deterministic binary choice is equivalent to repeating two transactions that are identical before this choice then deterministically diverge. We can optimize non-deterministic choice using replication. Usefully, each replica can be stable under incremental computation. Introducing a non-deterministic choice effect enables a single repeating transaction to represent a dynamic set of repeating transactions.
+Repeating a single transaction that makes a non-deterministic binary choice is equivalent to repeating two transactions that are identical until this choice then deterministically diverge. We can optimize non-deterministic choice using replication. Usefully, each replica can be stable under incremental computation. Introducing a non-deterministic choice effect enables a single repeating transaction to represent a dynamic set of repeating transactions.
 
 Transactions in the set will interact via shared state. Useful interaction patterns such as channels and mailboxes can be modeled and typefully abstracted within shared state. Transactional updates and ability to wait on flexible conditions also mitigates many challenges of working directly with shared state.
 
@@ -56,7 +56,7 @@ Transaction machines are only a partial solution for live coding. The applicatio
 
 ## Procedural Programming on Transaction Machines
 
-Procedural code is a good fit for some applications, especially scripts. In context of a transaction machine, a procedure is evaluated over multiple transactional steps. Blocking calls are implicitly modeled by retry on step failure. A procedure's call-by-value parameters and return value can be represented with init and halt. The implicit continuation and local variables will be represented in the procedure's continuation.
+Procedural code is a good fit for some applications, especially for short-running tasks where the implicit state doesn't become a problem. In context of a transaction machine, a procedure is evaluated over multiple transactional steps. Blocking calls are implicitly modeled by retry on step failure. A procedure's call-by-value parameters and return value can be represented with init and halt. The implicit continuation and local variables will be represented in the procedure's continuation.
 
 Concurrency keywords and atomic blocks are useful extensions for procedural programs. To model concurrent interaction between procedure calls, we use shared variables or channels. Syntactically this can be represented similarly to pass-by-reference in many PLs. Reads and writes of the shared variables is probably best represented effectfully.
 
@@ -93,9 +93,9 @@ Transactions are logically instantaneous. The concept of 'timeout' or 'sleep' is
 
 Time 'check' provides stable, monotonic, indirect observation of time. If a transaction aborts after a failed time check, the runtime can implicitly wait for specified time (or other relevant changes) to retry. Time check is useful for modeling timeouts and scheduling.
 
-Reading 'now' will destabilize a transaction because time is always advancing in the background. But this is not a problem if the time is read after another destabilizing input. For example, we could use 'now' after reading from an input channel to associate a received timestamp with each incoming message.
+Reading 'now' will always destabilize a transaction, so it's best read after the transaction is unstable for other reasons, such as processing an incoming message from a channel.
 
-By default, timestamps are in NT time: a natural number of 100ns intervals since midnight Jan 1, 1601 UT. 
+By default, I suggest timestamps are in NT time: a natural number of 100ns intervals since midnight Jan 1, 1601 UT. 
 
 ### Concurrency
 
@@ -107,11 +107,11 @@ Fork is abstractly a function of time. Relevantly, a hierarchical transaction ma
 
 ### Distribution
 
-Application state is represented in the `step:State` tree value. Instead of partitioning and replicating variables across machines, we'll break the tree into stable component branches then distribute those. 
+Application state is represented in the `step:State` tree value. Instead of partitioning and replicating variables across machines, an optimizer can separate state into components then distribute those. Effects can also be localized to machines where appropriate, e.g. `at:(loc:MachineRef, do:LocalEffect)`, allowing for local clocks and filesystems.
 
-The read and write buffers for a channel can be represented by lists on two different machines. We can mirror stable regions of the tree for efficient read-only access. Distributed application programs should include annotations and types to support intelligent distribution and resist accidental performance degradation.
+Any transaction that interacts with state or effects on multiple machines is naturally a distributed transaction. Communication is based on distributed transactions, but optimizing certain patterns. For example, we can heavily optimize a transaction that moves data between channel buffers on different machines. Read-only access to replicated state can potentially be optimized to use point-to-point updates if we also model 'time' as a machine-local effect (to avoid observing inconsistency between state and time).
 
-Effects APIs should also be extended to work with machine-specific resources. A viable, non-invasive option is to wrap machine-local effects with an explicit location, e.g. `at:(loc:MachineRef, do:LocalEffect)`. Transactions that reference multiple locations can be useful and would be implemented as distributed transactions, but should be avoided in normal use cases. 
+In case of network partitioning, each partition continues to evaluate in isolation, but distributed transactions are blocked. When networks partitions reconnect, the distributed transactions can immediately continue running. This results in very good default resilience for short-lived network disruptions, but programs should explicitly handle long-term disruptions, e.g. via timeouts or pushback (waiting when write buffers are full).
 
 ### Logging
 
@@ -119,17 +119,17 @@ Logging is a convenient approach to debugging. We can easily support a logging e
 
 * **log:Message** - Response is unit. Arbitrary output message, useful for progress reports or debugging.
 
-By convention, a log message should be a record of ad-hoc fields, whose meanings are de-facto standardized, such as `(lv:warn, text:"I'm sorry, Dave. I'm afraid I can't do that.", from:hal)`. This enables the record to be extended with metadata or new features.
+By convention, a log message should be a record of ad-hoc fields, whose meanings are de-facto standardized, such as `(lv:warn, text:"I'm sorry, Dave. I'm afraid I can't do that.", from:hal)`. This enables the record to be extended with rendering hints and other useful features.
 
 In context of transaction machines and fork-based concurrency, logs might be presented as a stable tree (aligned with forks) potentially with unstable leaf nodes. Logically, the entire tree updates, every frame, but log messages in the stable prefix of a fork will also be stable outputs. Further, messages logged by failed transactions might be observable indirectly via reflection, perhaps rendered in a distinct color.
 
 ### Random Data
 
-For optimization and security purposes, it's useful to distinguish non-deterministic choice from random data. Random reads are unstable for purpose of incremental computing. 
+For optimization and security purposes, it's necessary to distinguish non-deterministic choice from reading random data. If a transaction fails after reading random data, the same data may be read when the transaction is repeated. There is no implicit search for a 'successful' random choice. This might be implemented by maintaining a buffer per stable fork path.
 
-* **random:Count** - response is requested count of cryptographically, uniformly random bits, represented as a bitstring. E.g. `random:8` might return `00101010`. 
+* **random:Count** - response is requested count of cryptographically secure, uniformly random bits, represented as a bitstring. E.g. `random:8` might return `0b00101010`.
 
-Applications should often use deterministic pseudo-random data or noise models (such as Perlin noise) instead of external random data. However, sometimes we need the closest thing to true random data.
+Many applications would be better off using deterministic pseudo-random data or noise models (such as Perlin noise) instead of random data. But access to secure random data is convenient in some use cases, and necessary for cryptographic communications.
 
 ## Misc Thoughts
 
@@ -137,46 +137,27 @@ Applications should often use deterministic pseudo-random data or noise models (
 
 See [Glas command line interface](GlasCLI.md).
 
+### Notebook Applications
+
+I like the idea of building notebook-style applications, where each statement is a little application with its own little GUI. These small applications are connected by some means. Live coding is implicit: the code for a component is easily edited through the composite GUI view, and edits have immediate consequences. 
+
+An effective model for GUI: The application listens for GUI connections. Each GUI connection can request a view, receive rendering data or commands, and support potential interaction with a user. This supports multiple users or views of the application, and would also work outside of notebook apps. A disadvantage in this case is that the application behavior may change depending on whether a GUI is connected. But we can easily add debug views that we guarantee are separated.
+
+The other concern is how component applications should interact. Wiring components together as a process network is one viable option. Other options include database, databus, or publish-subscribe. It should be feasible to support multiple composition modes, e.g. a process network composite uses wiring, but might contain a process defined via pubsub app composite. This would be similar to composing different DSLs.
+
 ### Web Applications
 
-Another promising near-term target for Glas is web applications, compiling apps to JavaScript and using effects oriented around on Document Object Model, XMLHttpRequest, WebSockets, and Local Storage. Transaction machines are a good fit for web apps, I think.
+A promising target for Glas is web applications, compiling applications to JavaScript and using effects oriented around on Document Object Model, XMLHttpRequest, WebSockets, and Local Storage. Transaction machines should be a good fit for web apps, in theory. And we could also adapt notebook applications to the web target.
 
 ### Process Networks
 
 We can model process networks or flow-based programming with a relatively simple effects API for operations on external channels:
 
-* **send:(over:ChannelRef, data:Value)** - write arbitrary data to a named channel.
-* **recv:(from:ChannelRef)** - read data from a named channel. Fails if read buffer is empty or next input is not data.
+* **c:send:(over:ChannelRef, data:Value)** - write arbitrary data to a named channel. Might fail if write buffer is full at start of transaction (to support pushback).
+* **c:recv:(from:ChannelRef)** - read data from a named channel. Might fail if read buffer is empty or if next input is not data (see 'accept'). 
 
-References are local to each process in this API. Each process might begin with a set of open channels whose names are indicative of their role or purpose, and the channels of multiple processes could be externally wired to form a composite network process. 
+Channel references are local to each process, and are wired externally by a composite process. Channel references could be symbolic values indicative of their role, like labeled pins on a circuit board. Process networks with a graphical syntax can easily support flow-based programming style. 
 
-In some cases, we might want to model dynamic process networks, which statefully evolve from the initial configuration. This can be supported with some extensions to the API that make the configuration of channels clear to the composite process:
+*Aside:* It is feasible to extend the API to support dynamic process networks. But I cannot recommend it. Much benefit of process networks is the ability to treat software components like hardware (circuit boards) with regards to locality, modularity, replacement, etc..
 
-* **attach:(over:ChannelRef, as:NewChannelRef)** - send one end of a new duplex channel over an existing channel. One end of the new channel is bound locally to the given new channel name.
-* **accept:(from:ChannelRef, as:NewChannelRef)** - receive a duplex channel from an existing channel, attach to specified local endpoint. Fails if read buffer is empty or next input is not a channel endpoint.
-* **close:ChannelRef** - tell system the process is done with specified channel.
-* **wire:(from:ChannelRef, to:ChannelRef)** - tell system to permanently connect two channels, forwarding any unhandled or future messages and events between them. Closes both channels as far as the process is concerned.
 
-Between attach, accept, and wire it is possible to establish new point-to-point connections between nodes in the network without ever directly sharing a channel reference.
-
-### Object-Oriented Programming in Glas Applications
-
-Conventional OOP with *synchronous* method calls is an awkward fit for Glas programs and processes. A parent process can provide an effects API with references to share objects with a child process, such as open file handles. But the child process cannot conveniently return objects to the parent.
-
-It is feasible to use dynamic process networks APIs to model asynchronous objects. For example:
-
-        Object Client:
-            attach:(over:ObjectRef, as:RequestRef)
-            send:(over:RequestRef, data:RequestValue)
-            (... commit to actually send data ...)
-            recv:(from:RequestRef)  // blocking read!
-            close:RequestRef
-
-        Object Server:
-            accept:(from:ObjectRef, as:RequestRef)
-            recv:(from:RequestRef) 
-            (... zero or more steps ...)
-            send:(over:RequestRef, data:ResponseValue)
-            close:RequestRef
-
-In this case, we have simple request and response values. More generally, we might use attach and accept to support fine-grained subtask interactions or model object-passing. However, this API would become very inefficient for fine-grained use compared to conventional OOP.
