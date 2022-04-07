@@ -8,7 +8,7 @@ For Glas CLI verbs, initial arguments is a list of strings from the command line
 
 ## Bootstrap
 
-Glas systems will bootstrap the command line executable from the module system. Minimizing the effects API required for bootstrap will reduce overheads for developing an initial executable. For example, it is sufficient to write bytes to standard output, no need to implement a complete filesystem API. Proposed bootstrap effects API:
+Glas systems will bootstrap the command line executable from the module system. Minimizing the effects API required for bootstrap will reduce overheads for developing an initial executable. It is sufficient to write bytes to standard output, no need to implement a complete filesystem API. Proposed bootstrap effects API:
 
 * **write:Binary** - write a list of bytes to standard output. 
 * **log:Message** - same as used by language modules. For bootstrap, just write messages to stderr. 
@@ -64,19 +64,26 @@ See [Glas Apps](GlasApps.md) for discussion on some effects APIs that are suitab
 
 ### Standard Input and Output
 
-We need **write** for Bootstrap. For symmetry, perhaps include **read** effect for access to standard input. This would be convenient for defining a REPL, for example. 
+We already need 'write' for Bootstrap. For symmetry, we could add 'read'.
 
 * **write:Binary** - write a list of bytes to standard output.
-* **read:Count** - read up to Count bytes from standard input as available.
+* **read:Count** - read up to Count bytes from standard input, as available.
 
-In context of a filesystem API, these operations might implicitly rewrite into effects on 'std:out' and 'std:in' file references. 
+This API doesn't support recognizing end-of-input or closing output before the process halts. However, we can follow conventions here and treat write and read as operating on file references 'std:out' and 'std:in' respectively.
+
+        write:B         file:write:(to:std:out, data:B)
+        read:N          file:read:(from:std:in, count:N)
+
+Ideally we'll inline this rewrite once the optimizers are fully developed.
 
 ### Environment Variables
 
 In addition to command-line arguments, a console application typically has access to a set of 'environment variables'. The effects API can provide relatively lightweight read-only access to these variables:
 
-* **env:get:Variable** - response is a value for variable, or failure if the variable is unrecognized or undefined. Variables are usually strings, e.g. `env:get:"GLAS_PATH"`.
-* **env:list** - response is the list of defined Variables
+* **env:get:Variable** - response is a value for variable, or failure if the variable is unrecognized or undefined. Variables are usually represented as strings, e.g. `env:get:"GLAS_PATH"`.
+* **env:list** - response is the list of defined variables
+
+We don't have a good use-case for mutating environment variables, and it would significantly complicate reasoning about module caching and such. However, it is feasible to adjust the environment for a subprogram via the effects handler layer.
 
 ### Filesystem
 
@@ -138,7 +145,7 @@ I can cover needs of most applications with support for just the TCP and UDP pro
    * *error:Value* - indicates error. Value may be a record with ad-hoc fields describing the error, possibly empty. 
   * **info:ListenerRef** - After successful creation of listener, returns `(port:Port, addr:Addr)`. Fails if listener is not successfully created.
   * **close:ListenerRef** - Release listener reference and associated resources.
-  * **ref:list** - returns list of open listener refs
+  * **ref:list** - returns list of open listener refs 
   * **ref:move:(from:ListenerRef, to:ListenerRef)** - reorganize references. Cannot move to an open ref.
  * **connect:(dst:(port:Port, addr:Addr), src?(port?Port, addr?Addr), as:TcpRef)** - Create a new connection to a remote TCP port. Fails if TcpRef is already in use, otherwise returns unit. Whether the connection is successful is observable via 'state' a short while after the request is committed. Destination port and address must be specified, but source port and address are usually unspecified and determined dynamically by the OS.
  * **read:(from:TcpRef, count:N)** - read 1 to N bytes, limited by available data, returned as a list. Fails if no bytes are available - see 'status' to diagnose error vs. end of input. 
@@ -151,7 +158,7 @@ I can cover needs of most applications with support for just the TCP and UDP pro
   * *error:Value* - indicates error. Value may be a record with ad-hoc fields describing the error, possibly empty. 
  * **info:TcpRef** - For a successful TCP connection (whether via 'tcp:connect' or 'tcp:listener:accept'), returns `(dst:(port:Port, addr:Addr), src:(port:Port, addr:Addr))`. Fails if TCP connection is not successful.
  * **close:TcpRef**
- * **ref:list** - returns list of open TCP refs
+ * **ref:list** - returns list of open TCP refs 
  * **ref:move:(from:TcpRef, to:TcpRef)** - reorganize TCP refs. Fails if 'to' ref is in use.
 
 * **udp:UdpOp** - namespace for UDP operations.
@@ -179,12 +186,10 @@ The 'load' effect is sufficient for common module system access, but it might be
 
 ### Graphical User Interface? Defer.
 
-It might be useful to support a lightweight API for native GUI integration, perhaps something like TK. Seems difficult to make general across operating systems. Low priority.
+An viable option for GUI is to prompt the user, external tool, or command line tool to connect the user to a URL via web browser. This might be represented as a logging message with some simple conventions, no need for a new effects API. The URL would usually be served by the application.
+
+Later, I hope to develop a GUI API for notebook applications. At that time, it might be useful to introduce enough effects that we can directly render the view on the host, or at least adapt to webapp.
 
 ### Runtime Reflection? Defer.
 
-It might be useful to provide some reflection on the environment. This could include call stacks, performance metrics, traces of failed transactions. However, I'm uncertain what this API should look like, and it is also low priority. 
-
-### OS Exec? Defer.
-
-If I ever want to express a command shell as a normal glas verb, I'll need an effects API that supports execution of OS commands, including integration with file streams and environments. However, there is no pressing need.
+It might be useful to provide some reflection on the environment. This could include call stacks, performance metrics, or traces of failed transactions. However, I'm uncertain what this API should look like, and it is also low priority. 

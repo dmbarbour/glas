@@ -99,11 +99,13 @@ By default, I suggest timestamps are in NT time: a natural number of 100ns inter
 
 ### Concurrency
 
-Repetition and replication are equivalent for isolated transactions. In context of a transaction machine, within the stable prefix of a transaction, fork can be implemented efficiently by replication, essentially spawning a thread for each stable choice. Outside this context, fork can be implemented as probabilistic choice.
+Repetition and replication are equivalent for isolated transactions. In context of a transaction machine, within the stable prefix of a transaction, fork can be implemented efficiently by replication, essentially spawning a thread for each stable choice. Outside this context, fork can be implemented with probabilistic choice.
 
-* **fork** - non-deterministic behavior, respond with '0' or '1' bitstring.
+* **fork** - Response is a non-deterministic choice of boolean value '0' or '1'. 
 
-Fork is abstractly a function of time. Relevantly, a hierarchical transaction may observe 'fork' backtracking within logically frozen time, but there is no history maintained between transactions or procedural steps.
+Fork is abstractly a function of time. That is, the sequence of fork choices is logically frozen when a transaction starts. This is relevant in context of hierarchical transactions, to protect optimizations related to eliminating redundant computation.
+
+*Note:* In some cases, we'll want to fork on a dynamic collection of values. This results in potential instability, where updating the collection requires recomputing many unrelated forks. This can be mitigated by first computing a relatively stable index of values.
 
 ### Distribution
 
@@ -139,25 +141,75 @@ See [Glas command line interface](GlasCLI.md).
 
 ### Notebook Applications
 
-I like the idea of building notebook-style applications, where each statement is a little application with its own little GUI. These small applications are connected by some means. Live coding is implicit: the code for a component is easily edited through the composite GUI view, and edits have immediate consequences. 
+I like the idea of building notebook-style applications, where each statement is also an application with its own little GUI. Live coding should be implicit, such that code for each component is easily edited through the composite GUI view and has an immediate impact on behavior. The applications should be connected by various means, perhaps forming a *Reactive Dataflow Network*.
 
-An effective model for GUI: The application listens for GUI connections. Each GUI connection can request a view, receive rendering data or commands, and support potential interaction with a user. This supports multiple users or views of the application, and would also work outside of notebook apps. A disadvantage in this case is that the application behavior may change depending on whether a GUI is connected. But we can easily add debug views that we guarantee are separated.
+The GUI must be efficiently composable, such that a composite application can obtain GUI views from each component application. Ideally, we can also support multiple views and concurrent users. An API based on serving GUI connections is viable. It isn't convenient for a composite to explicitly bind GUI connections to each component application, but we could possibly design a GUI API that supports abstract routing through subchannels.
 
-The other concern is how component applications should interact. Wiring components together as a process network is one viable option. Other options include database, databus, or publish-subscribe. It should be feasible to support multiple composition modes, e.g. a process network composite uses wiring, but might contain a process defined via pubsub app composite. This would be similar to composing different DSLs.
+Mixing live code with the GUI is also a challenge, made a little more difficult because Glas supports user-defined syntax, graphical programming, and staged metaprogramming. Applications shouldn't responsible for rendering or updating their own code, so this feature should mostly be supported via language modules (or associated modules per language). But it also constrains the GUI model, at least insofar as we might need to request fine-grained views for component apps.
+
+A remaining concern is how component applications should communicate, such as manually wiring them together or plugging them into a shared database, databus, or publish-subscribe layer. Fortunately, this choice doesn't need to be made up front. It is feasible to support multiple heterogeneous types of application components and compositions within a larger application, assuming they all share the GUI effects model and 
+
+### User Interface APIs
+
+Initial GUI for command line interface applications will likely just be serving HTTP connections. But for notebook applications, we might benefit from a higher level API such that we can do more structured composition before converting the GUI to lower level code. About the only idea I'm solid on is that processes should accept and 'serve' a GUI connections, without needing an extra step to listen for connections on a specific 'port', e.g. **ui:accept:(as:UIRef)** returning a requested view. 
 
 ### Web Applications
 
-A promising target for Glas is web applications, compiling applications to JavaScript and using effects oriented around on Document Object Model, XMLHttpRequest, WebSockets, and Local Storage. Transaction machines should be a good fit for web apps, in theory. And we could also adapt notebook applications to the web target.
+A promising target for Glas is web applications, compiling applications to JavaScript and using effects oriented around on Document Object Model, XMLHttpRequest, WebSockets, and Local Storage. Transaction machines are a decent fit for web apps. And we could also adapt notebook applications to the web target.
 
 ### Process Networks
 
 We can model process networks or flow-based programming with a relatively simple effects API for operations on external channels:
 
-* **c:send:(over:ChannelRef, data:Value)** - write arbitrary data to a named channel. Might fail if write buffer is full at start of transaction (to support pushback).
-* **c:recv:(from:ChannelRef)** - read data from a named channel. Might fail if read buffer is empty or if next input is not data (see 'accept'). 
+* **c:send:(over:ChannelRef, data:Value)** - write arbitrary data to a named channel. 
+* **c:recv:(from:ChannelRef)** - read data from a named channel. Fails if read buffer is empty. 
 
-Channel references are local to each process, and are wired externally by a composite process. Channel references could be symbolic values indicative of their role, like labeled pins on a circuit board. Process networks with a graphical syntax can easily support flow-based programming style. 
+Channel references are local to a process, and will be wired externally by a composite process. Thus, we would benefit from some metadata or type information about which channels a process uses, and perhaps the datatypes and patterns of use. Session types could be useful for this purpose.
 
-*Aside:* It is feasible to extend the API to support dynamic process networks. But I cannot recommend it. Much benefit of process networks is the ability to treat software components like hardware (circuit boards) with regards to locality, modularity, replacement, etc..
+Processes can use effects other than sending messages on channels, such as filesystem or physical network access. This would require either that the composite process either know all the effects APIs used, so it can rewrite references, or conventions for partitioning references such as adding a prefix that is provided as a static input to each process definition.
 
+### Dynamic Process Networks and Object Oriented Programming
 
+A channel essentially enables communication with a remote object, abstracting over latency and routing. With dynamic process networks, we can model object oriented software design patterns. This would use asynchronous communications under-the-hood, but a program syntax could support synchronous calls then compile down to an asynchronous state machines. A syntax could hide the asynchronous mechanisms. A viable effects API:
+
+* **c:send:(data:Value, over:ChannelRef)** - send a value over a channel. Return value is unit.
+* **c:recv:(from:ChannelRef)** - receive data from a channel. Return value is the data. Fails if no input available or if next input isn't data (try 'accept').
+* **c:attach:(over:ChannelRef, chan:ChannelRef, mode:(copy|move|bind))** - send a channel endpoint over another channel. Behavior varies depending on mode:
+ * *copy* - a copy of chan is sent (see 'copy')
+ * *move* - chan is detached from calling process (see 'close')
+ * *bind* - new pipe created, move one end, bind other to chan.
+* **c:accept:(from:ChannelRef, as:ChannelRef)** - receive a channel endpoint, locally binding to the 'as' ChannelRef. Fails if no input available or if next input is data or if 'as' ref is already bound.
+* **c:pipe:(with:ChannelRef, and:ChannelRef, mode:(copy|move|bind))** - connect two channels such that messages received on one channel are automatically forwarded to the other, and vice versa. Behavior varies depending on mode:
+ * *copy* - a copy of the channels is connected; original refs tap communications.
+ * *move* - channels are both detached from calling pocess (see 'close').
+ * *bind* - new pipe is created created, binding two refs. Forms a loopback connection.
+* **c:copy:(of:ChannelRef, as:ChannelRef)** - duplicate a channel and its future content. Both original and copy will recv/accept the same inputs in the same order (transitively copying subchannels). Messages sent or subchannels attached to the original copy are both routed to the same destination.
+* **c:close:ChannelRef** - detach from a channel, enabling host to recycle associated resources. Messages sent to a closed channel are dropped. Fails if ref is not in use. Closure can be observed via 'check'.
+* **c:check:ChannelRef** - eventually detect whether a remote endpoint of a channel is closed. Fails if the channel is known to have no remote endpoints or pending inputs. Otherwise succeeds, returning unit. 
+
+Each object is associated with a channel and is hosted by a process. Each method call is reified by a subchannel, such that results are easily routed back to the caller. That is, an object will 'accept' a channel per method call, and callers will 'attach' a channel per method call. An object can optionally handle requests sequentially or accept concurrent interaction. 
+
+Compared to conventional OOP, performance requires efficient fine-grained concurrency, and we can conveniently extend request-response method call interactions with streaming, promise pipelining, lazy evaluation, multi-step protocols, etc.. Interfaces might better be described using session types instead of method lists. Distributed evaluation is very feasible.
+
+### Reactive Dataflow Networks
+
+An intruiging option is to communicate using only ephemeral connections. A short lifespan ensures that network connectivity and associated authority is visible, revocable, reactive to changes in code, configuration, or security policies. This is a useful guarantee for live coding, debugging, and open systems. However, continuous expiration and replacement of ephemeral connections is expensive. 
+
+The cost can be mitigated by abstracting over expiration and replacement, such that we can incrementally compute the dynamic network structure. In context of transaction machines, this optimization is feasible if the API supports blind forwarding of data. Stable but reconfigurable connections can be represented in the transaction's stable prefix, and connections implicitly break when the transaction fails.
+
+It is convenient for consistency if communication of data is similar to connections, e.g. represented in a transaction's stable prefix. This results in a reactive dataflow networks across process and application boundaries. Streaming data and message passing can be modeled above dataflow when needed. 
+
+A viable API:
+
+* **d:read:(from:DataflowChannel, mode:(list|fork|single))** - read a set of values currently available on a dataflow channel. Behavior depends on mode:
+ * *list* - the set should be represented as a sorted list with arbitrary but stable order.
+ * *fork* - returns a non-deterministic choice of value from the set, or fails if no data in set.
+ * *single* - returns the only value from a singleton set, or fails if set is not a singleton.
+* **d:write:(to:DataflowChannel, data:Value)** - add data to a dataflow channel. Writes within a transaction or between concurrent transactions are monotonic, idempotent, and commutative, being read as a set. Data implicitly expires from the set if not continuously written.
+* **d:wire:(with:DataflowChannel, and:DataflowChannel)** - temporarily connect two channels, such that data that can be read from each channel is written to the other. Also applies transitively to subchannels. Wires expire unless continuously maintained.
+
+A DataflowChannel might be represented by a concrete path, i.e. a `[List, Of, Values]`. The list represents hierarchical subchannels. Abstract references are neither necessary nor very useful in this case.
+
+Dataflow channels are duplex by default. Reads and writes flow in different directions. Subchannels are the basis for fine-grained communication, e.g. a request-response pattern might involve writing a request then reading a subchannel whose name includes the request. Type systems can restrict direction of dataflow and use of subchannels.
+
+A process will generally use a few standard channels, e.g. `[std:in]`, which are wired externally to form a composite process network. Standard channels should include a private loopback pair, because this would be very convenient for modeling hierarchical process networks without locally implementing the channels.
