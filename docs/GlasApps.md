@@ -202,14 +202,12 @@ It is convenient for consistency if communication of data is similar to connecti
 A viable API:
 
 * **d:read:(from:DataflowChannel, mode:(list|fork|single))** - read a set of values currently available on a dataflow channel. Behavior depends on mode:
- * *list* - the set should be represented as a sorted list with arbitrary but stable order.
- * *fork* - returns a non-deterministic choice of value from the set, or fails if no data in set.
+ * *list* - returned set represented as a sorted list with arbitrary but stable order.
+ * *fork* - returns a non-deterministic choice of value from the set, or fails if empty set.
  * *single* - returns the only value from a singleton set, or fails if set is not a singleton.
 * **d:write:(to:DataflowChannel, data:Value)** - add data to a dataflow channel. Writes within a transaction or between concurrent transactions are monotonic, idempotent, and commutative, being read as a set. Data implicitly expires from the set if not continuously written.
 * **d:wire:(with:DataflowChannel, and:DataflowChannel)** - temporarily connect two channels, such that data that can be read from each channel is written to the other. Also applies transitively to subchannels. Wires expire unless continuously maintained.
 
-A DataflowChannel might be represented by a concrete path, i.e. a `[List, Of, Values]`. The list represents hierarchical subchannels. Abstract references are neither necessary nor very useful in this case.
+A DataflowChannel is represented by a path, a `[List, Of, Values]`. The list represents hierarchical subchannels of a process. A process definition should document the primary elements, i.e. the different options for first element in the list, and also how subchannels are used. For example, a basic request-response pattern might be represented by writing the request then reading the response from a subchannel that includes the request. Primary channels can be wired externally to construct a composite process network.
 
-Dataflow channels are duplex by default. Reads and writes flow in different directions. Subchannels are the basis for fine-grained communication, e.g. a request-response pattern might involve writing a request then reading a subchannel whose name includes the request. Type systems can restrict direction of dataflow and use of subchannels.
-
-A process will generally use a few standard channels, e.g. `[std:in]`, which are wired externally to form a composite process network. Standard channels should include a private loopback pair, because this would be very convenient for modeling hierarchical process networks without locally implementing the channels.
+Dynamic networking in this API is mostly based on use of subchannels for dynamic subtasks, and wiring of subchannels. Use of 'wire' together with some runtime optimizations can support the performance of point-to-point connections between subtasks while ensuring the connections remain revocable and reconfigurable.
