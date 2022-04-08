@@ -101,11 +101,11 @@ By default, I suggest timestamps are in NT time: a natural number of 100ns inter
 
 Repetition and replication are equivalent for isolated transactions. In context of a transaction machine, within the stable prefix of a transaction, fork can be implemented efficiently by replication, essentially spawning a thread for each stable choice. Outside this context, fork can be implemented with probabilistic choice.
 
-* **fork** - Response is a non-deterministic choice of boolean value '0' or '1'. 
+* **fork:[List, Of, Values]** - Response is a non-deterministic choice of values from a non-empty list.
 
-Fork is abstractly a function of time. That is, the sequence of fork choices is logically frozen when a transaction starts. This is relevant in context of hierarchical transactions, to protect optimizations related to eliminating redundant computation.
+Fork is an abstract function of time and history of effects. Relevantly, in context of backtracking conditionals, a shared prefix should result in the same fork behavior. This is relevant mostly for reasoning about refactoring and optimizations.
 
-*Note:* In some cases, we'll want to fork on a dynamic collection of values. This results in potential instability, where updating the collection requires recomputing many unrelated forks. This can be mitigated by first computing a relatively stable index of values.
+*Aside:* A stable sequence of fork choices will effectively serve as a 'thread' identity. But it's better to annotate thread identity via 'log' instead of 'fork'.
 
 ### Distribution
 
@@ -117,21 +117,21 @@ In case of network partitioning, each partition continues to evaluate in isolati
 
 ### Logging
 
-Logging is a convenient approach to debugging. We can easily support a logging effect. Alternatively, we could introduce logging as a special debugging annotation, similar to breakpoints and profiling. 
+Logging is a convenient approach to debugging. We can easily support a logging effect. Alternatively, we could introduce logging as a program annotation, accessible via reflection. But it's convenient to introduce as an effect because it allows for very flexible handling.
 
 * **log:Message** - Response is unit. Arbitrary output message, useful for progress reports or debugging.
 
-By convention, a log message should be a record of ad-hoc fields, whose meanings are de-facto standardized, such as `(lv:warn, text:"I'm sorry, Dave. I'm afraid I can't do that.", from:hal)`. This enables the record to be extended with rendering hints and other useful features.
+The proposed convention is that a log message is represented by a record of ad-hoc fields, whose roles and data types are de-facto standardized. For example, `(lv:warn, text:"I'm sorry, Dave. I'm afraid I can't do that.", from:hal)`. This simplifies extension with new fields.
 
-In context of transaction machines and fork-based concurrency, logs might be presented as a stable tree (aligned with forks) potentially with unstable leaf nodes. Logically, the entire tree updates, every frame, but log messages in the stable prefix of a fork will also be stable outputs. Further, messages logged by failed transactions might be observable indirectly via reflection, perhaps rendered in a distinct color.
+In context of transaction machines with incremental computing and fork-based concurrency, the conventional notion of streaming log messages is not a good fit. A better presentation is a tree, with branches based on stable fork choices, and methods to animate the tree over time. Additionally, we'll generally want to render log outputs from failed transactions (perhaps in a faded color), e.g. using some reflection mechanism. 
 
 ### Random Data
 
-For optimization and security purposes, it's necessary to distinguish non-deterministic choice from reading random data. If a transaction fails after reading random data, the same data may be read when the transaction is repeated. There is no implicit search for a 'successful' random choice. This might be implemented by maintaining a buffer per stable fork path.
+For optimization and security purposes, it's necessary to distinguish non-deterministic choice from reading random data. If a transaction fails after reading random data, the same data may be read when the transaction is repeated. There is no implicit search for a 'successful' random choice.
 
 * **random:Count** - response is requested count of cryptographically secure, uniformly random bits, represented as a bitstring. E.g. `random:8` might return `0b00101010`.
 
-Many applications would be better off using deterministic pseudo-random data or noise models (such as Perlin noise) instead of random data. But access to secure random data is convenient in some use cases, and necessary for cryptographic communications.
+In many use cases, apps should use their own PRNGs or noise models (such as Perlin noise) instead of using external random data. But random is essential in some cases, such as supporting cryptographic communications.
 
 ## Misc Thoughts
 
@@ -141,7 +141,7 @@ See [Glas command line interface](GlasCLI.md).
 
 ### Notebook Applications
 
-I like the idea of building notebook-style applications, where each statement is also an application with its own little GUI. Live coding should be implicit, such that code for each component is easily edited through the composite GUI view and has an immediate impact on behavior. The applications should be connected by various means, perhaps forming a *Reactive Dataflow Network*.
+I like the idea of building notebook-style applications, where each statement is also an application with its own little GUI. Live coding should be implicit, such that code for each component is easily edited through the composite GUI view and has an immediate impact on behavior. The component applications could be connected by various means, perhaps using different communication styles for different composites.
 
 The GUI must be efficiently composable, such that a composite application can obtain GUI views from each component application. Ideally, we can also support multiple views and concurrent users. An API based on serving GUI connections is viable. It isn't convenient for a composite to explicitly bind GUI connections to each component application, but we could possibly design a GUI API that supports abstract routing through subchannels.
 
@@ -201,13 +201,14 @@ It is convenient for consistency if communication of data is similar to connecti
 
 A viable API:
 
-* **d:read:(from:DataflowChannel, mode:(list|fork|single))** - read a set of values currently available on a dataflow channel. Behavior depends on mode:
+* **d:read:(from:DataflowPort, mode:(list|fork|single))** - read a set of values currently available on a dataflow channel. Behavior depends on mode:
  * *list* - returned set represented as a sorted list with arbitrary but stable order.
- * *fork* - returns a non-deterministic choice of value from the set, or fails if empty set.
- * *single* - returns the only value from a singleton set, or fails if set is not a singleton.
-* **d:write:(to:DataflowChannel, data:Value)** - add data to a dataflow channel. Writes within a transaction or between concurrent transactions are monotonic, idempotent, and commutative, being read as a set. Data implicitly expires from the set if not continuously written.
-* **d:wire:(with:DataflowChannel, and:DataflowChannel)** - temporarily connect two channels, such that data that can be read from each channel is written to the other. Also applies transitively to subchannels. Wires expire unless continuously maintained.
+ * *fork* - same behavior as reading the list then immediately forking on it, i.e. returns non-deterministic choice of values from the set. Easier to stabilize because the program doesn't observe the full set.
+ * *single* - returns the only value from a singleton set. Fails if set is not a singleton.
+* **d:write:(to:DataflowPort, data:Value)** - add data to a dataflow channel. Writes within a transaction or between concurrent transactions are monotonic, idempotent, and commutative, being read as a set. Data implicitly expires from the set if not continuously written.
+* **d:wire:(with:DataflowPort, and:DataflowPort)** - temporarily connect two surfaces, such that data that can be read from each surface is written to the other. Applies transitively to hierarchical ports. Like writes, wires expire unless continuously maintained.
 
-A DataflowChannel is represented by a path, a `[List, Of, Values]`. The list represents hierarchical subchannels of a process. A process definition should document the primary elements, i.e. the different options for first element in the list, and also how subchannels are used. For example, a basic request-response pattern might be represented by writing the request then reading the response from a subchannel that includes the request. Primary channels can be wired externally to construct a composite process network.
+A DataflowPort is represented by a list of values. The first element of the list is a primary port, and is closely related to system architecture. For example, an `east` port of one process could be externally wired to `west` of another, and suggests a tiled grid. Remaining elements in the list represent hierarchical ports, and are closely related to communication protocol. For example, a minimal request-response protocol might involve writing `var:"Foo"` to `[env]` then reading a response on port `[env, var:"Foo"]`.
 
-Dynamic networking in this API is mostly based on use of subchannels for dynamic subtasks, and wiring of subchannels. Use of 'wire' together with some runtime optimizations can support the performance of point-to-point connections between subtasks while ensuring the connections remain revocable and reconfigurable.
+This model does have some weaknesses, e.g. it's difficult to implement precise expiration without reflection, and the effects are not well behaved in unstable contexts. These issues can be mitigated, e.g. we can implement internal wiring over external loopback (this would also improve extensibility and debuggability), and analyze for stability. Despite a few weaknesses, this seems a good fit for my vision, supporting spreadsheet-like properties across application and service boundaries.
+
