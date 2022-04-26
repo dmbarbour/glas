@@ -1,60 +1,58 @@
 # Glas Command Line Interface
 
-The [Glas Design](GlasDesign.md) document describes a Glas command-line interface (CLI) that is extensible with user-defined verbs via simple syntactic sugar: `glas foo a b c` is rewritten to `glas --run glas-cli-foo.run -- a b c`. This compiles module `glas-cli-foo`, which should produce a record value `(run:Program, ...)`. The program should represent a *transaction machine* process; see [Glas Apps](GlasApps.md) for details.
+In most cases users will invoke operations such as: 
 
-        type App = (init:Args | step:State) → [Effects] (halt:ExitCode | step:State) | FAILURE
+        glas print ValueRef
+        glas type ValueRef
+        glas repl
 
-For Glas CLI verbs, initial arguments is a list of strings from the command line such as `init:["a", "b", "c"]`, and the halting value should be a short bitstring, which is cast to 32-bit integer as the exit code. Potential effects APIs are described in this document. 
+These operations are implemented by defining modules with a simple naming convention. Relevantly, we apply a very simple rewrite rule:
+
+        glas opname a b c 
+            # rewrites to
+        glas --run glas-cli-opname.main -- a b c
+
+In this case module glas-cli-opname should compile to a value of form `(main:Process, ...)`. 
+
+        type Process = (init:Args | step:State) -> [Effects] (halt:Result | step:State) | FAILURE
+
+This process is evaluated in transactional steps. The first step starts with `init:["a", "b", "c"]` and the final step ends with `halt:ExitCode` (casting a bitstring exit code to an integer, anything else to -1). Failure does not halt the process, instead it waits for external changes or searches non-deterministic options. See [Glas Applications](GlasApps.md) for details.
+
+Besides '--run' there are only a few built-in operations:
+
+        glas --help
+        glas --version
+        glas --extract ValueRef
+
+The '--help' and '--version' operations are standard options and print messages. The '--extract' operation will compile and print a binary value to standard output, and is provided as a built-in primarily to simplify bootstrap (otherwise extraction would just be another user-defined operation).
 
 ## Bootstrap
 
-Glas systems will bootstrap the command line executable from the module system. Minimizing the effects API required for bootstrap will reduce overheads for developing an initial executable. It is sufficient to write bytes to standard output, no need to implement a complete filesystem API. Proposed bootstrap effects API:
-
-* **write:Binary** - write a list of bytes to standard output. 
-* **log:Message** - same as used by language modules. For bootstrap, just write messages to stderr. 
-* **load:ModuleName** - same as used by language modules. For bootstrap, assume source is constant.
-
-Assuming suitable module definitions, bootstrap can be expressed in a few lines of bash:
+The command line tool should be bootstrapped from the module system via extraction of an executable binary. Thus, an initial implementation doesn't need to support '--run' or a full effects API. Assuming suitable module definitions, bootstrap of the command line tool can be expressed using just a few lines of bash:
 
     # build
-    glas bootstrap linux-x64 > glas
-    chmod +x glas
+    /usr/bin/glas --extract glas-binary > /tmp/glas
+    chmod +x /tmp/glas
 
     # verify
-    ./glas bootstrap linux-x64 | cmp glas
+    /tmp/glas --extract glas-binary | cmp /tmp/glas
 
     # install
-    sudo mv glas /usr/bin/
+    sudo mv /tmp/glas /usr/bin/
 
-The generated executable might provide access to different effects than the initial executable. But the three bootstrap effects are critical and should always be supported.
-
-## Values and Programs
-
-The program argument to `--run` is currently specified by dotted path into the module system, i.e. `ModuleName(.Label)*`, generally assuming ASCII module names and labels. This should be adequate for most use-cases. If there is need for something more sophisticated, the parser can always be represented as another verb.
+In practice, we will need multiple versions of 'glas-binary' for multiple operating systems and processors. This might be achieved by defining 'glas-binary-linux-64' for example, or by defining a 'default-target' module that can be adjusted via GLAS_PATH.
 
 ## Useful Verbs
 
-I have a some thoughts for verbs that might be convenient to develop early on. 
+A few verbs that might be convenient to develop early on:
 
-* **print** - support for module system values and printing to standard output. Deterministic. 
-* **arity** - report arity of any named Glas program.
-* **test** - develop support for automated testing.
-* **repl** - a read-eval-print loop using some syntax specified on the command line. 
-* **type** - infer and report type of an indicated Glas program or value.
-* **bootstrap** - compile the glas executable
-* *language server* - support the [Language Server Protocol](https://en.wikipedia.org/wiki/Language_Server_Protocol).
-* *notebook apps* - a graphical, incremental variation on REPLs, via web services. Perhaps part of IDE. Need a model for this, e.g. for how each statement is a little applications of its own.
-* **ide** - maybe we can make it easy to run a web server that supports a browser based IDE.
+* **print** - pretty-print values from module system.  
+* **arity** - report arity of referenced Glas program. 
+* **type** - infer and report type info for indicated Glas value.
+* **test** - support automated testing, perhaps fuzz testing.
+* **repl** - a read-eval-print loop, perhaps configurable syntax. 
 
-These verbs use `--run` via the Glas module system. However, a Glas executable could integrate a few useful built-ins such as `--print`, `--arity`, and `--test` to ensure a minimal capability is always available.
-
-## Live Coding via Live Loading
-
-My proposal is to make the **load:ModuleName** effect 'live' by default after bootstrap. That is, the result from 'load' is stable when module source isn't changing, but reacts swiftly to changes in source. Meanwhile, the program input to `--run` is loaded only once, and static by default.
-
-Under this design, it is feasible to define live applications that explicitly load logic at runtime, optionally continuous or triggered by event. Additionally, we can support liveness as a user-defined adverb, i.e. define module `glas-cli-live.run` such that `glas live verb Args` does almost the same thing as `glas verb Args` except that it updates the verb continuously from the module system. Stateful loads must be represented explicitly by recording loaded values into state.
-
-An accelerated interpreter for Glas programs can ensure full performance from live loaded code.
+Beyond these, applications could support language server protocol, or provide a web-app based IDE.
 
 ## Effects API
 
@@ -62,32 +60,28 @@ An accelerated interpreter for Glas programs can ensure full performance from li
 
 See [Glas Apps](GlasApps.md) for discussion on some effects APIs that are suitable for transaction machine applications in general, such as 'fork' for concurrency and 'time' to model waits and sleeps. The 'log' effect will output to standard error, but this might be tweakable via reflection APIs. 
 
+### Log and Load
+
+We can directly provide the 'log' and 'load' effects from language modules. To support live coding, 'load' will be live, such that changes in source code at runtime are properly reflected in future evaluations of 'load'. Log messages will initially be streamed to standard error, but might later be configurable via environment variables.
+
 ### Standard Input and Output
 
-We already need 'write' for Bootstrap. For symmetry, we could add 'read'.
+We can provide `std:in` and `std:out` as initially open file streams.
 
-* **write:Binary** - write a list of bytes to standard output.
-* **read:Count** - read up to Count bytes from standard input, as available.
-
-This API doesn't support recognizing end-of-input or closing output before the process halts. However, we can follow conventions here and treat write and read as operating on file references 'std:out' and 'std:in' respectively.
-
-        write:B         file:write:(to:std:out, data:B)
-        read:N          file:read:(from:std:in, count:N)
-
-Ideally we'll inline this rewrite once the optimizers are fully developed.
+The standard error stream is usually reserved for log effects. Programs may only write to it indirectly, via 'log:Message'.
 
 ### Environment Variables
 
 In addition to command-line arguments, a console application typically has access to a set of 'environment variables'. The effects API can provide relatively lightweight read-only access to these variables:
 
 * **env:get:Variable** - response is a value for variable, or failure if the variable is unrecognized or undefined. Variables are usually represented as strings, e.g. `env:get:"GLAS_PATH"`.
-* **env:list** - response is the list of defined variables
+* **env:list** - response is a list of defined variables
 
-We don't have a good use-case for mutating environment variables, and it would significantly complicate reasoning about module caching and such. However, it is feasible to adjust the environment for a subprogram via the effects handler layer.
+I'd prefer to avoid the complications from mutating environment variables. But it is feasible to indirectly represent mutation via effects handler.
 
 ### Filesystem
 
-The Glas CLI needs just enough access to the filesystem to support bootstrap and live-coding. This includes reading and writing files, browsing the filesystem, and watching for changes. The API must also be adapted for asynchronous interaction. 
+Console apps are unavoidably related to the filesystem.
 
 * **file:FileOp** - namespace for file operations. An open file is essentially a cursor into a file resource, with access to buffered data. 
  * **open:(name:FileName, as:FileRef, for:Interaction)** - Create a new system object to interact with the specified file resource. Fails if FileRef is already in open, otherwise returns unit. Use 'status' The intended interaction must be specified:
@@ -127,7 +121,7 @@ I'm uncertain how to best handle buffering and pushback. Perhaps buffer size cou
  * **cwd** - return current working directory. Non-rooted file references are relative to this.
  * **sep** - return preferred directory separator substring for current OS, usually "/" or "\".
 
-Later, I might extend directory operations with option to watch a directory, or list content recursively. This might be extra flags on 'list'. However, my current goal is to get this into a usable state. Advanced features can wait until I'm trying to integrate live coding.
+Later, I might extend directory operations with option to watch a directory.
 
 ### Network
 
@@ -176,7 +170,7 @@ I can cover needs of most applications with support for just the TCP and UDP pro
  * **ref:list** - returns list of open UDP refs.
  * **ref:move:(from:UdpRef, to:UdpRef)** - reorganize UDP refs. Fails if 'to' ref is in use.
 
-A port is a fixed-width 16-bit number. An addr is a fixed-width 128-bit or 32-bit number (IPv4 or IPv6) or optionally a string such as "www.google.com" or "192.168.1.42". Later, I might add a dedicated API for DNS lookup, and perhaps for 'raw' Ethernet.
+A port is a fixed-width 16-bit number. An addr is a fixed-width 32-bit or 128-bit number (IPv4 or IPv6) or optionally a string such as "www.google.com" or "192.168.1.42" or "2001:db8::2:1". Later, I might add a dedicated API for DNS lookup, or perhaps for 'raw' Ethernet.
 
 ## Rejected or Deferred Effects APIs
 
@@ -186,9 +180,9 @@ The 'load' effect is sufficient for common module system access, but it might be
 
 ### Graphical User Interface? Defer.
 
-An viable option for GUI is to prompt the user, external tool, or command line tool to connect the user to a URL via web browser. This might be represented as a logging message with some simple conventions, no need for a new effects API. The URL would usually be served by the application.
+I like the idea that applications should 'serve' GUI connections, which can allow for multiple users and views and works well with orthogonal persistence. A GUI connection to applications could be initiated by default, perhaps configurable by defining an environment variable. But I'm uncertain what such a connection should look like. 
 
-Later, I hope to develop a GUI API for notebook applications. At that time, it might be useful to introduce enough effects that we can directly render the view on the host, or at least adapt to webapp.
+I'm not in a hurry to solve this. Short term, we can support GUI via web-app, or perhaps use a existing remote desktop protocol. 
 
 ### Runtime Reflection? Defer.
 

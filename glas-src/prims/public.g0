@@ -1,9 +1,10 @@
 # The 'prims' module provides a useful set of words for getting started with
 # the g0 language. Not all are true primitives, just stuff that is relatively
-# concrete, widely useful, low level, and doesn't require too much logic.
+# concrete, widely useful, low level, and doesn't require loops.
 #
 # At the moment, list ops, natural number arithmetic, and advanced record ops
-# such as iteration over keys is left to external modules.
+# such as iteration over keys is left to external modules. I might create a
+# different module that includes an entire standard library.
 
 macro apply []
 
@@ -116,12 +117,6 @@ macro do-while [p-do-while]
 #    Body [Cond] [Body] until-do
 prog p-do-until [[copy] dip swap p-until-do p-seq]
 macro do-until [p-do-until]
-
-# await         ([Op] await)
-#  run subprogram repeatedly until it succeeds.
-#  Useful in contexts with non-deterministic concurrency.
-prog p-await [0 'until put 0 'loop put]
-macro await [p-await]
 
 # DATA PLUMBING SUPPORT
 # 
@@ -285,11 +280,14 @@ prog p-prog-anno-getd [[p-prog-anno] dip2 getd]
 
 # p-anno-accel      ([Program] Model -- [Program](accel:Model))
 #
-#  Acceleration is the most performance-critical annotation. It asks the
-#  compiler or interpreter to substitute an optimized implementation or 
-#  to raise warnings or errors. The 'Model' is really a compiler hint,
-#  usually just a symbol.
-#  
+#  Example usage: 
+#       prog list-append [[list-append-impl] 'list-append p-anno-accel]
+#
+#  Acceleration is an essential performance annotation for Glas systems.
+#  It informs a compiler to substitute a subprogram with a highly optimized
+#  implementation that can take advantage of underlying representations and
+#  other hidden details. This supports extension with performance features.
+#
 prog p-anno-accel ['accel p-prog-anno-put]
 prog p-anno-accel-get ['accel p-prog-anno-get]
 
@@ -320,7 +318,8 @@ assert [
 #
 # Logging is convenient for debugging or tracking progress of an application.
 # Most application models in Glas systems will support an effect 'log:Message'
-# that should respond with unit value (0). If not, we can ignore log failures.
+# that should respond with unit value. We'll usually ignore logging failures
+# in case that effect is not supported.
 # 
 # By convention, Message is a record such as `(lv:warn, text:"problem found")`.
 # This may be extended with new fields on an ad-hoc basis, e.g. we could have
@@ -333,7 +332,7 @@ assert [
 #
 
 # log-send      Message --
-#  Sends provided Message as a logging effect. 
+#  Sends provided Message as a logging effect, dropping unit result. 
 #  Failure is silently ignored.
 prog log-send [[0 'log put eff 0 eq][drop] try-else]
 
@@ -342,7 +341,7 @@ prog log-send [[0 'log put eff 0 eq][drop] try-else]
 #   logmsg-val-text-lv   42 "Hello" 'warn -- (lv:warn, text:"Hello", val:42)
 # Will drop an empty/unit text, level, or value field.
 prog logmsg-text-lv [0 'lv 0 putd 'text 0 putd]
-prog logmsg-val-text-lv [log-text-lv-msg 'val 0 putd]
+prog logmsg-val-text-lv [logmsg-text-lv 'val 0 putd]
 
 # "Message" log-info  (or log-warn or log-error)
 prog log-info ['info logmsg-text-lv log-send]

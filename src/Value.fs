@@ -18,13 +18,13 @@ namespace Glas
 //     type Value = { Stem: Bits; Spine: (Value * FTList<Value> * NonPairVal) option }
 //
 // This enables us to efficiently check whether a value is a list, and to manipulate
-// list values with expected algorithmic efficiencies.
+// list values with expected algorithmic efficiencies. But it is still missing some
+// desirable features, such as rope-like compact representation of binary data and
+// content-addressed storage (stowage) of large data.
 //
-// This representation still excludes support for Stowage or rope-like chunks for 
-// binaries, much less support for acceleration of matrix math and so on. However,
-// this should be adequate for bootstrap, assuming dependencies fit within memory.
-// I'd prefer that advanced value representation features are post-bootstrap.
-
+// This representation can be taken as a proof-of-concept, and perhaps is adequate
+// for bootstrap. If performance is not sufficient, we could perhaps model large 
+// values using objects instead, applying compact representations where feasible.
 [<Struct; CustomComparison; CustomEquality>]
 type Value = 
     { Stem : Bits
@@ -177,7 +177,6 @@ module Value =
 
     let inline isLeft v =
         if Bits.isEmpty v.Stem then false else (not (Bits.head v.Stem))
-
 
     /// The right sum adds a `1` prefix to an existing value.
     let inline right b = 

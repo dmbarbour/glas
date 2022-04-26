@@ -30,26 +30,38 @@ module LoadModule =
         if not (Directory.Exists(subdir)) then [] else
         match findModuleAsFile "public" subdir with
         | [] -> [Path.Combine(subdir, "public.g0")] // missing file
-        | files -> files
+        | files -> files // one file, unless ambiguous 'public' module
 
-    let private findModule (m:ModuleName) (dir:FolderPath) : FilePath list =
-        List.append (findModuleAsFolder m dir) (findModuleAsFile m dir)
+    // search local to a file can find other files
+    let private fileLocalSearch (m:ModuleName) (relFile:FilePath) : FilePath list =
+        let localDir = Path.GetDirectoryName(relFile)
+        List.append (findModuleAsFile m localDir) (findModuleAsFolder m localDir)
 
-    let rec private moduleSearch (m:ModuleName) (searchPath:FolderPath list) : FilePath list =
+    // search of GLAS_PATH should ignore files, only match subfolders. An early match on 
+    // the search path has precedence over later matches.
+    let rec private pathSearch (m:ModuleName) (searchPath:FolderPath list) : FilePath list =
         match searchPath with
         | [] -> []
-        | (dir::searchPath') ->
-            match findModule m dir with
-            | [] -> moduleSearch m searchPath'
-            | files -> files 
+        | (p::searchPath') ->
+            match findModuleAsFolder m p with
+            | [] -> pathSearch m searchPath'
+            | result -> result
+
+    let private moduleSearch (m:ModuleName) (relFileOpt:FilePath option) (searchPath:FolderPath list) : FilePath list =
+        let localResult =
+            match relFileOpt with
+            | None -> []
+            | Some relFile -> fileLocalSearch m relFile
+        match localResult with
+        | [] -> pathSearch m searchPath
+        | _ -> localResult
 
     let private readGlasPath () = 
         let envPath = Environment.GetEnvironmentVariable("GLAS_PATH")
         if isNull envPath then [] else
         envPath.Split(Path.PathSeparator, StringSplitOptions.None) 
-            |> Array.map (fun s -> s.Trim())
+            |> Array.map (fun s -> s.Trim()) // remove surrounding whitespace
             |> List.ofArray
-   
 
     // wrap a compiler function for arity 1--1
     let private _compilerFn (p:Program) (ll:IEffHandler) =
@@ -64,7 +76,7 @@ module LoadModule =
         match vOpt with
         | Some (Value.FullRec ["compile"] ([pCompile], _)) ->
             match stackArity pCompile with
-            | ProgVal.Arity (a,b) when (a = b) && (1 >= a) -> 
+            | Arity (a,b) when ((a = b) && (1 >= a)) -> 
                 Some pCompile
             | ar ->
                 logError ll (sprintf "%s compile has incorrect arity %A" src ar)
@@ -149,6 +161,7 @@ module LoadModule =
                 logError ll (sprintf "dependency cycle detected! %s" (String.concat ", " cycle))
                 None
             | None ->
+                logInfo ll (sprintf "loading file %s" fp)
                 let ld0 = ll.Loading
                 ll.Loading <- fp :: ld0
                 try 
@@ -160,20 +173,17 @@ module LoadModule =
 
         /// Find a module.
         member ll.FindModule m : FilePath option = 
-            let searchDirs =  
-                let gp = readGlasPath () 
-                match ll.Loading with
-                | [] -> gp
-                | (hd::_) -> Path.GetDirectoryName(hd) :: gp
-            match moduleSearch m searchDirs with
+            let relFileOpt = List.tryHead ll.Loading
+            let searchPath = readGlasPath ()
+            match moduleSearch m relFileOpt searchPath with
+            | [fp] ->
+                // logInfo ll (sprintf "loading file %s" fp) 
+                Some fp
             | [] -> 
                 logWarn ll (sprintf "module %s not found" m)
                 None
-            | [fp] ->
-                logInfo ll (sprintf "loading module %s from file %s" m fp) 
-                Some fp
             | ps ->
-                logError ll (sprintf "module %s is ambiguous; found %s" m (String.concat ", " ps))
+                logError ll (sprintf "module %s ambiguous; found %s" m (String.concat ", " ps))
                 None
 
         /// Load a module
@@ -223,37 +233,26 @@ module LoadModule =
     let nonBootStrapLoader (nle : IEffHandler) : Loader =
         Loader(_builtInG0, nle)
 
-    let private _findG0 ll =
-        match moduleSearch "language-g0" (readGlasPath()) with
-        | [fp] -> Some fp
-        | [] -> 
-            None
-        | ambList ->
-            logError ll (sprintf "bootstrap failed: language-g0 ambiguous: %s" (String.concat ", " ambList))
-            None
-
     /// Attempt to bootstrap the g0 language, then use the language-g0
     /// module for the loader.
     let tryBootStrapLoader (nle : IEffHandler) : Loader option = 
-        match _findG0 nle with
-        | None -> None 
-        | Some fp ->
-            let ll0 = nonBootStrapLoader nle
-            match _expectCompiler ll0 "language-g0 via built-in g0" (ll0.LoadFile fp) with
-            | None -> None
-            | Some p0 ->
-                // logInfo nle "bootstrap: language-g0 compiled using built-in g0"
-                let ll1 = Loader(_compilerFn p0, nle)
-                match _expectCompiler ll1 "language-g0 via language-g0" (ll1.LoadFile fp) with
-                | None -> None 
-                | Some p1 -> 
-                    // logInfo nle "bootstrap: language-g0 compiled using language-g0"
-                    let ll2 = Loader(_compilerFn p1, nle)
-                    match ll2.LoadFile fp with
-                    | None -> None
-                    | Some p2 when (p1 <> p2) ->
-                        logError nle "language-g0 compile fails to exactly rebuild itself"
-                        None
-                    | Some _ ->
-                        // logInfo nle "language-g0 bootstrap successful!"
-                        Some ll2 
+        let ll0 = nonBootStrapLoader nle
+        let src0 = "language-g0 via built-in g0"
+        match _expectCompiler ll0 src0 (ll0.LoadModule "language-g0") with
+        | None -> None
+        | Some p0 ->
+            // logInfo nle "bootstrap: language-g0 compiled using built-in g0"
+            let ll1 = Loader(_compilerFn p0, nle)
+            let src1 = "language-g0 via language-g0"
+            match _expectCompiler ll1 src1 (ll1.LoadModule "language-g0") with
+            | None -> None 
+            | Some p1 -> 
+                // logInfo nle "bootstrap: language-g0 compiled using language-g0"
+                let ll2 = Loader(_compilerFn p1, nle)
+                match ll2.LoadModule "language-g0" with
+                | Some (Value.FullRec ["compile"] ([p2],_)) when (p2 = p1) ->
+                    // logInfo nle "language-g0 bootstrap successful!"
+                    Some ll2 
+                | _ -> 
+                    logError nle "language-g0 compile fails to exactly rebuild itself"
+                    None

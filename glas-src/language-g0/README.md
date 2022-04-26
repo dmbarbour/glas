@@ -1,8 +1,8 @@
 # Language g0
 
-The g0 (jee zero) language is a Forth variant with staged metaprogramming, algebraic effects, and immutable tree-structured data. The simple syntax and semantics of g0 are intended to remain close to the g0 program model and simplify bootstrap. This is the only bootstrapped language in the Glas system, so all other languages must be implemented (perhaps indirectly) using g0.
+The g0 language is a Forth variant with staged metaprogramming, algebraic effects, and immutable tree-structured data. The simple syntax and semantics of g0 are intended to remain close to the g0 program model and simplify bootstrap. This is the primary bootstrapped language in the Glas system, so other languages must be implemented (perhaps indirectly) using g0.
 
-The g0 language is not suitable for all programs, nor for all programmers. It's certainly unsuitable for embedding large amounts of data. Fortunately, the Glas system makes it relatively easy to define and use other languages with different file extensions.
+The g0 syntax is not suitable for all programs or programmers. It can be awkward to track the data stack in one's head, and the syntax for embedding data doesn't scale well to structured data. Users should develop different language modules to cover more use cases.
 
 ## Top Level
 
@@ -36,10 +36,10 @@ The g0 language cannot directly import or reference definitions that don't have 
 
 ## Embedded Data
 
-The g0 program can directly include numbers, symbols, strings, and programs.
+The g0 program can directly include bitstrings, natural numbers, symbols, strings, and programs.
 
         0b010111                (becomes identical bitstring)
-        23                      0b10111         (a min-width representation)
+        23                      0b10111         (min-width natural number)
         0x17                    0b00010111      (always multiple of four bits)
         'word                   0x776f726400    (symbols for every valid word)
         "hello"                 a list of ascii bytes; forbid C0, DEL, and '"'
@@ -66,11 +66,11 @@ There is no dedicated syntax for structured data. Clever word choice can mitigat
         li "  -- William Shakespeare"
         li unlines
 
-Despite mitigating techniques, the g0 syntax neither intended nor well suited for bulk data entry. Large texts should instead be embedded in a `.txt` file, with programmers defining `language-txt` module. For bulk structured data, we could define modules to read JSON, MsgPack, Cap'n Proto, SQLite, or other data formats. 
+Despite mitigating techniques, the g0 syntax neither intended nor well suited for bulk data entry. Strings are mostly to support lightweight testing, and do no support unicode. Large texts could instead be embedded in a `.txt` file, with programmers defining `language-txt` module. For bulk structured data, we could define modules to read JSON, MsgPack, Cap'n Proto, SQLite, or other data formats. 
 
 ## Programs 
 
-        [42 [foo] bar]
+        [0x2A [foo] bar]
 
 Language g0 programs are expressed as blocks of words and data delimited by square brackets. Programs themselves can be embedded as data, mostly for use in macros.
 

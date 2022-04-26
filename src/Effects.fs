@@ -2,20 +2,22 @@ namespace Glas
 
 module Effects = 
     // NOTE: I originally intended to support all the effects needed to *interpret*
-    // an implementation of Glas command line from within the Glas command line. But
-    // to keep it simple I reduced scope to effects needed to compile Glas, i.e. just
-    // writing binary to standard output (plus a couple effects for language modules).
+    // an implementation of Glas command line from within this program. That would
+    // mostly require filesystem effects and access to environment variables.
     //
-    // This means I'll need to write a compiler within Glas before I produce a useful
-    // application (other than pure computations). But it also means this F# code is
-    // simpler and requires less testing and debugging. 
+    // However, I've since decided to defer support for `glas --run` until after
+    // bootstrap. Transaction machine optimizations, including the essential ones:
+    // incremental computing and concurrent replication on fork, are not features 
+    // that I want to implement twice. Additionally, some dotnet API decisions 
+    // hinder efficient transactional effects, such as the lack of support for
+    // non-blocking reads.
+    //
+    // Anyhow, this dotnet implementation doesn't need much support for effects.
+    // Just log and load, as used by language modules, really. Load is supported
+    // by `LoadModule.fs`, so this module only provides a mechanism for backtracking
+    // and some support for logging.
 
-    /// Support for hierarchical transactions. This mostly applies to the external
-    /// effects handler in context of Glas programs.
-    ///
-    /// Note: This API is incompatible with *parallel* transactions, which require
-    /// multi-stage commit with potential failure so we can backtrack and retry. We
-    /// ultimately use locks to control background effects. 
+    /// Support for hierarchical transactions.
     type ITransactional = 
         interface
             /// The 'Try' operation is called to start a hierarchical transaction. This
@@ -73,7 +75,7 @@ module Effects =
         end
 
 
-    /// No effects. PRequests fail and transactions are ignored.
+    /// No effects. All requests fail. Transactions are ignored.
     let noEffects =
         { new IEffHandler with
             member __.Eff _ = None
@@ -82,124 +84,6 @@ module Effects =
             member __.Commit () = ()
             member __.Abort () = ()
         }
-
-    /// Rewrite and filter effects functionally. Also defers transactions
-    /// until an effect passes the filter.
-    type RewriteEff =
-        val private WrappedEff : IEffHandler
-        val private RewriteReq : Value -> Value option
-        val mutable private TXDepth : int 
-        new(io, rw) = 
-            { WrappedEff = io
-            ; RewriteReq = rw
-            ; TXDepth = 0
-            }
-        interface ITransactional with
-            member self.Try () =
-                self.TXDepth <- self.TXDepth + 1
-            member self.Commit () =
-                if (self.TXDepth > 0)
-                    then self.TXDepth <- self.TXDepth - 1
-                    else self.WrappedEff.Commit ()
-            member self.Abort () =
-                if (self.TXDepth > 0)
-                    then self.TXDepth <- self.TXDepth - 1
-                    else self.WrappedEff.Abort ()
-        interface IEffHandler with
-            member self.Eff req =
-                match self.RewriteReq req with
-                | None -> None
-                | Some req' ->
-                    while 0 < self.TXDepth do
-                        self.TXDepth <- self.TXDepth - 1
-                        self.WrappedEff.Try ()
-                    self.WrappedEff.Eff req'
-
-    /// Rewrite and/or filter effects functionally. Defers transactions until an 
-    /// effect is processed. 
-    let rewriteEffects (fn : Value -> Value option) (io:IEffHandler) : IEffHandler =
-        RewriteEff(io,fn) :> IEffHandler
-
-    /// Defer transactions until any effect is requested. This can help optimize
-    /// performance in context of mostly-pure computations. However, it is not the
-    /// best way to optimize (which should involve static analysis of effects).
-    let deferTry io =
-        rewriteEffects Some io
-
-    /// Given a header, only accept effects of form `header:Request`, then
-    /// remove the header before passing the request to the next effect handler.
-    let selectHeader (header : string) =
-        rewriteEffects (Value.(|Variant|_|) header)
-
-
-    /// Apply effects to a, then fallback to b only if a fails.
-    /// Transactions apply to both effect handlers.
-    ///
-    /// Note: this implementation doesn't scale nicely to many
-    /// effects. Fine if it's just a few, though.
-    let composeEff (a : IEffHandler) (b : IEffHandler)  =
-        { new IEffHandler with
-            member __.Eff msg =
-                let aResult = a.Eff msg
-                if Option.isSome aResult then aResult else
-                b.Eff msg
-          interface ITransactional with
-            member __.Try () = try b.Try() finally a.Try() 
-            member __.Commit () = try a.Commit() finally b.Commit()  
-            member __.Abort () = try a.Abort() finally b.Abort()
-        }
-
-
-    /// Simple Binary Writer
-    type BinaryWriter =
-        val private CommitWrite : byte array -> unit
-        val mutable private TXStack : FTList<byte array> list
-        new (cw) =
-            { CommitWrite = cw
-            ; TXStack = []
-            }
-
-        member private self.Write b =
-            if Array.isEmpty b then () else
-            match self.TXStack with
-            | (tx::txs) ->
-                self.TXStack <- ((FTList.snoc tx b) :: txs)
-            | [] ->
-                self.CommitWrite b
-        
-        interface ITransactional with
-            member self.Try () =
-                self.TXStack <- (FTList.empty :: self.TXStack)
-            member self.Commit () =
-                match self.TXStack with
-                | [bs] -> 
-                    self.TXStack <- []
-                    for b in FTList.toSeq bs do
-                        self.CommitWrite b
-                | (tx0::tx1::txs) -> 
-                    self.TXStack <- ((FTList.append tx1 tx0) :: txs)
-                | [] ->
-                    failwith "commit outside of transaction" 
-            member self.Abort () =
-                match self.TXStack with
-                | (_::txs) ->
-                    self.TXStack <- txs
-                | [] ->
-                    failwith "abort outside of transaction"
-
-        interface IEffHandler with
-            member self.Eff req =
-                match req with
-                | Value.Binary b ->
-                    self.Write b
-                    Some Value.unit // return value
-                | _ -> None
-    
-    /// The standard write effect, outputting data to standard output.
-    let writeEff () =
-        let s = System.Console.OpenStandardOutput()
-        let w b = s.Write(b, 0, b.Length)
-        BinaryWriter(w) |> selectHeader "write"
 
     /// Transactional Logging Support
     /// 
@@ -264,15 +148,6 @@ module Effects =
             member self.Try () = self.PushTX ()
             member self.Commit () = self.PopTX true
             member self.Abort () = self.PopTX false
-
-    /// Option for TXLogSupport in case we want to wrap messages instead of flagging them. 
-    /// Wrapping is more efficient and preserves some information about transaction structure.
-    /// OTOH, it's more difficult to read or process compared to a flat stream of messages.
-    let recantWrap vs =
-        let isRecanted = Value.record_lookup (Value.label "recant") >> Option.isSome 
-        let allRecanted = not (Seq.exists (isRecanted >> not) (FTList.toSeq vs))
-        if allRecanted then vs else
-        FTList.singleton (Value.variant "recant" (Value.ofFTList vs))
 
     /// The convention for log messages is an ad-hoc record where fields
     /// are useful for routing, filtering, etc. and ad-hoc standardized.

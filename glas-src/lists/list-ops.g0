@@ -1,48 +1,57 @@
-open prims
-
 # LIST OPERATIONS
 #
-# Lists in Glas are logically constructed of pairs, terminating in a single-node
-# tree (aka unit, represented in g0 by value 0).  
+# Lists in Glas are logically constructed of pairs, terminating in unit. This
+# is essentially a Lisp-like construction of lists, using cons cells and null
+# terminator. 
 #
-# However, Glas systems are *expected* to accelerate the representation of lists,
-# hopefully using finger-trees, rope structures, and stowage to work efficiently
-# with very large lists. This supports high-performance access to both ends, join,
-# and slicing. 
+#       type List a = (a * List a) | ()
+# 
+# However, Glas systems are assumed to accelerate lists. Under-the-hood, lists 
+# will be represented by a rope-like finger-tree structure by default. This can
+# support double-ended queue access, log-time split and join, compact binaries,
+# and structure sharing of fragments within a list.
+#
+# A finger-tree rope is a good one-size-fits-most representation of lists. It is
+# feasible for a compiler or runtime to specialize list representations for other
+# use cases, e.g. use a mutable array in a context where it isn't copied.
+#
 
-# list      Value -- List | FAIL
-#  Fails if input is not a valid list. Otherwise returns input. In context
-#  of acceleration, the returned list may have the optimized representation.
+open prims
+
+# list          Value -- ListValue | FAIL
+#  Check if input is a list. Fails if input value is not a list, otherwise
+#  returns the input value but with accelerated representation.
 prog list-impl [[[unpair [drop] dip] loop 0 eq] verify]
-prog list [[list-impl] 'type p-anno-accel apply]
+prog list [[list-impl] 'list p-anno-accel apply]
 
-assert [ 2 1 0 pair pair copy list eq]
-assert [ 3 2 1 pair pair copy [list] verify-not eq ]
+assert [ 2 1 0 pair pair copy list eq ]
+assert [ 3 2 1 pair pair [list] verify-not drop ]
 
 # pushl (V L -- V:L)
 #  same as pair except fails if L is a non-list value.
-prog pushl [[list pair] 'list p-anno-accel apply]
+prog pushl [pair list]
 
 # popl (V:L -- V L)
 #  same as unpair except fails for a non-list value.
-prog popl [[list unpair] 'popl p-anno-accel apply]
+prog popl [unpair list]
 
-# each ([Op] => (ABC -- A Op B Op C Op))
-prog p-each [[popl] swap p-dip p-while-do [0 eq] p-seq]
-macro each [p-each]
+# list-each ([Op] => (ABC -- A Op B Op C Op))
+prog p-list-each [[popl] swap p-dip p-while-do [0 eq] p-seq]
+macro each [p-list-each]
 
-# rev-app (CBA DEF -- ABCDEF)
-prog rev-app [swap [swap pushl] each]
+# list-reverse-append (CBA DEF -- ABCDEF)
+prog list-reverse-append [swap [swap pushl] list-each]
 
-# rev  (ABCDEF -- FEDCBA)
+# list-reverse  (ABCDEF -- FEDCBA)
 #  list reverse is not accelerated.
-prog rev [0 rev-app]
-assert ["hello" rev "olleh" eq]
+prog list-reverse [0 list-reverse-append]
+assert ["hello" list-reverse "olleh" eq]
 
 # append (ABC DEF -- ABCDEF)
-prog append-impl [[rev] dip rev-app]
-assert ["abc" "def" append-impl "abcdef" eq]
-prog append [[append-impl] 'append p-anno-accel apply]
+#  Concatenate two lists. 
+prog list-append-impl [[list-reverse] dip list-reverse-append]
+assert ["abc" "def" list-append-impl "abcdef" eq]
+prog list-append [[list-append-impl] 'list-append p-anno-accel apply]
 
 data l0 [0]
 prog l1 [l0 pushl]
@@ -66,9 +75,9 @@ prog unl7 [popl unl6]
 assert ["omn-nom" unl7 0x6d eq 0x6f eq 0x6e eq 0x2d eq 0x6e eq 0x6d eq 0x6f eq]
 
 # pushr (L V -- L:V)
-prog pushr-impl [swap rev pushl rev]
-assert ["pin" 0x67 pushr-impl "ping" eq]
-prog pushr [[pushr-impl] 'list-pushr p-anno-accel apply]
+prog pushr [l1 list-append]
+assert ["pin" 0x67 pushr "ping" eq]
+
 
 # popr (L:V -- L V)
 prog popr-impl [rev popl rev swap]

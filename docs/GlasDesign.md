@@ -27,21 +27,15 @@ To efficiently represent labeled data and numbers, the underlying data represent
         type Bits = (compact) Bool list
         type T = (Bits * (1 + (T*T)))
 
-Details of underlying representation are not directly exposed to programs. Relatedly, a list has type `type List a = (a * List a) | ()`, i.e. constructed of `(Head * Tail)` pairs (nodes with two children) terminating in unit. However, to support efficient split, concat, and double-ended queue operations, Glas systems will *accelerate* lists under-the-hood using a [finger tree](https://en.wikipedia.org/wiki/Finger_tree) representation. See *Acceleration* below.
+Details of underlying representation are not directly exposed to programs. Relatedly, a list has type `type List a = (a * List a) | ()`, i.e. constructed of `(Head * Tail)` pairs (nodes with two children) terminating in unit. Binary data is then a list of bytes. To support efficient split, concat, and double-ended queue operations, Glas systems can *accelerate* lists under-the-hood using a [finger tree](https://en.wikipedia.org/wiki/Finger_tree) representation. See *Acceleration* below.
 
 To work with very large trees, Glas systems may offload subtrees into content-addressed storage. I call this pattern *Stowage*. Of course, Glas applications may also use effects to interact with external storage. Stowage has a benefit of working nicely with pure computations, serves as a virtual memory and compression layer, and has several benefits for incremental computation and communication. Stowage can be guided by program annotations.
 
-## Command Line
+## Glas Command Line
 
-The Glas command line interface supports practical use of the Glas module system. The command line is extensible with user-defined verbs via naming modules with a `glas-cli-*` prefix. 
+The Glas system includes a command line tool that knows how to compile modules, bootstrap language-g0 module, extract binaries, and run simple applications. There is lightweight support for user-defined operations by defining modules with a simple naming convention. Through that mechanism, users can define operations such as pretty-printing values, read-eval-print loops, typechecking, package management, a language server, or a web-based IDE. 
 
-        glas foo Parameters 
-            # implicitly rewrites to
-        glas --run glas-cli-foo.run -- Parameters
-
-The glas executable must bootstrap the language-g0 module, build all transitive dependencies to compile the glas-cli-foo module, extracts the 'run' program, verifies arity, then evaluates the program with access to Parameters and ad-hoc effects. Unnecessary rework, such as bootstrapping language-g0 every time, can be mitigated by caching. See [Glas CLI](GlasCLI.md) for details.
-
-*Note:* Besides `--run`, the Glas command line interface should support `--version`, `--help`, and perhaps a few other useful built-in functions. However, the intention is that most logic should be separated from the executable and instead represented within the module system.
+See [Glas CLI](GlasCLI.md) for details.
 
 ## Glas Programs
 
@@ -119,7 +113,9 @@ The stack in Glas is really an intermediate data plumbing model. User syntax cou
 
 User syntax can extend the effective set of control operators, e.g. compiling a mutually recursive function group into a central loop. 
 
-*Note:* Glas does not provide an 'eval' operator. However, it is feasible to accelerate evaluation, and to memoize JIT compilation of programs, such that we effectively have first-class functions in Glas. 
+*Note:* Glas does not provide an 'eval' operator, but an 'eval' function could potentially be accelerated.
+
+*Thoughts:* I'm tempted to extend backtracking conditionals to provide some information about the cause of failure. 
 
 ### Effects Handler
 
@@ -151,7 +147,7 @@ Operators:
 * **put** (V (label?_|R) label -- (label:V|R)) - given a label, record, and value on the data stack, create new record with the given label associated with the given value. Will replace existing label in record.
 * **del** ((label?_|R) label -- R) - remove label from record. Equivalent to adding label then removing it except for any prefix shared with other labels in the record.
 
-Variants are essentially singleton records. The distinction between records and variants will mostly be handled during by static analysis instead of runtime ops.
+In these cases, labels may be arbitrary bitstrings. An invalid label also results in a failed operation. Variants are essentially singleton records. The distinction between records and variants will mostly be handled during by static analysis instead of runtime ops.
 
 ### Annotations Operators
 
@@ -193,6 +189,10 @@ First, developing a few data-entry languages early on could be very convenient. 
 
 For programming languages, we could develop something more Lisp-like, and also develop a good procedural language that compiles into multi-step [applications](GlasApps.md).
 
+## Applications
+
+See [Glas Apps](GlasApps.md) in general, [Glas CLI](GlasCLI.md) in specific.
+
 ## Automated Testing
 
 Static assertions when compiling modules are useful for automated testing. However, build-time is deterministic and under pressure to resolve swiftly. This leaves an open niche for long-running or non-deterministic tests, such as overnight fuzz-testing. Use of a non-deterministic 'fork' effect would be useful for testing:
@@ -200,10 +200,6 @@ Static assertions when compiling modules are useful for automated testing. Howev
 * **fork** - Response is a non-deterministic boolean - i.e. a '0' or '1' bitstring. In context of testing, the choice doesn't need to be fair or random. It can be guided by heuristics, memory, and program analysis to search for failing test cases.
 
 A test might be represented as a 0--0 arity program that is pass/fail. In addition to fork, a 'log' effect would be useful for generating messages to support debugging.
-
-## Glas Applications
-
-This is a big discussion of its own. See the [Glas Applications](GlasApps.md) document. 
 
 ## Performance
 
