@@ -1,21 +1,18 @@
 namespace Glas
 
 module Effects = 
-    // NOTE: I originally intended to support all the effects needed to *interpret*
-    // an implementation of Glas command line from within this program. That would
-    // mostly require filesystem effects and access to environment variables.
+    // NOTE: I originally intended to support all effects needed to `--run` an
+    // implementation of Glas command line from within this program. That would
+    // mostly require filesystem effects and environment variables.
     //
-    // However, I've since decided to defer support for `glas --run` until after
-    // bootstrap. Transaction machine optimizations, including the essential ones:
-    // incremental computing and concurrent replication on fork, are not features 
-    // that I want to implement twice. Additionally, some dotnet API decisions 
-    // hinder efficient transactional effects, such as the lack of support for
-    // non-blocking reads.
+    // Later, I decided to defer support for `glas --run` until after bootstrap.
+    // I will use a specialized `glas --extract` operation to perform bootstrap.
+    // Mostly, I don't want to implement this twice, nor work around the design
+    // decisions of the .NET API that are awkward for transaction machines, such
+    // as blocking reads.
     //
-    // Anyhow, this dotnet implementation doesn't need much support for effects.
-    // Just log and load, as used by language modules, really. Load is supported
-    // by `LoadModule.fs`, so this module only provides a mechanism for backtracking
-    // and some support for logging.
+    // A consequence is that effects required in this implementation are just
+    // log and load, which are used by language modules.
 
     /// Support for hierarchical transactions.
     type ITransactional = 
@@ -91,6 +88,9 @@ module Effects =
     /// and backtracking. We want to keep log messages from the aborted path because
     /// they remain valuable for debugging. However, we should distinguish recanted
     /// messages, e.g. by wrapping or flagging them.
+    ///
+    /// A simple default option is to add a 'recant' flag to every message that is
+    /// transactionally aborted.
     type TXLogSupport =
         val private WriteLog : Value -> unit
         val private Recant : FTList<Value> -> FTList<Value>

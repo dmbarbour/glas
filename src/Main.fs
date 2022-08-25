@@ -30,6 +30,7 @@ let helpMsg = String.concat "\n" [
     ""
     "    glas --extract ValueRef"
     "        print referenced binary value to standard output"
+    "        currently limited to produce binaries under 2GB"
     ""
     "    glas --version"
     "        print a version string"
@@ -37,17 +38,13 @@ let helpMsg = String.concat "\n" [
     "    glas --help"
     "        print this message"
     ""
-    
+    "A ValueRef must be a dotted path, `ModuleName(.Label)*`. The module's"
+    "transitive dependencies are compiled, including language modules. This"
+    "includes bootstrap of module language-g0 if it is defined."
     ""
-    "The ValueRef must be a dotted path, `ModuleName(.Label)*`. The module"
-    "and its transitive dependencies are compiled, including language modules."
-    ""
-    "The language-g0 module is bootstrapped if possible to avoid dependency on"
-    "behavior of the built-in implementation."
-    ""
-    "The `--run` method is not supported at all. The performance is awful. "
-    "The only purpose of this implementation is to support initial bootstrap"
-    "of the glas command line interface executable."
+    "Normally, a `--run` method will support user-defined apps with limited"
+    "effects, including filesystem and network access. However, this feature"
+    "is deferred for a post-bootstrap implementation."
     ]
 
 let ver = "glas pre-bootstrap 0.1 (dotnet)"
@@ -113,11 +110,11 @@ let rec main' (args : string list) : int =
         EXIT_OK
     | ( "--run" :: p :: "--" :: args') ->
         eprintfn "Command recognized: %s" (String.concat " " args)
-        eprintfn "However, --run is not supported pre-bootstrap."
+        eprintfn "But --run is not currently supported."
         EXIT_FAIL
     | (verb::args') when not (verb.StartsWith("-")) ->
         // trivial rewrite supports user-defined behavior
-        let p = "glas-cli-" + verb + ".run"
+        let p = "glas-cli-" + verb + ".main"
         main' ("--run" :: p :: "--" :: args')
     | args -> 
         eprintfn "unrecognized command: %s" (String.concat " " args)

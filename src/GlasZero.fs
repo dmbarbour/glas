@@ -16,28 +16,35 @@ namespace Glas
 module Zero =
     type Word = string
     type ModuleName = Word
+    type HWord = (Word * Word list) // m/trig/sine
+    type ImportList = (Word * Word) list
 
     /// AST for g0 programs.
     /// Comments are dropped. Words are not linked yet.
     type Block = Action list
     and Action =
-        // initial parse
-        | Call of Word      // word or macro call
+        | Call of HWord     // word or macro call
         | Const of Value    // numbers, strings, etc.
         | Block of Block    // [foo]
 
     type Ent =
-        | ImportFrom of ModuleName * ((Word * Word) list) 
-        | ProgDef of Word * Block
-        | MacroDef of Word * Block
-        | DataDef of Word * Block
-        | StaticAssert of int64 * Block   // (line number recorded for error reporting)
+        | ImportAs of ModuleName * Word       // import math as m 
+        | FromModule of ModuleName * ImportList  // from modulename import foo, bar as baz, ...
+        | FromData of Block * ImportList       // from [ Program ] import qux, baz as bar, ...
+        | ProgDef of Word * Block           // prog word [ Program ]
+        | MacroDef of Word * Block          // macro word [ Program ]
+        | DataDef of Word * Block           // data word [ Program ]
+        | StaticAssert of int64 * Block     // (line number recorded for error reporting)
+
+    type ExportOpt =
+        | ExportFn of Block
+        | ExportList of (Word list)
 
     /// AST for g0 toplevel.
     type TopLevel = 
         { Open : ModuleName option
         ; Ents : Ent list
-        ; Export : Block
+        ; Export : ExportOpt option
         }
 
     module Parser =
@@ -60,17 +67,30 @@ module Zero =
         let kwstr s : P<unit> = 
             pstring s >>. wsep
 
-        let parseWord : P<string> =
-            let frag = many1Satisfy2 isAsciiLower (fun c -> isAsciiLower c || isDigit c)
-            (stringsSepBy1 frag (pstring "-") .>> wsep) <?> "word"
+        let wordFrag : P<string> =
+            many1Satisfy2 isAsciiLower (fun c -> isAsciiLower c || isDigit c)
+        
+        let wordBody : P<string> = 
+            sepBy1 wordFrag (pchar '-')  
 
+        let parseWord : P<string> =
+            (wordBody .>> wsep) <?> "word"
+
+        let parseHWord : P<HWord> = 
+            let hword = wordBody .>>. many (pchar '/' >>. wordBody) 
+            (hword .>> wsep) <?> "hword"
+        
         let parseSymbol : P<Bits> =
-            pchar '\'' >>. parseWord |>> Value.label
+            ((pchar '\'' >>. parseWord) <?> "symbol") |>> Value.label
 
         let hexN (cp : byte) : byte =
+            // 0 to 9
             if ((48uy <= cp) && (cp <= 57uy)) then (cp - 48uy) else
-            if ((65uy <= cp) && (cp <= 70uy)) then (cp - 55uy) else
-            if ((97uy <= cp) && (cp <= 102uy)) then (cp - 87uy) else
+            // A to F
+            if ((65uy <= cp) && (cp <= 70uy)) then ((cp - 65uy) + 10uy) else
+            // a to f
+            if ((97uy <= cp) && (cp <= 102uy)) then ((cp - 97uy) + 10uy) else
+            // wat?
             invalidArg (nameof cp) "not a valid hex byte"
 
         let consNbl (nbl : byte) (b : Bits) : Bits =
@@ -114,7 +134,8 @@ module Zero =
             ]
 
         // FParsec's approach to recursive parser definitions is a little awkward.
-        let parseAction, parseActionRef = createParserForwardedToRef<Action, unit>()
+        let parseAction, parseActionRef = 
+            createParserForwardedToRef<Action, unit>()
 
         let parseBlock : P<Block> = 
             between (pchar '[' .>> ws) (pchar ']' .>> ws) (many parseAction)
@@ -123,24 +144,34 @@ module Zero =
             choice [
                 parseData |>> Const
                 parseBlock |>> Block
-                parseWord |>> Call
+                parseHWord |>> Call
             ]
 
         let parseOpen : P<ModuleName> =
             kwstr "open" >>. parseWord
 
-        let parseExport : P<Block> =
-            kwstr "export" >>. parseBlock 
+        let parseExport : P<ExportOpt> =
+            let wordList = sepBy1 parseWord (pchar ',' .>> ws)
+            kwstr "export" >>. choice [
+                parseBlock |>> ExportFn
+                wordList |>> ExportList
+            ]
 
-        let parseImport : P<Word * Word> =
+        let parseImportWord : P<(Word * Word)> =
             parseWord .>>. (opt (kwstr "as" >>. parseWord)) |>> 
                 fun (w,optAsW) ->
                     let aw = Option.defaultValue w optAsW
                     (w,aw)
 
+        let parseImportAs : P<Ent> =
+            kwstr "import" >>. parseImportWord |>> ImportAs
+
         let parseImportFrom : P<Ent> =
-            kwstr "from" >>. parseWord .>>. (kwstr "import" >>. sepBy1 parseImport (pchar ',' .>> ws)) 
-                |>> ImportFrom
+            let wordList = kwstr "import" >>. sepBy1 parseImportWord (pchar ',' .>> ws)
+            kwstr "from" >>. choice [
+                parseBlock .>>. wordList |>> FromData
+                parseWord .>>. wordList |>> FromModule
+            ]
 
         let parseProgDef : P<Ent> = 
             kwstr "prog" >>. parseWord .>>. parseBlock |>> ProgDef
@@ -158,6 +189,7 @@ module Zero =
 
         let parseEnt : P<Ent> =
             choice [
+                parseImportAs
                 parseImportFrom 
                 parseProgDef 
                 parseMacroDef 
@@ -169,7 +201,7 @@ module Zero =
             do! ws
             let! optOpen = opt (parseOpen)
             let! lEnts = many (parseEnt)
-            let! exportFn = opt (parseExport) |>> Option.defaultValue []
+            let! exportFn = opt (parseExport) 
             do! eof
             return { Open = optOpen; Ents = lEnts; Export = exportFn } 
         }
@@ -178,7 +210,7 @@ module Zero =
     let rec wordsCalledBlock (b:Block) =
         let fnEnt ent =
             match ent with
-            | Call w -> Set.singleton w
+            | Call struct(w,_) -> Set.singleton w
             | Const _ -> Set.empty
             | Block p -> wordsCalledBlock p
         Set.unionMany (Seq.map fnEnt b)
@@ -187,12 +219,16 @@ module Zero =
     let wordsCalled (tlv : TopLevel) : Set<Word> =
         let fnEnt ent =
             match ent with
-            | ProgDef (_, b) | MacroDef (_, b) | StaticAssert (_, b) | DataDef (_, b) -> 
+            | ProgDef (_, b) | MacroDef (_, b) | StaticAssert (_, b) | DataDef (_, b) | FromData (b, _) -> 
                 wordsCalledBlock b
-            | ImportFrom _ -> 
+            | FromM _ | Import _ -> 
                 Set.empty
-        Set.unionMany (Seq.map fnEnt tlv.Ents)
-            |> Set.union (wordsCalledBlock tlv.Export)
+        let entCalls = tlv.Ents |> Seq.map fnEnt |> Set.unionMany
+        let exportCalls =
+            match tlv.Export with
+            | ExportFn b -> wordsCalledBlock b
+            | ExportList _ -> Set.empty
+        Set.union entCalls exportCalls
 
     /// All words explicitly defined in the top-level entries.
     let wordsDefined (tlv : TopLevel) : Set<Word> = 

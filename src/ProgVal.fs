@@ -52,6 +52,7 @@ module ProgVal =
     let lEnv = label "env"
     let lWith = label "with"
     let lProg = label "prog"
+    let lTBD = label "tbd"
 
     let lv l v =  
         { v with Stem = Bits.append l (v.Stem) }
@@ -64,7 +65,7 @@ module ProgVal =
         | Stem lDip p -> Some p
         | _ -> None
 
-    let Data v = lv lData v
+    let Data vData = lv lData vData
     let (|Data|_|) v =
         match v with
         | Stem lData vData -> Some vData
@@ -141,6 +142,12 @@ module ProgVal =
             Some (vAnno, pDo)
         | _ -> None
 
+    let TBD vMsg = lv lTBD vMsg
+    let (|TBD|_|) v =
+        match v with
+        | Stem lTBD vMsg -> Some vMsg
+        | _ -> None
+
     /// Utility function. Add annotations to a program.
     let addAnno k v p =
         let struct(anno0, pDo) = 
@@ -179,6 +186,8 @@ module ProgVal =
                 yield! invalidProgramComponents pDo
             | Prog (_, pDo) ->
                 yield! invalidProgramComponents pDo
+            | TBD _ -> 
+                ()
             | _ -> 
                 yield v
         }

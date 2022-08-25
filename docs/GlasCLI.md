@@ -9,26 +9,22 @@ In most cases users will invoke operations such as:
 These operations are implemented by defining modules with a simple naming convention. Relevantly, we apply a very simple rewrite rule:
 
         glas opname a b c 
-            # rewrites to
+            # implicitly rewrites to
         glas --run glas-cli-opname.main -- a b c
 
-In this case module glas-cli-opname should compile to a value of form `(main:Process, ...)`. 
+In this case module glas-cli-opname must compile to a value of form `(main:Program, ...)`. This program is evaluated as a [Glas Application](GlasApps.md). It is initialized with the list of strings from the command line, i.e. `init:["a", "b", "c"]`. The final `halt:ExitCode` result should contain a bitstring that we can cast to a 32-bit integer.
 
-        type Process = (init:Args | step:State) -> [Effects] (halt:Result | step:State) | FAILURE
-
-This process is evaluated in transactional steps. The first step starts with `init:["a", "b", "c"]` and the final step ends with `halt:ExitCode` (casting a bitstring exit code to an integer, anything else to -1). Failure does not halt the process, instead it waits for external changes or searches non-deterministic options. See [Glas Applications](GlasApps.md) for details.
-
-Besides '--run' there are only a few built-in operations:
+Besides '--run' there are a few standard built-in operations:
 
         glas --help
         glas --version
         glas --extract ValueRef
 
-The '--help' and '--version' operations are standard options and print messages. The '--extract' operation will compile and print a binary value to standard output, and is provided as a built-in primarily to simplify bootstrap (otherwise extraction would just be another user-defined operation).
+The '--help' and '--version' operations are standard options and print messages. The '--extract' operation shall compile and print a binary value (a list of 8-bit bytes) to standard output, and is provided as a built-in only to simplify bootstrap. More built-in operations are possible, but the intention is to develop a minimal executable and move most logic into the module system. Performance can be mitigated by caching JIT-compiled representations of programs.
 
 ## Bootstrap
 
-The command line tool should be bootstrapped from the module system via extraction of an executable binary. Thus, an initial implementation doesn't need to support '--run' or a full effects API. Assuming suitable module definitions, bootstrap of the command line tool can be expressed using just a few lines of bash:
+The command line tool should be bootstrapped from the module system via extraction of an executable binary. Thus, an initial implementation doesn't need to support '--run' or a full effects API. Assuming suitable module definitions, bootstrap of the command line tool might be expressed using just a few lines of bash:
 
     # build
     /usr/bin/glas --extract glas-binary > /tmp/glas
@@ -40,7 +36,11 @@ The command line tool should be bootstrapped from the module system via extracti
     # install
     sudo mv /tmp/glas /usr/bin/
 
-In practice, we will need multiple versions of 'glas-binary' for multiple operating systems and processors. This might be achieved by defining 'glas-binary-linux-64' for example, or by defining a 'default-target' module that can be adjusted via GLAS_PATH.
+In practice, we will need multiple versions of 'glas-binary' for multiple operating systems and processors. This might be achieved by defining a 'target' module that can be adjusted via GLAS_PATH. Alternatively, we can define separate modules such as 'glas-binary-linux-x64'. 
+
+## Versioning
+
+Different versions of the glas executable should mostly vary in performance. If the g0 language module bootstraps, the outcome from '--extract' should be deterministic independent of 'glas' version. The behavior for '--run' may change due to different effects APIs, but the effects APIs and their associated behavior should be standardized to control variation.
 
 ## Useful Verbs
 
@@ -49,10 +49,10 @@ A few verbs that might be convenient to develop early on:
 * **print** - pretty-print values from module system.  
 * **arity** - report arity of referenced Glas program. 
 * **type** - infer and report type info for indicated Glas value.
-* **test** - support automated testing, perhaps fuzz testing.
+* **test** - support an automated fuzz-testing environment.
 * **repl** - a read-eval-print loop, perhaps configurable syntax. 
 
-Beyond these, applications could support language server protocol, or provide a web-app based IDE.
+Beyond these, applications may support language server protocol, or provide a web-app based IDE.
 
 ## Effects API
 

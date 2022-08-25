@@ -1,16 +1,16 @@
 # Glas Applications
 
-Glas applications, at least for [Glas CLI](GlasCLI.md) verbs, will be modeled by a 1--1 arity program that represents a multi-step process over time, where each step is evaluated atomically within a transaction.
+A Glas application, at least for [Glas CLI](GlasCLI.md) verbs, is represented by a Glas program that is evaluated transactionally and repeated over time explicit halt. Importantly, a failed transaction does not halt the application. Instead, repeating failed transactions will implicitly wait for external changes or, in case of non-deterministic choice, search for a choice that can be committed. This provides the basis for reactivity, concurrency, and process control - see *Transaction Machines*.
 
-        type Process = (init:Params | step:State) → [Effects] (halt:Result | step:State) | Failure
+A viable application program model: 
 
-An application process is started with 'init', voluntarily terminates by returning 'halt', or may return 'step' to continue in a future transaction, carrying state. Intermediate outputs or latent inputs will be modeled with effects, such as reading and writing channels. Failure aborts the current transaction then logically retries, implicitly waiting for external changes or searching among non-deterministic choices. 
+        type Process = init:Params | step:State -> [Effects] (halt:Result | step:State) | FAILURE
 
-This application model, which I call a *Transaction Machine*, has nice systemic properties regarding extensibility, composability, concurrency, distribution, reactivity, and live coding. However, transaction machines depend on advanced optimizations such as replication to evaluate many non-deterministic choices in parallel, and incremental computing to stabilize replicas. Implementation of the optimizer is the biggest development barrier for this model.
+The program represents a single transactional step in evaluation. This step will be evaluated repeatedly in separate transactions over time until 'halt' is returned. The State type is usually private to the application, but is accessible for extensions or potential debug views. The Params, Result, and Effects types must be externally known and documented.
 
 ## Transaction Machines
 
-Transaction machines model software systems as an open set of repeating, atomic, isolated transactions in a shared environment. Scheduling of transactions is non-deterministic. This is a simple idea, but has many nice properties, especially when optimized. 
+Transaction machines model software systems as an open set of repeating, atomic, isolated transactions in a shared environment. Scheduling of different transactions is non-deterministic. This is a simple idea, but has many nice systemic properties regarding extensibility, composability, concurrency, distribution, reactivity, and live coding. However, transaction machines depend on advanced optimizations such as replication to evaluate many non-deterministic choices in parallel, and incremental computing to stabilize replicas. Implementation of the optimizer is the biggest development barrier for this model.
 
 ### Waiting and Reactivity
 
@@ -50,9 +50,9 @@ Further, we could varify that critical transactions evaluate with worst-case tim
 
 ### Live Coding
 
-The application program can be updated at runtime between transactions. This would naturally destabilize incremental computing and concurrent replicas, but those can be swiftly regenerated. Application state would immediately be handled by the updated transaction.
+Transaction machines don't solve live coding, but they do lower a few barriers. Application code can be updated atomically between transactions. Threads can be regenerated according to the new code. Unhandled cases can simply diverge (e.g. via 'tbd' operator) to await programmer intervention and won't hinder concurrent progress.
 
-Transaction machines are only a partial solution for live coding. The application must also include transition logic for the state value, as needed, or must be careful to use a stable state type across application versions. Thus, support from the development environment is the other major part of the solution.
+Remaining challenges include stabilizing application state across minor changes, versioning major state changes, or tracing compiled code back to sources to render live data inline. These issues must be solved in other layers.
 
 ## Procedural Programming on Transaction Machines
 
@@ -64,25 +64,15 @@ Concurrency keywords and atomic blocks are useful extensions for procedural prog
 
 ## Concrete Design
 
-### Initial Performance Mitigation
+### Performance Mitigation
 
-Before optimizations are available, programmers should avoid use of concurrency. Failed transactions could cause evaluation to pause for a few milliseconds before retrying. There is no incremental computing, but programmers could use manual approaches such as maintaining an event queue or dirty bits in state. This is adequate for simple single-threaded apps, but it won't scale nicely to waiting on many input sources.
+Before optimizations are available, programmers should avoid use of fork-based concurrency. Failed transactions could cause evaluation to pause for a few milliseconds before retrying. There is no incremental computing, but programmers could use manual approaches such as maintaining an event queue or dirty bits in state. This is adequate for simple single-threaded apps, but it won't scale nicely to waiting on many input sources.
 
 ### Robust References
 
-Conventional APIs return allocated references to the client, e.g. `open file` returns a file handle. However, this design is unstable under concurrency and difficult to secure. A more robust API design for references is to have applications allocate their own references. For example, `open file as foo` where `foo` is a user-provided value. 
+Applications will be in charge of allocating local references to objects, i.e. instead of `var foo = open filename` I favor `open filename as "foo"`. Then, in context of the local namespace, we use "foo" to refer to this open file. This allows for static allocations, hierarchical regions, and supports decentralization in case of dynamic allocations. The reference can also carry convenient information for debugging. Importantly, it avoids any concern of 'abstract' references or forgery - i.e. the scope of the reference is clearly localized.
 
-Further operations such as read and close would then use `foo` value to reference the open file. The host would maintain a translation table between application references and runtime objects. Compared to system allocation of references, it is much easier to secure which references a subprogram may use, e.g. based on prefix. References can be stable and meaningful, which should simplify debugging and reflection. Allocation of references can be decentralized, reducing contention on a central allocator.
-
-### Asynchronous Effects
-
-Effects must be aborted when evaluation fails. Compared to distributed transactions, it's a lot easier to write messages into a local buffer then send on commit. Ease of implementation will impact API designs, favoring asynchronous effects.
-
-A useful exception is stable, cacheable reads. For example, loading a module from the module system, or reading a file's content, or even HTTP GET could potentially be performed within a transaction. In some cases, we might also read the age or staleness of the cached value.
-
-## Common Effects APIs
-
-Effects should be designed for transaction machines yet suitable for procedural code to simplify embeddings.
+This design does make references are second-class, i.e. we cannot simply communicate 'foo' into a new namespace and expect it refers to the same thing. But it is feasible to transfer references by indirect mechanisms. And assuming hierarchical structure, it is feasible to communicate an entire namespace including 'foo'.
 
 ### Time
 
@@ -131,6 +121,59 @@ For optimization and security purposes, it's necessary to distinguish non-determ
 
 Most apps should use PRNGs or noise models instead of external random input. But access to secure random data is necessary for some use cases, such as cryptographic protocols.
 
+## Inter-App Communication APIs
+
+Some ideas for communication between applications or components of a large application. 
+
+### Channels 
+
+A channel communicates with a remote process using reliable, ordered message passing. If channels are fine-grained and can be communicated, we can easily represent object-oriented software design patterns. A viable effects API:
+
+* **c:send:(data:Value, over:ChannelRef)** - send a value over a channel. Return value is unit.
+* **c:recv:(from:ChannelRef)** - receive data from a channel. Return value is the data. Fails if no input available or if next input isn't data (try 'accept').
+* **c:attach:(over:ChannelRef, chan:NewChannelRef, mode:(copy|move|create))** - create a new channel, send a channel endpoint over another channel.Behavior varies depending on mode:
+ * *copy* - a copy of chan is sent (see 'copy')
+ * *move* - chan is detached from calling process (see 'drop')
+ * *create* - new pipe created, move one end, bind other to chan which should be an unused ref.
+* **c:accept:(from:ChannelRef, as:NewChannelRef)** - receive a channel endpoint, locally binding to the 'as' ChannelRef. Fails if no input available or if next input is data or if 'as' ref is already bound.
+* **c:pipe:(with:ChannelRef, and:ChannelRef, mode:(copy|move|create))** - connect two channels such that future messages received on one channel are automatically forwarded to the other, and vice versa. This includes pending message and attached channels. Behavior varies depending on mode:
+ * *copy* - a copy of the channels is connected; original refs can tap communications.
+ * *move* - piped channels are detached from caller (see 'close'), managed by host system.
+ * *create* - new pipe is created created, binding two refs. Forms a loopback connection.
+* **c:copy:(of:ChannelRef, as:ChannelRef)** - duplicate a channel and its future content. Both original and copy will recv/accept the same inputs in the same order (transitively copying subchannels). Messages sent to either channel are routed to the same destination. Send order is preserved for each copy independently, e.g. if a transaction copies A as B then sends over ABABAB, the receive order can be AAABBB or BBABAA depending on implementation details.
+* **c:drop:ChannelRef** - detach channel from calling process, enabling host to recycle associated resources. Indirectly observable via 'test'.
+* **c:test:ChannelRef** - Succeeds, returning unit, if the channel has any pending inputs or is still remotely connected. Otherwise fails. If the remote endpoint of a channel is copied, all copies must be dropped before 'test' will fail.
+
+Objects are services that repeatedly 'accept' and handle calls. Each call is represented by a distinct subchannel. Typically, the caller will attach/create a subchannel per call, write parameters to that channel before committing, then await a response from the call channel in a future transaction. However, this is easily extended to support streams or interactive sessions. The channel that handles method calls serves as the object reference.
+
+To program these objects would benefit from a dedicated language module that knows how to compile procedural method calls into multiple steps. It would also benefit from named/versioned 'yield' points to stabilize the resulting state machines in context of live coding. It is feasible for transaction fusion to collapse unnecessary waits, but we could also try some annotations to stabilize the optimizations.
+
+There is some risk with channels of a fast producer outpacing a slow consumer of data, resulting in a space leak. This should usually be solved at the protocol layer for streaming data, e.g. require the consumer to provide some feedback such as acknowledgements or readiness tokens. Buffer limits and pushback aren't built into the channels because they interact awkwardly with transaction boundaries.
+
+A weakness of this API is that the network has a lot of implicit state related to routes (implicitly built via attach/accept/pipe) and buffers. Unlike private application state, the network state is not accessible for update in case of changes to code or configuration. Old connections can be inconsistent with new security policies. This can be mitigated by designing APIs that constrain the maximum age of connections, e.g. favoring short-lived connections or periodic regeneration of long-lived connections (like subscriptions). 
+
+### Reactive Dataflow Networks
+
+An intriguing option is to communicate using only ephemeral connections, where logical lifespan approaches zero. Connections and delegated authority are visible, revocable, reactive to changes in code, configuration, or security policy. This is a convenient guarantee for live coding, debugging, extensibility, and open systems.
+
+A viable API:
+
+* **d:read:(from:Port, mode:(list|fork))** - read a set of values currently available on a dataflow port. Behavior depends on mode:
+ * *list* - returned set represented as a list with arbitrary but stable order.
+ * *fork* - same behavior as reading the list then immediately forking on the list; easier to stabilize compared to performing these operations separately.
+* **d:write:(to:Port, data:Value)** - add data to a dataflow port. Writes within a transaction or between concurrent transactions are monotonic, idempotent, and commutative. Concurrent data is read as a set. Data implicitly expires from the set if not continuously written. Unstable data might be missed by a reader.
+* **d:wire:(with:Port, and:Port)** - When two ports are wired, data that can be read from each port is temporarily written to the other. Applies transitively to hierarchical ports. Like writes, wires expire unless continuously maintained.
+
+Ports are lists to abstract over hierarchical multiplexing. The ports used by a process should be documented. For example, a simple request-response protocol might involve writing `query:"GLAS_PATH"` to port `[env]` then reading responses from port `[env, val:"GLAS_PATH"]`. In this case, a process might describe the 'env' port as providing access to system environment variables. An efficient implementation requires abstracting over the expiration and regeneration of connections, and optimizing stable routes through wires. 
+
+Many processes will use a standard pair of loopback ports 'lo' and 'li', applied hierarchically (such that stable writes to `[lo, foo]` are eventually read on `[li, foo]` and vice versa). This enables hierarchical process networks to delegate implementation and optimization of reactive dataflow to runtime or compiler.
+
+A weakness of this model is that it can be difficult to predict or control which intermediate values are observed by external processes in context of unstable computations. This can be mitigated by stabilizing communication with application state, e.g. maintaining output until acknowledgement is received or timeout. 
+
+### Synchronous Remote Procedure Calls? Reject.
+
+Supporting synchronous remote procedure calls, i.e. within a transaction, is technically feasible but I'm not convinced it's a good idea. Doing so complicates the application model (to allow for reentrant calls), resists local reasoning and optimizations, and hinders integration with non-transactional systems. At least for now, I would suggest that distributed transaction be explicitly modeled between applications as needed.
+
 ## Misc Thoughts
 
 ### Console Applications
@@ -139,7 +182,7 @@ See [Glas command line interface](GlasCLI.md).
 
 ### Notebook Applications
 
-I like the idea of building notebook-style applications, where each statement is also a little application serving its own little GUI. Live coding should be implicit. 
+I like the idea of building notebook-style applications, where each statement is also a little application serving its own little GUI. Live coding should be implicit. The notebook pages should be highly reactive to changes in code, avoiding overuse of history-dependent behavior. 
 
 The GUI must be efficiently composable, such that a composite application can combine GUI views from component applications. Ideally, we can also support multiple views and concurrent users, e.g. an application serves multiple GUIs.
 
@@ -147,51 +190,9 @@ Component applications would be composed and connected. I like the idea of using
 
 ### User Interface APIs
 
-Initial GUI for command line interface applications will likely just be serving HTTP connections. But for notebook applications, we might benefit from a higher level API such that we can do more structured composition before converting the GUI to lower level code. About the only idea I'm solid on is that processes should accept and 'serve' a GUI connections, without needing an extra step to listen for connections on a specific 'port', e.g. **ui:accept:(as:UIRef)** returning a requested view. 
+Initial GUI for command line interface applications will likely just be serving HTTP connections. But for notebook applications, we might benefit from a higher level API such that we can do more structured composition before converting the GUI to lower level code. About the only idea I'm solid on is that processes should accept and 'serve' GUI connections, which can easily support running headless or multiple users and views. 
 
 ### Web Applications
 
 A promising target for Glas is web applications, compiling applications to JavaScript and using effects oriented around on Document Object Model, XMLHttpRequest, WebSockets, and Local Storage. Transaction machines are a decent fit for web apps. And we could also adapt notebook applications to the web target.
 
-### Channels and Object Oriented Programming
-
-A channel communicates with a remote object using reliable, ordered message passing. Channels are themselves communicated to support dynamic networks and object-oriented software design patterns. A viable effects API:
-
-* **c:send:(data:Value, over:ChannelRef)** - send a value over a channel. Return value is unit.
-* **c:recv:(from:ChannelRef)** - receive data from a channel. Return value is the data. Fails if no input available or if next input isn't data (try 'accept').
-* **c:attach:(over:ChannelRef, chan:ChannelRef, mode:(copy|move|create))** - send a channel endpoint over another channel.Behavior varies depending on mode:
- * *copy* - a copy of chan is sent (see 'copy')
- * *move* - chan is detached from calling process (see 'drop')
- * *create* - new pipe created, move one end, bind other to chan which should be an unused ref.
-* **c:accept:(from:ChannelRef, as:ChannelRef)** - receive a channel endpoint, locally binding to the 'as' ChannelRef. Fails if no input available or if next input is data or if 'as' ref is already bound.
-* **c:pipe:(with:ChannelRef, and:ChannelRef, mode:(copy|move|create))** - connect two channels such that messages received on one channel are automatically forwarded to the other, and vice versa. Behavior varies depending on mode:
- * *copy* - a copy of the channels is connected; original refs can tap communications.
- * *move* - piped channels are detached from caller (see 'close'), managed by host system.
- * *create* - new pipe is created created, binding two refs. Forms a loopback connection.
-* **c:copy:(of:ChannelRef, as:ChannelRef)** - duplicate a channel and its future content. Both original and copy will recv/accept the same inputs in the same order (transitively copying subchannels). Messages sent or subchannels attached to the original copy are both routed to the same destination.
-* **c:drop:ChannelRef** - detach channel from calling process, enabling host to recycle associated resources. Eventually observable via 'test'.
-* **c:test:ChannelRef** - Succeeds, returning unit, if a channel has pending inputs or is still remotely connected. Otherwise fails. 
-
-Method calls are reified as fresh connections in order to abstract over routing of responses. A remote caller must 'attach' a fresh connection per method call, send request information over this connection, then await a response. An object's host process 'accepts' then serves method calls, optionally processing the active requests concurrently. Objects may also be attached to the request or response. A syntax or intermediate language can compile asynchronous request-response to evaluate over multiple transactional steps. Beyond conventional request-response pattern, we can also model interactive sessions and streams.
-
-A relevant concern is that the connection graph grows very complicated and stateful while not being very visible or revocable. This has negative implications for debuggability, security, and live coding. Old connections, and the authorities they represent, can easily survive changes in configuration or security policy. System behavior will diverge from current system code unless the system is restarted. This can be mitigated by API design that favors short-lived sessions or periodically drops and regenerates long-lived connections. 
-
-### Reactive Dataflow Networks
-
-An intruiging option is to communicate using only ephemeral connections, where logical lifespan approaches zero. A short lifespan ensures that network connectivity and associated authority is visible, revocable, reactive to changes in code, system configuration, or security policies. This is a convenient guarantee for live coding, debugging, extensibility, and open systems. However, continuous expiration and replacement of ephemeral connections is expensive.
-
-The cost can be mitigated by abstracting over expiration and replacement, such that we can incrementally compute the dynamic network structure. In context of transaction machines, this optimization is feasible if the API supports blind forwarding of data. Stable but reconfigurable connections can be represented in the transaction's stable prefix, and connections implicitly break when the transaction fails.
-
-It is convenient for consistency if communication of data is similar to connections, e.g. represented in a transaction's stable prefix. This results in a reactive dataflow networks across process and application boundaries. Streaming data and message passing can be modeled above dataflow when needed.
-
-A viable API:
-
-* **d:read:(from:Port, mode:(list|fork))** - read a set of values currently available on a dataflow channel. Behavior depends on mode:
- * *list* - returned set represented as a sorted list with arbitrary but stable order.
- * *fork* - same behavior as reading the list then immediately forking on the list; easier to stabilize than seperately reading the list then forking on it.
-* **d:write:(to:Port, data:Value)** - add data to a dataflow channel. Writes within a transaction or between concurrent transactions are monotonic, idempotent, and commutative. Concurrent data is read as a set. Data implicitly expires from the set if not continuously written. Unstable data might be missed by a reader.
-* **d:wire:(with:Port, and:Port)** - When two ports are wired, data that can be read from each port is temporarily written to the other. Applies transitively to hierarchical ports. Like writes, wires expire unless continuously maintained.
-
-Ports represent points on the external surface of a process. For most use cases, I propose to model Ports as a non-empty list of values. The first element is the primary port, used for external wiring of processes, while remaining elements abstract over recursive mux/demux of the primary port. A simple request-response protocol might involve writing `query:"Foo"` to `[env]` then reading the response on port `[env, val:"Foo"]`.
-
-To simplify hierarchical composition, processes may assume 'lo' and 'li' primary ports are externally wired as a loopback, such that stable data written to port `[lo, foo]` is eventually read on port `[li, foo]` and vice versa. Internal dataflows can be mapped through external loopback, which enables the runtime consistently implement expiration of data after a transaction fails.
