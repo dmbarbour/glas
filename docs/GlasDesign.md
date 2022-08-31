@@ -32,14 +32,16 @@ Glas values build upon immutable binary trees. The naive representation is:
 
 Records are encoded as [radix trees](https://en.wikipedia.org/wiki/Radix_tree) (aka tries). For example, the label 'data' may be encoded as a path `01100100 01100001 01110100 01100001 00000000` favoring null-terminated UTF-8 text. Here '0' and '1' refer respectively to left or right branches through the tree. Multiple labels can be encoded.
 
-Tagged unions (aka variants) are encoded as records with a single label. The unit value is encoded by the tree with no children. A symbol is a variant with the unit value. Lists are encoded by a sequence of pairs, terminating in unit - e.g. `type List a = (a * List a) | ()`. Numbers can be encoded as bitstrings directly, e.g. `10111` for natural number 23, or `00010111` for byte 23.
+Tagged unions (aka variants) are encoded as records with a single label. The unit value is encoded by the tree with no children. A symbol is a variant with the unit value. Numbers can be encoded as into bitstrings, e.g. `10111` for natural number 23, or `00010111` for byte 23. Lists are encoded by a sequence of pairs, terminating in unit - e.g. `type List a = (a * List a) | ()`.
 
 The runtime representation of values can be optimized to support common use-cases. For example, to efficiently represent radix trees and bitstrings, we might favor a representation closer to:
 
         type Bits = compact Bool list
         type T = (Bits * (1 + (T*T)))
 
-This encoding happens to be isomorphic to the naive T earlier, but isomorphism isn't required. In the general case, we may use specialized representations for binary data, matrices, virtual machine state, etc. This is discussed further in context of *Acceleration*. Additionally, there may be some support for content-addressed storage and so on.
+This encoding happens to be isomorphic to the naive T earlier, but isomorphism isn't required. In the general case, we may use specialized representations for large lists, binary data, etc.. This is discussed further in context of *Acceleration*.
+
+To support larger-than-memory data, and structure sharing in context of network serialization, Glas systems will also use content-addressed references (i.e. secure hashes) to refer to binaries that contain parts of a value. This pattern is called *Stowage*.
 
 ## Programs
 
@@ -214,6 +216,8 @@ Glas systems will support large data using content-addressed storage. A subtree 
 
 Glas programs can use annotations to guide use of stowage. It is also feasible to extend the module system with access to some content-addressed data. And a garbage collector could heuristically use stowage to recover volatile memory resources. Use of stowage is not directly observable within a Glas program modulo reflection effects.
 
+The [Glas Object](GlasObject.md) (aka 'glob') encoding is intended to provide a primary representation for stowage. However, stowage doesn't strongly imply use of Glas Object.
+
 *Security Note:* In context of open systems, sensitive content should be secured by annotating the binary with a cryptographic salt. To support deduplication, we could take inspiration from [Tahoe's convergence secret](https://tahoe-lafs.readthedocs.io/en/tahoe-lafs-1.12.1/convergence-secret.html).
 
 ### Memoization
@@ -282,10 +286,6 @@ Bracketing currently requires explicit commands to modify state around an operat
 
 It is feasible to design language modules that parse MySQL database files, or other binary database formats (LMDB, MessagePack, etc.). Doing so can simplify tooling that supports interactive or graphical programming styles. A relevant concern is that database files will tend to be much larger than text files, and will receive more edits by concentrating program representation into fewer files. This makes fine-grained memoization more important.
 
-### Glas Object - TODO
-
-The idea is a standard representation for stowage and distribution of Glas values, using content-addressed references. I'm not entirely sure which other features to pursue - perhaps metadata, partial data, streamability. A lot of design work is still needed here. See [Glas Object](GlasObject.md).
-
 ### Program Search
 
 I'm interested in a style of metaprogramming where programmers express hard and soft constraints, search spaces, and search tactics for a program. Type safety can be considered a hard constraint to guide program decisions. It is possible to resolve ambiguity given a context of types and other constraints on meaning. For unresolved meaning, the search can seek a high-quality solution according to some heuristics.
@@ -300,9 +300,9 @@ I think that support for program search will mostly reduce to careful design of 
 
 ### Provenance Tracking
 
-Tracking provenance, e.g. tracing compiled code to its sources, is challenging and error-prone. Glas further hinders manual tracking because language modules cannot conveniently identify the module they're compiling - at best, they can record a secure hash or programmers could add some metadata to the file.
+Manually tracing data to its sources is challenging and error-prone. Glas further hinders manual tracking because language module compiler functions cannot refer to file or module names. This ensures code can be moved or shared without changing its meaning. Only content-addressed provenance is possible, e.g. based on secure hash of binary, or notation within the code.
 
-What I hope to do is support provenance tracking in a more systematic manner, such that all data is traced to its sources without any explicit effort by the programmers. This should use something similar to [SHErrLoc project's](https://research.cs.cornell.edu/SHErrLoc/) heuristics, e.g. assuming that widely used/tested dependencies (such as language parser code) contributes 'less' as a source.
+I hope to support provenance tracking in a more systematic manner, such that all data is traced to its sources without any explicit effort by the programmers. This might involve something similar to [SHErrLoc project's](https://research.cs.cornell.edu/SHErrLoc/) heuristics, e.g. assuming that widely used/tested dependencies (such as language parser code) contributes 'less' as a source.
 
 ### Extended Tacit Environment? Reject.
 
