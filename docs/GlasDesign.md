@@ -6,17 +6,17 @@ Design goals for Glas include purpose-specific syntax, compositionality, extensi
 
 ## Modules and Syntax
 
-Glas modules may be represented by files or folders, and compile to Glas values.
+Glas modules are usually represented by files or folders, and compile to Glas values. Modules may depend on the compiled values of other modules, but dependencies must form a directed acyclic graph.
 
-The syntax of a file is identified by file extension. For example, to compile the file "foo.ext" we search for a module language-ext to provide the compile function then evaluate it with file binary as input. Extensions may compose, e.g. "foo.x.y" would apply language-x to the result of compiling the binary with language-y. The [g0 language](GlasZero.md) module will be bootstrapped.
+The syntax of a file is identified by file extension. For example, to compile the file "foo.ext" we search for a module language-ext to provide the compile function then evaluate it with file binary as input. Extensions compose, e.g. "foo.x.y" will apply language-x then language-y (in this case, input to language-y may be structured data). The [g0 language](GlasZero.md) is built-in to bootstrap.
 
-A folder is compiled based on the contained 'public' file. For example, the value of a folder "foo/" would be the value of "foo/public.x". It's an ambiguity error if a folder contains multiple files or subfolders with the same base name. Folder names must not have '.' extensions.
+A folder is compiled based on the contained 'public' file. Within the folder, files may reference modules defined by local files and subfolders or global modules. It is not possible to reference across folder boundaries. Folders do not use file extensions.
 
-Compiler functions may load modules by base name. This can load the value of another file or subfolder local to the file currently being compiled, or a global module found via searching for subfolders on GLAS_PATH. Global modules must be represented by folders, not by individual files.
+The GLAS_PATH environment describes a list of filesystem directories. This represents the search space for global modules. Each global module is represented by the subfolder found by sequentially searching that list.
 
 ## Command Line
 
-The Glas system starts with a command line tool 'glas'. This tool knows how to compile modules, and how to bootstrap g0. After compiling a module, the command line tool can extract binary data or directly interpret simple applications, depending on the command line arguments.
+The Glas system starts with a command line tool 'glas'. This tool knows how to compile modules and how to bootstrap g0. After compiling a module, the command line tool can extract binary data or directly interpret simple applications, depending on the command line arguments.
 
 Extraction of binary data is via `glas --extract modulename.label`, outputting binary data to standard output. This feature is primarily used for bootstrap of the glas command line tool, avoiding need for effects.
 
@@ -45,7 +45,17 @@ To support larger-than-memory data, and structure sharing in context of network 
 
 ## Programs
 
-Glas programs are represented by values with a standard interpretation, designed for simplicity and compositionality. Linking is fully static. There are no register names to complicate decomposition and composition. Values at any step during evaluation are whole, never containing variable holes. Annotations within the program can support performance, analysis, and debugging.
+Glas programs are represented by values with a standard interpretation, designed for simplicity and compositionality. Linking is static. Evaluation is eager and sequential. There are no variables to complicate metaprogramming.
+
+This design has some costs to flexibility and parallelism.
+
+But we aren't *stuck* with Glas programs. 
+
+
+
+
+
+Values at any step during evaluation are whole, never containing variable holes. Annotations within the program can support performance, analysis, and debugging.
 
 A consequence of this design is that all higher-order programming must be staged, e.g. via macros or templates. Additionally, without either structure sharing or an explicit compression pass, program size will easily become a huge problem.
 
@@ -139,7 +149,7 @@ Glas programs do not have any math operators. Those must be awkwardly constructe
 
 ### Effects and Environments
 
-Glas effects are a based on a simple exchange of data with the host environment. An effects API can be described in terms of which types of values are accepted as requests and the external behavior and returned response for each type. 
+Glas effects are a based on a simple exchange of data with the host environment. An effects API can be described in terms of which types of values are accepted as requests and the external behavior and returned response for each type.
 
 Operators:
 
@@ -167,9 +177,9 @@ I haven't developed good annotations for stowage or memoization yet. I expect so
 
 Command-line runnable programs will initially represent processes as a 1--1 arity program that evaluates a single transactional step: 
 
-        type Process = (init:Args | step:State) -> [Effects] (step:State | halt:Results) | Failure
+        type Process = (init:Args | step:State) -> [Effects] (step:State | halt:Results) | FAIL
 
-An external loop implicitly repeats this step, forwarding step state, until 'halt' is returned. Each repetition may occur in a separate transaction. Failure does not halt the process, only aborts the current transaction. For live coding, it is feasible to atomically update process or state between steps. With optimizations and a non-deterministic choice effect, it is feasible to extend this process model for concurrency and distribution. See [Glas applications](GlasApps.md) for details.
+The process step function is repeatedly evaluated by an external program loop until 'halt' is returned. Step failure does not halt the program, but implicitly retries, waiting for changes. With several optimizations and suitable effects, this process model can also express concurrent or distributed computations. See [Glas applications](GlasApps.md) for details.
 
 ## Language Modules
 
@@ -177,12 +187,12 @@ Language modules have a module name of form `language-(ext)`, binding to files w
 
 The compile program must be 1--1 arity. Input is usually a file binary (excepting files with multiple extensions), and output is the compiled value. Compile-time effects are limited to loading modules and logging messages:
 
-* **load:ModuleName** - Response is compiled value for the indicated module, or the request may fail. Module names are currently strings such as `"foo"`, eliding file extensions. We search for the named module locally (relative to current file) then fallback to searching for a folder in GLAS_PATH.
-* **log:Message** - Response is unit. Arbitrary output message, useful for progress reports, debugging, code change proposals, etc.. 
+* **load:ModuleRef** - Response is compiled value for the indicated module, or the request may fail (e.g. if the module is not found, or could not be compiled). Cause of failure is not reported to the caller, but may implicitly be logged. Currently, two types of ModuleRef are supported:
+ * *global:String* - reference a module in the global search space, e.g. based on GLAS_PATH environment variable. Global modules are always represented by folders.
+ * *local:String* - reference a module in the local search space, within the same folder as the file currently being compiled.
+* **log:Message** - Response is unit. The Message should be a dict, e.g. `(text:"Uh oh, you messed up!", lv:warn)`, with fields subject to ad-hoc extension. Depending on runtime, if a log message is backtracked, it may still be visible via reflection APIs or a debug view.
 
-Load failure may occur due to missing modules, ambiguous module names, detection of cyclic dependencies, unhandled language extensions, a failed compile, etc.. The cause of load failure can be logged for programmers to see, but is not visible to the compile program.
-
-To support bootstrap, a compile function for a Forth-like [language-g0](GlasZero.md) is built into the Glas command line interface. The language-g0 module should ultimately be defined using the g0 language.
+To support bootstrap, a compiler for the Forth-like [language-g0](GlasZero.md) is built into the Glas command line interface. However, the language-g0 module should still be defined.
 
 ### Useful Languages
 
@@ -218,8 +228,6 @@ Glas programs can use annotations to guide use of stowage. It is also feasible t
 
 The [Glas Object](GlasObject.md) (aka 'glob') encoding is intended to provide a primary representation for stowage. However, stowage doesn't strongly imply use of Glas Object.
 
-*Security Note:* In context of open systems, sensitive content should be secured by annotating the binary with a cryptographic salt. To support deduplication, we could take inspiration from [Tahoe's convergence secret](https://tahoe-lafs.readthedocs.io/en/tahoe-lafs-1.12.1/convergence-secret.html).
-
 ### Memoization
 
 Purely functional subprograms in Glas can be annotated for memoization. This can be implemented by storing a lookup table mapping inputs to outputs. This lookup table can be persistent to support reuse across builds and integrate more conveniently with stowage.
@@ -238,19 +246,13 @@ The cost of acceleration is implementation complexity and risk to correctness, s
 
 ### Parallelism
 
-For computation at large scales within a Glas program, one viable option is to accelerate evaluation of a parallel or distributed (yet deterministic) virtual machine. This could be based on [Kahn Process Networks](https://en.wikipedia.org/wiki/Kahn_process_networks), for example.
+Glas program model is not designed for parallelism.
 
-Developers may eventually simply escape the Glas program model entirely. But acceleration can simplify the transition.
+A compiler can squeeze out some parallelism useful within a computation via dataflow analysis. For example, assuming F and G are both 1--1 arity and either F or G is pure (no effects), then we can evaluate `seq:[F, dip:G]` in parallel. However, there is no way to express communication between program loops, which limits scale.
+
+For scalable parallelism, it is feasible to *accelerate* evaluation of a distributed, confluent, monotonic virtual machine. [Kahn process network](https://en.wikipedia.org/wiki/Kahn_process_networks) and [Lafont Interaction Networks](https://en.wikipedia.org/wiki/Interaction_nets) can provide some inspiration.
 
 ## Thoughts
-
-### Logging Conventions
-
-Almost every application model will support a **log:Message** effect to support debugging. In general, we'll often want the ability to filter which messages we're seeing based on task, level, role, etc.. These properties are mostly independent of content. Instead of a variant type, log messages will normally use a record of ad-hoc fields, with de-facto standardization. For example:
-
-        (lv:warn, role:debug, text:"message for developer", val:42)
-
-This allows gradual and ad-hoc structured extension to log messages, e.g. with provenance metadata, without breaking existing routes or filters. 
 
 ### Abstract and Linear Data
 
@@ -284,7 +286,9 @@ Bracketing currently requires explicit commands to modify state around an operat
 
 ### Database Modules
 
-It is feasible to design language modules that parse MySQL database files, or other binary database formats (LMDB, MessagePack, etc.). Doing so can simplify tooling that supports interactive or graphical programming styles. A relevant concern is that database files will tend to be much larger than text files, and will receive more edits by concentrating program representation into fewer files. This makes fine-grained memoization more important.
+It is feasible to design language modules that parse MySQL database files, or other binary database formats (LMDB, MessagePack, Glas Object, etc.). Doing so can simplify tooling that supports interactive or graphical programming styles. 
+
+A relevant concern is that database files will tend to be much larger than text files, and will receive more edits by concentrating program representation into fewer files. This makes fine-grained memoization more important.
 
 ### Program Search
 

@@ -1,5 +1,13 @@
 # Glas Command Line Interface
 
+The glas command line will support a few built-in operations, such as:
+
+        glas --run 
+        glas --help
+        glas --version
+        glas --extract ValueRef
+
+
 In most cases users will invoke operations such as: 
 
         glas print ValueRef
@@ -16,11 +24,11 @@ In this case module glas-cli-opname must compile to a value of form `(main:Progr
 
 Besides '--run' there are a few standard built-in operations:
 
-        glas --help
-        glas --version
-        glas --extract ValueRef
-
 The '--help' and '--version' operations are standard options and print messages. The '--extract' operation shall compile and print a binary value (a list of 8-bit bytes) to standard output, and is provided as a built-in only to simplify bootstrap. More built-in operations are possible, but the intention is to develop a minimal executable and move most logic into the module system. Performance can be mitigated by caching JIT-compiled representations of programs.
+
+## Built-In File Extensions
+
+Support for the `.g0` extension (for [Glas Zero](GlasZero.md)) is a required built-in for bootstrap. The `.glob` format (for [Glas Object](GlasObject.md)) is likely to also become a standard built-in, with special support for verifying . Although these are built-in, we should still bootstrap the associated language-g0 and language-glob modules.
 
 ## Bootstrap
 
@@ -53,6 +61,7 @@ A few verbs that might be convenient to develop early on:
 * **repl** - a read-eval-print loop, perhaps configurable syntax. 
 
 Beyond these, applications may support language server protocol, or provide a web-app based IDE.
+
 
 ## Effects API
 

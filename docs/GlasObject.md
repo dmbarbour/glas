@@ -29,12 +29,12 @@ The proposed encoding for Basic Nodes uses 96 header types:
         ttt0 ab10 - 2 bits in header (H2)
         ttt0 a100 - 1 bits in header (H1)
         ttt0 1000 - 0 bits in header (H0)
- 
-        ttt1 fnnn (Bytes) - PBC 
+
+        ttt1 fnnn . (Bytes) - PBC 
             f - full (1) or partial (0) first byte  
             nnn - 1-8 byte.
- 
-        ttt0 0000 (ofnn nnnn) (Bytes or Offset) - Extended PBC 
+
+        ttt0 0000 . ofnn nnnn . (Bytes or Offset) - Extended PBC 
             o - offset (1) or inline bytes (0)
             f - full (1) or partial (0) first byte
             nnn nnnn - 1-64 bytes.
@@ -62,7 +62,7 @@ The proposed encoding for Basic Nodes uses 96 header types:
 
 This compactly encodes symbols, numbers, composite variants, radix trees, etc. without spending bytes on expensive structure. Common stems can optionally share bytes via External PBC encoding, though this is only worthwhile for large, common stems. In practice, most stems will be relatively short.
 
-*Aside:* The H0 Stem header (0x48 - 0100 1000) doesn't encode any stem bits, and is followed by a child node. This represents the no-op for Glas Object.
+*Aside:* The H0 Stem header (0x58 - 0101 1000) doesn't encode any stem bits, and is followed by a child node. This represents the no-op for Glas Object.
 
 ### References
 
@@ -73,25 +73,29 @@ Glas Object supports internal references within a glob file, and external refere
 
 Internal ref nodes are useful for structure sharing within a glob, and external refs can control memory use and support structure sharing between globs. External refs must be combined with *Accessors* to support fine-grained structure sharing, i.e. sharing component values between globs.
 
+*Note:* I originally wanted to support an offset into external refs, but that greatly complicates precise GC analysis and other tooling. Instead, we can support a pattern for random access if we want one.
+
 ### Accessors
 
-Accessors support fine-grained structure sharing between globs. For example, we could define a common dictionary then use accessors to reference individual definitions.
+Accessors support fine-grained structure sharing between globs. For example, we may define a common dictionary then use accessors to reference individual definitions.
 
-* *path select* - headers use same encoding of path bits as stem nodes (ttt = 100), followed by a target value offset (perhaps to an external ref). Represents the value reached by following the path into the target.
+* *path select* - headers use same encoding of path bits as stem nodes (ttt = 100), followed by an offset to the target value. Represents the value reached by following the path into target.
 * *list drop* - header (0x08) followed by count (varnat + 1) then by a list-like value. Represents value reached by following path of count '1' bits.
-* *list take* - header (0x09) followed by count (varnat + 1) then by a list-like value. Represents value after replacing the node at count '1' bits with a leaf node (unit).
+* *list take* - header (0x09) followed by count (varnat + 1) then by a list-like value. Represents value after replacing the node immediately after count '1' bits with a leaf node (unit).
 
-The *internal ref* node (0x88) is equivalent to encoding the 0-bit prefix for *path select*. 
+The 'path select' nodes include 'internal reference' (node 0x88 - select an empty path). All path select nodes use a reference to the target value, but an inline value can effectively be expressed via zero offset.
 
-Accessors are oriented around Glas Object list and radix-tree structures because that's what we index. List accessors work for any value with a contiguous right spine, i.e. list-like values. However, they are most optimally applied to list nodes.
+The 'list-like' values for the two list accessors only require a contiguous right spine of given length. But these accessors will be much more efficient if applied to an indexed list (see *Lists* below). 
 
 ### Annotations
 
-Annotations can include rendering hints for projectional editing, metadata for provenance tracking, suggest in-memory representations for acceleration at load-time, and otherwise support tooling. Each value in Glas Object may have a list of annotations (usually empty) by applying annotation nodes.
+Annotations can include rendering hints for projectional editing, metadata for provenance tracking, or recommend specialized runtime representation for acceleration at load-time. Their role is to support tooling. Each value in Glas Object may have a list of annotations (usually empty) by applying annotation nodes.
 
-* *annotation* - header (0x04) is followed by offset to annotated value, then by the annotation value.
+* *annotation* - header (0x04) is followed by offset to annotation value (the metadata), then by the annotated value.
 
-Glas Object annotations emphatically *do not* replace annotations at other layers, such as the Glas program model. A runtime could feasibly drop annotations or provide access effectfully.
+A runtime may feasibly drop these annotations or provide effectful access to read and write certain annotations. Glas Object annotations emphatically *do not* replace annotations at other layers, such as the Glas program model. 
+
+*Security Note:* Security or privacy sensitive data should paired with some random bits to resist guesswork (cf. [Tahoe's convergence secret](https://tahoe-lafs.readthedocs.io/en/tahoe-lafs-1.12.1/convergence-secret.html)). Further, it should be marked as sensitive via annotation so runtimes and tools know to aggressively expunge that data and avoid sharing it as part of a larger glob that should is logically unreachable due to use of accessors.
 
 ### Lists
 
@@ -110,45 +114,77 @@ Glas Object provides a few specialized nodes to support serialization of indexed
 
 * *array* - header (0x0A) followed by length (varnat + 1) then by that many value offsets. The varnat encoding of the offsets is denormalized so they're all the same width. All offsets are relative to just after the last one. Represents a list of values.
 * *binary* - header (0x0B) followed by length (varnat + 1) then by that many bytes. Represents a list containing the binary data. Each byte corresponds to an 8-bit bitstring, msb to lsb. 
-* *concat* - header (0x0C) followed by an offset to remainder, then by a list-like value whose right spine terminates in a leaf (unit). Represents value formed by replacing that leaf with the remainder.
+* *concat* - header (0x0C) followed by an offset to remainder, then by a list-like value whose right spine terminates in a leaf (unit). Represents value formed by replacing that leaf with the remainder. 
 
         concat (A:AS) B = A:concat(AS,B)
         concat () B = B
 
-In context of concat, we can easily index past 'list take', array, and binary nodes because they record size information. Serialization of ropes should introduce 'list take' nodes as needed for efficient indexing, simply taking the full length of the list.
+Indexing of concat nodes relies on inserting some 'list take' nodes to cache size information, controlling the number of nodes we must examine to compute length.
 
 ## Summary of Node Headers
 
         0x02        External Ref
         0x04        Annotation
-
         0x08        List Drop
         0x09        List Take
         0x0A        Array
         0x0B        Binary
         0x0C        Concat
 
-        0x20-0x3F   Leaf and Stem-Leaf Nodes
+        0x20-0x3F   Stem-Leaf and Leaf (0x28) 
         0x40-0x5F   Stem Nodes and No-op (0x48)
-        0x60-0x7F   Branch and Stem-Branch Nodes
+        0x60-0x7F   Stem-Branch and Branch (0x68)
         0x80-0x9F   Path Select and Internal Ref (0x88)
 
-## Potential Future Extensions?
+## Patterns
+
+Some ideas about how we might leverage Glas Object for more use cases.
+
+### Amortized Update
+
+When we update a radix tree or finger tree, the result is a new value with some shared structure. If the original tree is represented in a separate glob, shared structure can be represented via accessor nodes. Heuristically, we can copy data that is small enough that referencing it isn't worthwhile (adjusting for what we've already copied).
+
+If we later serialize data including the updated tree, we can make a decision to either drop the separate glob (after copying the content we need) or continue referencing it. This decision can be based on a heuristic threshold, e.g. keep the old glob if we're still referencing at least 30% of its content.
+
+Essentially, we can heuristically defer replacement of globs until enough data is being replaced. And upon replacing a node, the same pattern will apply to the next level of dependencies. This pattern can amortize update costs, keeping most updates close to the 'root' of a glob dependency graph, vaguely similar to a [log-structured merge-tree](https://en.wikipedia.org/wiki/Log-structured_merge-tree) or a generational garbage collector.
+
+### Random Access
+
+We can construct globs that have short paths to many data nodes, e.g. the root node is an array (or dictionary) that contains references to both large values and several deeper components. We could also arrange that the array is sorted so we can efficiently perform reverse lookup (via binary search), or separately compute and cache a reverse lookup index. Using this index, we can replace long accessors by short ones, potentially saving time and space. 
+
+This technique is unlikely to pay for its overheads in all cases. However, I expect we'll find enough cases where it is useful to explicitly support the pattern.
+
+## Potential Future Extensions
 
 ### Lazy Patches
 
-I could introduce an 'apply patch' node that applies a 'patch' to a data node.
+This was originally part of my Glas Object definition, so the design is almost complete. But I've decided to elide it for now because I'm not convinced by the performance-complexity tradeoff. May reconsider depending on experimental evidence of benefits.
 
-* *apply patch* - header (0x05) is followed by offset to value, then by patch node.
+The core idea is to introduce an 'apply patch' node that applies a 'patch' to a data node.
 
-Patch nodes must be carefully designed to support partial application, merging, and indexed lookup. They would largely mirror the structure of data, e.g. follow a stem then apply a patch, apply patch to each branch, split list at index then apply patches to left and right sublists (also tracking modified left sublist size). At their destination, patches would replace data, splice or trim branches, and insert or delete sublists.
+* *apply patch* - header (0x05) is followed by offset to target value, then by patch node.
 
-Benefits of lazy patching include more efficient representation of 'deep' updates (no need to reference unmodified regions) and amortization of updates (aggregate at root, apply at heuristic threshold). Glas Object could be used as a [log-structured merge-tree](https://en.wikipedia.org/wiki/Log-structured_merge-tree). The cost is complexity.
+Patches should be carefully designed with several properties:
 
-Decision is to defer this feature. Revisit if update performance becomes major issue.
+* incremental (lazy) application. e.g. `(apply-patch (patch-branch a b) (branch x y))` can be rewritten to `(branch (apply-patch a x) (apply-patch b y))`.
+* indexable, e.g. given `(patch-branch (patch-stem stem-bits (replace y)))` we could efficiently lookup the value 'y' without observing the original data. This enables patches to serve as working memory.
+* composable, e.g. `(apply-patch a (apply-patch b x))` can rewrite to `(apply-patch (merged a b) x)`, where the merged patch combines the index and is usually smaller than the sum of separate patches. 
 
-Even without patches, can amortize cost of replacing referenced globs based on heuristic thresholds (how much data is copied, how much is dropped, etc). Also, updates costs should align closely with eager in-memory updates of tries and finger-tree ropes; programmers can predict and work with this. Further, stowage annotations can provide some program control over serialization.
+To acheive these properties, we can mirror representation of data, and cache some information that would otherwise be derived by peeking at data. A viable model for patches:
 
-### Array of Structs
+* *nop* - encoded similar to data leaf. Patch has no effect, though implicitly asserts that the data node is reachable. Will usually be erased if feasible.
+* *stem* - encoded similar to data stem, followed by patch. Follow stem then applies patch.
+* *branch* - encoded similar to data branch, with left and right patches. Applies patch to both branches.
+* *replace* - header followed by data, replaces value at patched location.
+* *trim* - header includes direction (left or right). Applies to branch. Removes branch in indicated direction, resulting in a stem.
+* *splice* - header includes direction (left or right). Applies to stem. Adds branch in indicated direction, resulting in a branch. (Direction supports merging and indexing.)
+* *internal ref* - header followed by offset to patch, supports structure sharing of patches within a glob
+* *annotation* - encoded similar to data annotation, but the patch on the annotation applies a patch to the entire list of annotations. For example, we can erase all annotations on a value by replacing annotations with an empty list.
+* *list split update* - header followed by final left length (varnat), initial left length (varnat), offset to right patch, then left patch. Will:
+  * split list at initial left length
+  * apply left and right patches respectively to left and right sublists
+  * record final left list length (supports merging and indexing)
+  * concat patched lists 
+* *array* - encoded similar to data array, except with offsets to patches. Applies a list of patches to a list of data. (List of patches may be shorter than list of data.) 
 
-Support for logical transposition from array-of-structs as struct-of-arrays might be convenient for many use cases. However, I'm not convinced this would be best handled at the data layer. It might be better to support array of structs vs. struct of arrays at higher program layers.
+For 'deep' updates, patches are more compact than structure-sharing updates because patches don't need to represent or reference unmodified components. Patches also support amortized update directly at the data layer, whereas we depend on glob replacement heuristics for similar benefits at the content-addressed storage layer. I'm not convinced these performance benefits are worthy of the added complexity costs.

@@ -56,17 +56,19 @@ Remaining challenges include stabilizing application state across minor changes,
 
 ## Procedural Programming on Transaction Machines
 
-Procedural code is a good fit for some applications, especially for short-running tasks where the implicit state doesn't become a problem. In context of a transaction machine, a procedure is evaluated over multiple transactional steps. Blocking calls are implicitly modeled by retry on step failure. A procedure's call-by-value parameters and return value can be represented with init and halt. The implicit continuation and local variables will be represented in the procedure's continuation.
+In context of a transaction machine, a procedure will evaluated over multiple process steps.
 
-Concurrency keywords and atomic blocks are useful extensions for procedural programs. To model concurrent interaction between procedure calls, we use shared variables or channels. Syntactically this can be represented similarly to pass-by-reference in many PLs. Reads and writes of the shared variables is probably best represented effectfully.
+For example, with sequential composition the halt:Result of one process becomes init:Param to the next. If the first step yields before completion, the composite process must add information to the 'step:State' to remember that it's the first step that yielded. This effectively records the program counter within State. We can similarly define conditionals and loops in terms of composing processes.
 
-*Note:* Procedures can be separately compiled into transactional processes then composed. This is convenient for flexible integration. However, some optimizations will likely be easier to perform at the procedural layer. 
+A blocking call at the procedure layer becomes a process that sends a message, yields, then awaits a response at the start of the next transaction.
+
+### Performance and Risk Mitigation
+
+Before certain optimizations are available - incremental computing, replication on fork, partitioning of app state into fine-grained transaction variables - programmers should either avoid use of concurrency, or use inefficient but robust mechanisms such as polling and central dispatch.
+
+I am concerned that the required optimizations might prove too awkward or fragile on the Glas Program model, even with annotations. To mitigate this risk, I'm keeping open the option to later extend the application model, i.e. such that existing 'prog' nodes becomes one variant of the extended app model, and the other variants are designed to simplify optimizations for concurrency and distribution.
 
 ## Concrete Design
-
-### Performance Mitigation
-
-Before optimizations are available, programmers should avoid use of fork-based concurrency. Failed transactions could cause evaluation to pause for a few milliseconds before retrying. There is no incremental computing, but programmers could use manual approaches such as maintaining an event queue or dirty bits in state. This is adequate for simple single-threaded apps, but it won't scale nicely to waiting on many input sources.
 
 ### Robust References
 
@@ -97,7 +99,9 @@ I propose modeling fork as a deterministic operation on a non-deterministic envi
 
 ### Distribution
 
-Application state is represented in a massive `step:State` tree value. An optimizer can potentially use abstract interpretation to partition the tree into variables that can be distributed or replicated across physical machines. Where needed, the effects API could also include some location metadata, e.g. use of `at:(loc:MachineRef, do:LocalEffect)` where a local effect might involve the local filesystem, network, or clock.
+Application state is represented in a massive `step:State` tree value. An optimizer can potentially use abstract interpretation to partition the tree into variables that can be distributed or replicated across physical machines. 
+
+If necessary, the effects API could also include some location metadata, e.g. use of `at:(loc:MachineRef, do:LocalEffect)` where a local effect might involve the local filesystem, network, or clock. This might not be necessary if we separate distribution issues from regular 'prog' nodes.
 
 Distributed transactions support the general case, but are very expensive. High performance distribution depends on careful application design, with a goal that most transactions are evaluated on a single machine, and most distributed transactions are two-party blind-writes such as appending a list. It is possible to optimize common two-party blind-write transactions into simple message passing. It also is possible to abstract common two-party blind-write transactions into the effects API (see *Channels*, later).
 
