@@ -45,19 +45,9 @@ To support larger-than-memory data, and structure sharing in context of network 
 
 ## Programs
 
-Glas programs are represented by values with a standard interpretation, designed for simplicity and compositionality. Linking is static. Evaluation is eager and sequential. There are no variables to complicate metaprogramming.
+Glas programs are represented by values with a standard interpretation, designed for simplicity and compositionality. Linking is static. Evaluation is eager and sequential. There are no variables to complicate metaprogramming. Annotations within the program can support performance, analysis, and debugging.
 
-This design has some costs to flexibility and parallelism.
-
-But we aren't *stuck* with Glas programs. 
-
-
-
-
-
-Values at any step during evaluation are whole, never containing variable holes. Annotations within the program can support performance, analysis, and debugging.
-
-A consequence of this design is that all higher-order programming must be staged, e.g. via macros or templates. Additionally, without either structure sharing or an explicit compression pass, program size will easily become a huge problem.
+A consequence of this design is that all higher-order programming must be staged via macros or templates. Additionally, if we aren't careful to maintain structure sharing, program size can literally become a huge problem.
 
 Glas programs use backtracking for conditional behavior. Effects are also backtracked. This design is convenient for pattern matching or parsers, and is a great fit for the transaction-machine based *Process* model. But it does constrain the effects API to whatever can be supported transactionally, such as reading and writing local buffers. 
 
@@ -103,7 +93,8 @@ Glas programs must have static stack arity, i.e. the 'try-then' arity must match
  * 'do' field is optional, defaults to nop.
 * **eq** - Remove two items from data stack. If identical, continue, otherwise fail.
 * **fail** - always fail
-* **tbd:Message** - always diverge (like infinite loop). Message is for humans. Connotation is that the program is incomplete.   
+* **tbd:Message** - always diverge (like infinite loop). Message is for humans. Connotation is that the program is incomplete. 
+ * *tbd:unreachable* - says that a given operation should not be reachable. This might be useful in context of dependent types inference, or static reachability analysis.
 
         seq:[]              ∀S . S → S
         seq:(Op :: Ops)     (as SEQ)
@@ -248,9 +239,9 @@ The cost of acceleration is implementation complexity and risk to correctness, s
 
 Glas program model is not designed for parallelism.
 
-A compiler can squeeze out some parallelism useful within a computation via dataflow analysis. For example, assuming F and G are both 1--1 arity and either F or G is pure (no effects), then we can evaluate `seq:[F, dip:G]` in parallel. However, there is no way to express communication between program loops, which limits scale.
+A compiler can squeeze out some parallelism via dataflow analysis. For example, assuming F and G are both 1--1 arity and one of F or G is pure (no effects), we can evaluate `seq:[F, dip:G]` in parallel. However, this technique has limited applicability and scalability.
 
-For scalable parallelism, it is feasible to *accelerate* evaluation of a distributed, confluent, monotonic virtual machine. [Kahn process network](https://en.wikipedia.org/wiki/Kahn_process_networks) and [Lafont Interaction Networks](https://en.wikipedia.org/wiki/Interaction_nets) can provide some inspiration.
+For robust parallelism at scale, it is feasible to *accelerate* evaluation of a distributed, confluent, monotonic virtual machine. [Kahn process network](https://en.wikipedia.org/wiki/Kahn_process_networks) and [Lafont Interaction Networks](https://en.wikipedia.org/wiki/Interaction_nets) can provide some inspiration.
 
 ## Thoughts
 
