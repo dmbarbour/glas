@@ -1,6 +1,10 @@
 # Glas Object
 
-Glas Object, or 'glob', is intended to be a compact, indexed binary representation for Glas values, with support for content-addressed reference to other binaries. The intended use case is persistence, serialization, and caching.
+Glas Object, or 'glob', is a compact, indexed binary representation for tree-structured data. Primary use cases for Glas Object are data storage, communication, and caching. The focus is representation of dictionaries (radix trees) and lists (arrays, binaries, finger tree ropes), and structure sharing. 
+
+Structure sharing is supported within a glob via offsets and between globs via content-addressed references and accessors. We can reference globs by their secure hash (SHA3-512), and follow a path to a component item.
+
+Although Glas Object is designed for Glas, it should be a very good representation for acyclic structured data in general. 
 
 ## Desiderata
 
@@ -68,7 +72,7 @@ This compactly encodes symbols, numbers, composite variants, radix trees, etc. w
 
 Glas Object supports internal references within a glob file, and external references between glob files.
 
-* *external ref* - header (0x02) followed by 64-byte secure hash (SHA3-512) of another glob.
+* *external ref* - header (0x03) followed by 64-byte secure hash (SHA3-512) of another glob.
 * *internal ref* - header (0x88) followed by offset to later value within current glob.
 
 Internal ref nodes are useful for structure sharing within a glob, and external refs can control memory use and support structure sharing between globs. External refs must be combined with *Accessors* to support fine-grained structure sharing, i.e. sharing component values between globs.
@@ -80,8 +84,8 @@ Internal ref nodes are useful for structure sharing within a glob, and external 
 Accessors support fine-grained structure sharing between globs. For example, we may define a common dictionary then use accessors to reference individual definitions.
 
 * *path select* - headers use same encoding of path bits as stem nodes (ttt = 100), followed by an offset to the target value. Represents the value reached by following the path into target.
-* *list drop* - header (0x08) followed by count (varnat + 1) then by a list-like value. Represents value reached by following path of count '1' bits.
-* *list take* - header (0x09) followed by count (varnat + 1) then by a list-like value. Represents value after replacing the node immediately after count '1' bits with a leaf node (unit).
+* *list drop* - header (0x08) followed by count (varnat + 1) then by offset to list-like value. Represents value reached by following path of count '1' bits.
+* *list take* - header (0x09) followed by count (varnat + 1) then by immediate list-like value. Represents value after replacing the node immediately after count '1' bits with a leaf node (unit). In practice, mostly used to cache information about list length.
 
 The 'path select' nodes include 'internal reference' (node 0x88 - select an empty path). All path select nodes use a reference to the target value, but an inline value can effectively be expressed via zero offset.
 
@@ -108,23 +112,28 @@ Lists are a simple data structure formed from a right-spine of pairs terminating
                    d /\     [a,b,c,d,e]
                     e  ()
 
-In Glas systems, lists are used for almost any sequential data structure - arrays, tuples, stacks, queues, deques, binaries, etc.. Sparse lists, where elements are optional, are also useful in some contexts. However, direct representation of lists is awkward and inefficient for most use-cases. Thus, Glas systems will often use specialized representations under-the-hood, such as [finger-tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_(data_structure)).
+In Glas systems, lists are used for almost any sequential data structure - arrays, tuples, stacks, queues, deques, binaries, etc.. Sparse lists, where elements are optional, are also useful in some contexts. However, direct representation of lists is awkward and inefficient for most use-cases. Thus, Glas systems will often use specialized representations under-the-hood, such as arrays or[finger-tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_(data_structure)).
 
 Glas Object provides a few specialized nodes to support serialization of indexed lists (or any sufficiently list-like structure). Binary data is explicitly supported because it's the most common data type for interfacing between Glas systems and other systems.
 
 * *array* - header (0x0A) followed by length (varnat + 1) then by that many value offsets. The varnat encoding of the offsets is denormalized so they're all the same width. All offsets are relative to just after the last one. Represents a list of values.
 * *binary* - header (0x0B) followed by length (varnat + 1) then by that many bytes. Represents a list containing the binary data. Each byte corresponds to an 8-bit bitstring, msb to lsb. 
-* *concat* - header (0x0C) followed by an offset to remainder, then by a list-like value whose right spine terminates in a leaf (unit). Represents value formed by replacing that leaf with the remainder. 
+* *short array* - header (0xA0-0xAF) encodes length, 1 to 16 items, otherwise as array.
+* *short binary* - header (0xB0-0xBF) encodes length, 1 to 16 items, otherwise as binary.
+* *concat* - header (0x0C) followed by offset to list-like value, then immediately by the remainder value. A list-like value has a right spine that terminates in a leaf node. Logically equivalent to replacing that leaf with the remainder value.
 
-        concat (A:AS) B = A:concat(AS,B)
+        concat (A,AS) B = (A,concat AS B)
         concat () B = B
 
 Indexing of concat nodes relies on inserting some 'list take' nodes to cache size information, controlling the number of nodes we must examine to compute length.
 
+*Note:* One idea is to extend concat for 3 to 5 items (i.e. 0x0D-0x0F). This might align nicely with nodes for balancing of ropes. But it's also unnecessary - we can support such nodes in-memory even with just regular 'concat', and saving a few bytes on concat is negligible for space savings.
+
 ## Summary of Node Headers
 
-        0x02        External Ref
+        0x03        External Ref
         0x04        Annotation
+
         0x08        List Drop
         0x09        List Take
         0x0A        Array
@@ -135,6 +144,14 @@ Indexing of concat nodes relies on inserting some 'list take' nodes to cache siz
         0x40-0x5F   Stem Nodes and No-op (0x48)
         0x60-0x7F   Stem-Branch and Branch (0x68)
         0x80-0x9F   Path Select and Internal Ref (0x88)
+        0xA0-0xAF   Short Arrays (lengths 1 to 16)
+        0xB0-0xBF   Short Binaries (lengths 1 to 16)
+
+        UNUSED:
+        0x00-0x02
+        0x05-0x07
+        0x0D-0x0F
+        0xC0-0xFF
 
 ## Patterns
 
@@ -153,6 +170,12 @@ Essentially, we can heuristically defer replacement of globs until enough data i
 We can construct globs that have short paths to many data nodes, e.g. the root node is an array (or dictionary) that contains references to both large values and several deeper components. We could also arrange that the array is sorted so we can efficiently perform reverse lookup (via binary search), or separately compute and cache a reverse lookup index. Using this index, we can replace long accessors by short ones, potentially saving time and space. 
 
 This technique is unlikely to pay for its overheads in all cases. However, I expect we'll find enough cases where it is useful to explicitly support the pattern.
+
+### Dictionary Based Communication
+
+We can serialize messages between machines as globs. Referencing a common dictionary with every message is quite affordable, i.e. 65 bytes for the external ref plus ~6 bytes per dictionary word. The dictionary would be available upon request.
+
+This allows messages to carry their full 'meaning' unlike most communication today that references an implicit dictionary. It also ensures the meaning is immutable, except insofar as we explicitly model references within our values.
 
 ## Potential Future Extensions
 
