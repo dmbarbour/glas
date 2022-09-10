@@ -1,22 +1,24 @@
 # Glas Design
 
-Glas was named in reference to transparency of glass, liquid and solid states to represent staged metaprogramming, and human mastery over glass as a material. As a backronym, it can be taken as 'General LAnguage System'. 
+Glas was named in reference to transparency of glass, liquid and solid states to represent staged metaprogramming, and human mastery over glass as a material. As a backronym, 'General LAnguage System'. 
 
 Design goals for Glas include purpose-specific syntax, compositionality, extensibility, metaprogramming, live coding. Compared to conventional languages, there is a lot more focus on the compile-time. 
 
 ## Modules and Syntax
 
-Glas modules are usually represented by files or folders, and compile to Glas values. Modules may depend on the compiled values of other modules, but dependencies must form a directed acyclic graph.
+Global modules are folders found via GLAS_PATH environment variable. Each folder must contains a 'public' file (with any extension). This file is compiled to an arbitrary Glas value, often representing a dictionary. The value of a file may depend acyclically on the values of local files or subfolders or other global modules.
 
-The syntax of a file is identified by file extension. For example, to compile the file "foo.ext" we search for a module language-ext to provide the compile function then evaluate it with file binary as input. Extensions compose, e.g. "foo.x.y" will apply language-x then language-y (in this case, input to language-y may be structured data). The [g0 language](GlasZero.md) is built-in to bootstrap.
+The syntax of a file depends on file extension. For example, to compile a file named "foo.ext" we'll first compile the global module language-ext then extract the 'compile' function, which must represent a suitable Glas program. This compile function is then applied to the file binary. 
 
-A folder is compiled based on the contained 'public' file. Within the folder, files may reference modules defined by local files and subfolders or global modules. It is not possible to reference across folder boundaries. Folders do not use file extensions.
+File extensions compose, for example "foo.x.y" will apply language-y to the file binary, then language-x to the resulting Glas value. Conversely, a file without an extension compiles to the file binary.
 
-The GLAS_PATH environment describes a list of filesystem directories. This represents the search space for global modules. Each global module is represented by the subfolder found by sequentially searching that list.
+To support bootstrap, the [language-g0](../glas-src/language-g0/README.md) module may be defined using '.g0' files. The g0 language is a Forth-inspired macro-assembly for Glas programs. Early development of Glas systems will heavily use g0, but it's just a starting point.
+
+*Note:* Global modules should eventually support reference to repositories curated by company or community.
 
 ## Command Line
 
-The Glas system starts with a command line tool 'glas'. This tool knows how to compile modules and how to bootstrap g0. After compiling a module, the command line tool can extract binary data or directly interpret simple applications, depending on the command line arguments.
+The Glas system starts with a command-line tool 'glas'. This tool knows how to compile modules and how to bootstrap language-g0. After compiling a module, the command line tool can extract binary data or directly interpret simple applications, depending on the command line arguments.
 
 Extraction of binary data is via `glas --extract modulename.label`, outputting binary data to standard output. This feature is primarily used for bootstrap of the glas command line tool, avoiding need for effects.
 
@@ -151,7 +153,7 @@ Dependent types or session types may be required to precisely describe an effect
 
 ### Annotations
 
-Annotations in Glas programs support tooling without affecting formal program behavior.
+Annotations in Glas programs support tooling without affecting formal program behavior. 
 
 * **prog:(do:P, ...)** - runs program P. If 'do' is elided, defaults to nop. All fields other than 'do' are annotations and must not affect behavior of program.
 
@@ -162,34 +164,34 @@ Some annotations in use:
 * *accel:Model* - accelerate the program. The Model is usually a symbol indicating a built-in function that should replace the direct implementation. 
 * *arity:(i:Nat, o:Nat)* - describe stack arity of a program. This can be checked by a compiler, or help stabilize partial evaluation.
 
-I haven't developed good annotations for stowage or memoization yet. I expect some parameters will be desirable to configure memoization or tune stowage heuristics.
+Still need to develop good annotations for stowage and memoization.
 
 ## Processes
 
-Command-line runnable programs will initially represent processes as a 1--1 arity program that evaluates a single transactional step: 
+Command-line runnable programs will initially represent processes as a 1--1 arity program that evaluates a transactional step: 
 
         type Process = (init:Args | step:State) -> [Effects] (step:State | halt:Results) | FAIL
 
-The process step function is repeatedly evaluated by an external program loop until 'halt' is returned. Step failure does not halt the program, but implicitly retries, waiting for changes. With several optimizations and suitable effects, this process model can also express concurrent or distributed computations. See [Glas applications](GlasApps.md) for details.
+This process step function is evaluated repeatedly over time until 'halt' is returned. Step failure does not halt the program, but will retry with the original input, implicitly waiting on external conditions. Assuming optimizations for incremental computing and non-deterministic choice, this step process model can express concurrent systems more conveniently than conventional process models.
+
+See [Glas applications](GlasApps.md) for details.
 
 ## Language Modules
 
-Language modules have a module name of form `language-(ext)`, binding to files with extension `.(ext)`. For example, module `language-xyzzy` would be used to process file `foo.xyzzy`. The language module must compile to a record value of form `(compile:Program, ...)`. Other than 'compile', language modules might define functions for linting, code completion, repl, decompiler, documentation, interactive tutorials, etc..
+Language modules have a module name of form `language-ext`, binding to files with extension `.ext`. A language module must compile to a record value of form `(compile:Program, ...)`. Other than 'compile', language modules may define functions for linting, code completion, read-eval-print-loop, decompiler, documentation, interactive tutorials, etc..
 
-The compile program must be 1--1 arity. Input is usually a file binary (excepting files with multiple extensions), and output is the compiled value. Compile-time effects are limited to loading modules and logging messages:
+A compile program must be 1--1 arity. The input is usually a binary (with exceptions for composing file extensions) and the output is the compiled module value (or failure). Compile-time effects are extremely limited to simplify reasoning about caching, sharing, and reproducibility:
 
-* **load:ModuleRef** - Response is compiled value for the indicated module, or the request may fail (e.g. if the module is not found, or could not be compiled). Cause of failure is not reported to the caller, but may implicitly be logged. Currently, two types of ModuleRef are supported:
- * *global:String* - reference a module in the global search space, e.g. based on GLAS_PATH environment variable. Global modules are always represented by folders.
- * *local:String* - reference a module in the local search space, within the same folder as the file currently being compiled.
-* **log:Message** - Response is unit. The Message should be a dict, e.g. `(text:"Uh oh, you messed up!", lv:warn)`, with fields subject to ad-hoc extension. Depending on runtime, if a log message is backtracked, it may still be visible via reflection APIs or a debug view.
-
-To support bootstrap, a compiler for the Forth-like [language-g0](GlasZero.md) is built into the Glas command line interface. However, the language-g0 module should still be defined.
+* **load:ModuleRef** - Response is compiled value for the indicated module. The request may fail, e.g. if the module cannot be found or compiled, with cause implicitly logged. Currently support two forms of ModuleRef: 
+ * *global:String* - sequentially search GLAS_PATH for a folder with the matching name.
+ * *local:String* - search files and subfolders local to file currently being compiled.
+* **log:Message** - Message should be a record, e.g. `(text:"Uh oh, you messed up!", lv:warn)`, so that it can be flexibly extended with metadata. Response is unit. Behavior depends on development environment, e.g. might print the message to stderr with color based on level.
 
 ### Useful Languages
 
-First, developing a few data-entry languages early on could be very convenient. For example, we could support `.txt` files that verify unicode input, remove the byte order mark, and convert to UTF-8 if needed. We could support JSON, MsgPack, Cap'n Proto, or SQLite files for structured data entry.
+First, developing a few data-entry languages early on could be very convenient. For example, we could support `.txt` files that verify unicode input, remove the byte order mark, convert to UTF-8, and perhaps even detect language and run a spellcheck and grammar check. We could support JSON, MsgPack, Cap'n Proto, SQLite, or [0GlasObject](GlasObject.md) files for structured data entry.
 
-For programming languages, we could develop something more Lisp-like, and also develop a language that conveniently compiles into multi-step procedures, processes, and applications (see below).
+For programming languages, perhaps some programmers would favor a more Lisp-like or C-like syntax. But I'm also very interested in structured programming, where our programs are recorded into a database.
 
 ## Automated Testing
 
@@ -263,6 +265,14 @@ An alternative is to model and accelerate virtual machines that host a collectio
 
 Either of these options have some advantages. Modeling objects as processes would fit distributed and concurrent programming styles. Accelerating a virtual machine could be widely useful in many other cases, and would make scope obvious. 
 
+### Reactive Systems Programming 
+
+Robust reactive systems benefit from precise temporal semantics, abstracting over variable latency and arrival-order non-determinism, and modeling precise synchronization of outputs.
+
+[Kahn process networks](https://en.wikipedia.org/wiki/Kahn_process_networks) (KPNs) are a viable foundation. We can extend KPNs with temporal semantics - every process and message has an implicit logical time, and a process can observe which channel has the next message in temporal order. This can be combined with dynamic channels to model open systems. 
+
+KPNs could then be compiled into a lower level model that exposes arrival-order non-determinism, such as Glas applications.
+
 ### Static Routing of Effects? Reject.
 
 Currently 'eff' always runs the same handler for an effect. It is feasible to modify 'eff' to support static routing, i.e. use `eff:Operator` and an environment of type `Operator -> Handler`.
@@ -283,15 +293,11 @@ A relevant concern is that database files will tend to be much larger than text 
 
 ### Program Search
 
-I'm interested in a style of metaprogramming where programmers express hard and soft constraints, search spaces, and search tactics for a program. Type safety can be considered a hard constraint to guide program decisions. It is possible to resolve ambiguity given a context of types and other constraints on meaning. For unresolved meaning, the search can seek a high-quality solution according to some heuristics.
+I'm interested in a style of metaprogramming where programmers express hard and soft constraints, search spaces, and search tactics for programs. Type safety can be considered a hard constraint to guide program decisions. Programs expressed this way can resolve ambiguity, fill the gaps, and produce large working systems from relatively few words.
 
-Unfortunately, search is expensive. It is necessary to reduce rework. 
+Search is expensive, so it is necessary to reduce rework. Stateful solutions are viable, i.e. we could use special editors or tools to move part of program search to edit-time. But I'd prefer stateless solutions, such as memoization.
 
-Stateful solutions are feasible, e.g. we could develop tools that record search state into the module system. This might be useful for interactive program search, especially. However, I'd prefer to statelessly reduce rework via memoization. 
-
-Memoization can mitigate rework in cases where we can make good local - i.e. compositional or modular - predictions of utility. For example, we can use memoization to eliminate programs that aren't internally type-safe. Or if we have [consistent heuristics](https://en.wikipedia.org/wiki/Consistent_heuristic) for utility, we could memoize partial searches.
-
-I think that support for program search will mostly reduce to careful design of the search language to support memoization, especially in context of interactive revision and refinement of searches.
+Memoization can mitigate rework insofar as we have [consistent heuristics](https://en.wikipedia.org/wiki/Consistent_heuristic) for utility, i.e. such that we can locally filter for good modular components without looking at global fitness. Of course, those heuristics are also contextual. Perhaps a monotonic heuristic can be aligned with expression of component search.
 
 ### Provenance Tracking
 

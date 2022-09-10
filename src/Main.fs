@@ -26,11 +26,15 @@ open Glas.ProgEval
 let helpMsg = String.concat "\n" [
     "A pre-bootstrap implementation of Glas command line interface."
     ""
-    "Methods:"
+    "Built-in Commands:"
     ""
     "    glas --extract ValueRef"
     "        print referenced binary value to standard output"
     "        currently limited to produce binaries under 2GB"
+    ""
+    "    glas --run ValueRef -- Args"
+    "        evaluate an application process, represented as a"
+    "        transactional step function. Incomplete effects API!"
     ""
     "    glas --version"
     "        print a version string"
@@ -38,42 +42,81 @@ let helpMsg = String.concat "\n" [
     "    glas --help"
     "        print this message"
     ""
-    "A ValueRef must be a dotted path, `ModuleName(.Label)*`. The module's"
-    "transitive dependencies are compiled, including language modules. This"
-    "includes bootstrap of module language-g0 if it is defined."
+    "User-Defined Commands:"
     ""
-    "Normally, a `--run` method will support user-defined apps with limited"
-    "effects, including filesystem and network access. However, this feature"
-    "is deferred for a post-bootstrap implementation."
+    "    glas opname Args"
+    "        rewrites to"
+    "    glas --run glas-cli-opname.main -- Args"
+    ""
+    "    We can define glas-cli-* modules "
+    ""
+    "A ValueRef is essentially a dotted path starting with a module ref. A"
+    "module ref can be a module-name (global) or ./module-name (local)."
+    ""
     ]
 
-let ver = "glas pre-bootstrap 0.1 (dotnet)"
+let ver = "glas pre-bootstrap 0.2 (dotnet)"
 
 let EXIT_OK = 0
 let EXIT_FAIL = -1
 
-let getValue (ll:Loader) (vstr : string): Value option =
-    // no complicated parsing of value identifiers, just split on '.'
-    match List.ofArray (vstr.Split('.')) with
-    | (m::idx) ->
-        match ll.LoadModule m with
-        | None ->
-            logError ll (sprintf "module %s failed to load" m)
-            None
-        | Some v0 -> 
-            // we have the module value, the hard part is done!
-            // just need to index via dotted path.
-            let fn vOpt s =
-                match vOpt with
-                | None -> None
-                | Some v -> Value.record_lookup (Value.label s) v
-            let result = List.fold fn (Some v0) idx
-            if Option.isNone result then
-                logError ll (sprintf "value of module %s does not have path .%s" m (String.concat "." idx))
-            result
-    | [] -> 
-        logError ll "failed to parse value reference"
+// parser for value ref.
+module ValueRef =
+    open FParsec
+    type P<'T> = Parser<'T,unit>
+
+    type Word = string
+
+    type ModuleRef =
+        | Local of Word
+        | Global of Word
+    
+    let parseWord : P<string> =
+        let wf = many1Satisfy2 isAsciiLower (fun c -> isAsciiLower c || isDigit c)
+        stringsSepBy1 wf (pstring "-")
+
+    let parseModuleRef : P<ModuleRef> =
+        choice [
+            pstring "./" >>. parseWord |>> Local
+            parseWord |>> Global
+        ]
+
+    let parse : P<(ModuleRef * Word list)> = 
+        parseModuleRef .>>. many (pchar '.' >>. parseWord) 
+
+let getValue (ll:Loader) (vref : string): Value option =
+    match FParsec.CharParsers.run (ValueRef.parse) vref with
+    | FParsec.CharParsers.Success ((m,idx),_,_) ->
+        let mv = 
+            match m with
+            | ValueRef.Local m' -> ll.LoadLocalModule m'
+            | ValueRef.Global m' -> ll.LoadGlobalModule m'
+        if Option.isNone mv then None else // error already printed
+        let fn vOpt s =
+            match vOpt with
+            | None -> None
+            | Some v -> Value.record_lookup (Value.label s) v
+        let result = List.fold fn mv idx
+        if Option.isNone result then
+            logError ll (sprintf "value of module %A does not have path .%s" m (String.concat "." idx))
+        result
+    | FParsec.CharParsers.Failure (msg, _, _) ->
+        logError ll (sprintf "reference %s fails to parse: %s" vref msg)
         None
+
+// as getValue but checks for 'prog' header, valid AST, arity.
+let getProgVal (ll:Loader) (vref : string) : Value option = 
+    match getValue ll vref with
+    | Some ((Value.Variant "prog" _) as p) when isValidProgramAST p ->
+        match stackArity p with
+        | Arity(1,1) -> Some p
+        | ar ->
+            logError ll (sprintf "value %s has wrong arity %A" vref ar)
+            None
+    | Some _ ->
+        logError ll (sprintf "value %s is not a valid Glas program" vref)
+        None
+    | None -> None // error reported by getValue
 
 let getLoader (logger:IEffHandler) =
     match tryBootStrapLoader logger with
@@ -82,10 +125,10 @@ let getLoader (logger:IEffHandler) =
         logWarn logger "failed to bootstrap language-g0; using built-in"
         nonBootStrapLoader logger
 
-let extract (vstr:string) : int =
+let extract (vref:string) : int =
     let logger = consoleErrLogger ()
     let loader = getLoader logger
-    match getValue loader vstr with
+    match getValue loader vref with
     | None -> EXIT_FAIL
     | Some (Value.Binary b) ->
         let stdout = System.Console.OpenStandardOutput()
@@ -95,23 +138,57 @@ let extract (vstr:string) : int =
         // This pre-bootstrap is limited to extracting 2GB. That's okay. The glas
         // executable should be small, a few megabytes at most. Larger files must
         // wait until after bootstrap. 
-        logError logger (sprintf "value %s is not a binary (or is too big)" vstr)
+        logError logger (sprintf "value %s is not a binary (or is too big)" vref)
         EXIT_FAIL
+
+let run (vref:string) (args : string list) : int = 
+    let eff = runEffects ()
+    let ll = getLoader eff
+    match getProgVal ll vref with
+    | None -> EXIT_FAIL
+    | Some p ->
+        let pfn = eval p ll
+        let rec loop st =
+            match pfn [st] with
+            | None ->
+                // ideally, we'd track effects to know when to retry.
+                // but this implementation is blind, so just wait and hope.
+                System.Threading.Thread.Sleep(10)
+                loop st
+            | Some [st'] ->
+                match st' with
+                | Value.Variant "step" _ -> 
+                    loop st'
+                | Value.Variant "halt" (Value.Bits b) ->
+                    // cast b to int for exit code
+                    let fn n b = (n * 2) + (if b then 1 else 0)
+                    Bits.fold fn 0 b 
+                | _ ->
+                    logErrorV ll (sprintf "program %s reached unrecognized state" vref) st'
+                    EXIT_FAIL
+            | Some _ ->
+                logError ll (sprintf "program %s halted on arity error" vref)
+                EXIT_FAIL
+        try
+            let v0 = args |> List.map Value.ofString |> Value.ofList |> Value.variant "init"
+            loop v0
+        with 
+        | e -> 
+            logError ll (sprintf "program %s halted on exception %A" vref e)
+            EXIT_FAIL
 
 let rec main' (args : string list) : int =
     match args with
-    | ["--extract"; vstr] ->
-        extract vstr
+    | ["--extract"; b] ->
+        extract b
+    | ("--run" :: p :: "--" :: args') ->
+        run p args'
     | ["--version"] -> 
         System.Console.WriteLine(ver)
         EXIT_OK
     | ["--help"] -> 
         System.Console.WriteLine(helpMsg)
         EXIT_OK
-    | ( "--run" :: p :: "--" :: args') ->
-        eprintfn "Command recognized: %s" (String.concat " " args)
-        eprintfn "But --run is not currently supported."
-        EXIT_FAIL
     | (verb::args') when not (verb.StartsWith("-")) ->
         // trivial rewrite supports user-defined behavior
         let p = "glas-cli-" + verb + ".main"

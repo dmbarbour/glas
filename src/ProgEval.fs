@@ -4,7 +4,6 @@ module ProgEval =
     open Value
     open ProgVal
 
-
     module FTI =
         open Effects
 
@@ -49,6 +48,9 @@ module ProgEval =
         // We'll catch it at the top-level eval, so it isn't directly
         // exposed to the caller.
         exception RuntimeUnderflowError of RTE
+
+        /// If we encounter a TBD operation, we may use an exception to abort.
+        exception HaltOnTBD of RTE * Value
 
         // Due to lazy compilation, we might catch some compilation errors
         // at runtime. We'll perform an intermediate catch here, mostly so
@@ -129,6 +131,9 @@ module ProgEval =
 
         let eff cte cc = // rte implicit
             (cte.EH) cte cc
+
+        let tbd msg cte cc rte =
+            raise <| HaltOnTBD(rte,msg)
 
         // We can logically flatten 'dip:P' into the sequence:
         //   dipBegin P dipEnd
@@ -258,6 +263,7 @@ module ProgEval =
             | Prog (_, p') -> 
                 // memoization, stowage, or acceleration could be annotated here.
                 compile p' 
+            | Stem lTBD msg -> tbd msg
             | _ -> 
                 // not a valid program.
                 fun cte cc rte ->

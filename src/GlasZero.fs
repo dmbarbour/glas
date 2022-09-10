@@ -15,7 +15,9 @@ namespace Glas
 ///
 module Zero =
     type Word = string
-    type ModuleName = Word
+    type ModuleRef = 
+        | Local of Word
+        | Global of Word
     type HWord = (Word * Word list) // m/trig/sine
     type ImportList = (Word * Word) list
 
@@ -28,13 +30,13 @@ module Zero =
         | Block of Block    // [foo]
 
     type Ent =
-        | ImportAs of ModuleName * Word       // import math as m 
-        | FromModule of ModuleName * ImportList  // from modulename import foo, bar as baz, ...
-        | FromData of Block * ImportList       // from [ Program ] import qux, baz as bar, ...
-        | ProgDef of Word * Block           // prog word [ Program ]
-        | MacroDef of Word * Block          // macro word [ Program ]
-        | DataDef of Word * Block           // data word [ Program ]
-        | StaticAssert of int64 * Block     // (line number recorded for error reporting)
+        | ImportAs of ModuleRef * Word          // import modulename as m
+        | FromModule of ModuleRef * ImportList  // from modulename import foo, bar as baz, ...
+        | FromData of Block * ImportList        // from [ Program ] import qux, baz as bar, ...
+        | ProgDef of Word * Block               // prog word [ Program ]
+        | MacroDef of Word * Block              // macro word [ Program ]
+        | DataDef of Word * Block               // data word [ Program ]
+        | StaticAssert of int64 * Block         // (line number recorded for error reporting)
 
     type ExportOpt =
         | ExportFn of Block
@@ -42,7 +44,7 @@ module Zero =
 
     /// AST for g0 toplevel.
     type TopLevel = 
-        { Open : ModuleName option
+        { Open : ModuleRef option
         ; Ents : Ent list
         ; Export : ExportOpt option
         }
@@ -70,15 +72,15 @@ module Zero =
         let wordFrag : P<string> =
             many1Satisfy2 isAsciiLower (fun c -> isAsciiLower c || isDigit c)
         
-        let wordBody : P<string> = 
-            sepBy1 wordFrag (pchar '-')  
+        let wordBody : P<string> =
+            stringsSepBy1 wordFrag (pstring "-") 
 
         let parseWord : P<string> =
             (wordBody .>> wsep) <?> "word"
 
         let parseHWord : P<HWord> = 
             let hword = wordBody .>>. many (pchar '/' >>. wordBody) 
-            (hword .>> wsep) <?> "hword"
+            (hword .>> wsep) <?> "d/word"
         
         let parseSymbol : P<Bits> =
             ((pchar '\'' >>. parseWord) <?> "symbol") |>> Value.label
@@ -147,15 +149,14 @@ module Zero =
                 parseHWord |>> Call
             ]
 
-        let parseOpen : P<ModuleName> =
-            kwstr "open" >>. parseWord
-
-        let parseExport : P<ExportOpt> =
-            let wordList = sepBy1 parseWord (pchar ',' .>> ws)
-            kwstr "export" >>. choice [
-                parseBlock |>> ExportFn
-                wordList |>> ExportList
+        let parseModuleRef : P<ModuleRef> =
+            choice [
+                pstring "./" >>. parseWord |>> Local
+                parseWord |>> Global
             ]
+
+        let parseOpen : P<ModuleRef> =
+            kwstr "open" >>. parseModuleRef
 
         let parseImportWord : P<(Word * Word)> =
             parseWord .>>. (opt (kwstr "as" >>. parseWord)) |>> 
@@ -163,14 +164,21 @@ module Zero =
                     let aw = Option.defaultValue w optAsW
                     (w,aw)
 
-        let parseImportAs : P<Ent> =
-            kwstr "import" >>. parseImportWord |>> ImportAs
-
         let parseImportFrom : P<Ent> =
             let wordList = kwstr "import" >>. sepBy1 parseImportWord (pchar ',' .>> ws)
             kwstr "from" >>. choice [
                 parseBlock .>>. wordList |>> FromData
-                parseWord .>>. wordList |>> FromModule
+                parseModuleRef .>>. wordList |>> FromModule
+            ]
+        
+        let parseImportAs : P<Ent> =
+            kwstr "import" >>. parseModuleRef .>>. kwstr "as" >>. parseWord |>> ImportAs
+
+        let parseExport : P<ExportOpt> =
+            let wordList = sepBy1 parseWord (pchar ',' .>> ws)
+            kwstr "export" >>. choice [
+                parseBlock |>> ExportFn
+                wordList |>> ExportList
             ]
 
         let parseProgDef : P<Ent> = 
@@ -201,7 +209,7 @@ module Zero =
             do! ws
             let! optOpen = opt (parseOpen)
             let! lEnts = many (parseEnt)
-            let! exportFn = opt (parseExport) 
+            let! exportFn = opt (parseExport)
             do! eof
             return { Open = optOpen; Ents = lEnts; Export = exportFn } 
         }
@@ -210,7 +218,7 @@ module Zero =
     let rec wordsCalledBlock (b:Block) =
         let fnEnt ent =
             match ent with
-            | Call struct(w,_) -> Set.singleton w
+            | Call (w,_) -> Set.singleton w // toplevel word only
             | Const _ -> Set.empty
             | Block p -> wordsCalledBlock p
         Set.unionMany (Seq.map fnEnt b)
@@ -221,8 +229,7 @@ module Zero =
             match ent with
             | ProgDef (_, b) | MacroDef (_, b) | StaticAssert (_, b) | DataDef (_, b) | FromData (b, _) -> 
                 wordsCalledBlock b
-            | FromM _ | Import _ -> 
-                Set.empty
+            | FromImport _ | ImportAs _ -> Set.empty
         let entCalls = tlv.Ents |> Seq.map fnEnt |> Set.unionMany
         let exportCalls =
             match tlv.Export with
@@ -234,51 +241,50 @@ module Zero =
     let wordsDefined (tlv : TopLevel) : Set<Word> = 
         let fnEnt ent =
             match ent with
-            | ImportFrom (_, lImports) -> 
+            | FromModule (_, lImports) | FromData (_, lImports) -> 
                 Set.ofList (List.map snd lImports)
-            | ProgDef (w, _) | MacroDef (w, _) | DataDef (w, _) -> 
+            | ProgDef (w, _) | MacroDef (w, _) | DataDef (w, _) | ImportAs (_,w) -> 
                 Set.singleton w
             | StaticAssert _ -> 
                 Set.empty
         Set.unionMany (Seq.map fnEnt tlv.Ents)
 
-    /// I'll discourage shadowing of definitions via issuing a warning.
-    /// A word is observably shadowed if defined or called before a
-    /// later definition within the same file.
-    ///
-    /// This check detects duplicate definitions, call before definition, and
-    /// accidental recursion. But undefined words are not detected.
+    /// Shadowing of words is (usually) not permitted within g0. This includes
+    /// defining any word after it has been used, or defining a word twice.
+    /// This function finds shadowing.
     let wordsShadowed (tlv : TopLevel) : Set<Word> =
-        let fnEnt ent (wsSh,wsDef) =
-            match ent with
-            | ImportFrom (_, lImports) ->
-                // detect shadowing within the imports list, too.
-                let fnImp (_,w) (wsSh, wsDef) =
-                    let wsDef' = Set.add w wsDef
-                    let wsSh' = if Set.contains w wsDef then Set.add w wsSh else wsSh
-                    (wsSh', wsDef')
-                List.foldBack fnImp lImports (wsSh, wsDef)
-            | ProgDef (w, b) | MacroDef (w, b) | DataDef (w, b) ->
-                let shWord = if Set.contains w wsDef then Set.singleton w else Set.empty
+        let rec fnImp wsSh wsDef lImports =
+            match lImports with
+            | [] -> (wsSh, wsDef)
+            | ((_,w)::lImports') ->
+                let wsSh' = if Set.contains w wsDef then Set.add w wsSh else wsSh
                 let wsDef' = Set.add w wsDef
-                let shCall = Set.intersect wsDef' (wordsCalledBlock b) 
-                let wsSh' = Set.unionMany [shWord; shCall; wsSh]
+                fnImp wsSh' wsDef' lImports'
+        let fnEnt (wsSh,wsDef) ent =
+            match ent with
+            | FromImport (_, lImports) -> fnImp wsSh wsDef lImports
+            | FromData (b, lImports) ->
+                let wsDef0 = Set.union (wordsCalledBlock b) wsDef
+                fnImp wsSh wsDef0 lImports
+            | ProgDef (w, b) | MacroDef (w, b) | DataDef (w, b) ->
+                let wsDef0 = Set.union (wordsCalledBlock b) wsDef // treat called words as defined
+                let wsSh' = if Set.contains w wsDef0 then Set.add w wsSh else wsSh
+                let wsDef' = Set.add w wsDef0
                 (wsSh', wsDef')
             | StaticAssert (_, b) ->
-                let wsSh' = wordsCalledBlock b |> Set.intersect wsDef |> Set.union wsSh
-                (wsSh', wsDef)
-        List.foldBack fnEnt tlv.Ents (Set.empty, Set.empty) |> fst
+                let wsDef' = Set.union (wordsCalledBlock b) wsDef
+                (wsSh, wsDef')
+        List.fold fnEnt (Set.empty, Set.empty) tlv.Ents |> fst
 
-    /// List of modules loaded via 'open' or 'from'.
-    /// This doesn't detect modules loaded via compile-time effects from macros.
-    let modulesLoaded (tlv : TopLevel) : List<ModuleName> =
+    /// Set of modules directly loaded (not counting compile-time effects).
+    let modulesLoaded (tlv : TopLevel) : Set<ModuleRef> =
         let fnEnt ent =
             match ent with
-            | ImportFrom (m, _) -> [m]
-            | ProgDef _ | MacroDef _ | StaticAssert _ | DataDef _  -> []
-        let lOpen = Option.toList tlv.Open
-        let lFrom = List.collect fnEnt tlv.Ents
-        List.append lOpen lFrom 
+            | FromImport (m, _) | ImportAs (m,_) -> Set.singleton m
+            | ProgDef _ | MacroDef _ | StaticAssert _ | DataDef _ | FromData _ -> Set.empty
+        let lOpen = tlv.Open |> Option.toList |> Set.ofList
+        let lFrom = List.map fnEnt tlv.Ents |> Set.unionMany
+        Set.union lOpen lFrom 
 
     module Compile =
         open Effects

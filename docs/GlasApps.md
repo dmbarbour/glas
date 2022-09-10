@@ -1,12 +1,10 @@
 # Glas Applications
 
-A Glas application, at least for [Glas CLI](GlasCLI.md) verbs, is represented by a Glas program that is evaluated transactionally and repeated over time explicit halt. Importantly, a failed transaction does not halt the application. Instead, repeating failed transactions will implicitly wait for external changes or, in case of non-deterministic choice, search for a choice that can be committed. This provides the basis for reactivity, concurrency, and process control - see *Transaction Machines*.
-
-A viable application program model: 
+A Glas application, at least for [Glas CLI](GlasCLI.md) verbs, is represented by a step function that is repeatedly evaluated over time until it successfully halts, with each evaluation in a transaction. A failed evaluation does not halt the application, but retries with the original input over time, implicitly waiting for external conditions (or any non-deterministic choices) to change. 
 
         type Process = init:Params | step:State -> [Effects] (halt:Result | step:State) | FAILURE
 
-The program represents a single transactional step in evaluation. This step will be evaluated repeatedly in separate transactions over time until 'halt' is returned. The State type is usually private to the application, but is accessible for extensions or potential debug views. The Params, Result, and Effects types must be externally known and documented.
+This application model, which I call *Transaction Machine*, provides a robust foundation for reactivity, concurrency, and process control. 
 
 ## Transaction Machines
 
@@ -62,19 +60,17 @@ For example, with sequential composition the halt:Result of one process becomes 
 
 A blocking call at the procedure layer becomes a process that sends a message, yields, then awaits a response at the start of the next transaction.
 
-### Performance and Risk Mitigation
+## Concrete API Design
 
-Before certain optimizations are available - incremental computing, replication on fork, partitioning of app state into fine-grained transaction variables - programmers should either avoid use of concurrency, or use inefficient but robust mechanisms such as polling and central dispatch.
+### Performance-Risk Mitigation
 
-I am concerned that the required optimizations might prove too awkward or fragile on the Glas Program model, even with annotations. To mitigate this risk, I'm keeping open the option to later extend the application model, i.e. such that existing 'prog' nodes becomes one variant of the extended app model, and the other variants are designed to simplify optimizations for concurrency and distribution.
-
-## Concrete Design
+Initially, application programs must use the 'prog' header, i.e. `prog:(do:GlasProgram, app, ...)`. Eventually, we might extend representation or application programs with specialized variants to simplify essential transaction machine optimizations - i.e. nodes explicitly for checkpointing, stable forks, and fine-grained partitioning of state. This design mitigates risk in case annotations prove awkward or inadequate for the task.
 
 ### Robust References
 
-Applications will be in charge of allocating local references to objects, i.e. instead of `var foo = open filename` I favor `open filename as "foo"`. Then, in context of the local namespace, we use "foo" to refer to this open file. This allows for static allocations, hierarchical regions, and supports decentralization in case of dynamic allocations. The reference can also carry convenient information for debugging. Importantly, it avoids any concern of 'abstract' references or forgery - i.e. the scope of the reference is clearly localized.
+Applications are in charge of allocating local references to objects, i.e. instead of `var foo = open filename` I favor an API style closer to `open filename as "foo"`. This allows for static allocation, hierarchical regions, or decentralization for dynamic allocations. References can carry convenient information for debugging. Importantly, it avoids concerns related to abstraction or forgery for references. 
 
-This design does make references are second-class, i.e. we cannot simply communicate 'foo' into a new namespace and expect it refers to the same thing. But it is feasible to transfer references by indirect mechanisms. And assuming hierarchical structure, it is feasible to communicate an entire namespace including 'foo'.
+This design essentially makes references second-class, in the sense that they cannot be directly communicated between scopes. Indirect communication of references is still feasible, e.g. we could include an API that allows establishing a subchannel over an existing channel, or allows connecting two channels.
 
 ### Time
 
@@ -87,7 +83,7 @@ Time 'check' provides stable, monotonic, indirect observation of time. If a tran
 
 Reading 'now' will always destabilize a transaction, so it's best read after the transaction is unstable for other reasons, such as processing an incoming message from a channel.
 
-By default, I suggest timestamps are in NT time: a natural number of 100ns intervals since midnight Jan 1, 1601 UT. 
+Suggest timestamps are usually in NT time: a natural number of 100ns intervals since midnight Jan 1, 1601 UT.
 
 ### Concurrency
 
@@ -121,7 +117,7 @@ In context of transaction machines with incremental computing and fork-based con
 
 For optimization and security purposes, it's necessary to distinguish non-deterministic choice from reading random data. Relevantly, 'fork' is not random (cf. *Transaction Fusion* selecting optimizable schedules), and 'random' does not implicitly search on failure (e.g. cryptographic PRNG per fork under hood). A viable API:
 
-* **random:Count** - response is requested count of cryptographically secure, uniformly random bits, represented as a bitstring. E.g. `random:8` might return `0b00101010`. 
+* **random:N** - response is cryptographically random binary of N bytes.
 
 Most apps should use PRNGs or noise models instead of external random input. But access to secure random data is necessary for some use cases, such as cryptographic protocols.
 
@@ -135,15 +131,15 @@ A channel communicates with a remote process using reliable, ordered message pas
 
 * **c:send:(data:Value, over:ChannelRef)** - send a value over a channel. Return value is unit.
 * **c:recv:(from:ChannelRef)** - receive data from a channel. Return value is the data. Fails if no input available or if next input isn't data (try 'accept').
-* **c:attach:(over:ChannelRef, chan:NewChannelRef, mode:(copy|move|create))** - create a new channel, send a channel endpoint over another channel.Behavior varies depending on mode:
- * *copy* - a copy of chan is sent (see 'copy')
- * *move* - chan is detached from calling process (see 'drop')
- * *create* - new pipe created, move one end, bind other to chan which should be an unused ref.
-* **c:accept:(from:ChannelRef, as:NewChannelRef)** - receive a channel endpoint, locally binding to the 'as' ChannelRef. Fails if no input available or if next input is data or if 'as' ref is already bound.
-* **c:pipe:(with:ChannelRef, and:ChannelRef, mode:(copy|move|create))** - connect two channels such that future messages received on one channel are automatically forwarded to the other, and vice versa. This includes pending message and attached channels. Behavior varies depending on mode:
+* **c:attach:(over:ChannelRef, chan:ChannelRef, mode:(copy|move|bind))** - connect a channel over a channel. Behavior varies depending on mode:
+ * *copy* - a copy of 'chan' is sent (see 'copy')
+ * *move* - 'chan' is detached from calling process. (attach copy then drop original)
+ * *bind* - a new channel is established, with one endpoint bound to 'chan'. Fails if 'chan' in use.
+* **c:accept:(from:ChannelRef, as:NewChannelRef)** - Receives a channel endpoint, binding to the 'as' channel. This will fail if the next input on the channel is not a channel (or not available), such that send/attach order is preserved at recv/accept.
+* **c:pipe:(with:ChannelRef, and:ChannelRef, mode:(copy|move|bind))** - connect two channels such that future messages received on one channel are automatically forwarded to the other, and vice versa. This includes pending message and attached channels. Behavior varies depending on mode:
  * *copy* - a copy of the channels is connected; original refs can tap communications.
  * *move* - piped channels are detached from caller (see 'close'), managed by host system.
- * *create* - new pipe is created created, binding two refs. Forms a loopback connection.
+ * *bind* - new channel is created between two references. Fails if either ChannelRef is already in use.
 * **c:copy:(of:ChannelRef, as:ChannelRef)** - duplicate a channel and its future content. Both original and copy will recv/accept the same inputs in the same order (transitively copying subchannels). Messages sent to either channel are routed to the same destination. Send order is preserved for each copy independently, e.g. if a transaction copies A as B then sends over ABABAB, the receive order can be AAABBB or BBABAA depending on implementation details.
 * **c:drop:ChannelRef** - detach channel from calling process, enabling host to recycle associated resources. Indirectly observable via 'test'.
 * **c:test:ChannelRef** - Succeeds, returning unit, if the channel has any pending inputs or is still remotely connected. Otherwise fails. If the remote endpoint of a channel is copied, all copies must be dropped before 'test' will fail.
@@ -199,4 +195,3 @@ Initial GUI for command line interface applications will likely just be serving 
 ### Web Applications
 
 A promising target for Glas is web applications, compiling applications to JavaScript and using effects oriented around on Document Object Model, XMLHttpRequest, WebSockets, and Local Storage. Transaction machines are a decent fit for web apps. And we could also adapt notebook applications to the web target.
-

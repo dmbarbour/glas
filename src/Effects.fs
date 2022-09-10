@@ -89,7 +89,7 @@ module Effects =
     /// they remain valuable for debugging. However, we should distinguish recanted
     /// messages, e.g. by wrapping or flagging them.
     ///
-    /// A simple default option is to add a 'recant' flag to every message that is
+    /// A simple default option is to add a '~' flag to every message that is
     /// transactionally aborted.
     type TXLogSupport =
         val private WriteLog : Value -> unit
@@ -97,9 +97,9 @@ module Effects =
         val mutable private TXStack : FTList<Value> list
 
         /// Set the committed output destination. Default behavior for aborted
-        /// transactions is to add a 'recant' flag to every message.
+        /// transactions is to insert a '~' flag to every message.
         new (out) = 
-            let recantMsg = Value.record_insert (Value.label "recant") (Value.unit)
+            let recantMsg = Value.record_insert (Value.label "~") (Value.unit)
             { WriteLog = out
             ; Recant = FTList.map recantMsg
             ; TXStack = [] 
@@ -182,7 +182,7 @@ module Effects =
 
     let private selectColor v =
         match v with
-        | Value.FullRec ["recant"] ([_], _) -> 
+        | Value.FullRec ["~"] ([_], _) -> 
             System.ConsoleColor.DarkMagenta
         | Value.FullRec ["lv"] ([lv],_) ->
             match lv with
@@ -216,4 +216,7 @@ module Effects =
     let consoleErrLogger () : IEffHandler =
         TXLogSupport(consoleErrLogOut) :> IEffHandler
 
-
+    /// This should be full effects for 'glas --run'. But it's
+    /// just a tiny subset at the moment.
+    let runEffects () : IEffHandler =
+        consoleErrLogger ()

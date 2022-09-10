@@ -1,37 +1,23 @@
 # Glas KPN
 
-## Kahn Process Networks (KPNs)
+[Kahn Process Networks](https://en.wikipedia.org/wiki/Kahn_process_networks) (KPNs) express deterministic computation in terms of concurrent processes that communicate by reading and writing channels. KPNs are very scalable, able to leverage distributed processors in a controlled manner. To support most use-cases, KPNs are readily extended with temporal semantics and dynamic connections.
 
-[Kahn Process Networks](https://en.wikipedia.org/wiki/Kahn_process_networks) (KPNs) express programs as concurrent processes that communicate by reading and writing channels. To ensure a deterministic outcome, reading a channel will wait indefinitely. Writes are buffered. In practice, we'll want static analysis to verify bounded buffers.
+I initially intended to support KPNs as the initial program model for Glas systems. I eventually decided against this for reasons of simplicity, but I still believe KPNs can play a very useful role in Glas systems whether we compile KPNs into Glas applications or to an accelerated virtual machine.
 
-Compared to lambdas or combinatory logic, KPNs are more expressive for partial evaluation, stream processing, interaction, and state abstraction. This reduces need for special features. 
+## Temporal KPNs
 
-Useful Variations:
+A temporal KPN assigns an implicit logical time to every process and message. Temporal semantics support flexible composition of concurrent systems, for example to deterministically merge data from several asynchronous channels into one.
 
-### Static Hierarchical KPNs
+A process can detect when there are no messages 'immediately' available on the channel (without waiting). A process can explicitly wait for a message to be available on any/all of a list of channels, or explicitly sleep. Whenever process time advances, all outbound channels are implicitly notified that there will never be any more messages for prior logical times.
 
-Static, hierarchical KPNs with external wiring between components. Instead of first-class channels, each process has second-class IO ports and concurrent loops. The process can read and write IO ports, and also ports of embedded processes. Wiring is a loop that forever reads one port and writes to another. This design is simple, stable, and composable compared to designs based on first-class channels.
+## Dynamic KPNs
 
-### Temporal KPNs
+Dynamic networks can be expressed if our channel API supports:
 
-Temporal KPNs implicitly add logical timing metadata to every message, and the interpreter also tracks the logical time of processes. This allows a process to wait on multiple channels concurrently and observe logical races between them. Logical time is deterministic within the KPN, but external inputs could be timed based on real events.
+* attaching channel endpoints over channels
+* accepting channel endpoints from channels.
+* closing channel endpoints 
+* allocating new channel pairs
+* wiring channels together permanently
 
-Temporal KPNs are convenient because we can easily and robustly merge event sources, or model periodic clocks within the KPN.
-
-## KPNs in Glas
-
-KPNs are not simple to implement and are not great for pattern matching or live coding. So, I chose to exclude them from the base program model for Glas.
-
-However, KPNs can easily be supported at the Glas application model layer: transaction machines can easily model waiting on input channels and writing to output channels. Channels are easily modeled using memory. We could easily design a program model then compile it for the application layer.
-
-Additionally, it is feasible to support KPNs as an accelerated model within a program. The accelerated KPN could support distribution, parallelism, and concurrency. Effects would become a bottleneck in this case, binding 'eff' to a request-response channel, but they can be avoided or mitigated.
-
-## Program Model (Old)
-
-Programs are concretely represented by a dict of form `(do:[List, Of, Operators], ...)`. The dict header can be extended with annotations and metadata to support performance, presentation, or debugging. Operators are represented as variants with form `opname:(StaticArgs)`. Operators can declare process components and describe dataflow between components. 
-
-A program represents a process. Every process has a set of labeled ports for input and output, like keyword parameters. For example, with a process component labeled `foo`, we might write `foo:arg` then read `foo:result`. Within a program, external process ports are represented by implicit component `io`. For example, writing `io:result` within a subprogram labeled `foo` corresponds to reading `foo:result` from the parent program.
-
-Glas represents most computation as processes. For example, instead of an operator to add numbers, we'd declare a component process for adding numbers then write inputs and read results. Other than declaring components, most operators describe communication between components, including loops and conditional behavior. Operators within a program evaluate concurrently, except that operations modifying the same port will be sequenced according to the list.
-
-Channels and processes are second class in this model, and subprograms are directly included within a program. Macros and metaprogramming are essential for expressiveness, and can be supported by language modules. Structure sharing and content-addressed storage at the data model layer supports efficient representation.
+This could be sombined with some operations to spawn processes, handing control for a subset of channels to the process until it terminates. 

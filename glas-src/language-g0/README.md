@@ -33,21 +33,9 @@ Most entries may appear in any order and number. The exceptions are 'open' and '
 
 ## Dictionary
 
-By default, a g0 module compiles to a dictionary - a value of form `dict:(w1:prog:do:Program, w2:macro:Program, w3:data:Value, m:data:Dictionary, qux:(...), ...)`. Each symbol in the dictionary corresponds to a defined word, and each definition has a type header to allow specialized handling at the call site. The 'dict' header is intended to simplify future integration with or extension by other language modules.
+By default, a g0 module compiles to a dictionary - a value of form `dict:(w1:prog:do:Program, w2:macro:Program, w3:data:Value, m:data:dict:(...), qux:(...), bar-baz:(...), ...)`. Each symbol within the dictionary corresponds to a defined word, and each definition has a type header such as 'prog' to simplify specialized handling at the call site. The 'dict' header is intended to simplify extension of dictionaries with metadata and integration with other Glas languages. 
 
-A g0 program only recognizes words with the `prog | macro | data` definition types. Words with unrecognized definition types may be imported and exported but cannot be called from a g0 program.
-
-## Imports
-
-Imports provide convenient access to the module system. 
-
-* **open ModuleName** - start with words defined in another module. The value of the named module must be a dictionary. Unused words from this module may be overridden by later imports or definitions.
-* **from ModuleName import ImportList** - add selected words from a module into the local namespace. The import list is comma separated list of words with optional 'as' clauses for local renaming.
-* **import ModuleName (as Word)** - this simply imports a module value as data. If the 'as' clause is elided, the ModuleName is used as the data word. See *Hierarchical Definitions*.
-
-Import may fail if the module cannot be loaded or (in case of 'from') does not define an imported word. In case of failure, the full module will fail to compile. 
-
-Modules can be programatically imported via 'load' effect in static evaluation contexts (such as data evaluation and macro calls). This allows for more flexible failure handling and inspection or manipulation of the loaded value. However, this is much less concise and convenient than import declarations.
+The g0 language only knows how to define and call 'prog', 'macro', and 'data' words. It isn't an error for g0 to import words of other types, but it would be an error to call them from within a g0 program.
 
 ## Words
 
@@ -57,9 +45,22 @@ Words in g0 must match a simple regex:
         Word:  WFrag('-'WFrag)*
         HWord: Word('/'Word)*
 
-In context of a g0 module, each word has exactly one definition. Words implicitly imported via 'open' may be redefined but only before their first use, i.e. such that the original definition is never observed within the g0 module. Hierarchical words are indirectly defined, i.e. we define 'm/sqrt' as part of defining data 'm'.
+In context of a g0 module, a word will have exactly one definition. That is, a word cannot be defined twice or be defined after use. However, words implicitly imported via 'open' may be overridden before first used.
 
-The g0 language cannot directly import or reference definitions that don't have valid g0 words. This isn't a problem when working mostly within g0, but importing definitions from modules written in other languages might require using macros to extract the definition.
+## Imports
+
+Imports provide convenient, basic access to the module system. 
+
+* **open ModuleRef** - start with words defined in another module. The value of the referenced module must be a dictionary. Unused words from this module may be overridden by later imports or definitions.
+* **from ModuleRef import ImportList** - add selected words from a module into the local namespace. The import list is comma separated list of words with optional 'as' clauses for local renaming.
+* **import ModuleRef as Word** - import complete value of a module as a data word. This can be useful with hierarchical definitions, e.g. after 'import math as m' we might use 'm/sqrt'. 
+
+A module reference may be one of:
+
+        GlobalModuleName        loads global:"GlobalModuleName"
+        ./LocalModuleName       loads local:"LocalModuleName"
+
+A referenced module must load successfully and define any listed words or compilation will fail. If more flexible behavior is needed, use compile-time evaluation and explicit 'load' effects.
 
 ## Embedded Data
 
@@ -72,9 +73,11 @@ The g0 program can directly include bitstrings, natural numbers, symbols, string
         "hello"                 a list of ascii bytes excluding C0, DEL, and "
         [Program]               program as a value, mostly for use with macros
 
-The value `0` is the single-node tree. This can represent an empty bitstring, empty list, empty record, unit value, and natural number zero. For clarity of intention, it's best to define something like `data unit [0]` for each of these cases, though. Program values are locally non-deterministic due to compiler optimizations and annotations.
+Depending on context, value `0` might represent an empty bitstring, empty list, empty record, unit value, and natural number zero. For clarity of intention, it's best to define something like `data unit [0]` for each case.
 
-There is no dedicated syntax for bulk or structured data. Clever word choice can mitigate this. For example, with suitable definitions, a multi-line text could be embedded as:
+Program values are compiled. Their representation may vary due to which optimizations are applied, but behavior should be preserved and compilation is deterministic within context of the language-g0 module. In most cases, program values are parameters to macros.
+
+Other than programs values, there is no syntax for structured data. Clever word choice can mitigate this. For example, with suitable definitions, a multi-line text could be embedded as:
 
         l0 "Blow, blow, thou winter wind,"
         li "Thou art not so unkind"
@@ -93,7 +96,7 @@ There is no dedicated syntax for bulk or structured data. Clever word choice can
         li "  -- William Shakespeare"
         li unlines
 
-However, instead of awkwardly embedding data in g0, it is better to develop language modules for data entry. Text could be provided in a `.txt` file. Structured data could use JSON, XML, MsgPack, SQLite, etc.. A `.g0` file may then simply `import` the module data, or load it via macro.
+However, the intended approach for embedding data is to define another language, e.g. define a language-txt module that can convert most texts to UTF-8 and run a spellchecker. Also define generic language modules to parse JSON, XML, SQLite, and other structured data. 
 
 ## Programs 
 
@@ -109,23 +112,24 @@ Macro definitions support staged metaprogramming. Each call to a macro will be e
 
 ### Prog Definitions
 
-A 'prog' definition is for normal runtime behavior. A call to a prog word will simply apply the word's behavior, albeit subject to partial evaluation and other optimizations.
+A 'prog' definition is for normal runtime behavior. A call to a prog word will simply apply the word's behavior, subject to partial evaluation if there are sufficient inputs on the data stack and no effects are required.
 
 ### Data Definitions
 
-A 'data' definition is expressed by a program of arity 0--1 that is evaluated at compile-time to produce the data value. A call to a data word is trivially replaced by the computed data.
+A 'data' definition is expressed by a program of arity 0--1 that is evaluated at compile-time to produce the data value. A call to a data word is trivially replaced by the already computed data.
 
 ### Procedural Definitions
 
         from [ Program ] import foo, bar as baz, qux
 
-A 'from' entry may be parameterized by a 0--1 arity program instead of a module name. This program is evaluated at compile-time to return a dictionary from which we integrate definitions into the toplevel namespace. It is an error if the imported word is not defined or has an unrecognized type.
+A 'from' entry may be parameterized by a 0--1 arity program instead of a module name. This program is evaluated at compile-time to return a dictionary (including the 'dict' header) from which we'll integrate definitions into the toplevel namespace. Like 'from ModuleRef import ...' it is an error if an imported word is not defined.
 
 ### Hierarchical Definitions
 
-Within a program, `m/sqrt` requires that 'm' is dictionary data defining 'sqrt'. That is, 'm' is a data word whose value is of form `(dict:(sqrt:(...)), ...)`. This is usually achieved via 'import' declaration or 'data' definition. A benefit of hierarchical definitions is that it reduces need to import words individually, and provides clear provenance of words. A disadvantage is that it's often more verbose.
+Within a program, `m/sqrt` assumes that 'm' is defined as a data word of form `(dict:(sqrt:(...), ...), ...)`. This is readily achieved via import-as or data entries. 
+ that 'm' includes a def of sqrt. That is, 'm' is a data word whose value is of form `(def:(sqrt:(...)), ...)`. This can be achieved via import-as or 'data' definition. A benefit of hierarchical definitions is that it reduces need to import words individually, and provides clear provenance of words. A disadvantage is that it's often more verbose.
 
-Hierarchical definitions can be arbitrarily deep, e.g. `m/trig/sine` requires that `m/trig` is also dictionary data that defines sine. However, programmers may receive a style warning for going more than one level deep.
+Hierarchical definitions can be arbitrarily deep, e.g. `m/trig/sine` requires that `m/trig` is also a dictionary value that defines 'sine'.
 
 ### Primitive Definitions
 
@@ -149,17 +153,16 @@ Assertions are 0--Any static arity programs that are evaluated at compile-time. 
 
 Static assertions serve a role in lightweight unit and integration tests. They can also support user-defined static analysis, e.g. we could assert that a program typechecks according to some function, though it's more convenient to leave regular analysis to the g0 compiler.
 
-## Export Function
+## Export
 
-The final step when compiling a g0 module is to evaluate the export function. The dictionary value for the module is input to the export function, and the output is taken as the module's compiled value. Export functions are potentially useful for procedural generation of definitions, or compiling values for consumption outside the g0 context. If the 'export' entry is elided, is equivalent to `export []`, returning the dictionary unmodified.
+        export list, of, defined, words
+        export [ Program ]
 
-### Export Word List
-
-Alternatively, g0 modules may export an inclusion list of defined words. For example, `export foo, bar, qux` filters the dictionary to contain just those three words. This provides lightweight support for simple export control, but anything more sophisticated will need to use the export function.
+The 'export' entry, if present, must be the final entry in the g0 module. It may take the form of a word list or function. In case of a word list, any words that aren't in the list are removed from the dictionary. In case of a function, it receives the module dictionary as input (including 'dict' header), and may return an arbitrary value as output to become the module's compiled value. If absent, is equivalent to `export []`, returning the unmodified dictionary. 
 
 ## Static Evaluation
 
-Static evaluation is performed in context of macro calls, data definitions, procedural definitions, static assertions, and the export function. In all cases, static evaluation has access to compile-time effects. This include the 'log' and 'load' effects available to language modules, but may be extended with [compiler directives](https://en.wikipedia.org/wiki/Directive_%28programming%29) that influence or observe compiler state, perhaps increasing a quota or disabling a warning or requesting compiler version info. However, directives should be carefully considered to with regards to portability or complication.
+Static evaluation is performed in context of macro calls, data definitions, procedural definitions, static assertions, and the export function. In all cases, static evaluation has access to compile-time effects. This include the 'log' and 'load' effects available to language modules, but may be extended with [compiler directives](https://en.wikipedia.org/wiki/Directive_%28programming%29) that influence compiler state, such as controlling compiler warnings or setting quotas.
 
 ## Partial Evaluation
 
@@ -193,7 +196,7 @@ After the second pass, we wrap the resulting list with 'seq' then may pass the p
 
 ## Compilation Quotas
 
-With static evaluation, we can easily have compilations take arbitrary amounts of time. To guard against this, a g0 compiler could use quotas, tuning them such that they're sufficiently large that most modules do not have a problem. A compiler function cannot observe CPU time, but a quota could be based on number of operations for example. Quotas could be increased via compiler directives (static effects) for modules that are expected to take a long time to compile.
+With static evaluation, we can easily have compilations take arbitrary amounts of time. To guard against infinite loops, a g0 compiler could use quotas, and support compiler directives (via compile-time effects) to tune quotas in case they are too small for a specific module. 
 
 ## Bootstrap 
 

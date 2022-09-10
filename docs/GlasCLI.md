@@ -1,38 +1,27 @@
 # Glas Command Line Interface
 
-The glas command line will support a few built-in operations, such as:
+The glas command line supports only a few built-in operations:
 
-        glas --run 
-        glas --help
-        glas --version
+        glas --run ValueRef -- Args
         glas --extract ValueRef
+        glas --version
+        glas --help
 
-
-In most cases users will invoke operations such as: 
-
-        glas print ValueRef
-        glas type ValueRef
-        glas repl
-
-These operations are implemented by defining modules with a simple naming convention. Relevantly, we apply a very simple rewrite rule:
+User-defined commands are supported via lightweight syntactic sugar:
 
         glas opname a b c 
             # implicitly rewrites to
         glas --run glas-cli-opname.main -- a b c
 
-In this case module glas-cli-opname must compile to a value of form `(main:Program, ...)`. This program is evaluated as a [Glas Application](GlasApps.md). It is initialized with the list of strings from the command line, i.e. `init:["a", "b", "c"]`. The final `halt:ExitCode` result should contain a bitstring that we can cast to a 32-bit integer.
+Ideally, most commands used in practice should be user-defined:
 
-Besides '--run' there are a few standard built-in operations:
-
-The '--help' and '--version' operations are standard options and print messages. The '--extract' operation shall compile and print a binary value (a list of 8-bit bytes) to standard output, and is provided as a built-in only to simplify bootstrap. More built-in operations are possible, but the intention is to develop a minimal executable and move most logic into the module system. Performance can be mitigated by caching JIT-compiled representations of programs.
-
-## Built-In File Extensions
-
-Support for the `.g0` extension (for [Glas Zero](GlasZero.md)) is a required built-in for bootstrap. The `.glob` format (for [Glas Object](GlasObject.md)) is likely to also become a standard built-in, with special support for verifying . Although these are built-in, we should still bootstrap the associated language-g0 and language-glob modules.
+        glas print ValueRef
+        glas type ValueRef
+        glas repl
 
 ## Bootstrap
 
-The command line tool should be bootstrapped from the module system via extraction of an executable binary. Thus, an initial implementation doesn't need to support '--run' or a full effects API. Assuming suitable module definitions, bootstrap of the command line tool might be expressed using just a few lines of bash:
+The bootstrap implementation for glas command line only needs to support the '--extract' command. Assuming suitable module definitions, bootstrap can be expressed with just a few lines of bash:
 
     # build
     /usr/bin/glas --extract glas-binary > /tmp/glas
@@ -44,79 +33,103 @@ The command line tool should be bootstrapped from the module system via extracti
     # install
     sudo mv /tmp/glas /usr/bin/
 
-In practice, we will need multiple versions of 'glas-binary' for multiple operating systems and processors. This might be achieved by defining a 'target' module that can be adjusted via GLAS_PATH. Alternatively, we can define separate modules such as 'glas-binary-linux-x64'. 
+In practice, we need different binaries for different operating systems and machine architectures. This can be conveniently supported by defining a global 'target' module that describes our compilation target. (Alternatively, we could define specific modules such as 'glas-binary-linux-x64'.)
 
-## Versioning
+## Value References
 
-Different versions of the glas executable should mostly vary in performance. If the g0 language module bootstraps, the outcome from '--extract' should be deterministic independent of 'glas' version. The behavior for '--run' may change due to different effects APIs, but the effects APIs and their associated behavior should be standardized to control variation.
+The '--run' and '--extract' commands must reference values in the Glas module system. However, it isn't necessary to reference arbitrary values, just enough to support user-defined commands and early development.
 
-## Useful Verbs
+        ValueRef = ModuleRef ComponentPath
+        ModuleRef = LocalModule | GlobalModule
+        LocalModule = './' Word
+        GlobalModule = Word
+        ComponentPath = ('.' Word)*
+        Word = WFrag('-'WFrag)*
+        WFrag = [a-z][a-z0-9]*
 
-A few verbs that might be convenient to develop early on:
+A value reference starts by identifying a specific module, local or global. Global modules are folders found by searching GLAS_PATH environment variable, while local modules identify files or subfolders within the current working directory. The specified module is compiled to a Glas value, then a component value is extracted by following a dotted path (assuming null-terminated labels).
 
-* **print** - pretty-print values from module system.  
-* **arity** - report arity of referenced Glas program. 
-* **type** - infer and report type info for indicated Glas value.
-* **test** - support an automated fuzz-testing environment.
-* **repl** - a read-eval-print loop, perhaps configurable syntax. 
+User-defined commands may use an extended ValueRef parser. However, I caution against sophisticated command-line parameters. Better to keep logic in the Glas module system rather than bury it within external scripts as parameters to glas commands.
 
-Beyond these, applications may support language server protocol, or provide a web-app based IDE.
+## Extracting Binaries
 
+The command-line tool will always include an option to directly extract binary data. 
 
-## Effects API
+        glas --extract ValueRef
 
-### General Effects
+The reference must evaluate to a binary (a list of bytes). This binary is written to stdout, then the command halts.
 
-See [Glas Apps](GlasApps.md) for discussion on some effects APIs that are suitable for transaction machine applications in general, such as 'fork' for concurrency and 'time' to model waits and sleeps. The 'log' effect will output to standard error, but this might be tweakable via reflection APIs. 
+## Running Applications
 
-### Log and Load
+        glas --run ValueRef -- List Of Args
 
-We can directly provide the 'log' and 'load' effects from language modules. To support live coding, 'load' will be live, such that changes in source code at runtime are properly reflected in future evaluations of 'load'. Log messages will initially be streamed to standard error, but might later be configurable via environment variables.
+This will interpret the referenced value as an [application](GlasApps.md). Initial parameter is `init:["List", "Of", "Args"]`. Final 'halt' value should be a bitstring, which we'll truncate and cast to a 32-bit int for the final exit code. At the moment, this requires a 'prog' header and 1--1 arity for the app. Eventually, we might support other app representations. 
 
-### Standard Input and Output
+## Standard Exit Codes
 
-We can provide `std:in` and `std:out` as initially open file streams.
+Mostly, we'll just return 0 or -1 depending on whether things are all good or not. If there are any problems, we'll write the details in the log, which is normally written to stderr.
 
-The standard error stream is usually reserved for log effects. Programs may only write to it indirectly, via 'log:Message'.
+        0       OK
+        -1      Not OK (see log!)
+
+## Proposed Effects API
+
+The effects API is subject to gradual development.
+
+### Language Module Effects
+
+* **log:Message** - write a message to the log. Usually, this is written to the standard error stream.
+* **load:ModuleRef** - load value of referenced module. ModuleRef may currently be 'local:String | global:String'. In context of live coding, module values may update between transactions.
 
 ### Environment Variables
 
-In addition to command-line arguments, a console application typically has access to a set of 'environment variables'. The effects API can provide relatively lightweight read-only access to these variables:
+* **env:get:String** - read-only access to environment variables. 
+* **env:list** - returns a list of defined environment variables.
 
-* **env:get:Variable** - response is a value for variable, or failure if the variable is unrecognized or undefined. Variables are usually represented as strings, e.g. `env:get:"GLAS_PATH"`.
-* **env:list** - response is a list of defined variables
+## Time
 
-I'd prefer to avoid the complications from mutating environment variables. But it is feasible to indirectly represent mutation via effects handler.
+* **time:now** - Response is an estimated, logical time of commit, as a TimeStamp value.
+* **time:check:TimeStamp** - If 'now' is equal or greater to TimeStamp, respond with unit. Otherwise fail. Useful for expressing waits, but only if we also optimize for incremental computing.
 
-### Filesystem
+TimeStamp will be given as NT time: a natural number of 0.1 microsecond intervals since midnight, January 1, 1601 UT.
 
-Console apps are unavoidably related to the filesystem.
+### Noise
+
+* **fork:[List, Of, Values]** - returns a value chosen non-deterministically from the list. Is not necessarily a random choice. Can model concurrency, but requires several optimizations (incremental computing, replication on stable choice) to do so efficiently. 
+* **random:N** - response is cryptographically random binary of N bytes. Weak stability (i.e. usually same bytes after failed transaction).
+
+### Console
+
+Console IO is modeled as filesystem access with `std:in` and `std:out` as implicitly open file references. 
+
+### Filesystem Access
+
+Console apps are unavoidably related to the filesystem. The conventional API mostly works, but must be adapted for asynchronous interaction. Relevantly, we do not support implicit pushback on 'write'.  
 
 * **file:FileOp** - namespace for file operations. An open file is essentially a cursor into a file resource, with access to buffered data. 
- * **open:(name:FileName, as:FileRef, for:Interaction)** - Create a new system object to interact with the specified file resource. Fails if FileRef is already in open, otherwise returns unit. Use 'status' The intended interaction must be specified:
+ * **open:(name:FileName, as:FileRef, for:Interaction)** - Response is unit, or failure if the FileRef is already in use. Binds a new filesystem interaction to the given FileRef. Usually does not wait on OS (see 'status').
   * *read* - read file as stream. Status is set to 'done' when last byte is available, even if it hasn't been read yet.
   * *write* - open file and write from beginning. Will delete content in existing file.
   * *append* - open file and write start writing at end. Will create a new file if needed.
   * *delete* - remove a file. Use status to observe potential error.
-  * *rename:NewFileName* - rename a file. 
+  * *move:NewFileName* - rename a file. Use status to observe error.
  * **close:FileRef** - Release the file reference.
  * **read:(from:FileRef, count:Nat)** - Response is list of up to Count available bytes taken from input stream. Returns fewer than Count if input buffer is empty. 
- * **write:(to:FileRef, data:Binary)** - write a list of bytes to file. 
- * **status:FileRef** - Return a representation of the state of the system object. 
-  * *init* - the 'open' request hasn't been fully processed yet.
-  * *live* - no obvious errors, and not done. normal status for reading or writing data.
-  * *done* - successful completion of task. Does not apply to all interactions.
-  * *error:Value* - any error state. Value can be a record of ad-hoc fields describing the error (possibly empty).
+ * **write:(to:FileRef, data:Binary)** - write a list of bytes to file. Fails if not opened for write or append. Use 'busy' status for heuristic pushback.
+ * **status:FileRef** - Returns a record that may contain one or many status flags or values.
+  * *init* - the 'open' request has not yet been seen by OS. Need to wait for transaction to end.
+  * *ready* - further interaction is possible, e.g. read buffer has data available, or you're free to write.
+  * *busy* - has an active background task, e.g. write buffer not empty at start of transaction.
+  * *done* - successful termination of interaction.
+  * *error:Message* - reports an error, with some extra description.
  * **ref:list** - return a list of open file references. 
  * **ref:move:(from:FileRef, to:FileRef)** - reorganize references. Fails if 'to' ref is in use. 
-
-I'm uncertain how to best handle buffering and pushback. Perhaps buffer size could be explicitly configurable, or we could provide a simple method to check dynamically whether the write buffer is smaller than a limit. But it's a low priority feature for now. 
 
 **dir:DirOp** - namespace for directory/folder operations. This includes browsing files, watching files. 
  * **open:(name:DirName, as:DirRef, for:Interaction)** - create new system objects to interact with the specified directory resource in a requested manner. Fails if DirRef is already in use, otherwise returns unit. Potential Interactions:
   * *list* - read a list of entries from the directory. Reaches Done state after all items are read.
-  * *rename:NewDirName* - rename or move a directory. Remains open until attempted by runtime.
-  * *delete:(recursive?)* - remove an empty directory. Can be flagged for recursive deletion.
+  * *move:NewDirName* - rename or move a directory. Use status to observe error.
+  * *delete:(recursive?)* - remove an empty directory, or flag for recursive deletion.
  * **close:DirRef** - release the directory reference.
  * **read:DirRef** - read a file system entry, or fail if input buffer is empty. This is a record with ad-hoc fields including at least 'type' and 'name'. Some potential fields:
   * *type:Symbol* (always) - usually a symbol 'file' or 'dir'
@@ -124,7 +137,7 @@ I'm uncertain how to best handle buffering and pushback. Perhaps buffer size cou
   * *mtime:TimeStamp* (optional) - modify time 
   * *ctime:TimeStamp* (optional) - creation time 
   * *size:Nat* (optional) - number of bytes
- * **status:FileRef** - ~ same as file status
+ * **status:DirRef** - ~ same as file status
  * **ref:list** - return a list of open directory references.
  * **ref:move:(from:DirRef, to:DirRef)** - reorganize directory references. Fails if 'to' ref is in use.
  * **cwd** - return current working directory. Non-rooted file references are relative to this.
@@ -140,46 +153,38 @@ I can cover needs of most applications with support for just the TCP and UDP pro
  * **l:ListenerOp** - namespace for TCP listener operations.
   * **create:(port?Port, addr?Addr, as:ListenerRef)** - Create a new ListenerRef. Return unit. Whether listener is successfully created is observable via 'state' a short while after the request is committed.
    * *port* - indicates which local TCP port to bind. If omitted, OS chooses port.
-   * *addr* - indicates which local network cards or ethernet interfaces to bind. If omitted, attempts to bind all addresses.
+   * *addr* - indicates which local network cards or ethernet interfaces to bind. Can be a string or bitstring. If omitted, attempts to bind all interfaces.
   * **accept:(from:ListenerRef, as:TcpRef)** - Receive an incoming connection, and bind the new connection to the specified TcpRef. This operation will fail if there is no pending connection. 
-  * **status:ListenerRef**
-   * *init* - initial status, 'create' not yet processed by OS/runtime.
-   * *live*
-   * *error:Value* - indicates error. Value may be a record with ad-hoc fields describing the error, possibly empty. 
-  * **info:ListenerRef** - After successful creation of listener, returns `(port:Port, addr:Addr)`. Fails if listener is not successfully created.
+  * **status:ListenerRef** ~ same as file status
+  * **info:ListenerRef** - For active listener, returns a list of local `(port:Port, addr:Addr)` pairs for that are being listened on. Fails in case of 'init' or 'error' status.
   * **close:ListenerRef** - Release listener reference and associated resources.
   * **ref:list** - returns list of open listener refs 
   * **ref:move:(from:ListenerRef, to:ListenerRef)** - reorganize references. Cannot move to an open ref.
  * **connect:(dst:(port:Port, addr:Addr), src?(port?Port, addr?Addr), as:TcpRef)** - Create a new connection to a remote TCP port. Fails if TcpRef is already in use, otherwise returns unit. Whether the connection is successful is observable via 'state' a short while after the request is committed. Destination port and address must be specified, but source port and address are usually unspecified and determined dynamically by the OS.
  * **read:(from:TcpRef, count:N)** - read 1 to N bytes, limited by available data, returned as a list. Fails if no bytes are available - see 'status' to diagnose error vs. end of input. 
- * **write:(to:TcpRef, data:Binary)** - write binary data to the TCP connection. The binary is represented by a list of bytes.
+ * **write:(to:TcpRef, data:Binary)** - write binary data to the TCP connection. The binary is represented by a list of bytes. Use 'busy' status for heuristic pushback.
  * **limit:(of:Ref, cap:Count)** - fails if number of bytes pending in the write buffer is greater than Count or if connection is closed, otherwise succeeds returning unit. Not necessarily accurate or precise. This method is useful for pushback, to limit a writer that is faster than a remote reader.
- * **status:TcpRef**
-  * *init* - initial status, 'create' not yet processed by OS/runtime.
-  * *live*
-  * *done* - remote has closed connection, but might still receive/send just a little more.
-  * *error:Value* - indicates error. Value may be a record with ad-hoc fields describing the error, possibly empty. 
- * **info:TcpRef** - For a successful TCP connection (whether via 'tcp:connect' or 'tcp:listener:accept'), returns `(dst:(port:Port, addr:Addr), src:(port:Port, addr:Addr))`. Fails if TCP connection is not successful.
+ * **status:TcpRef** ~ same as file status
+ * **info:TcpRef** - Returns a `(dst:(port, addr), src:(port, addr))` pair after TCP connection is active. May fail in some cases (e.g. 'init' or 'error' status).
  * **close:TcpRef**
  * **ref:list** - returns list of open TCP refs 
  * **ref:move:(from:TcpRef, to:TcpRef)** - reorganize TCP refs. Fails if 'to' ref is in use.
 
-* **udp:UdpOp** - namespace for UDP operations.
+* **udp:UdpOp** - namespace for UDP operations. UDP messages use `(port, addr, data)` triples, with port and address refering to the remote endpoint.
  * **connect:(port?Port, addr?Addr, as:UdpRef)** - Bind a local UDP port, potentially across multiple ethernet interfaces. Fails if UdpRef is already in use, otherwise returns unit. Whether binding is successful is observable via 'state' after the request is committed. Options:
   * *port* - normally included to determine which port to bind, but may be left to dynamic allocation. 
-  * *addr* - indicates which local ethernet interfaces to bind; if unspecified, binds all of them.
- * **read:(from:UdpRef)** - returns the next available Message value, consisting of `(port:Port, addr:Addr, data:Binary)`. This refers to the remote UDP port and address, and the binary data payload. Fails if there is no available message.
- * **write(to:UdpRef, data:Message)** - output a message using same `(port, addr, data)` record as messages read. Returns unit. Write may fail if the connection is in an error state, and attempting to write to an invalid port or address or oversized packets may result in an error state.
- * **status:UdpRef**
-  * *init* - initial status, 'create' not yet processed by OS/runtime.
-  * *live*
-  * *error:Value* - indicates error. Value may be a record with ad-hoc fields describing the error, possibly empty. 
- * **info:UdpRef** - For a live UDP connection, returns a `(port:Port, addr:Addr)` pair. Fails if still initializing, or if there was an error during initialization.
+  * *addr* - indicates which local ethernet interfaces to bind; if unspecified, attempts to binds all interfaces.
+ * **read:(from:UdpRef)** - returns the next available UDP message value. 
+ * **write(to:UdpRef, data:Message)** - output a UDP message
+ 
+  using same `(port, addr, data)` record as messages read. Returns unit. Write may fail if the connection is in an error state, and attempting to write to an invalid port or address or oversized packets may result in an error state.
+ * **status:UdpRef** ~ same as file status
+ * **info:UdpRef** - Returns a list of `(port:Port, addr:Addr)` pairs for the local endpoint.
  * **close:UdpRef** - Return reference to unused state, releasing system resources.
  * **ref:list** - returns list of open UDP refs.
  * **ref:move:(from:UdpRef, to:UdpRef)** - reorganize UDP refs. Fails if 'to' ref is in use.
 
-A port is a fixed-width 16-bit number. An addr is a fixed-width 32-bit or 128-bit number (IPv4 or IPv6) or optionally a string such as "www.google.com" or "192.168.1.42" or "2001:db8::2:1". Later, I might add a dedicated API for DNS lookup, or perhaps for 'raw' Ethernet.
+A port is a fixed-width 16-bit number. An addr is a fixed-width 32-bit or 128-bit bitstring (IPv4 or IPv6) or a text string such as "www.example.com" or "192.168.1.42" or "2001:db8::2:1". Later, I might add a dedicated API for DNS lookup, or perhaps for 'raw' Ethernet.
 
 ## Rejected or Deferred Effects APIs
 
@@ -189,10 +194,22 @@ The 'load' effect is sufficient for common module system access, but it might be
 
 ### Graphical User Interface? Defer.
 
-I like the idea that applications should 'serve' GUI connections, which can allow for multiple users and views and works well with orthogonal persistence. A GUI connection to applications could be initiated by default, perhaps configurable by defining an environment variable. But I'm uncertain what such a connection should look like. 
+Assuming network support, we can indirectly support GUI applications via X11, RDP, HTTP, VNC, or other protocols. Similarly for sound. This should be sufficient for many use-cases and avoids the challenge of reinventing UI models.
 
-I'm not in a hurry to solve this. Short term, we can support GUI via web-app, or perhaps use a existing remote desktop protocol. 
+However, it is potentially interesting to reinvent UI models and sound in context of transaction machines and reference to content-addressed storage. We can potentially simplify many things.
 
 ### Runtime Reflection? Defer.
 
-It might be useful to provide some reflection on the environment. This could include call stacks, performance metrics, or traces of failed transactions. However, I'm uncertain what this API should look like, and it is also low priority. 
+It might be useful to provide some reflection on the environment. 
+
+* API information
+* access to Glas Object representations of data, including stowage references
+* performance analysis support, e.g. know how often a transaction fails or is interrupted.
+
+This is something to return to when I have a better idea of what is needed.
+
+### Foreign Function Interface? Defer.
+
+Reference to external DLLs is a terrible fit for my vision of Glas systems. However, Glas systems can feasibly embed DLLs (and headers) within the module system. This would make the DLL code accessible in the module system for analysis, synthesis, simulation, optimization, and so on. Further, it would simplify precise reference and distribution via content-addressed storage.
+
+Applications represented as Glas programs, i.e. with the 'prog' header, are too high level to leverage embedded DLLs. But it is feasible to eventually extend 'glas --run' to support other representations. This could include an option to interpret a low-level app representation without compiling a separate executable.

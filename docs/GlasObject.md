@@ -163,7 +163,7 @@ When we update a radix tree or finger tree, the result is a new value with some 
 
 If we later serialize data including the updated tree, we can make a decision to either drop the separate glob (after copying the content we need) or continue referencing it. This decision can be based on a heuristic threshold, e.g. keep the old glob if we're still referencing at least 30% of its content.
 
-Essentially, we can heuristically defer replacement of globs until enough data is being replaced. And upon replacing a node, the same pattern will apply to the next level of dependencies. This pattern can amortize update costs, keeping most updates close to the 'root' of a glob dependency graph, vaguely similar to a [log-structured merge-tree](https://en.wikipedia.org/wiki/Log-structured_merge-tree) or a generational garbage collector.
+Essentially, we can heuristically defer replacement of globs until enough data is being replaced. Upon replacing a node, the same pattern will apply to the next level of dependencies. This pattern can amortize update costs at cost of some vestigial data in content-addressed storage.
 
 ### Random Access
 
@@ -181,33 +181,33 @@ This allows messages to carry their full 'meaning' unlike most communication tod
 
 ### Lazy Patches
 
-This was originally part of my Glas Object definition, so the design is almost complete. But I've decided to elide it for now because I'm not convinced by the performance-complexity tradeoff. May reconsider depending on experimental evidence of benefits.
+This was originally part of my Glas Object definition, so the design is close to complete. But I've decided to elide it because I'm not convinced by the performance-complexity tradeoff in general, and programmers can obtain similar performance benefits by explicitly modeling patches in the data layer.
 
-The core idea is to introduce an 'apply patch' node that applies a 'patch' to a data node.
+The foundation for patches is introducing apply-patch nodes:
 
-* *apply patch* - header (0x05) is followed by offset to target value, then by patch node.
+* *apply patch* - header is followed by target value and representation of patch
 
-Patches should be carefully designed with several properties:
+To make them efficient and useful, patches should be carefully designed with several properties:
 
-* incremental (lazy) application. e.g. `(apply-patch (patch-branch a b) (branch x y))` can be rewritten to `(branch (apply-patch a x) (apply-patch b y))`.
+* incremental (lazy) application. e.g. `(apply-patch (patch-branch a b) (branch x y))` can be rewritten to `(branch (apply-patch a x) (apply-patch b y))`, then we only need to consider half.
 * indexable, e.g. given `(patch-branch (patch-stem stem-bits (replace y)))` we could efficiently lookup the value 'y' without observing the original data. This enables patches to serve as working memory.
-* composable, e.g. `(apply-patch a (apply-patch b x))` can rewrite to `(apply-patch (merged a b) x)`, where the merged patch combines the index and is usually smaller than the sum of separate patches. 
+* composable / mergable, e.g. `(apply-patch a (apply-patch b x))` can rewrite to `(apply-patch (merge a b) x)`, where the evaluated merge is usually smaller than the sum of its components.
 
-To acheive these properties, we can mirror representation of data, and cache some information that would otherwise be derived by peeking at data. A viable model for patches:
+To acheive these properties, we can mirror representation of indexed data, and keep enough extra information to merge patches as part of each patch. A viable model for patches on radix trees and lists: 
 
-* *nop* - encoded similar to data leaf. Patch has no effect, though implicitly asserts that the data node is reachable. Will usually be erased if feasible.
-* *stem* - encoded similar to data stem, followed by patch. Follow stem then applies patch.
-* *branch* - encoded similar to data branch, with left and right patches. Applies patch to both branches.
+* *nop* - encoded similar to data leaf. Patch has no effect, though implicitly asserts that the data node is reachable. Usually erased if feasible.
+* *patch stem* - encoded similar to data stem, followed by patch. Follow stem then applies patch.
+* *patch branch* - encoded similar to data branch, with left and right patches. Applies patch to both branches.
 * *replace* - header followed by data, replaces value at patched location.
 * *trim* - header includes direction (left or right). Applies to branch. Removes branch in indicated direction, resulting in a stem.
 * *splice* - header includes direction (left or right). Applies to stem. Adds branch in indicated direction, resulting in a branch. (Direction supports merging and indexing.)
 * *internal ref* - header followed by offset to patch, supports structure sharing of patches within a glob
-* *annotation* - encoded similar to data annotation, but the patch on the annotation applies a patch to the entire list of annotations. For example, we can erase all annotations on a value by replacing annotations with an empty list.
+* *patch annotation* - encoded similar to data annotation, but the patch on the annotation applies a patch to the entire list of annotations. For example, we can erase all annotations on a value by replacing annotations with an empty list.
 * *list split update* - header followed by final left length (varnat), initial left length (varnat), offset to right patch, then left patch. Will:
   * split list at initial left length
   * apply left and right patches respectively to left and right sublists
   * record final left list length (supports merging and indexing)
   * concat patched lists 
-* *array* - encoded similar to data array, except with offsets to patches. Applies a list of patches to a list of data. (List of patches may be shorter than list of data.) 
+* *patch array* - encoded similar to data arrays, except with offsets to patches. Applies a list of patches to a list of data. (List of patches may be shorter than list of data.) 
 
-For 'deep' updates, patches are more compact than structure-sharing updates because patches don't need to represent or reference unmodified components. Patches also support amortized update directly at the data layer, whereas we depend on glob replacement heuristics for similar benefits at the content-addressed storage layer. I'm not convinced these performance benefits are worthy of the added complexity costs.
+If patches were explicitly modeled in the data layer, they would not be limited to radix trees and lists, and programmers can more precisely align patches with problem domain. It becomes impossible to directly observe external refs, but annotations for stowage and memoization would provide sufficient control to model a persistent [log-structured merge-tree](https://en.wikipedia.org/wiki/Log-structured_merge-tree). 

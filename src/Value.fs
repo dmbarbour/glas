@@ -490,6 +490,9 @@ module Value =
         | Some (fv0, fv') ->
             { Stem = Bits.empty; Spine = Some struct(fv0, fv', NonPairVal(unit)) }
 
+    let ofList (lv : Value list) : Value =
+        lv |> FTList.ofList |> ofFTList
+
     /// Convert from a binary 
     let ofBinary (s : uint8 array) : Value =
         let fn e l = pair (u8 e) l
@@ -761,3 +764,29 @@ module Value =
     // A related option is to represent a large value as a program that
     // would reproduce the value. Obviously we could write `data:Value`,
     // but we could use compression mechanisms on the value.
+
+
+// Performance of lists, especially binaries, isn't great in prior representation.
+// Developing alternative model based around the Glob representation of values.
+module GlobValue =
+    type IA<'T> = System.Collections.Immutable.ImmutableArray<'T>
+    type B = IA<uint8>
+
+    type Value =
+        // Basic Values (radix trees).
+        | Leaf // unit value
+        | Stem of uint64 * Value      // 0..63 bits, e.g. `abcdef1000...0` is 6 bits.
+        | Stem64 of uint64 * Value    // exactly 64 bits of stem data
+        | Branch of Value * Value     // basic branching data
+
+        // Optimized Lists (also list-like or sparse list values)
+        | Drop of uint64 * Value        // slicing lists
+        | Take of uint64 * Value        // slicing, caching size of lists
+        | Array of IA<Value>            // optimized list of values
+        | Binary of B                   // optimized list of bytes
+        | Concat of Value * Value       // concatenation of lists
+
+        // Potential extensions:
+        //  Content Addressed Storage and Path Select 
+        //  Reference to 'compact' values as Glob binary and offset.
+
