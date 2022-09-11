@@ -172,7 +172,7 @@ module Zero =
             ]
         
         let parseImportAs : P<Ent> =
-            kwstr "import" >>. parseModuleRef .>>. kwstr "as" >>. parseWord |>> ImportAs
+            kwstr "import" >>. parseModuleRef .>>. (kwstr "as" >>. parseWord) |>> ImportAs
 
         let parseExport : P<ExportOpt> =
             let wordList = sepBy1 parseWord (pchar ',' .>> ws)

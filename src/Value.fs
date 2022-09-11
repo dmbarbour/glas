@@ -772,14 +772,14 @@ module GlobValue =
     type IA<'T> = System.Collections.Immutable.ImmutableArray<'T>
     type B = IA<uint8>
 
-    type Value =
-        // Basic Values (radix trees).
-        | Leaf // unit value
-        | Stem of uint64 * Value      // 0..63 bits, e.g. `abcdef1000...0` is 6 bits.
-        | Stem64 of uint64 * Value    // exactly 64 bits of stem data
-        | Branch of Value * Value     // basic branching data
+    [<Struct>]
+    type Value = { Stem: Bits; Term: Term }
+    and Term = 
+        // Basic Values
+        | Leaf
+        | Branch of Value * Value
 
-        // Optimized Lists (also list-like or sparse list values)
+        // Optimized Lists (and list-like structures)
         | Drop of uint64 * Value        // slicing lists
         | Take of uint64 * Value        // slicing, caching size of lists
         | Array of IA<Value>            // optimized list of values
@@ -787,6 +787,6 @@ module GlobValue =
         | Concat of Value * Value       // concatenation of lists
 
         // Potential extensions:
-        //  Content Addressed Storage and Path Select 
-        //  Reference to 'compact' values as Glob binary and offset.
+        //  Content Addressed Storage and Path Select
+        //  Alternatively, 'compact' values via glob+offset.
 

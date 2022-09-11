@@ -1,6 +1,15 @@
 namespace Glas
 
 /// A compact, immutable list of bits (bools). Optimized for short lists.
+///
+/// Head bits are encoded such that msb is first bit. Length of Head is
+/// encoded based on lowest '1' bit. E.g. for four bits we'd use:
+/// 
+///    abc1 - 3 bits
+///    ab10 - 2 bits
+///    a100 - 1 bits
+///    1000 - 0 bits
+/// 
 [<Struct>]
 type Bits = 
     { Head     : uint64         // 0 to 63 bits encoded in head.  
@@ -30,17 +39,17 @@ module Bits =
 
     /// Returns whether Bits is empty list.
     let inline isEmpty (b : Bits) : bool =
-        (1UL = b.Head) && (List.isEmpty b.Tail)
+        (hibit = b.Head) && (List.isEmpty b.Tail)
 
     /// The empty Bits list.
     let empty : Bits = 
-        { Head = 1UL; Tail = List.empty }
+        { Head = hibit; Tail = List.empty }
 
     /// Head element of a non-empty list.
     let head (b : Bits) : bool =
-        if (1UL <> b.Head) then lsb b.Head else 
+        if (hibit <> b.Head) then msb b.Head else 
         match b.Tail with
-        | (x :: _) -> lsb x
+        | (x :: _) -> msb x
         | [] -> invalidArg (nameof b) "head of empty list"
 
     let tryHead (b : Bits) : bool option =
@@ -48,9 +57,9 @@ module Bits =
 
     /// Remainder of a non-empty list after head.
     let tail (b : Bits) : Bits =
-        if (1UL <> b.Head) then { b with Head = (b.Head >>> 1) } else
+        if (hibit <> b.Head) then { b with Head = (b.Head <<< 1) } else
         match b.Tail with
-        | (x :: xs) -> { Head = (hibit ||| (x >>> 1)); Tail = xs }
+        | (x :: xs) -> { Head = (lobit ||| (x <<< 1)); Tail = xs }
         | [] -> invalidArg (nameof b) "tail of empty list"
 
     let tryTail (b : Bits) : Bits option =
@@ -58,10 +67,9 @@ module Bits =
 
     /// Add element to head of list.
     let cons (e : bool) (b : Bits) : Bits =
-        let eUL = if e then 1UL else 0UL
-        let hd' = (b.Head <<< 1) ||| eUL
-        if msb b.Head 
-          then { Head = 1UL; Tail = (hd' :: b.Tail) }
+        let hd' = (b.Head >>> 1) ||| (if e then hibit else 0UL)
+        if lsb b.Head // if b.Head has 63 bits
+          then { Head = hibit; Tail = (hd' :: b.Tail) }
           else { b with Head = hd' }   
 
     let inline (|Cons|_|) b =
@@ -84,56 +92,16 @@ module Bits =
         // 6-step computation of size via binary division.
         let mutable v = hd
         let mutable n = 0
-        if (0UL <> (0xFFFFFFFF00000000UL &&& v)) then n <- n + 32; v <- v >>> 32;
-        if (0UL <> (        0xFFFF0000UL &&& v)) then n <- n + 16; v <- v >>> 16;
-        if (0UL <> (            0xFF00UL &&& v)) then n <- n +  8; v <- v >>>  8;
-        if (0UL <> (              0xF0UL &&& v)) then n <- n +  4; v <- v >>>  4;
-        if (0UL <> (               0xCUL &&& v)) then n <- n +  2; v <- v >>>  2;
-        if (0UL <> (               0x2UL &&& v)) then n+1 else n
+        if (0UL <> (0xFFFFFFFFUL &&& v)) then n <- n + 32 else v <- v >>> 32
+        if (0UL <> (    0xFFFFUL &&& v)) then n <- n + 16 else v <- v >>> 16
+        if (0UL <> (      0xFFUL &&& v)) then n <- n +  8 else v <- v >>>  8
+        if (0UL <> (       0xFUL &&& v)) then n <- n +  4 else v <- v >>>  4
+        if (0UL <> (       0x3UL &&& v)) then n <- n +  2 else v <- v >>>  2
+        if (0UL <> (       0x1UL &&& v)) then      n +  1 else n
 
     /// Return number of bits.
     let length (b : Bits) : int =
         (lenHd b.Head) + (64 * (List.length b.Tail))
-
-    let inline private headBits hd = 
-        (1UL <<< (lenHd hd)) - 1UL
-
-    let inline private bmap1UL fn b =
-        let m = headBits b.Head
-        { Head = ((~~~m) &&& b.Head) ||| (m &&& (fn b.Head))
-        ; Tail = List.map fn b.Tail
-        }
-
-    /// Bitwise Negation (flip all the bits)
-    let bneg (b : Bits) : Bits =
-        bmap1UL (~~~) b
-
-    let inline private bmap2UL (fn) (bL : Bits) (bR : Bits) : Bits =
-        let m = headBits bL.Head
-        if (m <> headBits bR.Head) then invalidArgMatchLen bL bR else
-        { Head = ((~~~m) &&& bL.Head) ||| (m &&& (fn bL.Head bR.Head))
-        ; Tail = List.map2 fn bL.Tail bR.Tail
-        }
-    
-    /// Bitwise not-equal (XOR)
-    let bneq (bL : Bits) (bR : Bits) : Bits =
-        bmap2UL (^^^) bL bR
-
-    // F# doesn't have bitwise equality operator, but we can negate XOR
-    let private beqUL a b = 
-        ~~~(a ^^^ b)
-
-    /// Bitwise Equality (negation of XOR)
-    let beq (bL : Bits) (bR : Bits) : Bits =
-        bmap2UL beqUL bL bR
-
-    /// Bitwise Minimum (AND)
-    let bmin (bL : Bits) (bR : Bits) : Bits =
-        bmap2UL (&&&) bL bR
-
-    /// Bitwise Maximum (OR)
-    let bmax (bL : Bits) (bR : Bits) : Bits =
-        bmap2UL (|||) bL bR
 
     /// Fold over bits within list, starting from head.
     let rec fold fn (st : 'ST) (b : Bits) : 'ST =
@@ -155,13 +123,13 @@ module Bits =
         let rec foldBack fn ix n (st : 'ST) : 'ST =
             if (0 = ix) then st else
             let ix' = ix - 1
-            let item = (0UL <> (n &&& (1UL <<< ix')))
+            let item = (0UL <> (n &&& (hibit >>> ix')))
             foldBack fn ix' n (fn item st)
 
         let rec foldBack2 fn ix nL nR (st : 'ST) : 'ST =
             if (0 = ix) then st else
             let ix' = ix - 1
-            let bit = (1UL <<< ix')
+            let bit = (hibit >>> ix')
             let itL = (0UL <> (nL &&& bit))
             let itR = (0UL <> (nR &&& bit))
             foldBack2 fn ix' nL nR (fn itL itR st) 
@@ -185,7 +153,7 @@ module Bits =
     let append (bL : Bits) (bR : Bits) : Bits =
         if isEmpty bR then bL else
         if isEmpty bL then bR else
-        if (1UL = bR.Head) // optimizable
+        if (hibit = bR.Head) // optimizable
           then { Head = bL.Head; Tail = List.append (bL.Tail) (bR.Tail) }
           else foldBack cons bL bR
 
@@ -267,9 +235,9 @@ module Bits =
         Array.foldBack consByte b empty
 
     let inline private matchHdLen hdlen n =
-        let expect_hibit = (1UL <<< hdlen)
-        let mask_hibits = ~~~(expect_hibit - 1UL)
-        ((mask_hibits &&& n) = expect_hibit)
+        let lb = (hibit >>> hdlen)  // length bit
+        let ndb = lb ||| (lb - 1UL) // non-data bits (mask)
+        (lb = (n &&& ndb))
 
     let rec private matchListLen len xs =
         match xs with
