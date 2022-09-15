@@ -129,32 +129,4 @@ let tests =
             Expect.equal (Bits.toList (Bits.take tk (Bits.ofList b))) (List.take tk b) "equal take"
             Expect.equal (Bits.toList (Bits.skip tk (Bits.ofList b))) (List.skip tk b) "equal skip"
 
-        testCase "bitwise negation" <| fun () ->
-            let b0 = randomList 599
-            Expect.equal (Bits.ofList b0 |> Bits.bneg |> Bits.toList) (List.map (not) b0) "equal negation"
-
-        testCase "bitwise equality" <| fun () ->
-            let len = 461
-            let b0 = randomList len
-            let b1 = randomList len
-            Expect.equal (Bits.beq (Bits.ofList b0) (Bits.ofList b1) |> Bits.toList) (List.map2 (=) b0 b1) "bitwise equal"
-        
-        testCase "bitwise xor" <| fun () ->
-            let len = 1373
-            let b0 = randomList len
-            let b1 = randomList len
-            Expect.equal (Bits.bneq (Bits.ofList b0) (Bits.ofList b1) |> Bits.toList) (List.map2 (<>) b0 b1) "bitwise xor"
-
-        testCase "bitwise and" <| fun () ->
-            let len = 503
-            let b0 = randomList len
-            let b1 = randomList len
-            Expect.equal (Bits.bmin (Bits.ofList b0) (Bits.ofList b1) |> Bits.toList) (List.map2 (&&) b0 b1) "bitwise and / min"
-
-        testCase "bitwise or" <| fun () ->
-            let len = 1231
-            let b0 = randomList len
-            let b1 = randomList len
-            Expect.equal (Bits.bmax (Bits.ofList b0) (Bits.ofList b1) |> Bits.toList) (List.map2 (||) b0 b1) "bitwise or/max"
-
     ]

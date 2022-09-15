@@ -27,9 +27,10 @@ module Glas.TestGlasZero
         _toBits (Bits.empty) bitct n
 
 
-    let imp w = (w,w)
-    let impAs w a = (w,a)
-
+    let inline impAs w a = struct(w,a)
+    let inline imp w = impAs w w
+    let inline callW (s:string) : Action = 
+        Call struct(s,[])
 
     [<Tests>]
     let tests = 
@@ -103,10 +104,10 @@ module Glas.TestGlasZero
                 let vb = Value.ofBits
 
                 // A simple program.
-                let p1 =  [Const (vb (toB 12 0xabcUL)); Const (Value.symbol "foo"); Const (Value.ofString "test"); Call "swap"]
+                let p1 =  [Const (vb (toB 12 0xabcUL)); Const (Value.symbol "foo"); Const (Value.ofString "test"); callW "swap"]
                 Expect.equal p1 (pp "0xaBc 'foo \"test\" \n  swap  ") "test simple program"
 
-                let p2 = [Block []; Call "dip"]
+                let p2 = [Block []; callW "dip"]
                 Expect.equal p2 (pp "[] dip") "dip nop 1"
                 Expect.equal p2 (pp " [ ] dip ") "dip nop 2"
                 Expect.equal p2 (pp "# dip nop\n [  ] dip") "dip nop 3"
@@ -116,29 +117,33 @@ module Glas.TestGlasZero
                 failParse zpp "] dip"
                 failParse zpp "[]] dip "
 
-                let p3 = [Block [Call "foo"]; Call "dip"]
+                let p3 = [Block [callW "foo"]; callW "dip"]
                 Expect.equal p3 (pp "[foo] dip") "dip foo 1"
                 Expect.equal p3 (pp "[ foo ] dip ") "dip foo 2"
                 Expect.equal p3 (pp "\n[ \nfoo\r ] \r dip ") "dip foo 3"
                 Expect.equal p3 (pp "[foo] # comment\n dip") "dip foo 4"
 
-                let p4 = [Block [Call "foo"]; Block [Call "bar"]; Block [Call "baz"]; Call "try-then-else"]
+                let p4 = [Block [callW "foo"]; Block [callW "bar"]; Block [callW "baz"]; callW "try-then-else"]
                 Expect.equal p4 (pp "[foo] [\nbar\n] \n [baz #comment\n] try-then-else # more comments\n") "try then else"
 
             testCase "imports" <| fun () -> 
-                let zpf = Parser.parseImportFrom
+                Expect.equal (Global "abc") (doParse Parser.parseOpen "open abc") "parse open"
+
+                let zpf = Parser.parseEnt 
                 let pf s = doParse zpf s
 
-                let p1 = ImportFrom ("a", [impAs "bar" "foo"; imp "qux"; impAs "foo" "bar"; imp "baz" ])
-                Expect.equal p1 (pf "from a import bar as foo, qux, foo as bar, baz") "from module import words"
-                Expect.equal "abc" (doParse Parser.parseOpen "open abc") "parse open"
+                let p1 = FromModule (Local "a", [impAs "bar" "foo"; imp "qux"; impAs "foo" "bar"; imp "baz" ])
+                Expect.equal p1 (pf "from ./a import bar as foo, qux, foo as bar, baz") "from module import words"
+
+                let p2 = FromData ([callW "a"; callW "b"], [impAs "x" "y"])
+                Expect.equal p2 (pf "from [a b] import x as y") "from data import words"
 
 
             testCase "toplevel" <| fun () ->
                 let p1 = String.concat "\n" [ 
                     "open xyzzy # inherit definitions"
                     "from foo import a, b as c, d"
-                    "from bar import i as j, k"
+                    "from ./bar import i as j, k"
                     ""
                     "prog baz [ # defining baz"
                     "  a c j h"
@@ -150,15 +155,15 @@ module Glas.TestGlasZero
                     ""
                     "export [foo bar]"
                 ]
-                let fromFoo = ImportFrom("foo", [imp "a"; impAs "b" "c"; imp "d"])
-                let fromBar = ImportFrom("bar", [impAs "i" "j"; imp "k"])
-                let defBaz = ProgDef("baz", [Call "a"; Call "c"; Call "j"; Call "h"])
-                let defQux = MacroDef("qux", [Call "abra"; Call "cadabra"])
-                let assertIJK = StaticAssert (11L, [Call "i"; Call "j"; Call "k" ])
+                let fromFoo = FromModule(Global "foo", [imp "a"; impAs "b" "c"; imp "d"])
+                let fromBar = FromModule(Local "bar", [impAs "i" "j"; imp "k"])
+                let defBaz = ProgDef("baz", [callW "a"; callW "c"; callW "j"; callW "h"])
+                let defQux = MacroDef("qux", [callW "abra"; callW "cadabra"])
+                let assertIJK = StaticAssert (11L, [callW "i"; callW "j"; callW "k" ])
                 let p1act =
-                    { Open = Some "xyzzy"
+                    { Open = Some (Global "xyzzy")
                       Ents = [fromFoo; fromBar; defBaz; defQux; assertIJK]
-                      Export = [Call "foo"; Call "bar"]
+                      Export = Some (ExportFn [callW "foo"; callW "bar"])
                     }
                 Expect.equal p1act (doParse Parser.parseTopLevel p1) "parse a program"
         ]
@@ -208,15 +213,17 @@ module Glas.TestGlasZero
     // Simple effects handler to test loading of modules.
     // Note that we aren't testing the log function, since
     // the logging behavior isn't very well specified.
-    let testLoadEff (src:string) (ns:Map<string,Value>) : IEffHandler =
+    let testLoadEff (src:string) (ns:Map<ModuleRef,Value>) : IEffHandler =
         let logging = not (System.String.IsNullOrEmpty(src))
         { new IEffHandler with
             member __.Eff request =
                 if logging then
                     printfn "%s: %s" src (Value.prettyPrint request)
                 match request with
-                | Value.Variant "load" (Value.String m) ->
-                    Map.tryFind m ns
+                | Value.Variant "load" (Value.Variant "global" (Value.String m)) ->
+                    Map.tryFind (Global m) ns
+                | Value.Variant "load" (Value.Variant "local" (Value.String m)) ->
+                    Map.tryFind (Local m) ns
                 | Value.Variant "log" msg ->
                     Some (Value.unit)
                 | _ ->
@@ -307,7 +314,7 @@ module Glas.TestGlasZero
             let ll0 = testLoadEff "" (Map.empty) 
             let mPrims = doCompile ll0 prims
 
-            let ll1 = testLoadEff "" (Map.ofList [("prims", mPrims)])
+            let ll1 = testLoadEff "" (Map.ofList [(Global "prims", mPrims)])
             let mLists = doCompile ll1 listOps
 
             let s0 = "abcdefghijklm"

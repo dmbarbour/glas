@@ -64,7 +64,17 @@ A blocking call at the procedure layer becomes a process that sends a message, y
 
 ### Performance-Risk Mitigation
 
-Initially, application programs must use the 'prog' header, i.e. `prog:(do:GlasProgram, app, ...)`. Eventually, we might extend representation or application programs with specialized variants to simplify essential transaction machine optimizations - i.e. nodes explicitly for checkpointing, stable forks, and fine-grained partitioning of state. This design mitigates risk in case annotations prove awkward or inadequate for the task.
+Initially, application programs must use the 'prog' header, i.e. `prog:(do:GlasProgram, app, ...)`. However, optimizations on this representation are not easy.
+
+Eventually, we might extend representation or application programs with specialized variants to simplify essential transaction machine optimizations - i.e. nodes explicitly for checkpointing, stable forks, and fine-grained partitioning of state. This opportunity mitigates risk in case annotations prove awkward or inadequate for the task.
+
+Use of 'fork' for concurrency is not very efficient without the incremental computing and replication optimizations. We should avoid it where feasible. But we can still support fork concurrency to a limited degree by 'scheduling' forks instead of randomizing them:
+
+* after evaluation of a fork succeeds, try that fork again soon.
+* ordered cycle through failed forks; guarantee opportunity to run.
+* when all forks seem to be failing, wait briefly before retry.
+
+This would be inefficient because we don't have incremental computing, but predictable and effective in case we try running an app that uses fork-based concurrency.
 
 ### Robust References
 

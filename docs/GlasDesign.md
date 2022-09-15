@@ -6,19 +6,19 @@ Design goals for Glas include purpose-specific syntax, compositionality, extensi
 
 ## Modules and Syntax
 
-Global modules are folders found via GLAS_PATH environment variable. Each folder must contains a 'public' file (with any extension). This file is compiled to an arbitrary Glas value, often representing a dictionary. The value of a file may depend acyclically on the values of local files or subfolders or other global modules.
+Modules are currently represented by files or folders in the filesystem. Each module compiles to a value, and may depend (acyclically) upon compiled values from other modules.
 
-The syntax of a file depends on file extension. For example, to compile a file named "foo.ext" we'll first compile the global module language-ext then extract the 'compile' function, which must represent a suitable Glas program. This compile function is then applied to the file binary. 
+Modules are global or local. Global modules are folders found by searching the GLAS_PATH environment variable. Eventually, GLAS_PATH will also support curated network repositories. Local modules are files or subfolders found in the same folder of the file currently being compiled.
 
-File extensions compose, for example "foo.x.y" will apply language-y to the file binary, then language-x to the resulting Glas value. Conversely, a file without an extension compiles to the file binary.
+The syntax for a file depends on file extension. For example, to compile a file named "foo.ext" we'll first compile the global module 'language-ext' then apply the 'compile' function, which must represent a valid Glas program. This compile function is then applied to the file binary. Folders simply compile to the value of the contained 'public' file (of any extension).
 
-To support bootstrap, the [language-g0](../glas-src/language-g0/README.md) module may be defined using '.g0' files. The g0 language is a Forth-inspired macro-assembly for Glas programs. Early development of Glas systems will heavily use g0, but it's just a starting point.
+To bootstrap this system, [language-g0](../glas-src/language-g0/README.md) will be defined using '.g0' files. The g0 language is a Forth-like macro-assembly aligned closely with the Glas program model.
 
-*Note:* Global modules should eventually support reference to repositories curated by company or community.
+*Aside:* File extensions compose, for example "foo.x.y" will process the file binary via language-y, then the result via language-x. Conversely, a file without any extension implicitly compiles to the raw file binary.
 
 ## Command Line
 
-The Glas system starts with a command-line tool 'glas'. This tool knows how to compile modules and how to bootstrap language-g0. After compiling a module, the command line tool can extract binary data or directly interpret simple applications, depending on the command line arguments.
+The Glas system starts with a command-line tool 'glas'. This tool knows how to compile modules and how to bootstrap language-g0. After compiling modules, the command line tool can extract binary data or interpret simple applications, depending on command line arguments.
 
 Extraction of binary data is via `glas --extract modulename.label`, outputting binary data to standard output. This feature is primarily used for bootstrap of the glas command line tool, avoiding need for effects.
 
@@ -182,7 +182,7 @@ Language modules have a module name of form `language-ext`, binding to files wit
 
 A compile program must be 1--1 arity. The input is usually a binary (with exceptions for composing file extensions) and the output is the compiled module value (or failure). Compile-time effects are extremely limited to simplify reasoning about caching, sharing, and reproducibility:
 
-* **load:ModuleRef** - Response is compiled value for the indicated module. The request may fail, e.g. if the module cannot be found or compiled, with cause implicitly logged. Currently support two forms of ModuleRef: 
+* **load:ModuleRef** - Response is compiled value for the indicated module. The request may fail, e.g. if the module cannot be found or compiled, with cause implicitly logged. Currently propose a few forms of ModuleRef: 
  * *global:String* - sequentially search GLAS_PATH for a folder with the matching name.
  * *local:String* - search files and subfolders local to file currently being compiled.
 * **log:Message** - Message should be a record, e.g. `(text:"Uh oh, you messed up!", lv:warn)`, so that it can be flexibly extended with metadata. Response is unit. Behavior depends on development environment, e.g. might print the message to stderr with color based on level.

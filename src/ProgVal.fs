@@ -166,12 +166,10 @@ module ProgVal =
     let rec invalidProgramComponents v =
         seq {
             match v with
-            | Op _ -> 
+            | Op _ | Data _ | TBD _ -> 
                 ()
             | Dip p -> 
                 yield! invalidProgramComponents p
-            | Data _ -> 
-                ()
             | PSeq lP -> 
                 yield! lP |> FTList.toSeq |> Seq.collect invalidProgramComponents
             | Cond (pTry, pThen, pElse) ->
@@ -186,8 +184,6 @@ module ProgVal =
                 yield! invalidProgramComponents pDo
             | Prog (_, pDo) ->
                 yield! invalidProgramComponents pDo
-            | TBD _ -> 
-                ()
             | _ -> 
                 yield v
         }
@@ -282,7 +278,7 @@ module ProgVal =
         | Stem lPut U -> Arity (3,1)
         | Stem lDel U -> Arity (2,1)
         | Stem lEff U -> Arity (1,1)
-        | Stem lFail U -> ArityFail 0
+        | Stem lFail U | Stem lTBD _ -> ArityFail 0
         | Dip p ->
             match stackArity p with
             | Arity (a,b) -> Arity (a+1, b+1)
@@ -317,8 +313,7 @@ module ProgVal =
                 Arity(i',o')
             | _, None -> arInfer // no annotation, use inferred
             | _, _ -> ArityDyn // arity inconsistent with annotation
-        | _ ->
-            failwithf "not a valid program %s" (prettyPrint p0)
+        | _ -> ArityDyn
 
     let static_arity p =
         match stackArity p with

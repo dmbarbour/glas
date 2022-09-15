@@ -82,6 +82,9 @@ module Effects =
             member __.Abort () = ()
         }
 
+    /// Select effects with a matching header.
+    //let effHeader (b : Bits) 
+
     /// Transactional Logging Support
     /// 
     /// Logging requires special attention in context of hierarchical transactions
@@ -216,7 +219,6 @@ module Effects =
     let consoleErrLogger () : IEffHandler =
         TXLogSupport(consoleErrLogOut) :> IEffHandler
 
-    /// This should be full effects for 'glas --run'. But it's
-    /// just a tiny subset at the moment.
-    let runEffects () : IEffHandler =
-        consoleErrLogger ()
+    // given log+load effects, return full runtime effects
+    let runtimeEffects (ll : IEffHandler) : IEffHandler =
+        ll // TODO!

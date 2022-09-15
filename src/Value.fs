@@ -668,16 +668,16 @@ module Value =
         sb.ToString()
 
 
-    let rec private _ppV (bLRSep:bool) (v:Value) : string seq = 
+    let rec private _ppV (bLR : bool) (v:Value) : string seq = 
         seq {
             match v with
             | U -> yield "()"
             | _ when isRecord v ->
                 let kvSeq = recordSeq v
                 if Seq.isEmpty (Seq.tail kvSeq) then
-                    if bLRSep then
-                        yield " "
                     // variant or symbol (a singleton record)
+                    if bLR then
+                        yield "/"
                     yield! _ppKV (Seq.head kvSeq)
                 else
                     yield "("
@@ -685,8 +685,6 @@ module Value =
                     yield! kvSeq |> Seq.tail |> Seq.collect (fun kv -> seq { yield ", "; yield! _ppKV kv})
                     yield ")"
             | String s ->
-                if bLRSep then
-                    yield " "
                 yield "\""
                 yield _escape s
                 yield "\""
@@ -698,27 +696,24 @@ module Value =
                     yield! FTList.toSeq l' |> Seq.collect (fun v -> seq { yield ", "; yield! _ppV false v})
                 | _ -> ()
                 yield "]"
-            | Bits b ->
-                if bLRSep then
-                    yield " "
-                if (Bits.head b) then 
-                    yield (Bits.toI b).ToString()
-                else
-                    yield "0b"
-                    for b in Bits.toSeq b do
-                        if b then yield "1" else yield "0"
+            | (Bits b) ->
+                if Bits.isEmpty b then yield "0" else
+                if (Bits.head b) then yield (Bits.toI b).ToString() else
+                yield "0b"
+                for bit in Bits.toSeq b do
+                    if bit then yield "1" else yield "0"
+            | P (a,b) ->
+                yield "("
+                yield! _ppV false a
+                yield ", "
+                yield! _ppV false b
+                yield ")"
             | L v ->
                 yield "L"
                 yield! _ppV true v
             | R v ->
                 yield "R"
                 yield! _ppV true v
-            | P (a,b) ->
-                yield "("
-                yield! _ppV false a
-                yield " . "
-                yield! _ppV false b
-                yield ")"
         }
     and private _ppKV (k:string,v:Value) : string seq = 
         seq {
@@ -728,11 +723,11 @@ module Value =
                 yield! _ppV false v
         }
 
-    /// (dubiously) Pretty Printing of Values.
+    /// Pretty Printing of Values. (dubiously pretty) 
     ///
     /// Heuristic Priorities:
     ///   - unit
-    ///   - records/variants/symbols
+    ///   - records/variants/symbol
     ///   - strings and lists of values
     ///   - numbers/bitstrings
     ///   - pairs and sums.
@@ -746,7 +741,7 @@ module Value =
     /// for most problems. The main issue is that some numbers might 
     /// render as symbols by accident.
     let prettyPrint (v:Value) : string =
-        _ppV false v |> String.concat "" 
+        v |> _ppV false |> String.concat "" 
 
 
     // TODO:
@@ -769,24 +764,109 @@ module Value =
 // Performance of lists, especially binaries, isn't great in prior representation.
 // Developing alternative model based around the Glob representation of values.
 module GlobValue =
-    type IA<'T> = System.Collections.Immutable.ImmutableArray<'T>
-    type B = IA<uint8>
 
-    [<Struct>]
-    type Value = { Stem: Bits; Term: Term }
-    and Term = 
+    // immutable arrays with efficient slicing
+    [<Struct; NoEquality; NoComparison>] // todo: CustomEquality/Comparison. IEnumerable.
+    type ImmArray<'T> =
+        val private Data : 'T array
+        val private Offset : int
+        val Length : int
+
+        // constructors are private; use static methods instead.
+        private new(data : 'T array, offset, length) =
+            { Data = data; Offset = offset; Length = length }
+        private new(data : 'T array) =
+            { Data = data; Offset = 0; Length = data.Length }
+
+        static member Empty =
+            ImmArray(Array.empty)
+        static member OfArray(data : 'T array) =
+            ImmArray(Array.copy data)
+        static member OfArraySlice(data : 'T array, offset, len) =
+            let ok = ((len >= 0) && (offset >= 0) && ((data.Length - offset) >= len))
+            if not ok then failwith "invalid Array slice" else
+            let arr = Array.zeroCreate len
+            Array.blit data offset arr 0 len
+            ImmArray(arr)
+        static member OfSeq(dataSeq : 'T seq) =
+            ImmArray(Array.ofSeq dataSeq)
+
+        member a.GetItem(ix) =
+            let ok = ((ix >= 0) && (ix < a.Length))
+            if not ok then failwith "invalid index" else
+            a.Data.[a.Offset + ix]
+        member a.Slice(offset, len) =
+            let ok = ((offset >= 0) && (len >= 0) && ((a.Length - offset) >= len))
+            if not ok then failwith "invalid ImmArray slice" else
+            ImmArray(a.Data, a.Offset + offset, len)
+        member a.GetSlice(optIxStart, optIxEnd) = // support for .[1..3] slices.
+            let ixStart = Option.defaultValue 0 optIxStart
+            let ixEnd = Option.defaultValue (a.Length - 1) optIxEnd
+            a.Slice(ixStart, (ixEnd - ixStart + 1))
+
+        member a.CopyTo(dst, dstOffset) =
+            Array.blit a.Data a.Offset dst dstOffset a.Length
+        member a.ToArray() =
+            if (0 = a.Length) then Array.empty else 
+            let arr = Array.zeroCreate a.Length
+            a.CopyTo(arr, 0)
+            arr
+        member a.TrimUnused(tolerance) =
+            if (tolerance >= (a.Data.Length - a.Length)) then a else
+            ImmArray(a.ToArray())
+        // maybe add support for ReadOnlySpan.
+
+    type Binary = ImmArray<uint8>
+
+
+    // TODO: potential support for optimized slicing of lists.
+
+    [<NoEquality; NoComparison>] // TODO: CustomEquality, CustomComparison
+    type Value = 
         // Basic Values
         | Leaf
-        | Branch of Value * Value
+        | Stem of uint64 * Value        // 1..63 bits, e.g. abc1000..0 is 3 bits.
+        | Stem64 of uint64 * Value      // full 64 bits 
+        | Branch of Value * Value       
 
         // Optimized Lists (and list-like structures)
-        | Drop of uint64 * Value        // slicing lists
-        | Take of uint64 * Value        // slicing, caching size of lists
-        | Array of IA<Value>            // optimized list of values
-        | Binary of B                   // optimized list of bytes
-        | Concat of Value * Value       // concatenation of lists
+        | Array of ImmArray<Value>      // optimized list of values
+        | Binary of Binary              // optimized list of bytes
+        | Concat of uint64 * Value * Value  // truncate left and concat
+            // Can represent Take as Concat (size, list, Leaf)
 
-        // Potential extensions:
-        //  Content Addressed Storage and Path Select
-        //  Alternatively, 'compact' values via glob+offset.
+        // For now eliding external refs, Glob representation, etc..
+        // It might be worth supporting a value interface that can
+        // abstract these things, however.
 
+    module StemBits = // utility functions
+        // encode 1..63 bits in a uint64
+        // msb is first bit, lowest '1' bit indicates length.
+
+        let hibit = (1UL <<< 63)
+        let lobit = 1UL
+        let inline head stemBits = (0UL <> (hibit &&& stemBits)) 
+        let inline tail stemBits = (stemBits <<< 1)
+        let inline isEmpty stemBits = (hibit = stemBits)
+        let inline isFull stemBits = (0UL <> (lobit &&& stemBits))
+
+        let len stemBits = 
+            // 6-step computation of size via binary division.
+            let mutable v = stemBits
+            let mutable n = 0
+            if (0UL <> (0xFFFFFFFFUL &&& v)) then n <- n + 32 else v <- v >>> 32
+            if (0UL <> (    0xFFFFUL &&& v)) then n <- n + 16 else v <- v >>> 16
+            if (0UL <> (      0xFFUL &&& v)) then n <- n +  8 else v <- v >>>  8
+            if (0UL <> (       0xFUL &&& v)) then n <- n +  4 else v <- v >>>  4
+            if (0UL <> (       0x3UL &&& v)) then n <- n +  2 else v <- v >>>  2
+            if (0UL <> (       0x1UL &&& v)) then      n +  1 else n
+
+        let inline matchLen n stemBits =
+            let nb = (1UL <<< n)
+            let m = nb ||| (nb - 1UL)
+            (nb = (stemBits &&& m))
+
+    module List =
+        let inline singleton v = 
+            Branch(v, Leaf)
+        

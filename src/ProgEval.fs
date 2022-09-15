@@ -306,8 +306,9 @@ module ProgEval =
             fun ds ->
                 try ds |> dataStack |> (runLazy.Force()) |> unbox<Value list option>
                 with
-                | RuntimeUnderflowError(rte) -> 
+                | RuntimeUnderflowError(rte) | HaltOnTBD(rte,_)-> 
                     // underflow shouldn't occur if programs are checked ahead of eval.
+                    // A tbd error might occur in some cases.
                     unwindTX io rte 
                     None
                 | JITCompilationError(rte,p) ->
@@ -315,7 +316,30 @@ module ProgEval =
                     unwindTX io rte
                     failwithf "invalid subprogram %s" (prettyPrint p)
 
+        // We'll block partial evaluation of a 'prog' call if it would use
+        // any effects. Easiest way to represent this with current compile
+        // function is to catch an exception. 
+        exception ForbiddenEffectException of Value
+        let forbidEffects = 
+            { new IEffHandler with
+                member __.Eff v = raise (ForbiddenEffectException(v))
+              interface ITransactional with
+                member __.Try () = ()
+                member __.Commit () = ()
+                member __.Abort () = ()
+            }
+        let pureEval (p : Program) =
+            let evalNoEff = eval p forbidEffects
+            fun ds -> 
+                try evalNoEff ds
+                with 
+                | ForbiddenEffectException _ -> None
+
+
     /// The current favored implementation of eval.
     let eval : Program -> Effects.IEffHandler -> Value list -> Value list option = 
         FTI.eval
 
+    /// Evaluate except with any effect halting the application. 
+    let pureEval : Program -> Value list -> Value list option =
+        FTI.pureEval

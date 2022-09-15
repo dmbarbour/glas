@@ -33,9 +33,11 @@ Most entries may appear in any order and number. The exceptions are 'open' and '
 
 ## Dictionary
 
-By default, a g0 module compiles to a dictionary - a value of form `dict:(w1:prog:do:Program, w2:macro:Program, w3:data:Value, m:data:dict:(...), qux:(...), bar-baz:(...), ...)`. Each symbol within the dictionary corresponds to a defined word, and each definition has a type header such as 'prog' to simplify specialized handling at the call site. The 'dict' header is intended to simplify extension of dictionaries with metadata and integration with other Glas languages. 
+A valid g0 module initially compiles to a dictionary, represented as a record (radix tree) of form `(word:deftype:Value, ...)`. The g0 language handles 'prog', 'macro', and 'data' deftypes. The deftype determines how a word will be applied. Words of other deftypes are possible via import but cannot be called from a g0 program.
 
-The g0 language only knows how to define and call 'prog', 'macro', and 'data' words. It isn't an error for g0 to import words of other types, but it would be an error to call them from within a g0 program.
+The 'prog' and 'macro' deftypes are statically linked at compile time, and 'data' is statically evaluated. Thus, there are no symbolic references between definitions of these types. Structure sharing and memoization can serve a performance role similar to symbolic references, e.g. memoize the inferred type for a subprogram.
+
+*Note:* An export function can rewrite or replace this dictionary. This enables g0 modules to compile to arbitrary values.
 
 ## Words
 
@@ -49,18 +51,30 @@ In context of a g0 module, a word will have exactly one definition. That is, a w
 
 ## Imports
 
-Imports provide convenient, basic access to the module system. 
+Imports provide convenient access to the module system. A design goal is that definition and provenance of every word must be unambiguous at g0 file scope. 
 
-* **open ModuleRef** - start with words defined in another module. The value of the referenced module must be a dictionary. Unused words from this module may be overridden by later imports or definitions.
-* **from ModuleRef import ImportList** - add selected words from a module into the local namespace. The import list is comma separated list of words with optional 'as' clauses for local renaming.
-* **import ModuleRef as Word** - import complete value of a module as a data word. This can be useful with hierarchical definitions, e.g. after 'import math as m' we might use 'm/sqrt'. 
+* **open ModuleRef** - start with words defined in another module. The value of the referenced module must be a dictionary. Unused words from this module may be overridden by later imports or definitions. 
+* **from ModuleRef import ImportList** - add selected words from a module into the local namespace. The import list has form 'x, y as foo-y, z' - a comma separated list of words with optional 'as' clauses for local renaming. It is an error if any word in the import list is undefined.
+* **import ModuleRef as Word** - import value of any module as a 'data' word. Mostly intended for hierarchical definitions, e.g. after 'import math as m' we can use 'm/sqrt'. The 'as' clause is required in this case.
 
-A module reference may be one of:
+### ModuleRef 
 
-        GlobalModuleName        loads global:"GlobalModuleName"
-        ./LocalModuleName       loads local:"LocalModuleName"
+A ModuleRef may be one of:
 
-A referenced module must load successfully and define any listed words or compilation will fail. If more flexible behavior is needed, use compile-time evaluation and explicit 'load' effects.
+        Word            # load  global:"Word"
+        './'Word        # load  local:"Word"
+
+The g0 language cannot directly import modules whose names are not valid g0 words. Local and global module namespaces are entirely separate, no fallbacks or defaults. A failure to load a module will be a compile time error. In the rare case that more flexible behavior is required, compile-time evaluation can directly use 'load' effects.
+
+### ImportList 
+
+An ImportList has the form:
+
+        ImportWord = Word ('as' Word)?
+        ImportList = ImportWord (',' ImportWord)*
+
+Each word in our import list must be found in the source dictionary, and is added to the current dictionary, optionally using a new name via the 'as' clause.
+
 
 ## Embedded Data
 
@@ -110,30 +124,35 @@ Language g0 programs are expressed as blocks of words and data delimited by squa
 
 Macro definitions support staged metaprogramming. Each call to a macro will be evaluated at compile-time, taking inputs from the data stack based on partial evaluation. The top data stack result must represent a Glas program, which is subsequently applied. If any macro call fails, that is a compile-time error and the entire g0 module will fail to compile.
 
+Compiles to a 'word:macro:GlasProgram' entry in the dictionary. 
+
 ### Prog Definitions
 
-A 'prog' definition is for normal runtime behavior. A call to a prog word will simply apply the word's behavior, subject to partial evaluation if there are sufficient inputs on the data stack and no effects are required.
+A 'prog' definition is for normal runtime behavior. A call to a prog word will apply the word's behavior at runtime, albeit subject to partial evaluation if there is sufficient input on the data stack and no effects are required. 
+
+Compiles to a 'word:prog:(do:GlasProgram, ...)' entry in the dictionary. Potentially annotated.
 
 ### Data Definitions
 
-A 'data' definition is expressed by a program of arity 0--1 that is evaluated at compile-time to produce the data value. A call to a data word is trivially replaced by the already computed data.
+A 'data' definition is expressed by a program of arity 0--1 that is evaluated at compile-time to produce the data value. A call to a data word is trivially replaced by the computed data.
+
+Compiles to a 'word:data:Value' entry in the dictionary.
 
 ### Procedural Definitions
 
-        from [ Program ] import foo, bar as baz, qux
+        from [ Program ] import ImportList
 
-A 'from' entry may be parameterized by a 0--1 arity program instead of a module name. This program is evaluated at compile-time to return a dictionary (including the 'dict' header) from which we'll integrate definitions into the toplevel namespace. Like 'from ModuleRef import ...' it is an error if an imported word is not defined.
+A 'from' entry may be parameterized by a data program instead of a module name. This program is evaluated at compile-time and must return a dictionary. We then import definitions from this dictionary same as we would from a module's compiled value.
 
 ### Hierarchical Definitions
 
-Within a program, `m/sqrt` assumes that 'm' is defined as a data word of form `(dict:(sqrt:(...), ...), ...)`. This is readily achieved via import-as or data entries. 
- that 'm' includes a def of sqrt. That is, 'm' is a data word whose value is of form `(def:(sqrt:(...)), ...)`. This can be achieved via import-as or 'data' definition. A benefit of hierarchical definitions is that it reduces need to import words individually, and provides clear provenance of words. A disadvantage is that it's often more verbose.
+A dictionary may contain other dictionaries as 'data'. The g0 language provides access to words from these hierarchical dictionaries via 'm/sqrt' syntax. This would essentially apply the definition reached by following path 'm.data.sqrt'. We can define the hierarchical dictionary via 'import math as m' or by other means.
 
-Hierarchical definitions can be arbitrarily deep, e.g. `m/trig/sine` requires that `m/trig` is also a dictionary value that defines 'sine'.
+*Aside:* I'm not fond of the aesthetic when a program uses too many calls to hierarchical definitions. However, it is at least very conventional to organize definitions into bundles.
 
 ### Primitive Definitions
 
-The g0 language does not have any implicit definitions. Instead, we can use macros and embedded data as the foundation for constructing arbitrary Glas programs, as follows:
+The g0 language does not have any built-in definitions. Instead, we can use macros and embedded data as the foundation for constructing arbitrary Glas programs, as follows:
 
         macro apply []
         prog swap ['swap apply]
@@ -155,10 +174,12 @@ Static assertions serve a role in lightweight unit and integration tests. They c
 
 ## Export
 
-        export list, of, defined, words
+        export ImportList
         export [ Program ]
 
-The 'export' entry, if present, must be the final entry in the g0 module. It may take the form of a word list or function. In case of a word list, any words that aren't in the list are removed from the dictionary. In case of a function, it receives the module dictionary as input (including 'dict' header), and may return an arbitrary value as output to become the module's compiled value. If absent, is equivalent to `export []`, returning the unmodified dictionary. 
+In case of an import word list, we'll export only the final words represented by this list. In case of a function, the function must be 1--1 arity, receiving the dictionary as input and returning the compiled module value. If absent, is equivalent to `export []`, returning the unmodified dictionary.
+
+The export function may return any Glas value, not limited to a dictionary. Thus, the export function can potentially be useful for adaptation between Glas system languages, or procedural generation of data modules.
 
 ## Static Evaluation
 
@@ -192,7 +213,7 @@ A second compilation pass performs partial evaluation of 'prog' calls and elimin
 
 After the second pass, we wrap the resulting list with 'seq' then may pass the program to a Glas program optimizer. The optimizer is free to perform ad-hoc program to program rewrites and partial evaluations, e.g. based on abstract interpretation. Ideally, the optimizer should preserve static arity via annotations in case of optimizations that affect arity, otherwise we may have inconsistent partial evaluation behavior depending on optimizer version.
 
-*Note:* A 'prog' definition always results in 'prog' header in the dictionary, even if it could be optimized to 'data'. The idea here is to preserve programmer intentions against optimizations.
+*Note:* A 'prog' definition always results in 'prog' header in the dictionary, even if it could be optimized to 'data'. Similarly, 'macro' is not optimized to 'prog' even if it could be. The idea here is to preserve programmer intentions.
 
 ## Compilation Quotas
 

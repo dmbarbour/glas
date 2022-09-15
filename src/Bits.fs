@@ -9,6 +9,8 @@ namespace Glas
 ///    ab10 - 2 bits
 ///    a100 - 1 bits
 ///    1000 - 0 bits
+///
+/// This is extended to 64-bits.
 /// 
 [<Struct>]
 type Bits = 
@@ -18,15 +20,13 @@ type Bits =
 
 module Bits =
 
-    let private hibit = 
-        (1UL <<< 63)
-    let private lobit = 
-        1UL
-    let inline private match_mask mask n = 
+    let hibit = (1UL <<< 63)
+    let lobit = 1UL
+    let inline match_mask mask n = 
         ((mask &&& n) = mask) 
-    let inline private msb n = 
+    let inline msb n = 
         match_mask hibit n 
-    let inline private lsb n = 
+    let inline lsb n = 
         match_mask lobit n 
 
     let inline private invalidArgMatchLen l r =
@@ -307,7 +307,7 @@ module Bits =
 
     /// convert up to 64 bits to a number
     let (|Nat64|_|) b =
-        let len_ok = (List.isEmpty b.Tail) || ((1UL = b.Head) && (matchListLen 1 b.Tail))
+        let len_ok = (List.isEmpty b.Tail) || ((hibit = b.Head) && (matchListLen 1 b.Tail))
         if not len_ok then None else
         Some (toNat64 b)
 
@@ -368,6 +368,7 @@ module Bits =
         let extraBits = (8 * nBytes) - nBits
         assert(extraBits < 8)
         let arr = Array.zeroCreate nBytes
-        use rng = new System.Security.Cryptography.RNGCryptoServiceProvider()
+        use rng = 
+            System.Security.Cryptography.RandomNumberGenerator.Create()
         rng.GetBytes(arr)
         ofBinary arr |> skip extraBits

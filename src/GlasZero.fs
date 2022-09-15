@@ -18,8 +18,8 @@ module Zero =
     type ModuleRef = 
         | Local of Word
         | Global of Word
-    type HWord = (Word * Word list) // m/trig/sine
-    type ImportList = (Word * Word) list
+    type HWord = (struct(Word * Word list)) // m/trig/sine
+    type ImportList = (struct(Word * Word)) list
 
     /// AST for g0 programs.
     /// Comments are dropped. Words are not linked yet.
@@ -40,7 +40,7 @@ module Zero =
 
     type ExportOpt =
         | ExportFn of Block
-        | ExportList of (Word list)
+        | ExportList of ImportList
 
     /// AST for g0 toplevel.
     type TopLevel = 
@@ -48,6 +48,14 @@ module Zero =
         ; Ents : Ent list
         ; Export : ExportOpt option
         }
+
+    let hwstr (struct(w,ws)) =
+        String.concat "/" (w::ws)
+    
+    let mstr m =
+        match m with
+        | Global s -> s
+        | Local s -> "./" + s
 
     module Parser =
         // I'm using FParsec to provide decent error messages without too much effort.
@@ -79,8 +87,8 @@ module Zero =
             (wordBody .>> wsep) <?> "word"
 
         let parseHWord : P<HWord> = 
-            let hword = wordBody .>>. many (pchar '/' >>. wordBody) 
-            (hword .>> wsep) <?> "d/word"
+            let hword = wordBody .>>. many (pchar '/' >>. wordBody)
+            (hword .>> wsep) <?> "d/word" |>> fun (w,ws) -> struct(w,ws)
         
         let parseSymbol : P<Bits> =
             ((pchar '\'' >>. parseWord) <?> "symbol") |>> Value.label
@@ -158,14 +166,13 @@ module Zero =
         let parseOpen : P<ModuleRef> =
             kwstr "open" >>. parseModuleRef
 
-        let parseImportWord : P<(Word * Word)> =
-            parseWord .>>. (opt (kwstr "as" >>. parseWord)) |>> 
-                fun (w,optAsW) ->
-                    let aw = Option.defaultValue w optAsW
-                    (w,aw)
+        let parseImportList : P<ImportList> =
+            let pw = parseWord .>>. (opt (kwstr "as" >>. parseWord)) |>> 
+                        fun (w0,optAsW) -> struct(w0, Option.defaultValue w0 optAsW)
+            sepBy1 pw (pchar ',' .>> ws)
 
         let parseImportFrom : P<Ent> =
-            let wordList = kwstr "import" >>. sepBy1 parseImportWord (pchar ',' .>> ws)
+            let wordList = kwstr "import" >>. parseImportList
             kwstr "from" >>. choice [
                 parseBlock .>>. wordList |>> FromData
                 parseModuleRef .>>. wordList |>> FromModule
@@ -178,7 +185,7 @@ module Zero =
             let wordList = sepBy1 parseWord (pchar ',' .>> ws)
             kwstr "export" >>. choice [
                 parseBlock |>> ExportFn
-                wordList |>> ExportList
+                parseImportList |>> ExportList
             ]
 
         let parseProgDef : P<Ent> = 
@@ -215,13 +222,13 @@ module Zero =
         }
 
     /// Words called from a single block.
-    let rec wordsCalledBlock (b:Block) =
+    let rec wordsCalledBlock (b:Block) : Set<Word> =
         let fnEnt ent =
             match ent with
-            | Call (w,_) -> Set.singleton w // toplevel word only
+            | Call (struct(w,_)) -> Set.singleton w // toplevel word only
             | Const _ -> Set.empty
             | Block p -> wordsCalledBlock p
-        Set.unionMany (Seq.map fnEnt b)
+        b |> Seq.map fnEnt |> Set.unionMany
 
     /// All words called from all top-level entries.
     let wordsCalled (tlv : TopLevel) : Set<Word> =
@@ -229,62 +236,80 @@ module Zero =
             match ent with
             | ProgDef (_, b) | MacroDef (_, b) | StaticAssert (_, b) | DataDef (_, b) | FromData (b, _) -> 
                 wordsCalledBlock b
-            | FromImport _ | ImportAs _ -> Set.empty
+            | FromModule _ | ImportAs _ -> Set.empty
+        let openCalls = Set.empty
         let entCalls = tlv.Ents |> Seq.map fnEnt |> Set.unionMany
         let exportCalls =
             match tlv.Export with
-            | ExportFn b -> wordsCalledBlock b
-            | ExportList _ -> Set.empty
-        Set.union entCalls exportCalls
+            | Some (ExportFn b) -> wordsCalledBlock b
+            | _ -> Set.empty
+        Set.unionMany [openCalls; entCalls; exportCalls]
 
     /// All words explicitly defined in the top-level entries.
     let wordsDefined (tlv : TopLevel) : Set<Word> = 
         let fnEnt ent =
             match ent with
             | FromModule (_, lImports) | FromData (_, lImports) -> 
-                Set.ofList (List.map snd lImports)
+                let ssnd (struct(_,b)) = b
+                Set.ofList (List.map ssnd lImports)
             | ProgDef (w, _) | MacroDef (w, _) | DataDef (w, _) | ImportAs (_,w) -> 
                 Set.singleton w
             | StaticAssert _ -> 
                 Set.empty
         Set.unionMany (Seq.map fnEnt tlv.Ents)
 
-    /// Shadowing of words is (usually) not permitted within g0. This includes
-    /// defining any word after it has been used, or defining a word twice.
-    /// This function finds shadowing.
+    /// Shadowing of words is not permitted within g0. This includes defining
+    /// a word after it has been used, or defining a word twice.
     let wordsShadowed (tlv : TopLevel) : Set<Word> =
-        let rec fnImp wsSh wsDef lImports =
-            match lImports with
-            | [] -> (wsSh, wsDef)
-            | ((_,w)::lImports') ->
-                let wsSh' = if Set.contains w wsDef then Set.add w wsSh else wsSh
-                let wsDef' = Set.add w wsDef
-                fnImp wsSh' wsDef' lImports'
-        let fnEnt (wsSh,wsDef) ent =
+        let addDef w (struct(wsSh,wsDef))  = 
+            let wsSh' = if Set.contains w wsDef then Set.add w wsSh else wsSh
+            let wsDef' = Set.add w wsDef
+            struct(wsSh', wsDef')
+        let addBlock b (struct(wsSh, wsDef)) =
+            // any called word is implicitly defined earlier, but cannot shadow
+            let wsDef' = Set.union (wordsCalledBlock b) wsDef
+            struct(wsSh, wsDef')
+        let addImportList lImports acc0 =
+            let fn acc (struct(_,w)) = addDef w acc 
+            List.fold fn acc0 lImports
+        let addEnt acc ent =
             match ent with
-            | FromImport (_, lImports) -> fnImp wsSh wsDef lImports
-            | FromData (b, lImports) ->
-                let wsDef0 = Set.union (wordsCalledBlock b) wsDef
-                fnImp wsSh wsDef0 lImports
+            | FromModule (_, lImports) -> 
+                acc |> addImportList lImports
+            | FromData (b, lImports) -> 
+                acc |> addBlock b |> addImportList lImports
             | ProgDef (w, b) | MacroDef (w, b) | DataDef (w, b) ->
-                let wsDef0 = Set.union (wordsCalledBlock b) wsDef // treat called words as defined
-                let wsSh' = if Set.contains w wsDef0 then Set.add w wsSh else wsSh
-                let wsDef' = Set.add w wsDef0
-                (wsSh', wsDef')
+                acc |> addBlock b |> addDef w   // b before w to catch recursion
             | StaticAssert (_, b) ->
-                let wsDef' = Set.union (wordsCalledBlock b) wsDef
-                (wsSh, wsDef')
-        List.fold fnEnt (Set.empty, Set.empty) tlv.Ents |> fst
-
-    /// Set of modules directly loaded (not counting compile-time effects).
+                acc |> addBlock b
+            | ImportAs (_, w) ->
+                acc |> addDef w
+        let acc0 = struct(Set.empty, Set.empty)
+        let inline shadowedWords (struct(wsSh, _)) = wsSh
+        let wsShOpen = 
+            // 'open' cannot shadow anything 
+            Set.empty 
+        let wsShEnts = 
+            List.fold addEnt acc0 tlv.Ents |> shadowedWords
+        let wsShExport = 
+            match tlv.Export with
+            | Some (ExportList lImports) -> 
+                // duplicate 'as' entries result in shadowing
+                addImportList lImports acc0 |> shadowedWords
+            | Some (ExportFn _) -> Set.empty
+            | None -> Set.empty
+        Set.unionMany [wsShOpen; wsShEnts; wsShExport]
+        
+    /// Set of modules loaded via syntax (not including compile-time effects).
     let modulesLoaded (tlv : TopLevel) : Set<ModuleRef> =
         let fnEnt ent =
             match ent with
-            | FromImport (m, _) | ImportAs (m,_) -> Set.singleton m
+            | FromModule (m, _) | ImportAs (m,_) -> Set.singleton m
             | ProgDef _ | MacroDef _ | StaticAssert _ | DataDef _ | FromData _ -> Set.empty
-        let lOpen = tlv.Open |> Option.toList |> Set.ofList
-        let lFrom = List.map fnEnt tlv.Ents |> Set.unionMany
-        Set.union lOpen lFrom 
+        let openModule = tlv.Open |> Option.toList |> Set.ofList
+        let entModules = tlv.Ents |> List.map fnEnt |> Set.unionMany
+        let exportModules = Set.empty
+        Set.unionMany [openModule; entModules; exportModules]
 
     module Compile =
         open Effects
@@ -292,293 +317,281 @@ module Zero =
         open ProgEval
         open Value
 
-        // Goals for compilation:
-        // - Report as many errors as feasible while compiling, even after
-        //   we know that compilation will fail. 
-        // - Allow client to continue with errors at its own discretion.
-        //
-        // I'm still considering static arity checks or annotations. 
-        //
-
         [<System.FlagsAttribute>]
         type ErrorFlags =
-            | NoError = 0
-            | SyntaxError = 1           // the program doesn't parse
-            | WordShadowed = 2          // at least one word is shadowed
-            | LoadError = 4             // 'open' or 'from' fails to load 
-            | WordUndefined = 8         // called or imported word is undefined
-            | UnknownDefType = 16       // called word has unrecognized def type
-            | MacroFailure = 64         // evaluation of macro failed for any reason
-            | AssertionFail = 128       // evaluation of an assertion failed 
-            | DataEvalFail = 256        // evaluation of data block failed
-            | ExportFailed = 512        // evaluation of export failed.
-            | BadStaticArity = 1024     // failed static arity check
+            | NoError           = 0b0000000000000000
+            | SyntaxError       = 0b0000000000000001    // the program doesn't parse
+            | WordShadowed      = 0b0000000000000010    // at least one word is shadowed
+            | LoadError         = 0b0000000000000100    // 'open' or 'from' fails to load 
+            | WordUndefined     = 0b0000000000001000    // called or imported word is undefined
+            | UnknownDefType    = 0b0000000000010000    // called word has unrecognized def type
+            | BadStaticArity    = 0b0000000000100000    // failed static arity check
+            | BadStaticEval     = 0b0000000001000000    // static eval of assert/macro/export/data.
+
+        type LinkOutcome =
+            | LinkProg of Value
+            | LinkMacro of Value
+            | LinkData of Value
+            | LinkFail of ErrorFlags
+
+        // lookup, allowing for hierarchical words.
+        let rec tryLink (struct(w,ws)) d =
+            match Value.record_lookup (Value.label w) d with
+            | Some (Value.Variant "data" d') ->
+                match ws with
+                | (w'::ws') -> tryLink (struct(w',ws')) d'
+                | [] -> LinkData d'
+            | Some ((Value.Variant "prog" _) as p) when (List.isEmpty ws) -> 
+                LinkProg p
+            | Some (Value.Variant "macro" m) when (List.isEmpty ws) -> 
+                LinkMacro m
+            | Some v when (List.isEmpty ws) -> 
+                LinkFail (ErrorFlags.UnknownDefType)
+            | _ ->
+                LinkFail (ErrorFlags.WordUndefined)
 
         [<Struct>]
         type CTE =
-            { Dict : Value
-            ; CallWarn : Set<Word>   // to resist duplicate call warnings 
+            { Dict   : Value
+            ; Alerts : Set<HWord>  
             ; Errors : ErrorFlags
-            ; LogLoad : IEffHandler
-            ; DbgCx : string
+            ; LL     : IEffHandler    // log and load effects
+            ; DbgCx  : string         // metadata for error reporting
             }
-        type AR = (struct(int*int)) option
 
-        exception ForbiddenEffectException of Value
-        let forbidEffects = 
-            { new IEffHandler with
-                member __.Eff v = raise (ForbiddenEffectException(v))
-              interface ITransactional with
-                member __.Try () = ()
-                member __.Commit () = ()
-                member __.Abort () = ()
+        let inline addErr e (cte : CTE) = 
+            { cte with 
+                Errors = (e ||| cte.Errors) 
             }
+
+        let addAlert (hw:HWord) (e:ErrorFlags) (cte:CTE) : CTE =
+            if not (Set.contains hw cte.Alerts) then
+                logError (cte.LL) (sprintf "issue with %s: %s" (hwstr hw) (string e))
+            { cte with 
+                Errors = (e ||| cte.Errors) 
+                Alerts = (Set.add hw cte.Alerts) 
+            }
+
+        let inline addDef (w:Word) (vDef:Value) (cte:CTE) : CTE =
+            let wL = Value.label w
+            { cte with Dict = Value.record_insert wL vDef (cte.Dict) }
 
         let private addDataOpsRev (revOps:Program list) (ds:Value list) =
             List.append (List.map (ProgVal.Data) ds) revOps
-
-        let private checkArity (struct(cte,p)) =
-            let ar = stackArity p
-            let eArity =
-                if ArityDyn <> ar then ErrorFlags.NoError else 
-                logError (cte.LogLoad) (sprintf "%s does not have static arity" (cte.DbgCx))
-                ErrorFlags.BadStaticArity
-            let cte' = { cte with Errors = eArity ||| cte.Errors }
-            struct(cte', p)
 
         // The resulting values tend to be a little messy. Trying to prettify
         // them heuristically. Removing extraneous 'prog' headers. Flattening
         // tree-structured 'seq' calls. But only at the surface layer.
         //
-        //   prog:do:Program                        non-annotated prog ops.
+        //   prog:do:Program                        non-annotated prog.
         //   seq:[seq:[...], op, seq:[...], ...]    deep sequences
         //
         let rec expandOp op =
             match op with
-            | Prog (U, pDo) -> expandOp pDo
+            | Prog (U, pDo) ->
+                expandOp pDo
             | PSeq l -> l
             | _ -> FTList.singleton op
 
         // Compile a program block into a value. 
-        let rec compileBlock (cte:CTE) (b:Block) =
-            _compileBlock cte [] [] b
+        let rec compileBlock (dbgCx:string) (cte0:CTE) (b:Block) : struct(CTE * Program) =
+            let cte1 = { cte0 with DbgCx = dbgCx }
+            let struct(cte2,p) = _compileBlock cte1 [] [] b
+            struct({cte2 with DbgCx = cte0.DbgCx }, p)
         and private _compileCallProg cte revOps ds p b =
-            let tryEval =
-                try eval p forbidEffects ds 
-                with 
-                | ForbiddenEffectException _ -> None
-            match tryEval with
+            match pureEval p ds with
             | Some ds' ->
                 _compileBlock cte revOps ds' b
             | None ->
                 let revOps' = p :: (addDataOpsRev revOps ds)
                 _compileBlock cte revOps' [] b
-        and private _compileFailedCall cte revOps ds w eType b =
-            let revOps' = (Op lFail) :: addDataOpsRev revOps ds
-            let cte' = 
-                { cte with 
-                    Errors = (eType ||| cte.Errors) 
-                    CallWarn = Set.add w (cte.CallWarn)
-                }
-            _compileBlock cte' revOps' [] b
-        and private _compileBlock (cte:CTE) (revOps:Program list) (ds:Value list) (b:Block) =
+        and private _compileBadCall cte revOps ds b =
+            // replace failed operation with 'tbd'
+            let tbdOp = TBD (Value.symbol "undefined")
+            let revOps' = tbdOp :: addDataOpsRev revOps ds
+            _compileBlock cte revOps' [] b
+        and private _compileBlock (cte0:CTE) (revOps:Program list) (ds:Value list) (b:Block) =
             match b with
             | ((Block p)::b') ->
                 let ixEnd = 1 + List.length b'
-                let dbg = cte.DbgCx + (sprintf " block -%d" ixEnd)
-                let struct(cte', pv) = compileBlock { cte with DbgCx = dbg } p
-                _compileBlock { cte' with DbgCx = cte.DbgCx } revOps (pv::ds) b'
+                let dbg = cte0.DbgCx + (sprintf " block -%d" ixEnd)
+                let struct(cte', pv) = compileBlock dbg cte0 p
+                _compileBlock cte' revOps (pv::ds) b'
             | ((Const v)::b') ->
-                _compileBlock cte revOps (v::ds) b'
-            | ((Call w)::b') ->
-                match Value.record_lookup (Value.label w) (cte.Dict) with
-                | Some (ProgVal.Data v) ->
-                    _compileBlock cte revOps (v::ds) b'
-                | Some ((ProgVal.Prog _) as p) ->
-                    _compileCallProg cte revOps ds p b'
-                | Some (Value.Variant "macro" m) ->
-                    match eval m (cte.LogLoad) ds with
+                _compileBlock cte0 revOps (v::ds) b'
+            | ((Call hw)::b') ->
+                match tryLink hw (cte0.Dict) with
+                | LinkData d ->
+                    _compileBlock cte0 revOps (d::ds) b'
+                | LinkProg p ->
+                    _compileCallProg cte0 revOps ds p b'
+                | LinkMacro m ->
+                    match eval m (cte0.LL) ds with
                     | Some (p :: ds') ->
-                        _compileCallProg cte revOps ds' p b'
+                        _compileCallProg cte0 revOps ds' p b'
                     | _ ->
-                        let ixEnd = 1 + List.length b' 
-                        if not (Set.contains w (cte.CallWarn)) then
-                            let msg = sprintf "macro %s failed in %s at -%d" w (cte.DbgCx) ixEnd
-                            logError (cte.LogLoad) msg
-                        _compileFailedCall cte revOps ds w (ErrorFlags.MacroFailure) b'
-                | Some v -> 
-                    // unrecognized deftype, will warn on first call
-                    if not (Set.contains w (cte.CallWarn)) then 
-                        logError (cte.LogLoad) (sprintf "word %s has unhandled deftype (%s)" w (prettyPrint v)) 
-                    _compileFailedCall cte revOps ds w (ErrorFlags.UnknownDefType) b'
-                | None ->
-                    // no need to report undefined words here, reported on 'open' or 'import'
-                    _compileFailedCall cte revOps ds w (ErrorFlags.WordUndefined) b'
-            | [] -> 
-                let ops = addDataOpsRev revOps ds |> List.rev |> FTList.collect expandOp 
+                        logError (cte0.LL) (sprintf "macro call %s failed in %s" (hwstr hw) (cte0.DbgCx))
+                        let cte' = addErr (ErrorFlags.BadStaticEval) cte0
+                        _compileBadCall cte' revOps ds b'
+                | LinkFail e ->
+                    _compileBadCall (addAlert hw e cte0) revOps ds b'
+            | [] ->
+                let ops = addDataOpsRev revOps ds |> List.rev |> FTList.collect expandOp
                 let p = 
                     match ops.T with
                     | FT.Single op -> op.V
                     | _ -> PSeq ops
-                checkArity (struct(cte,p))
+                let ar = stackArity p
+                let cte' =
+                    if ArityDyn <> ar then cte0 else
+                    logError (cte0.LL) (sprintf "%s does not have static arity" (cte0.DbgCx))
+                    addErr (ErrorFlags.BadStaticArity) cte0
+                struct(cte',p) 
 
-        let loadModule (ll:IEffHandler) (m:string) = 
-            ll.Eff(Value.variant "load" (Value.ofString m))
+        let loadModule (ll:IEffHandler) (m:ModuleRef) =
+            let mRefVal = 
+                match m with
+                | Global s -> Value.variant "global" (Value.ofString s)
+                | Local s -> Value.variant "local" (Value.ofString s)
+            ll.Eff(Value.variant "load" mRefVal)
 
-        let private tryOptOpen ll optOpen =
-            match optOpen with
-            | None -> 
-                // no 'open', just return empty dict
-                Some (Value.unit)   
+        let initDict ll openOpt =
+            match openOpt with
+            | None -> struct(Value.unit, ErrorFlags.NoError)
             | Some m ->
                 match loadModule ll m with
                 | None ->
-                    logError ll (sprintf "failed to load module %s for 'open'" m)
-                    None
-                | Some d0 -> Some d0
-
-        let initOpen ll tlv =
-            match tryOptOpen ll tlv.Open with
-            | None -> struct(Value.unit, ErrorFlags.LoadError)
-            | Some d0 ->
-                // detect any words we expected in 'open'
-                // we may compile with shadowing, so we don't erase any words here.
-                let haveWord w = Option.isSome (Value.record_lookup (Value.label w) d0)
-                let wsExpect = Set.difference (wordsCalled tlv) (wordsDefined tlv)
-                let wsMissing = Set.filter (haveWord >> not) wsExpect
-                if Set.isEmpty wsMissing then
+                    logError ll (sprintf "'open' failed to load %s" (mstr m))
+                    struct(Value.unit, ErrorFlags.LoadError)
+                | Some d0 ->
                     struct(d0, ErrorFlags.NoError)
-                else 
-                    logError ll (sprintf "missing definitions for %s"  (String.concat ", " wsMissing))
-                    struct(d0, ErrorFlags.WordUndefined)
 
-        let applyImportFrom (cte:CTE) (m:ModuleName) (lImports:(Word * Word) list) =
-            let ll = cte.LogLoad
+        let applyImportAs (cte0:CTE) (m:ModuleRef) (w:Word) : CTE =
+            let ll = cte0.LL
             match loadModule ll m with
             | None ->
-                logError ll (sprintf "failed to load module %s" m)
-                { cte with Errors = (cte.Errors ||| ErrorFlags.LoadError) }
-            | Some dSrc ->
-                let haveWord (w:string) = Option.isSome <| Value.record_lookup (Value.label w) dSrc
-                let wsMissing = lImports |> List.map fst |> List.filter (haveWord >> not) 
-                let errNew = 
-                    if List.isEmpty wsMissing then ErrorFlags.NoError else 
-                    logError ll (sprintf "module %s does not define %s" m (String.concat ", " wsMissing))
-                    ErrorFlags.WordUndefined
-                let addWord dDst (w,aw) =
-                    match Value.record_lookup (Value.label w) dSrc with
-                    | None -> Value.record_delete (Value.label aw) dDst
-                    | Some vDef -> Value.record_insert (Value.label aw) vDef dDst
-                { cte with 
-                    Dict = List.fold addWord (cte.Dict) lImports
-                    Errors = errNew ||| cte.Errors 
-                }
+                logError ll (sprintf "failed to load module %s" (mstr m))
+                addErr (ErrorFlags.LoadError) cte0
+            | Some v ->
+                addDef w (Value.variant "data" v) cte0
 
-        // add 'prog:do' prefix if it does not already exist
-        let private wrapProg p =
-            match p with
-            | Prog _ -> p 
-            | _ -> Prog(Value.unit, p)
-
-        let applyProgDef cte w b =
-            let dbg = sprintf "prog %s" w
-            let struct(cte', p) = compileBlock { cte with DbgCx = dbg } b
-            { cte' with 
-                Dict = Value.record_insert (Value.label w) (wrapProg p) (cte'.Dict) 
-                DbgCx = cte.DbgCx
-            }
-
-        let applyMacroDef cte w b = 
-            let dbg = sprintf "macro %s" w
-            let struct(cte', p) = compileBlock { cte with DbgCx = dbg } b 
-            let m = Value.variant "macro" (wrapProg p)
-            { cte' with 
-                Dict = Value.record_insert (Value.label w) m (cte'.Dict) 
-                DbgCx = cte.DbgCx
-            }
-
-        let applyDataDef cte w b =
-            let ll = cte.LogLoad
-            let dbg = sprintf "data %s" w
-            let struct(cte', pData) = compileBlock { cte with DbgCx = dbg } b
-            let vDataOpt = 
-                match eval pData ll [] with
-                | Some [vData] -> Some (Value.variant "data" vData)
-                | Some _ ->
-                    logError ll (sprintf "%s produces too much data" dbg) 
-                    None
-                | _ ->
-                    logError ll (sprintf "%s evaluation failed" dbg)
-                    None
-            let eDataEval = 
-                if Option.isSome vDataOpt 
-                    then ErrorFlags.NoError 
-                    else ErrorFlags.DataEvalFail
-            { cte' with
-                DbgCx = cte.DbgCx
-                Dict = Value.record_set (Value.label w) vDataOpt (cte.Dict)
-                Errors = eDataEval ||| cte.Errors
-            }
-
-        let applyStaticAssert cte ln b =
-            let ll = cte.LogLoad
-            let dbg = sprintf "assert at line %d" ln
-            let struct(cte', pAssert) = compileBlock { cte with DbgCx = dbg } b
-            let bSuccess =
-                match eval pAssert ll [] with
-                | Some results ->
-                    if not (List.isEmpty results) then
-                        logInfoV ll (sprintf "%s passed with outputs" dbg) 
-                                    (Value.ofFTList (FTList.ofList results))  
-                    true // any number of results is okay
+        let applyImportList (cte0:CTE) (ws:ImportList) (dSrc:Value) =
+            let applyImport cte (struct(w,asW)) =
+                match Value.record_lookup (Value.label w) dSrc with
+                | Some wDef ->
+                    addDef asW wDef cte
                 | None ->
-                    logError ll (sprintf "%s failed" dbg)
-                    false
-            let eAssert = 
-                if bSuccess 
-                    then ErrorFlags.NoError 
-                    else ErrorFlags.AssertionFail
-            { cte' with
-                DbgCx = cte.DbgCx
-                Errors = eAssert ||| cte.Errors
-                // no Dict changes
-            } 
+                    addAlert (struct(asW,[])) (ErrorFlags.WordUndefined) cte
+            List.fold applyImport cte0 ws
+
+        let applyFromModule (cte0:CTE) (m:ModuleRef) (lImports:ImportList) =
+            let ll = cte0.LL
+            match loadModule ll m with
+            | None ->
+                logError ll (sprintf "failed to load module %s" (mstr m))
+                addErr ErrorFlags.LoadError cte0
+            | Some dSrc ->
+                applyImportList cte0 lImports dSrc
+
+        let applyFromData (cte0:CTE) (b:Block) (lImports:ImportList) =
+            let ll = cte0.LL
+            let dbg = 
+                match lImports with
+                | struct(_,w)::_ -> (sprintf "def %s" w)
+                | [] -> failwith "invalid from data"
+            let struct(cte', pData) = compileBlock dbg cte0 b
+            match eval pData ll [] with
+            | Some [dSrc] ->
+                applyImportList cte' lImports dSrc
+            | Some _ ->
+                logError ll (sprintf "%s arity error" dbg)
+                addErr ErrorFlags.BadStaticArity cte'
+            | None -> 
+                logError ll (sprintf "%s eval failure" dbg)
+                addErr ErrorFlags.BadStaticEval cte'
+
+        let applyProgDef cte0 w b =
+            let dbg = sprintf "def %s" w
+            let struct(cte', p) = compileBlock dbg cte0 b
+            let pDef = // avoid doubling "prog" header if present.
+                match p with
+                | Prog _ -> p
+                | _ -> Prog(Value.unit, p)
+            addDef w pDef cte'
+
+        let applyMacroDef cte0 w b = 
+            let dbg = sprintf "def %s" w
+            let struct(cte', p) = compileBlock dbg cte0 b 
+            addDef w (Value.variant "macro" p) cte'
+
+        let applyDataDef cte0 w b =
+            let ll = cte0.LL
+            let dbg = sprintf "def %s" w
+            let struct(cte', pData) = compileBlock dbg cte0 b
+            match eval pData ll [] with
+            | Some [vData] -> 
+                addDef w (Value.variant "data" vData) cte'
+            | Some _ ->
+                logError ll (sprintf "arity error %s" dbg) 
+                addErr (ErrorFlags.BadStaticArity) cte'
+            | _ ->
+                logError ll (sprintf "eval failed %s" dbg)
+                addErr (ErrorFlags.BadStaticEval) cte'
+
+        let applyStaticAssert cte0 ln b =
+            let ll = cte0.LL
+            let dbg = sprintf "assert ln %d" ln
+            let struct(cte', pAssert) = compileBlock dbg cte0 b
+            match eval pAssert ll [] with
+            | Some results ->
+                if not (List.isEmpty results) then
+                    logInfoV ll (sprintf "%s passed with outputs" dbg) 
+                                (Value.ofFTList (FTList.ofList results)) 
+                cte'
+            | None ->
+                logError ll (sprintf "%s failed" dbg)
+                addErr (ErrorFlags.BadStaticEval) cte'
             
         let applyEnt (cte:CTE) (ent:Ent) : CTE =
             match ent with
-            | ImportFrom (m, lImports) -> applyImportFrom cte m lImports
+            | ImportAs (m, w) -> applyImportAs cte m w
+            | FromModule (m, lImports) -> applyFromModule cte m lImports
+            | FromData (b, lImports) -> applyFromData cte b lImports
             | ProgDef (w, b) -> applyProgDef cte w b
             | MacroDef (w, b) -> applyMacroDef cte w b
-            | StaticAssert (ln, b) -> applyStaticAssert cte ln b
             | DataDef (w, b) -> applyDataDef cte w b
+            | StaticAssert (ln, b) -> applyStaticAssert cte ln b
 
-        let applyExport cte b =
-            let ll = cte.LogLoad
-            let struct(cte', pExport) = compileBlock { cte with DbgCx = "export" } b
-            let vExportOpt =
-                match eval pExport ll [cte.Dict] with
-                | Some [vExport] -> Some vExport
-                | Some _ -> // requires arity error
-                    logError ll "export produces too much data"
-                    None
-                | None ->
-                    logError ll "export evaluation failed"
-                    None
-            let eExport =
-                if Option.isSome vExportOpt
-                    then ErrorFlags.NoError
-                    else ErrorFlags.ExportFailed
-            { cte' with
-                DbgCx = cte.DbgCx
-                Dict = Option.defaultValue (Value.unit) vExportOpt
-                Errors = eExport ||| cte.Errors
-            }
+        let applyExportFn cte0 b = 
+            let ll = cte0.LL
+            let struct(cte', pExport) = compileBlock "export" cte0 b
+            match eval pExport ll [cte0.Dict] with
+            | Some [vExport] -> 
+                { cte' with Dict = vExport }
+            | Some vs -> // requires arity error
+                logError ll "export arity error"
+                let d' = vs |> List.tryHead |> Option.defaultValue (Value.unit)
+                { cte' with Dict = d' } |> addErr ErrorFlags.BadStaticArity
+            | None ->
+                logError ll "export eval failed"
+                { cte' with Dict = Value.unit } |> addErr ErrorFlags.BadStaticEval  
+
+        let applyExportList cte ws =
+            // clear Dict then re-import from original Dict.
+            applyImportList { cte with Dict = Value.unit } ws (cte.Dict)
+
+        let applyExport cte exportOpt =
+            match exportOpt with
+            | Some (ExportFn b) -> applyExportFn cte b
+            | Some (ExportList ws) -> applyExportList cte ws
+            | None -> cte
+
 
         let initCTE ll err d0 =
             { Dict = d0
-            ; LogLoad = ll
+            ; LL = ll
             ; Errors = err
-            ; CallWarn = Set.empty
+            ; Alerts = Set.empty
             ; DbgCx = ""
             }
 
@@ -590,7 +603,7 @@ module Zero =
                     if Set.isEmpty wsSh then ErrorFlags.NoError else
                     logError ll (sprintf "shadowed words: %s" (String.concat ", " wsSh))
                     ErrorFlags.WordShadowed
-                let struct(dOpen,eOpen) = initOpen ll tlv 
+                let struct(dOpen,eOpen) = initDict ll (tlv.Open) 
                 let cte0 = initCTE ll (eShadow ||| eOpen) dOpen
                 let cte' = List.fold applyEnt cte0 (tlv.Ents)
                 applyExport cte' (tlv.Export)

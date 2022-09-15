@@ -41,15 +41,17 @@ The '--run' and '--extract' commands must reference values in the Glas module sy
 
         ValueRef = ModuleRef ComponentPath
         ModuleRef = LocalModule | GlobalModule
-        LocalModule = './' Word
+        LocalModule = './'Word
         GlobalModule = Word
-        ComponentPath = ('.' Word)*
+        ComponentPath = ('.'Word)*
         Word = WFrag('-'WFrag)*
-        WFrag = [a-z][a-z0-9]*
+        WFrag = [a-z][a-z0-9]
+ 
+A value reference starts by identifying a specific module, local or global. Global modules are folders found by searching GLAS_PATH environment variable, while local modules identify files or subfolders within the current working directory. The specified module is compiled to a Glas value.
 
-A value reference starts by identifying a specific module, local or global. Global modules are folders found by searching GLAS_PATH environment variable, while local modules identify files or subfolders within the current working directory. The specified module is compiled to a Glas value, then a component value is extracted by following a dotted path (assuming null-terminated labels).
+A subcomponent of the module's value may then be indicated by dotted path. This path is limited to simple null-terminated text labels. There is no attempt to generalize, at least not for the built-in commands. 
 
-User-defined commands may use an extended ValueRef parser. However, I caution against sophisticated command-line parameters. Better to keep logic in the Glas module system rather than bury it within external scripts as parameters to glas commands.
+User-defined commands can feasibly extended the ValueRef mini-language. However, I think it's usually better to put any desired logic into the module system where it's accessible, rather than embedded in external scripts.
 
 ## Extracting Binaries
 
@@ -63,14 +65,15 @@ The reference must evaluate to a binary (a list of bytes). This binary is writte
 
         glas --run ValueRef -- List Of Args
 
-This will interpret the referenced value as an [application](GlasApps.md). Initial parameter is `init:["List", "Of", "Args"]`. Final 'halt' value should be a bitstring, which we'll truncate and cast to a 32-bit int for the final exit code. At the moment, this requires a 'prog' header and 1--1 arity for the app. Eventually, we might support other app representations. 
+The referenced value must be a Glas program, representing a process with a 'prog' header. This might be extended later, for performance reasons. See the [application model](GlasApps.md) for general information.
+
+        type Process = (init:Args | step:State) -- [Eff] (step:State | halt:Result) | Fail
+
+Initial arguments are the command-line arguments, `init:["List", "Of", "Args"]`. Final result should be a bitstring that we'll cast to an int. 
 
 ## Standard Exit Codes
 
-Mostly, we'll just return 0 or -1 depending on whether things are all good or not. If there are any problems, we'll write the details in the log, which is normally written to stderr.
-
-        0       OK
-        -1      Not OK (see log!)
+Mostly, we'll just return 0 for okay or -1 for error. Any details on why things failed should be in the log (stderr, by default).
 
 ## Proposed Effects API
 
@@ -95,8 +98,8 @@ TimeStamp will be given as NT time: a natural number of 0.1 microsecond interval
 
 ### Noise
 
-* **fork:[List, Of, Values]** - returns a value chosen non-deterministically from the list. Is not necessarily a random choice. Can model concurrency, but requires several optimizations (incremental computing, replication on stable choice) to do so efficiently. 
-* **random:N** - response is cryptographically random binary of N bytes. Weak stability (i.e. usually same bytes after failed transaction).
+* **fork:[List, Of, Values]** - returns a value chosen non-deterministically from the list. Is not usually a random choice: a scheduler may heuristically select choices to to increase probability of progress. 
+* **random:N** - response is cryptographically random binary of N bytes. Is not usually a non-deterministic choice: a runtime may use a cryptographic PRNG that backtracks on failure.
 
 ### Console
 
@@ -116,10 +119,10 @@ Console apps are unavoidably related to the filesystem. The conventional API mos
  * **close:FileRef** - Release the file reference.
  * **read:(from:FileRef, count:Nat)** - Response is list of up to Count available bytes taken from input stream. Returns fewer than Count if input buffer is empty. 
  * **write:(to:FileRef, data:Binary)** - write a list of bytes to file. Fails if not opened for write or append. Use 'busy' status for heuristic pushback.
- * **status:FileRef** - Returns a record that may contain one or many status flags or values.
-  * *init* - the 'open' request has not yet been seen by OS. Need to wait for transaction to end.
+ * **status:FileRef** - Returns a record that may contain one or more flags and values describing the status of a file.
+  * *init* - the 'open' request has not yet been seen by OS.
   * *ready* - further interaction is possible, e.g. read buffer has data available, or you're free to write.
-  * *busy* - has an active background task, e.g. write buffer not empty at start of transaction.
+  * *busy* - has an active background task.
   * *done* - successful termination of interaction.
   * *error:Message* - reports an error, with some extra description.
  * **ref:list** - return a list of open file references. 
@@ -137,7 +140,7 @@ Console apps are unavoidably related to the filesystem. The conventional API mos
   * *mtime:TimeStamp* (optional) - modify time 
   * *ctime:TimeStamp* (optional) - creation time 
   * *size:Nat* (optional) - number of bytes
- * **status:DirRef** - ~ same as file status
+ * **status:DirRef** ~ same as file status
  * **ref:list** - return a list of open directory references.
  * **ref:move:(from:DirRef, to:DirRef)** - reorganize directory references. Fails if 'to' ref is in use.
  * **cwd** - return current working directory. Non-rooted file references are relative to this.

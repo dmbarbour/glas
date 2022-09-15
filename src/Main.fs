@@ -42,6 +42,9 @@ let helpMsg = String.concat "\n" [
     "    glas --help"
     "        print this message"
     ""
+    "    glas --print ValueRef"
+    "        write value to standard output (ad-hoc, for debugging)"
+    ""
     "User-Defined Commands:"
     ""
     "    glas opname Args"
@@ -126,9 +129,8 @@ let getLoader (logger:IEffHandler) =
         nonBootStrapLoader logger
 
 let extract (vref:string) : int =
-    let logger = consoleErrLogger ()
-    let loader = getLoader logger
-    match getValue loader vref with
+    let ll = getLoader <| consoleErrLogger ()
+    match getValue ll vref with
     | None -> EXIT_FAIL
     | Some (Value.Binary b) ->
         let stdout = System.Console.OpenStandardOutput()
@@ -138,22 +140,32 @@ let extract (vref:string) : int =
         // This pre-bootstrap is limited to extracting 2GB. That's okay. The glas
         // executable should be small, a few megabytes at most. Larger files must
         // wait until after bootstrap. 
-        logError logger (sprintf "value %s is not a binary (or is too big)" vref)
+        logError ll (sprintf "value %s is not a binary (or is too big)" vref)
+        EXIT_FAIL
+
+let print (vref:string) : int = 
+    let ll = getLoader <| consoleErrLogger ()
+    match getValue ll vref with
+    | Some v ->
+        let s = Value.prettyPrint v
+        System.Console.Write(s)
+        EXIT_OK
+    | None ->
         EXIT_FAIL
 
 let run (vref:string) (args : string list) : int = 
-    let eff = runEffects ()
-    let ll = getLoader eff
+    let ll = getLoader <| consoleErrLogger ()
     match getProgVal ll vref with
     | None -> EXIT_FAIL
     | Some p ->
-        let pfn = eval p ll
+        let eff = runtimeEffects ll 
+        let pfn = eval p eff
         let rec loop st =
             match pfn [st] with
             | None ->
                 // ideally, we'd track effects to know when to retry.
                 // but this implementation is blind, so just wait and hope.
-                System.Threading.Thread.Sleep(10)
+                System.Threading.Thread.Sleep(20)
                 loop st
             | Some [st'] ->
                 match st' with
@@ -189,6 +201,8 @@ let rec main' (args : string list) : int =
     | ["--help"] -> 
         System.Console.WriteLine(helpMsg)
         EXIT_OK
+    | ["--print"; v] ->
+        print v 
     | (verb::args') when not (verb.StartsWith("-")) ->
         // trivial rewrite supports user-defined behavior
         let p = "glas-cli-" + verb + ".main"
