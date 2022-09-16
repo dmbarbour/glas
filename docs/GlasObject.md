@@ -9,9 +9,9 @@ Although Glas Object is designed for Glas, it should be a very good representati
 ## Desiderata
 
 * *indexed* - Data access to specific elements of lists and dicts does not need to parse or scan unrelated regions of the glob file. Dictionaries can be organized as radix trees. Lists can be organized as finger trees or ropes.
-* *compact* - Binary data can be very efficiently embedded into globs. Tabular data can avoid repeating headers. Structured data can be embedded tighter than many in-memory representations. Can easily share common structure within a file.
+* *compact* - Common data and binaries can be efficiently embedded. Can easily share common structure within a glob. 
 * *scalable* - Larger-than-memory values can be loaded partially, leaving most data in content-addressed storage. All sizes use variable-sized numbers. Content-addressed storage is persistent, can support databases.
-* *simple* - should not have a very complicated parser. No separate headers (but annotations are supported). A minimalist writer should also be easy, even if it doesn't result in the best compression.
+* *simple* - Should not have a complicated parser. Composition and decomposition should be easy. Avoid headers and footers. A minimalist writer (i.e. without compression passes) should also be easy.
 
 ## Encoding
 
@@ -68,6 +68,32 @@ This compactly encodes symbols, numbers, composite variants, radix trees, etc. w
 
 *Aside:* The H0 Stem header (0x58 - 0101 1000) doesn't encode any stem bits, and is followed by a child node. This represents the no-op for Glas Object.
 
+### Lists
+
+Lists are a simple data structure formed from a right-spine of pairs terminating in unit (leaf). 
+
+                 /\     type List = (Value * List) | ()
+                a /\
+                 b /\   a list of 5 elements
+                  c /\      a:b:c:d:e:[]
+                   d /\     [a,b,c,d,e]
+                    e  ()
+
+In Glas systems, lists are used for almost any sequential data structure - arrays, tuples, stacks, queues, deques, binaries, etc.. Sparse lists, where elements are optional, are also useful in some contexts. However, direct representation of lists is awkward and inefficient for most use-cases. Thus, Glas systems will often use specialized representations under-the-hood, such as arrays or[finger-tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_(data_structure)).
+
+Glas Object provides a few specialized nodes to support serialization of indexed lists (or any sufficiently list-like structure). Binary data is explicitly supported because it's the most common data type for interfacing between Glas systems and other systems.
+
+* *array* - header (0x0A) followed by length (varnat + 1) then by that many value offsets. The varnat encoding of the offsets is denormalized so they're all the same width. All offsets are relative to just after the last one. Represents a list of values.
+* *short array* - header (0xA0-0xAF) encodes length of 1 to 16 items, otherwise as array.
+* *binary* - header (0x0B) followed by length (varnat + 1) then by that many bytes. Represents a list containing the binary data. Each byte corresponds to an 8-bit bitstring, msb to lsb. 
+* *short binary* - header (0xB0-0xBF) encodes length of 1 to 16 items, otherwise as binary.
+* *concat* - header (0x0C) followed by offset to list-like value, then immediately by the remainder value. A list-like value has a right spine that terminates in a leaf node. Logically equivalent to replacing that leaf with the remainder value.
+
+        concat (A,AS) B = (A,concat AS B)
+        concat () B = B
+
+Indexing of concat nodes will additionally rely on inserting some *list take* nodes (from *Accessors*) to cache size information.
+
 ### References
 
 Glas Object supports internal references within a glob file, and external references between glob files.
@@ -95,39 +121,11 @@ The 'list-like' values for the two list accessors only require a contiguous righ
 
 Annotations can include rendering hints for projectional editing, metadata for provenance tracking, or recommend specialized runtime representation for acceleration at load-time. Their role is to support tooling. Each value in Glas Object may have a list of annotations (usually empty) by applying annotation nodes.
 
-* *annotation* - header (0x04) is followed by offset to annotation value (the metadata), then by the annotated value.
+* *annotation* - header (0x04) is followed by offset to annotation value (the metadata), then immediately by the annotated value.
 
 A runtime may feasibly drop these annotations or provide effectful access to read and write certain annotations. Glas Object annotations emphatically *do not* replace annotations at other layers, such as the Glas program model. 
 
 *Security Note:* Security or privacy sensitive data should paired with some random bits to resist guesswork (cf. [Tahoe's convergence secret](https://tahoe-lafs.readthedocs.io/en/tahoe-lafs-1.12.1/convergence-secret.html)). Further, it should be marked as sensitive via annotation so runtimes and tools know to aggressively expunge that data and avoid sharing it as part of a larger glob that should is logically unreachable due to use of accessors.
-
-### Lists
-
-Lists are a simple data structure formed from a right-spine of pairs terminating in unit (leaf). 
-
-                 /\     type List = (Value * List) | ()
-                a /\
-                 b /\   a list of 5 elements
-                  c /\      a:b:c:d:e:[]
-                   d /\     [a,b,c,d,e]
-                    e  ()
-
-In Glas systems, lists are used for almost any sequential data structure - arrays, tuples, stacks, queues, deques, binaries, etc.. Sparse lists, where elements are optional, are also useful in some contexts. However, direct representation of lists is awkward and inefficient for most use-cases. Thus, Glas systems will often use specialized representations under-the-hood, such as arrays or[finger-tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_(data_structure)).
-
-Glas Object provides a few specialized nodes to support serialization of indexed lists (or any sufficiently list-like structure). Binary data is explicitly supported because it's the most common data type for interfacing between Glas systems and other systems.
-
-* *array* - header (0x0A) followed by length (varnat + 1) then by that many value offsets. The varnat encoding of the offsets is denormalized so they're all the same width. All offsets are relative to just after the last one. Represents a list of values.
-* *binary* - header (0x0B) followed by length (varnat + 1) then by that many bytes. Represents a list containing the binary data. Each byte corresponds to an 8-bit bitstring, msb to lsb. 
-* *short array* - header (0xA0-0xAF) encodes length, 1 to 16 items, otherwise as array.
-* *short binary* - header (0xB0-0xBF) encodes length, 1 to 16 items, otherwise as binary.
-* *concat* - header (0x0C) followed by offset to list-like value, then immediately by the remainder value. A list-like value has a right spine that terminates in a leaf node. Logically equivalent to replacing that leaf with the remainder value.
-
-        concat (A,AS) B = (A,concat AS B)
-        concat () B = B
-
-Indexing of concat nodes relies on inserting some 'list take' nodes to cache size information, controlling the number of nodes we must examine to compute length.
-
-*Note:* One idea is to extend concat for 3 to 5 items (i.e. 0x0D-0x0F). This might align nicely with nodes for balancing of ropes. But it's also unnecessary - we can support such nodes in-memory even with just regular 'concat', and saving a few bytes on concat is negligible for space savings.
 
 ## Summary of Node Headers
 
@@ -211,3 +209,33 @@ To acheive these properties, we can mirror representation of indexed data, and k
 * *patch array* - encoded similar to data arrays, except with offsets to patches. Applies a list of patches to a list of data. (List of patches may be shorter than list of data.) 
 
 If patches were explicitly modeled in the data layer, they would not be limited to radix trees and lists, and programmers can more precisely align patches with problem domain. It becomes impossible to directly observe external refs, but annotations for stowage and memoization would provide sufficient control to model a persistent [log-structured merge-tree](https://en.wikipedia.org/wiki/Log-structured_merge-tree). 
+
+### Matrices
+
+A matrix might be represented as a row-list of column-lists (or vice versa). This is acceptable for many use cases, but is a bit inefficient - it requires repeating list header overheads, and extra work to verify that every column-list has the same length.
+
+An alternative is to represent a matrix within a single list via [row-major or column-major order](https://en.wikipedia.org/wiki/Matrix_representation). This could feasibly be supported in Glas with header such as:
+
+* *chunkify* - header is followed by length K (varnat+1) then by a list value whose total length must be an exact multiple of K. Outcome is a logical list of lists of length K, formed by taking the first K (0..K-1), second K (K..2K-1), etc. items from the original list.
+* *transpose* - header is followed by a matrix (a list of lists of constant length). Logically transposes this matrix.
+
+Providing this feature at the Glas Object layer is currently a premature optimization. It is necessary to first observe how matrix functions and accelerators develop in practice. It may prove that we prefer to represent matrices directly in programs as a single list or binary (for unboxed matrices of floating point numbers) paired with metadata to describe structure.
+
+### Structs and Tables
+
+Radix trees are great but have an obvious flaw: the labels are repeated with every value. An alternative is to apply a list-of-labels to a list-of-values. That list of labels could feasibly be shared by multiple instances. This could also be mapped to a table.
+
+* *struct* - header is followed by an offset to a list of distinct bitstrings representing labels, then by a list of values of same length. Logically computes a record of labeled values.
+* *table* - header is followed by an offset to a list of labels, then by a list of lists (a matrix). Logically applies the 'struct' header to every element of the list.
+
+This feature is tempting. For example, between 'table' and 'transpose' we can support both [array-of-structs and struct-of-arrays](https://en.wikipedia.org/wiki/AoS_and_SoA) at the Glas Object layer. However, like matrix support this is a premature optimization. I should first observe how Glas systems handle large tables in practice. I won't be very surprised if programmers prefer to explicitly model tables using an array-of-structures.
+
+### User Defined Codecs
+
+It is feasible to make Glas Object extensible with arbitrary encodings. Consider:
+
+* *codec* - header is followed by offset to value representing a codec, then immediately by the encoded value.
+
+A 'codec' might be represented as '(encode:Program, decode:Program, ...)'. These programs would be large and frequently used, so would often reference content-addressed storage to simplify caching and reuse. A runtime can potentially recognize and accelerate codecs for use together with accelerated representations of data.
+
+However, this sacrifices some simplicity and indexability. These might be recovered a little: For simplicity, use a program model that structurally guarantees termination. For indexability, support lazy partial evaluation, similar to patches. Even better if encode and decode can be written as a combined program that runs forwards or backwards. In any case, a lot more design work is needed to make this fit my design goals for Glas Object, and it isn't necessary to do that work immediately.
