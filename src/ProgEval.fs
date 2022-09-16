@@ -97,17 +97,17 @@ module ProgEval =
                     else (cte.FK) rte
             | _ -> raise <| RuntimeUnderflowError(rte)
 
-        let inline record_lookup_v kv r =
-            match kv with
-            | Bits k -> record_lookup k r
-            | _ -> None
+        let typeErr = Value.symbol "type-error"
 
         let get cte cc rte =
             match rte.DataStack with
             | (kv::r::ds') ->
-                match record_lookup_v kv r with
-                | Some v -> cc { rte with DataStack = (v::ds') }
-                | None -> (cte.FK) rte
+                match kv with
+                | Bits k ->
+                    match record_lookup k r with
+                    | Some v -> cc { rte with DataStack = (v::ds') }
+                    | None -> (cte.FK) rte
+                | _ -> raise <| HaltOnTBD(rte, typeErr)
             | _ -> raise <| RuntimeUnderflowError(rte)
 
         let put cte cc rte =
@@ -115,7 +115,7 @@ module ProgEval =
             | (kv::r::v::ds') -> 
                 match kv with
                 | Bits k -> cc { rte with DataStack = ((record_insert k v r)::ds') }
-                | _ -> (cte.FK) rte
+                | _ -> raise <| HaltOnTBD(rte, typeErr)
             | _ -> raise <| RuntimeUnderflowError(rte)
 
         let del cte cc rte =
@@ -123,7 +123,7 @@ module ProgEval =
             | (kv::r::ds') ->
                 match kv with
                 | Bits k -> cc { rte with DataStack = ((record_delete k r)::ds') }
-                | _ -> (cte.FK) rte
+                | _ -> raise <| HaltOnTBD(rte, typeErr)
             | _ -> raise <| RuntimeUnderflowError(rte)
 
         let fail cte cc = // rte implicit
@@ -262,6 +262,7 @@ module ProgEval =
                 env (compile pWith) (compile pDo) 
             | Prog (_, p') -> 
                 // memoization, stowage, or acceleration could be annotated here.
+                // TODO: acceleration of several useful functions!
                 compile p' 
             | Stem lTBD msg -> tbd msg
             | _ -> 

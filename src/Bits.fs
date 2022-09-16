@@ -88,7 +88,7 @@ module Bits =
     /// Just one bit.
     let inline singleton (e : bool) : Bits = cons e empty
 
-    let inline private lenHd hd = 
+    let lenHd hd = 
         // 6-step computation of size via binary division.
         let mutable v = hd
         let mutable n = 0

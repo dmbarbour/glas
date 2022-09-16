@@ -677,7 +677,7 @@ module Value =
                 if Seq.isEmpty (Seq.tail kvSeq) then
                     // variant or symbol (a singleton record)
                     if bLR then
-                        yield "/"
+                        yield "."
                     yield! _ppKV (Seq.head kvSeq)
                 else
                     yield "("
@@ -697,6 +697,7 @@ module Value =
                 | _ -> ()
                 yield "]"
             | (Bits b) ->
+                assert(not bLR)
                 if Bits.isEmpty b then yield "0" else
                 if (Bits.head b) then yield (Bits.toI b).ToString() else
                 yield "0b"
@@ -709,10 +710,14 @@ module Value =
                 yield! _ppV false b
                 yield ")"
             | L v ->
-                yield "L"
+                if not bLR then 
+                    yield "~"
+                yield "0"
                 yield! _ppV true v
             | R v ->
-                yield "R"
+                if not bLR then 
+                    yield "~"
+                yield "1"
                 yield! _ppV true v
         }
     and private _ppKV (k:string,v:Value) : string seq = 

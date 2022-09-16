@@ -266,8 +266,8 @@ let tests =
 
         testCase "printing basic pairs and sums data" <| fun () ->
             Expect.equal "((), 0b0)" (prettyPrint (pair unit (left unit))) "pulu"
-            Expect.equal "R[()]" (prettyPrint (right (pair unit unit))) "rpuu"
-            Expect.equal "RL((), 1)" (prettyPrint (right (left (pair unit (right unit))))) "rlpuru"
+            Expect.equal "~1[()]" (prettyPrint (right (pair unit unit))) "rpuu"
+            Expect.equal "~10((), 1)" (prettyPrint (right (left (pair unit (right unit))))) "rlpuru"
 
         testCase "printing variants" <| fun () ->
             Expect.equal "foo" (prettyPrint (symbol "foo")) "foo"

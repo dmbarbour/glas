@@ -28,22 +28,28 @@ See [Glas CLI](GlasCLI.md) for details.
 
 ## Values
 
-Glas values build upon immutable binary trees. The naive representation is:
+Glas values are immutable binary trees, i.e. where each node in the tree has an optional left and right children, respectively labeled '0' and '1'. The naive representation is:
 
         type T = ((1+T) * (1+T))
 
-Records are encoded as [radix trees](https://en.wikipedia.org/wiki/Radix_tree) (aka tries). For example, the label 'data' may be encoded as a path `01100100 01100001 01110100 01100001 00000000` favoring null-terminated UTF-8 text. Here '0' and '1' refer respectively to left or right branches through the tree. Multiple labels can be encoded.
+Glas systems encode text labels as a path through the tree, with null-terminated UTF-8. For example, the label 'data' is by path `01100100 01100001 01110100 01100001 00000000`, using null-terminated UTF-8. Multiple paths can be encoded into a single [radix trees](https://en.wikipedia.org/wiki/Radix_tree) (aka trie) to represent a record value. We can also encode symbols into paths, or variants as a singleton record. 
 
-Tagged unions (aka variants) are encoded as records with a single label. The unit value is encoded by the tree with no children. A symbol is a variant with the unit value. Numbers can be encoded as into bitstrings, e.g. `10111` for natural number 23, or `00010111` for byte 23. Lists are encoded by a sequence of pairs, terminating in unit - e.g. `type List a = (a * List a) | ()`.
+Glas systems also encode bitstrings such as fixed-width numbers into the path. For example, a byte may be encoded as an arbitrary path of 8 bits, msb to lsb, terminating in a leaf node.
 
-The runtime representation of values can be optimized to support common use-cases. For example, to efficiently represent radix trees and bitstrings, we might favor a representation closer to:
+The runtime representation of values can be optimized to support common use-cases. For example, to efficiently represent radix trees and bitstrings, we could favor a representation closer to:
 
         type Bits = compact Bool list
         type T = (Bits * (1 + (T*T)))
 
-This encoding happens to be isomorphic to the naive T earlier, but isomorphism isn't required. In the general case, we may use specialized representations for large lists, binary data, etc.. This is discussed further in context of *Acceleration*.
+Glas systems also benefit from efficient representation of lists, arrays, binaries, etc.. Also, if we know the static fields and data types for a record, a compiler may favor a more efficient struct-like representation. Runtime representations of values can be further specialized for performance. See *Acceleration* and the proposed [Glas Object](GlasObject.md) serialization.
 
 To support larger-than-memory data, and structure sharing in context of network serialization, Glas systems will also use content-addressed references (i.e. secure hashes) to refer to binaries that contain parts of a value. This pattern is called *Stowage*.
+
+Regardless of representation, we can always view Glas values as binary trees.
+
+### Numbers
+
+Numbers deserve some special 
 
 ## Programs
 
@@ -136,7 +142,7 @@ Operators:
 * **put** (V (label?_|R) label -- (label:V|R)) - given a label, record, and value on the data stack, create new record with the given label associated with the given value. Will replace existing label in record.
 * **del** ((label?_|R) label -- R) - remove label from record. Equivalent to adding label then removing it except for any prefix shared with other labels in the record.
 
-Labels don't need to be textual, but they must be valid bitstrings. Use of a non-label input as the top stack argument to get, put, or del will diverge instead of failing. For static analysis, it's preferable if the labels are statically known values in most contexts.
+Labels don't need to be textual, but they must be valid bitstrings. Use of a non-label input as the top stack argument to get, put, or del will diverge (same as 'tbd') instead of failing. It's preferable if the labels are statically known values in most use cases.
 
 Glas programs do not have any math operators. Those must be awkwardly constructed using get/put/del and loops.
 

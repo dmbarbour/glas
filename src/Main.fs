@@ -45,7 +45,7 @@ let helpMsg = String.concat "\n" [
     "    glas --print ValueRef"
     "        write value to standard output (ad-hoc, for debugging)"
     ""
-    "User-Defined Commands:"
+    "User-Defined Commands (no '-' prefix):"
     ""
     "    glas opname Args"
     "        rewrites to"
