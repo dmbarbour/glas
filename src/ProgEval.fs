@@ -44,20 +44,12 @@ module ProgEval =
             ; FailureStack : RTE option     
             } 
 
-        // When we observe arity errors at runtime, raise this exception.
-        // We'll catch it at the top-level eval, so it isn't directly
-        // exposed to the caller.
-        exception RuntimeUnderflowError of RTE
+        // For halting on runtime errors of any sort. The value should carry some
+        // extra information about cause.
+        exception RTError of RTE * Value
 
-        /// If we encounter a TBD operation, we may use an exception to abort.
-        exception HaltOnTBD of RTE * Value
-
-        // Due to lazy compilation, we might catch some compilation errors
-        // at runtime. We'll perform an intermediate catch here, mostly so
-        // we can unwind but also so we don't raise an error unless this
-        // invalid code is actually encountered at runtime.
-        exception JITCompilationError of RTE * Program
-
+        let underflow rte = 
+            raise <| RTError(rte, Value.symbol "underflow")
 
         /// simplest continuation.
         type CC = RTE -> obj 
@@ -77,17 +69,18 @@ module ProgEval =
         let copy cte cc rte =
             match rte.DataStack with
             | (a::_) as ds -> cc { rte with DataStack = (a::ds) }
-            | _ -> raise <| RuntimeUnderflowError(rte)
+            | _ -> underflow rte
+
 
         let drop cte cc rte =
             match rte.DataStack with
             | (_::ds') -> cc { rte with DataStack = ds' }
-            | _ -> raise <| RuntimeUnderflowError(rte)
+            | _ -> underflow rte
 
         let swap cte cc rte =
             match rte.DataStack with
             | (a::b::ds') -> cc { rte with DataStack = (b::a::ds') }
-            | _ -> raise <| RuntimeUnderflowError(rte)
+            | _ -> underflow rte
 
         let eq cte cc rte =
             match rte.DataStack with
@@ -95,9 +88,11 @@ module ProgEval =
                 if (a = b) 
                     then cc { rte with DataStack = ds' }
                     else (cte.FK) rte
-            | _ -> raise <| RuntimeUnderflowError(rte)
+            | _ -> underflow rte
 
-        let typeErr = Value.symbol "type-error"
+        
+        let badLabel rte k =
+            raise <| RTError(rte, Value.variant "invalid-label" k)
 
         let get cte cc rte =
             match rte.DataStack with
@@ -107,24 +102,24 @@ module ProgEval =
                     match record_lookup k r with
                     | Some v -> cc { rte with DataStack = (v::ds') }
                     | None -> (cte.FK) rte
-                | _ -> raise <| HaltOnTBD(rte, typeErr)
-            | _ -> raise <| RuntimeUnderflowError(rte)
+                | _ -> badLabel rte kv
+            | _ -> underflow rte
 
         let put cte cc rte =
             match rte.DataStack with
             | (kv::r::v::ds') -> 
                 match kv with
                 | Bits k -> cc { rte with DataStack = ((record_insert k v r)::ds') }
-                | _ -> raise <| HaltOnTBD(rte, typeErr)
-            | _ -> raise <| RuntimeUnderflowError(rte)
+                | _ -> badLabel rte kv
+            | _ -> underflow rte
 
         let del cte cc rte =
             match rte.DataStack with
             | (kv::r::ds') ->
                 match kv with
                 | Bits k -> cc { rte with DataStack = ((record_delete k r)::ds') }
-                | _ -> raise <| HaltOnTBD(rte, typeErr)
-            | _ -> raise <| RuntimeUnderflowError(rte)
+                | _ -> badLabel rte kv
+            | _ -> underflow rte
 
         let fail cte cc = // rte implicit
             (cte.FK) 
@@ -133,7 +128,7 @@ module ProgEval =
             (cte.EH) cte cc
 
         let tbd msg cte cc rte =
-            raise <| HaltOnTBD(rte,msg)
+            raise <| RTError(rte, ProgVal.TBD msg)
 
         // We can logically flatten 'dip:P' into the sequence:
         //   dipBegin P dipEnd
@@ -143,13 +138,15 @@ module ProgEval =
             match rte.DataStack with
             | (a::ds') -> 
                 cc { rte with DataStack = ds'; DipStack = (a::(rte.DipStack)) }
-            | _ -> raise <| RuntimeUnderflowError(rte)
+            | _ -> underflow rte
 
         let dipEnd _ cc rte =
             match rte.DipStack with
             | (a::dip') ->
                 cc { rte with DataStack = (a::(rte.DataStack)); DipStack = dip' }
-            | _ -> failwith "(internal compile error) imbalanced dip stack"
+            | _ -> 
+                // this should be unreachable
+                failwith "(internal compile error) imbalanced dip stack"
 
         let dip (opDip : Op) cte cc0 =
             dipBegin cte (opDip cte (dipEnd cte cc0))
@@ -169,14 +166,18 @@ module ProgEval =
             | Some rte' ->
                 cte.TX.Abort()
                 cc rte'
-            | None -> failwith "(internal compile error) imbalanced transaction"
+            | None -> 
+                // should be unreachable
+                failwith "(internal compile error) imbalanced transaction"
 
         let commitTX cte cc rte =
             match rte.FailureStack with
             | Some priorTX ->
                 cte.TX.Commit()
                 cc { rte with FailureStack = priorTX.FailureStack }
-            | None -> failwith "(internal compile error) imbalanced transaction"
+            | None ->
+                // should be unreachable 
+                failwith "(internal compile error) imbalanced transaction"
 
         let beginTX cte cc rte =
             cte.TX.Try()
@@ -221,14 +222,16 @@ module ProgEval =
             match rte.EffStateStack with
             | (a::es') ->
                 cc { rte with DataStack = (a::(rte.DataStack)); EffStateStack = es' }
-            | _ -> failwith "(internal compile error) imbalanced effects handler stack"
+            | _ -> 
+                // should be unreachable
+                failwith "(internal compile error) imbalanced effects handler stack"
         
         // special operator to push data to the eff-state stack.
         let effStatePush cte cc rte =
             match rte.DataStack with
             | (a::ds') ->
                 cc { rte with DataStack = ds'; EffStateStack = (a::(rte.EffStateStack)) }
-            | _ -> raise <| RuntimeUnderflowError(rte)
+            | _ -> underflow rte
 
         let env (opWith:Op) (opDo:Op) cte0 cc0 =
             let eh0 = cte0.EH // restore parent effect in context of opWith
@@ -266,9 +269,10 @@ module ProgEval =
                 compile p' 
             | Stem lTBD msg -> tbd msg
             | _ -> 
-                // not a valid program.
+                // not a valid program. This could be detected by analysis. But
+                // if we skip analysis, it will be reported at runtime.
                 fun cte cc rte ->
-                    raise <| JITCompilationError(rte,p)
+                    raise <| RTError(rte, Value.variant "invalid-subprogram" p)
 
         let ioEff (io:IEffHandler) cte cc rte =
             match rte.DataStack with
@@ -276,8 +280,8 @@ module ProgEval =
                 match io.Eff request with
                 | Some response ->
                     cc { rte with DataStack = (response::ds') }
-                | _ -> (cte.FK) rte
-            | _ -> (cte.FK) rte
+                | None -> (cte.FK) rte
+            | [] -> underflow rte
 
         let dataStack ds = 
             { DataStack = ds
@@ -307,23 +311,17 @@ module ProgEval =
             fun ds ->
                 try ds |> dataStack |> (runLazy.Force()) |> unbox<Value list option>
                 with
-                | RuntimeUnderflowError(rte) | HaltOnTBD(rte,_)-> 
-                    // underflow shouldn't occur if programs are checked ahead of eval.
-                    // A tbd error might occur in some cases.
-                    unwindTX io rte 
-                    None
-                | JITCompilationError(rte,p) ->
-                    // JIT error shouldn't occur if programs are checked ahead of eval.
+                | RTError(rte,msg) ->
                     unwindTX io rte
-                    failwithf "invalid subprogram %s" (prettyPrint p)
+                    logErrorV io "runtime error" msg
+                    None
 
-        // We'll block partial evaluation of a 'prog' call if it would use
-        // any effects. Easiest way to represent this with current compile
-        // function is to catch an exception. 
+        // For 'pure' functions, we'll also halt on first *attempt* to use effects.
         exception ForbiddenEffectException of Value
         let forbidEffects = 
             { new IEffHandler with
-                member __.Eff v = raise (ForbiddenEffectException(v))
+                member __.Eff v = 
+                    raise <| ForbiddenEffectException(v)
               interface ITransactional with
                 member __.Try () = ()
                 member __.Commit () = ()

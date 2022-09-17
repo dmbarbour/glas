@@ -162,8 +162,8 @@ module Effects =
     let logText lv msg =
         Value.asRecord ["lv"; "text"] [Value.symbol lv; Value.ofString msg]
     
-    let logTextV lv msg v =
-        Value.asRecord ["lv";"text";"val"] [Value.symbol lv; Value.ofString msg; v]
+    let logTextV lv txtMsg vMsg =
+        Value.asRecord ["lv";"text";"msg"] [Value.symbol lv; Value.ofString txtMsg; vMsg]
 
     // common log levels
     let info = "info"

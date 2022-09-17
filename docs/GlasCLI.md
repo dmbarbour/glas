@@ -119,7 +119,7 @@ Console apps are unavoidably related to the filesystem. The conventional API mos
  * **close:FileRef** - Release the file reference.
  * **read:(from:FileRef, count:Nat)** - Response is list of up to Count available bytes taken from input stream. Returns fewer than Count if input buffer is empty. 
  * **write:(to:FileRef, data:Binary)** - write a list of bytes to file. Fails if not opened for write or append. Use 'busy' status for heuristic pushback.
- * **status:FileRef** - Returns a record that may contain one or more flags and values describing the status of a file.
+ * **status:FileRef** - Returns a record that may contain one or more flags and values describing the status of an open file.
   * *init* - the 'open' request has not yet been seen by OS.
   * *ready* - further interaction is possible, e.g. read buffer has data available, or you're free to write.
   * *busy* - has an active background task.
