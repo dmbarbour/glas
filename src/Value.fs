@@ -796,14 +796,30 @@ module GlobValue =
         static member OfSeq(dataSeq : 'T seq) =
             ImmArray(Array.ofSeq dataSeq)
 
-        member a.GetItem(ix) =
-            let ok = ((ix >= 0) && (ix < a.Length))
-            if not ok then failwith "invalid index" else
-            a.Data.[a.Offset + ix]
+        // private constructors are accessible directly via 'Unsafe' methods.
+        // The intention here is to make the 'Unsafe' qualifier more visible.
+        // Ideally, caller should ensure array is not shared. 
+        static member UnsafeOfArray(data : 'T array) =
+            ImmArray(data)
+        static member UnsafeOfArraySlice(data : 'T array, offset, len) =
+            assert((offset >= 0) && (len >= 0) && ((data.Length - offset) >= len))
+            ImmArray(data, offset, len)
+
+        member a.Item
+            with get(ix) = 
+                let ok = ((ix >= 0) && (ix < a.Length))
+                if not ok then failwith "invalid index" else
+                a.Data.[a.Offset + ix]
+        member a.Take(len) =
+            let ok = (a.Length >= len) && (len >= 0)
+            if not ok then failwith "invalid slice (take)" else
+            ImmArray(a.Data, a.Offset, len)
+        member a.Drop(ct) =
+            let ok = (a.Length >= ct) && (ct >= 0)
+            if not ok then failwith "invalid slice (drop)" else
+            ImmArray(a.Data, a.Offset + ct, a.Length - ct)
         member a.Slice(offset, len) =
-            let ok = ((offset >= 0) && (len >= 0) && ((a.Length - offset) >= len))
-            if not ok then failwith "invalid ImmArray slice" else
-            ImmArray(a.Data, a.Offset + offset, len)
+            a.Drop(offset).Take(len)
         member a.GetSlice(optIxStart, optIxEnd) = // support for .[1..3] slices.
             let ixStart = Option.defaultValue 0 optIxStart
             let ixEnd = Option.defaultValue (a.Length - 1) optIxEnd
@@ -812,66 +828,165 @@ module GlobValue =
         member a.CopyTo(dst, dstOffset) =
             Array.blit a.Data a.Offset dst dstOffset a.Length
         member a.ToArray() =
-            if (0 = a.Length) then Array.empty else 
             let arr = Array.zeroCreate a.Length
             a.CopyTo(arr, 0)
             arr
         member a.TrimUnused(tolerance) =
             if (tolerance >= (a.Data.Length - a.Length)) then a else
             ImmArray(a.ToArray())
-        // maybe add support for ReadOnlySpan.
-
-    type Binary = ImmArray<uint8>
-
 
     // TODO: potential support for optimized slicing of lists.
 
-    [<NoEquality; NoComparison>] // TODO: CustomEquality, CustomComparison
-    type Value = 
-        // Basic Values
+    [<Struct; NoEquality; NoComparison>] // TODO: CustomEquality, CustomComparison
+    type Value = { Stem : Bits; Term : Node }
+    and Node =
+        // basic tree structure.
         | Leaf
-        | Stem of uint64 * Value        // 1..63 bits, e.g. abc1000..0 is 3 bits.
-        | Stem64 of uint64 * Value      // full 64 bits 
-        | Branch of Value * Value       
+        | Branch of Value * Value
 
         // Optimized Lists (and list-like structures)
-        | Array of ImmArray<Value>      // optimized list of values
-        | Binary of Binary              // optimized list of bytes
-        | Concat of uint64 * Value * Value  // truncate left and concat
-            // Can represent Take as Concat (size, list, Leaf)
+        | Array of ImmArray<Value>      // optimized list of values (non-empty!)
+        | Binary of ImmArray<uint8>     // optimized list of bytes (non-empty!)
+        | Concat of uint64 * Node * Value  // truncate left and concat (non-zero truncate!)
 
+        // Once had Stem64, but felt like unnecessary complexity.
         // For now eliding external refs, Glob representation, etc..
         // It might be worth supporting a value interface that can
         // abstract these things, however.
 
-    module StemBits = // utility functions
-        // encode 1..63 bits in a uint64
-        // msb is first bit, lowest '1' bit indicates length.
+    let inline ofNode v =
+        { Stem = Bits.empty; Term = v }
 
-        let hibit = (1UL <<< 63)
-        let lobit = 1UL
-        let inline head stemBits = (0UL <> (hibit &&& stemBits)) 
-        let inline tail stemBits = (stemBits <<< 1)
-        let inline isEmpty stemBits = (hibit = stemBits)
-        let inline isFull stemBits = (0UL <> (lobit &&& stemBits))
+    let inline ofBits b =
+        { Stem = b; Term = Leaf }
 
-        let len stemBits = 
-            // 6-step computation of size via binary division.
-            let mutable v = stemBits
-            let mutable n = 0
-            if (0UL <> (0xFFFFFFFFUL &&& v)) then n <- n + 32 else v <- v >>> 32
-            if (0UL <> (    0xFFFFUL &&& v)) then n <- n + 16 else v <- v >>> 16
-            if (0UL <> (      0xFFUL &&& v)) then n <- n +  8 else v <- v >>>  8
-            if (0UL <> (       0xFUL &&& v)) then n <- n +  4 else v <- v >>>  4
-            if (0UL <> (       0x3UL &&& v)) then n <- n +  2 else v <- v >>>  2
-            if (0UL <> (       0x1UL &&& v)) then      n +  1 else n
+    let inline private wrapConcat n l r =
+        if (0UL = n) then r else
+        if not (Bits.isEmpty l.Stem) then failwith "invalid concat" else
+        ofNode <| Concat(n, l.Term, r)
 
-        let inline matchLen n stemBits =
-            let nb = (1UL <<< n)
-            let m = nb ||| (nb - 1UL)
-            (nb = (stemBits &&& m))
+    // add a single bit to a stem. 
+    let consBit (b : bool) (v : Value) : Value =
+        { v with Stem = Bits.cons b (v.Stem) }
+
+    // add a full byte to a stem. Used for symbols, etc..
+    let consByte (b : uint8) (v : Value) : Value =
+        { v with Stem = Bits.consByte b (v.Stem) }
+
+    // add multiple bytes
+    let consBytes (b : uint8 array) (v:Value) : Value =
+        { v with Stem = Array.foldBack (Bits.consByte) b (v.Stem) }
+
+    let unit = 
+        ofNode Leaf
+
+    let inline pair a b =
+        ofNode (Branch(a,b))
+
+    let inline left v =
+        consBit false v
+
+    let inline right v =
+        consBit true v
+
+    let variant (s : string) (v : Value) : Value =
+        consBytes (System.Text.Encoding.UTF8.GetBytes(s)) v
+
+    let inline symbol (s : string) : Value =
+        variant s unit
+
+    let inline ofByte (b:uint8) : Value = 
+        consByte b unit
+
+    let ofNat64 (n0 : uint64) : Value =
+        ofBits (Bits.ofNat64 n0)
+
+    let ofImmArray (a : ImmArray<Value>) : Value =
+        if (0 = a.Length) then unit else
+        if (1 = a.Length) then pair a.[0] unit else
+        ofNode (Array a)
+
+    let ofImmBinary (b : ImmArray<uint8>) : Value =
+        if (0 = b.Length) then unit else
+        ofNode (Binary b)
+
+    let ofArray (a : Value array) : Value =
+        ofImmArray (ImmArray.OfArray a)
+
+    let ofList (l : Value list) : Value =
+        ofImmArray (ImmArray.OfSeq l)
+
+    let ofSeq (s : Value seq) : Value =
+        ofImmArray (ImmArray.OfSeq s)
+
+    let ofBinary (b : uint8 array) : Value =
+        ofImmBinary (ImmArray.OfArray b)
+
+    let ofString (s : string) : Value =
+        // using UnsafeOfArray to avoid copying bytes twice.
+        let b = System.Text.Encoding.UTF8.GetBytes(s)
+        ofImmBinary (ImmArray.UnsafeOfArray b)
+
+    // basic pattern matching support for tree structured data.
+    //  L(v) - stem left (value)
+    //  R(v) - stem right (value)
+    //  P(a,b) - pair (a,b)
+    //  U - unit (leaf node)
+    let rec (|L|R|P|U|) v =
+        if Bits.isEmpty v.Stem then
+            match v.Term with
+            | Leaf -> U
+            | Branch(a,b) -> P(a,b)
+            | Array a -> P(a.[0], ofImmArray (a.Drop(1)))
+            | Binary b -> P(ofByte b.[0], ofImmBinary (b.Drop(1)))
+            | Concat(nL,l,r) ->
+                match ofNode l with
+                | { Term = Concat(nLL0, ll, lr) } ->
+                    // flatten concat nodes to reduce depth
+                    let nLL = min nL nLL0 // truncation
+                    let v' = ofNode <| Concat(nLL, ll, wrapConcat (nL - nLL) lr r)
+                    (|L|R|P|U|) v'
+                | P(a,l') ->
+                    assert(nL > 0UL)
+                    P(a, wrapConcat (nL - 1UL) l' r) // head of list
+                | _ -> failwith "invalid concat node"
+        else
+            let inR = Bits.head v.Stem
+            let v' = { v with Stem = (Bits.tail v.Stem) }
+            if inR then R(v') else L(v')
+
+
+    let inline isUnit v =
+        match v with
+        | U -> true
+        | _ -> false
+    
+    let inline isPair v =
+        match v with
+        | P _ -> true
+        | _ -> false
+    
+    let inline isLeft v =
+        match v with
+        | L _ -> true
+        | _ -> false
+
+    let inline isRight v =
+        match v with
+        | R _ -> true
+        | _ -> false
+
+    let inline isBitString v =
+        match v.Term with
+        | Leaf -> true
+        | _ -> false
+
+    // todo: 
+    //  radix tree operations
+    //  stem and record matching
+    //  roughly balanced finger-tree-rope ops (append, split, etc.)
 
     module List =
         let inline singleton v = 
-            Branch(v, Leaf)
+            ofNode <| Branch(v, ofNode Leaf)
         

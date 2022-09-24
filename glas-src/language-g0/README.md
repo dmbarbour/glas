@@ -1,8 +1,8 @@
 # Language g0
 
-The g0 language is a Forth variant with staged metaprogramming, algebraic effects, and immutable tree-structured data. The simple syntax and semantics of g0 are intended to remain close to the g0 program model and simplify bootstrap. This is the primary bootstrapped language in the Glas system, so other languages must be implemented (perhaps indirectly) using g0.
+The g0 language is essentially a Forth-inspired macro-assembly for the Glas program model. The Glas program model is oriented around immutable data and algebraic effects. To this, the g0 layer adds limited support for modularity and staged metaprogramming. 
 
-The g0 syntax is not suitable for all programs or programmers. It can be awkward to track the data stack in one's head, and the syntax for embedding data doesn't scale well to structured data. Users should develop different language modules to cover more use cases.
+The g0 syntax isn't suitable for all programs or programmers. It's especially awkward for embedding data. The main use case for g0 is very early development and bootstrap of the Glas language system. Thus, a primary design goal is simplicity of implementation. The g0 language can later be used to implement other Glas language modules.
 
 ## Top Level
 
@@ -26,18 +26,16 @@ The top-level of a g0 file consists of imports, definitions, assertions, and an 
         # static assertions for lightweight verification
         assert [ Program ]
 
-        # rewrite of module value
-        export [ Program ]
+        # rewrite or filter final module value
+        export [ Program ] # or an import list
 
-Most entries may appear in any order and number. The exceptions are 'open' and 'export' which, if included, must respectively be the first and last entries. Use of 'open' inherits definitions from another module. Use of 'export' can rewrite or replace default module value. 
+Most entries may appear in any order and number. The exceptions are 'open' and 'export' which, if included, must respectively be the first and last entries. Use of 'open' inherits the definitions from another module. Use of 'export' can rewrite or replace default module value. 
 
 ## Dictionary
 
-A valid g0 module initially compiles to a dictionary, represented as a record (radix tree) of form `(word:deftype:Value, ...)`. The g0 language handles 'prog', 'macro', and 'data' deftypes. The deftype determines how a word will be applied. Words of other deftypes are possible via import but cannot be called from a g0 program.
+A valid g0 module initially compiles to a dictionary, represented as a record (a radix tree) of form `(word:deftype:Value, ...)`. The g0 language handles 'prog', 'macro', and 'data' deftypes. The deftype determines how the Value will be handled at the call site for a word. Other deftypes may be imported or exported but cannot be called from a g0 program.
 
-The 'prog' and 'macro' deftypes are statically linked at compile time, and 'data' is statically evaluated. Thus, there are no symbolic references between definitions of these types. Structure sharing and memoization can serve a performance role similar to symbolic references, e.g. memoize the inferred type for a subprogram.
-
-*Note:* An export function can rewrite or replace this dictionary. This enables g0 modules to compile to arbitrary values.
+The compiled dictionary is statically linked, i.e. definitions do not contain g0 words or other symbolic references. Logically, every call is inlined. This relies on structure sharing at the data layer to control consumption of memory.
 
 ## Words
 
@@ -47,34 +45,35 @@ Words in g0 must match a simple regex:
         Word:  WFrag('-'WFrag)*
         HWord: Word('/'Word)*
 
-In context of a g0 module, a word will have exactly one definition. That is, a word cannot be defined twice or be defined after use. However, words implicitly imported via 'open' may be overridden before first used.
+In context of a single g0 file, each word has exactly one definition, and must be defined before use.
 
 ## Imports
 
-Imports provide convenient access to the module system. A design goal is that definition and provenance of every word must be unambiguous at g0 file scope. 
+Imports provide convenient access to the module system. 
 
-* **open ModuleRef** - start with words defined in another module. The value of the referenced module must be a dictionary. Unused words from this module may be overridden by later imports or definitions. 
-* **from ModuleRef import ImportList** - add selected words from a module into the local namespace. The import list has form 'x, y as foo-y, z' - a comma separated list of words with optional 'as' clauses for local renaming. It is an error if any word in the import list is undefined.
-* **import ModuleRef as Word** - import value of any module as a 'data' word. Mostly intended for hierarchical definitions, e.g. after 'import math as m' we can use 'm/sqrt'. The 'as' clause is required in this case.
+* **open ModuleRef** - start with words defined in another module. Assumes compiled value of referenced module is a dictionary. It is possible to override words imported via 'open' before their first use within a file.
+* **from ModuleRef import ImportList** - add selected words from another module into the local namespace. Assumes compiled value of referenced module is a dictionary. Fails if any words from import list are undefined.
+* **import ModuleRef as Word** - import the compiled value of the referenced module as data. This is primarily intended for use with hierarchical definitions, e.g. 'import math as m' then later call 'm/sqrt'. However, this can also be convenient for import of arbitrary data.
+
+If a module fails to load in the above import statements, compilation of the g0 module will fail. If more flexible handling of load failure is required, use compile-time 'load' effects.
 
 ### ModuleRef 
 
 A ModuleRef may be one of:
 
-        Word            # load  global:"Word"
-        './'Word        # load  local:"Word"
+        Word            # loads  global:"Word"
+        './'Word        # loads  local:"Word"
 
-The g0 language cannot directly import modules whose names are not valid g0 words. Local and global module namespaces are entirely separate, no fallbacks or defaults. A failure to load a module will be a compile time error. In the rare case that more flexible behavior is required, compile-time evaluation can directly use 'load' effects.
+The g0 language can only conveniently reference modules whose names are valid g0 words. Use of compile-time 'load' effects don't have this naming constraint.
 
 ### ImportList 
 
-An ImportList has the form:
+An ImportList applies to a dictionary and has the form:
 
         ImportWord = Word ('as' Word)?
         ImportList = ImportWord (',' ImportWord)*
 
-Each word in our import list must be found in the source dictionary, and is added to the current dictionary, optionally using a new name via the 'as' clause.
-
+Each word may optionally be renamed via the 'as' clause upon import; if elided, is equivalent to 'foo as foo'. It is an error to import a word that is not defined in the source dictionary. 
 
 ## Embedded Data
 
@@ -110,7 +109,7 @@ Other than programs values, there is no syntax for structured data. Clever word 
         li "  -- William Shakespeare"
         li unlines
 
-However, the intended approach for embedding data is to define another language, e.g. define a language-txt module that can convert most texts to UTF-8 and run a spellchecker. Also define generic language modules to parse JSON, XML, SQLite, and other structured data. 
+However, the intended approach for embedding data is to define another language, e.g. define a language-txt module then shove the poem into "poem.txt". Define language modules to parse popular structured data formats, such as JSON.
 
 ## Programs 
 
@@ -236,3 +235,15 @@ I could allow macro calls to return `macro:Program`, to be evaluated as another 
 ### Local Variables? Reject.
 
 To make variables work well, e.g. such that we can access and update a local variable from deep within a loop, I need macros that operate on an abstract g0 AST instead of program values. Although this is feasible, it isn't a complication I want for the g0 language. My decision is to support variables in higher-level language modules.
+
+### Negative Assertions? Defer.
+
+Currently, it is feasible to express a negative assertion with a macro that verifies a program halts with a backtracking failure.
+
+        assert [ [test code] verify-not ]
+
+I've found this pattern is common in practice. It is tempting to provice a specialized syntax for the same behavior.
+
+        reject [ test code ]
+
+However, I hesitate to do so. I feel it might be a bit confusing that any effects within 'reject' will be backtracked.

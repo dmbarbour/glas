@@ -148,7 +148,7 @@ let print (vref:string) : int =
     match getValue ll vref with
     | Some v ->
         let s = Value.prettyPrint v
-        System.Console.Write(s)
+        System.Console.WriteLine(s)
         EXIT_OK
     | None ->
         EXIT_FAIL

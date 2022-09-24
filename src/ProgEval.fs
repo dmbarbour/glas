@@ -298,6 +298,19 @@ module ProgEval =
                 io.Abort()
                 unwindTX io rte'
 
+        let rec rteVal rte =
+            let dataStack = rte.DataStack |> Value.ofList
+            let dipStack = rte.DataStack |> Value.ofList
+            let effStack = rte.EffStateStack |> Value.ofList
+            let failStack = 
+                match rte.FailureStack with
+                | Some rte' -> rteVal rte'
+                | None -> Value.symbol "none"
+            Value.asRecord ["data";"dip";"eff";"back"] [dataStack;dipStack;effStack;failStack]
+
+        let rec rtErrMsg rte msg =
+            Value.variant "rte" <| Value.asRecord ["state";"event"] [rteVal rte; msg]
+
         // Note that 'eval' does not check the program for validity up front.
         let eval (p:Program) (io:IEffHandler) =
             let ccEvalOK rte = 
@@ -312,8 +325,9 @@ module ProgEval =
                 try ds |> dataStack |> (runLazy.Force()) |> unbox<Value list option>
                 with
                 | RTError(rte,msg) ->
+                    let v = rtErrMsg rte msg
                     unwindTX io rte
-                    logErrorV io "runtime error" msg
+                    logErrorV io "runtime error" (rtErrMsg rte msg)
                     None
 
         // For 'pure' functions, we'll also halt on first *attempt* to use effects.

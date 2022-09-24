@@ -21,6 +21,11 @@ module Effects =
             /// will implicitly be child of previously started, unconcluded transaction.
             abstract member Try : unit -> unit
 
+            // To support a two-phase commit, we call Precommit before Commit. If the
+            // Precommit returns false, we should Abort instead. This is necessary for
+            // interacting with other transaction systems. 
+            // abstract member Precommit : unit -> bool
+
             /// The most recently started, unconcluded transaction is concluded by calling
             /// one of Commit or Abort. If Try has been called many times, each Try must be
             /// concluded independently and Commit simply adds the child transaction's actions

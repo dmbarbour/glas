@@ -10,8 +10,8 @@ namespace Glas
 ///    a100 - 1 bits
 ///    1000 - 0 bits
 ///
-/// This is extended to 64-bits.
-/// 
+/// The Head encodes 0..63 stem bits. The tail encodes additional 
+/// fragments of exactly 64 bits.
 [<Struct>]
 type Bits = 
     { Head     : uint64         // 0 to 63 bits encoded in head.  
@@ -20,14 +20,35 @@ type Bits =
 
 module Bits =
 
-    let hibit = (1UL <<< 63)
-    let lobit = 1UL
-    let inline match_mask mask n = 
-        ((mask &&& n) = mask) 
-    let inline msb n = 
-        match_mask hibit n 
-    let inline lsb n = 
-        match_mask lobit n 
+    module ENC = 
+        // some utility stuff
+        let hibit = (1UL <<< 63)
+        let lobit = 1UL
+        let inline match_mask mask n = 
+            ((mask &&& n) = mask) 
+        let inline msb n = 
+            match_mask hibit n 
+        let inline lsb n = 
+            match_mask lobit n 
+        let inline data_mask len =
+            let lb = (hibit >>> len)
+            ~~~(lb ||| (lb - 1UL))
+
+        let lenHd bits = 
+            // 6-step computation of size via binary division.
+            let mutable v = bits
+            let mutable n = 0
+            if (0UL <> (0xFFFFFFFFUL &&& v)) then n <- n + 32 else v <- v >>> 32
+            if (0UL <> (    0xFFFFUL &&& v)) then n <- n + 16 else v <- v >>> 16
+            if (0UL <> (      0xFFUL &&& v)) then n <- n +  8 else v <- v >>>  8
+            if (0UL <> (       0xFUL &&& v)) then n <- n +  4 else v <- v >>>  4
+            if (0UL <> (       0x3UL &&& v)) then n <- n +  2 else v <- v >>>  2
+            if (0UL <> (       0x1UL &&& v)) then      n +  1 else n
+
+        let inline matchHdLen len bits =
+            let nb = (hibit >>> len)
+            let m = nb ||| (nb - 1UL)
+            (nb = (bits &&& m))
 
     let inline private invalidArgMatchLen l r =
         invalidArg (nameof l) "lists of different length"
@@ -37,19 +58,19 @@ module Bits =
     let valid (b : Bits) : bool =
         (0UL <> b.Head)
 
-    /// Returns whether Bits is empty list.
-    let inline isEmpty (b : Bits) : bool =
-        (hibit = b.Head) && (List.isEmpty b.Tail)
-
     /// The empty Bits list.
     let empty : Bits = 
-        { Head = hibit; Tail = List.empty }
+        { Head = ENC.hibit; Tail = List.empty }
+
+    /// Returns whether Bits is empty list.
+    let inline isEmpty (b : Bits) : bool =
+        (b.Head = ENC.hibit) && (List.isEmpty b.Tail)
 
     /// Head element of a non-empty list.
     let head (b : Bits) : bool =
-        if (hibit <> b.Head) then msb b.Head else 
+        if (ENC.hibit <> b.Head) then ENC.msb b.Head else 
         match b.Tail with
-        | (x :: _) -> msb x
+        | (x :: _) -> ENC.msb x
         | [] -> invalidArg (nameof b) "head of empty list"
 
     let tryHead (b : Bits) : bool option =
@@ -57,9 +78,9 @@ module Bits =
 
     /// Remainder of a non-empty list after head.
     let tail (b : Bits) : Bits =
-        if (hibit <> b.Head) then { b with Head = (b.Head <<< 1) } else
+        if (ENC.hibit <> b.Head) then { b with Head = (b.Head <<< 1) } else
         match b.Tail with
-        | (x :: xs) -> { Head = (lobit ||| (x <<< 1)); Tail = xs }
+        | (x :: xs) -> { Head = (ENC.lobit ||| (x <<< 1)); Tail = xs }
         | [] -> invalidArg (nameof b) "tail of empty list"
 
     let tryTail (b : Bits) : Bits option =
@@ -67,10 +88,10 @@ module Bits =
 
     /// Add element to head of list.
     let cons (e : bool) (b : Bits) : Bits =
-        let hd' = (b.Head >>> 1) ||| (if e then hibit else 0UL)
-        if lsb b.Head // if b.Head has 63 bits
-          then { Head = hibit; Tail = (hd' :: b.Tail) }
-          else { b with Head = hd' }   
+        let hd' = (b.Head >>> 1) ||| (if e then ENC.hibit else 0UL)
+        if ENC.lsb b.Head // if b.Head has 63 bits
+          then { Head = ENC.hibit; Tail = (hd' :: b.Tail) }
+          else { b with Head = hd' }
 
     let inline (|Cons|_|) b =
         if isEmpty b then None else
@@ -86,22 +107,12 @@ module Bits =
         consN count e empty
 
     /// Just one bit.
-    let inline singleton (e : bool) : Bits = cons e empty
-
-    let lenHd hd = 
-        // 6-step computation of size via binary division.
-        let mutable v = hd
-        let mutable n = 0
-        if (0UL <> (0xFFFFFFFFUL &&& v)) then n <- n + 32 else v <- v >>> 32
-        if (0UL <> (    0xFFFFUL &&& v)) then n <- n + 16 else v <- v >>> 16
-        if (0UL <> (      0xFFUL &&& v)) then n <- n +  8 else v <- v >>>  8
-        if (0UL <> (       0xFUL &&& v)) then n <- n +  4 else v <- v >>>  4
-        if (0UL <> (       0x3UL &&& v)) then n <- n +  2 else v <- v >>>  2
-        if (0UL <> (       0x1UL &&& v)) then      n +  1 else n
+    let inline singleton (e : bool) : Bits = 
+        cons e empty
 
     /// Return number of bits.
     let length (b : Bits) : int =
-        (lenHd b.Head) + (64 * (List.length b.Tail))
+        (ENC.lenHd b.Head) + (64 * (List.length b.Tail))
 
     /// Fold over bits within list, starting from head.
     let rec fold fn (st : 'ST) (b : Bits) : 'ST =
@@ -110,7 +121,8 @@ module Bits =
 
     /// Reverse a list of bits.
     let rev (b0 : Bits) : Bits =
-        fold (fun b e -> cons e b) empty b0
+        let fn st b = cons b st
+        fold fn empty b0
 
     /// Fold over a pair of lists of equal length. 
     let rec fold2 fn (st : 'ST) (bL : Bits) (bR : Bits) : 'ST = 
@@ -123,13 +135,14 @@ module Bits =
         let rec foldBack fn ix n (st : 'ST) : 'ST =
             if (0 = ix) then st else
             let ix' = ix - 1
-            let item = (0UL <> (n &&& (hibit >>> ix')))
+            let bit = (ENC.hibit >>> ix')
+            let item = (0UL <> (n &&& bit))
             foldBack fn ix' n (fn item st)
 
         let rec foldBack2 fn ix nL nR (st : 'ST) : 'ST =
             if (0 = ix) then st else
             let ix' = ix - 1
-            let bit = (hibit >>> ix')
+            let bit = (ENC.hibit >>> ix')
             let itL = (0UL <> (nL &&& bit))
             let itR = (0UL <> (nR &&& bit))
             foldBack2 fn ix' nL nR (fn itL itR st) 
@@ -138,12 +151,12 @@ module Bits =
     let foldBack fn (b : Bits) (st0 : 'ST) : 'ST =
         let fb64 n st = FoldBack64.foldBack fn 64 n st
         let stTail = List.foldBack fb64 (b.Tail) st0
-        FoldBack64.foldBack fn (lenHd b.Head) (b.Head) stTail
+        FoldBack64.foldBack fn (ENC.lenHd b.Head) (b.Head) stTail
 
     /// Reverse fold on two lists.
     let foldBack2 fn (bL : Bits) (bR : Bits) (st0 : 'ST) : 'ST =
-        let fill = lenHd bL.Head
-        if (fill <> (lenHd bR.Head)) then invalidArgMatchLen bL bR else
+        let fill = ENC.lenHd bL.Head
+        if (fill <> (ENC.lenHd bR.Head)) then invalidArgMatchLen bL bR else
         let fb64 nL nR st = FoldBack64.foldBack2 fn 64 nL nR st
         let stTail = List.foldBack2 fb64 (bL.Tail) (bR.Tail) st0
         FoldBack64.foldBack2 fn fill (bL.Head) (bR.Head) stTail
@@ -153,7 +166,7 @@ module Bits =
     let append (bL : Bits) (bR : Bits) : Bits =
         if isEmpty bR then bL else
         if isEmpty bL then bR else
-        if (hibit = bR.Head) // optimizable
+        if (ENC.hibit = bR.Head) // optimizable
           then { Head = bL.Head; Tail = List.append (bL.Tail) (bR.Tail) }
           else foldBack cons bL bR
 
@@ -223,7 +236,7 @@ module Bits =
 
     /// Prefix a full byte, such that MSB is head.
     let consByte (byte : uint8) (b : Bits) : Bits =
-        let inline cb n acc = cons (0uy <> ((1uy <<< n) &&& byte)) acc
+        let inline cb ix acc = cons (0uy <> ((1uy <<< ix) &&& byte)) acc
         b |> cb 0 |> cb 1 |> cb 2 |> cb 3
           |> cb 4 |> cb 5 |> cb 6 |> cb 7
 
@@ -234,11 +247,6 @@ module Bits =
     let ofBinary (b : uint8[]) : Bits =
         Array.foldBack consByte b empty
 
-    let inline private matchHdLen hdlen n =
-        let lb = (hibit >>> hdlen)  // length bit
-        let ndb = lb ||| (lb - 1UL) // non-data bits (mask)
-        (lb = (n &&& ndb))
-
     let rec private matchListLen len xs =
         match xs with
         | [] -> (0 = len)
@@ -247,7 +255,7 @@ module Bits =
     // matchlen is O(min(len, length b)), and requires constant time to
     // match the expected head length.
     let inline private matchLen len b =
-        matchHdLen (len % 64) (b.Head) && matchListLen (len / 64) (b.Tail)
+        ENC.matchHdLen (len % 64) (b.Head) && matchListLen (len / 64) (b.Tail)
 
     let toByte (b : Bits) : byte =
         let addBit n e = (n <<< 1) ||| (if e then 1uy else 0uy)
@@ -298,6 +306,11 @@ module Bits =
         if (isEmpty b || head b) then b else
         dropZeroesPrefix (tail b)
 
+    /// drop all ones in bitstring prefix
+    let rec dropOnesPrefix b =
+        if (isEmpty b || not (head b)) then b else
+        dropOnesPrefix (tail b)
+
     /// min-width representation of number
     let inline ofNat64 n =
         dropZeroesPrefix (ofU64 n) 
@@ -307,7 +320,7 @@ module Bits =
 
     /// convert up to 64 bits to a number
     let (|Nat64|_|) b =
-        let len_ok = (List.isEmpty b.Tail) || ((hibit = b.Head) && (matchListLen 1 b.Tail))
+        let len_ok = (List.isEmpty b.Tail) || ((ENC.hibit = b.Head) && (matchListLen 1 b.Tail))
         if not len_ok then None else
         Some (toNat64 b)
 
