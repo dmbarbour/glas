@@ -28,28 +28,31 @@ See [Glas CLI](GlasCLI.md) for details.
 
 ## Values
 
-Glas values are immutable binary trees, i.e. where each node in the tree has an optional left and right children, respectively labeled '0' and '1'. The naive representation is:
+Glas values are immutable binary trees, i.e. where each node in the tree has an optional left and right children, respectively labeled '0' and '1'. The most naive representation is:
 
         type T = ((1+T) * (1+T))
 
-Glas systems encode text labels as a path through the tree, with null-terminated UTF-8. For example, the label 'data' is by path `01100100 01100001 01110100 01100001 00000000`, using null-terminated UTF-8. Multiple paths can be encoded into a single [radix trees](https://en.wikipedia.org/wiki/Radix_tree) (aka trie) to represent a record value. We can also encode symbols into paths, or variants as a singleton record. 
+A binary tree can directly represent unit `()`, pair `(a,b)`, and sum types `L a | R b`. However, Glas systems generally favor labeled data because it is extensible and meaningful. Text labels are encoded into a null-terminated UTF-8 path through the tree. For example, label 'data' is encoded by path `01100100 01100001 01110100 01100001 00000000`, where '0' represents a left branch and '1' a right branch. Multiple labels can be encoded, sharing prefixes, essentially forming a [radix tree](https://en.wikipedia.org/wiki/Radix_tree) as the basis for record and dictionary data.
 
-Glas systems also encode bitstrings such as fixed-width numbers into the path. For example, a byte may be encoded as an arbitrary path of 8 bits, msb to lsb, terminating in a leaf node.
-
-The runtime representation of values can be optimized to support common use-cases. For example, to efficiently represent radix trees and bitstrings, we could favor a representation closer to:
+To efficiently represent non-branching path fragments, Glas values use a representation under the hood closer to:
 
         type Bits = compact Bool list
-        type T = (Bits * (1 + (T*T)))
+        type T = (Bits * (1 + (T * T)))
 
-Glas systems also benefit from efficient representation of lists, arrays, binaries, etc.. Also, if we know the static fields and data types for a record, a compiler may favor a more efficient struct-like representation. Runtime representations of values can be further specialized for performance. See *Acceleration* and the proposed [Glas Object](GlasObject.md) serialization.
+Glas systems will encode small, simple values directly into bitstrings. A bitstring is a tree with a single, non-branching path. For example, a byte is an 8-bit bitstring, msb to lsb, such that `00010110` is byte 22. A variable-width natural number 22 is almost the same but loses the zeroes prefix `10110`. Negative integers invert natural number bits, so -22 is `01001`. 
 
-To support larger-than-memory data, and structure sharing in context of network serialization, Glas systems will also use content-addressed references (i.e. secure hashes) to refer to binaries that contain parts of a value. This pattern is called *Stowage*.
+Glas systems encode most sequential structures as lists. Logically, a list is tree representing a right-associative sequence of pairs, terminating in unit - `type List = (Elem * List) | ()`. This is similar to cons cells in Lisp.
 
-Regardless of representation, we can always view Glas values as binary trees.
+        /\
+       1 /\     the list [1,2,3]
+        2 /\
+         3  ()
 
-### Numbers
+However, direct representation of lists is awkward and inefficient for many use-cases such as tuples, arrays, dequeues. Thus, Glas systems will often represent lists under-the-hood using [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_(data_structure)). This structure can efficiently represent index, slice, append, enqueue, and dequeue operations. Binary fragments (sublists of bytes, specifically) can be further optimized.
 
-Numbers deserve some special 
+Beyond lists, Glas systems may eventually support specialized representations for matrices, tables, and other common structures. See *Acceleration*.
+
+Glas values are scalable, capable of representing entire databases. This is supported via content-addressed references. Values may also be content-addressed for network communication between Glas systems. See *Stowage*.
 
 ## Programs
 
@@ -215,23 +218,25 @@ Glas systems will at least check for stack arity ahead of time. A more precise s
 
 ### Stowage
 
-Glas systems will support large data using content-addressed storage. A subtree can be serialized to cheap, high-latency storage and referenced by secure hash. I call this pattern 'stowage'. Stowage serves a similar role as virtual memory, but there are several benefits related to semantic data alignment and content-addressed storage:
+Glas systems will support storage and communication of large data by serializing subtrees to the [Glas Object](GlasObject.md) (aka 'glob') encoding then referencing the glob binary by SHA3-512 secure hash. I call this pattern 'stowage'. 
 
-* implicit deduplication and structure sharing
-* incremental upload, download, and durability
-* provider-independent, validated distribution
-* memoization over large trees can use hashes
-* value-level alignment simplifies control
-
-Glas programs can use annotations to guide use of stowage. It is also feasible to extend the module system with access to some content-addressed data. And a garbage collector could heuristically use stowage to recover volatile memory resources. Use of stowage is not directly observable within a Glas program modulo reflection effects.
-
-The [Glas Object](GlasObject.md) (aka 'glob') encoding is intended to provide a primary representation for stowage. However, stowage doesn't strongly imply use of Glas Object.
+Stowage can be guided by program annotations or performed heuristically by a garbage collector. Stowage essentially replaces use of virtual-memory paging. Consistent use of secure hashes simplifies the interaction of stowage with memoization and content distribution.
 
 ### Memoization
 
-Purely functional subprograms in Glas can be annotated for memoization. This can be implemented by storing a lookup table mapping inputs to outputs. This lookup table can be persistent to support reuse across builds and integrate more conveniently with stowage.
+Purely functional subprograms in Glas can be annotated for memoization. This can be implemented by storing a lookup table mapping inputs to outputs. This lookup table can be persistent to support reuse across builds, and integrate with stowage.
 
 Glas systems assume memoization as a solution to many performance issues that would otherwise require explicit state. Without memoization, the potential scale of Glas systems would be severely constrained.
+
+### Content Distribution
+
+Networked Glas systems will support [content distribution networks (CDNs)](https://en.wikipedia.org/wiki/Content_delivery_network) to improve performance when repeatedly serving large values. This feature is tightly aligned with *Stowage*.
+
+The Glas CDN network is not fully trusted, so all data distributed through it is encrypted. This is achieved by splitting the 512-bit secure hash (SHA3-512) into two parts: a 256-bit lookup key, and a 256-bit decryption key. The client will query the CDN using the lookup key, download the encrypted binary, decrypt then decompress locally, and verify against the original secure hash.
+
+The encrypted binary includes a non-encrypted header that records encryption algorithm, compression algorithm, decompressed size, and optional metadata. 
+
+When uploading data, the CDN must receive the the lookup key, encrypted binary, and a list of dependencies. The dependencies are provided as an array of lookup keys. The CDN requires all transitive dependencies before distributing the value, and may use remember this list to support garbage collection. The CDN should never see the decryption key.
 
 ### Acceleration
 

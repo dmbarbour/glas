@@ -86,14 +86,12 @@ This design essentially makes references second-class, in the sense that they ca
 
 Transactions are logically instantaneous. The concept of 'timeout' or 'sleep' is incompatible with transactions. However, we can constrain a transaction to commit before or after a given time. We can also estimate time of commit then abort if the estimate is too far off. Proposed effects API:
 
-* **time:now** - Response is an estimated, logical time of commit, as a TimeStamp value.
-* **time:check:TimeStamp** - If 'now' is equal or greater to TimeStamp, respond with unit. Otherwise fail.
+* **time:now** - Response is an estimated, logical time of commit, as a TimeStamp value. This method will always return the same value within a transaction. 
+* **time:check:TimeStamp** - If 'now' is equal or greater to TimeStamp, respond with unit. Otherwise fail. 
 
-Time 'check' provides stable, monotonic, indirect observation of time. If a transaction aborts after a failed time check, the runtime can implicitly wait for specified time (or other relevant changes) to retry. Time check is useful for modeling timeouts and scheduling.
+These APIs interact differently with incremental computing. Use of 'time:now' is inherently unstable so will force the transaction to repeatedly backtrack and retry. Use of 'time:check' will only update once for a future TimeStamp, and is useful for precise waits and timeouts. A runtime can arrange for the transaction to evaluate again slightly ahead of the specified time, then commit at that time.
 
-Reading 'now' will always destabilize a transaction, so it's best read after the transaction is unstable for other reasons, such as processing an incoming message from a channel.
-
-Suggest timestamps are usually in NT time: a natural number of 100ns intervals since midnight Jan 1, 1601 UT.
+TimeStamp values will use NT time - a natural number of 100ns intervals since midnight, Jan 1, 1601 UTC. The 100ns interval is more than accurate enough for casual use. 
 
 ### Concurrency
 
@@ -119,25 +117,131 @@ Logging is a convenient approach to debugging. We can easily support a logging e
 
 * **log:Message** - Response is unit. Arbitrary output message, useful for progress reports or debugging.
 
-The proposed convention is that a log message is represented by a record of ad-hoc fields, whose roles and data types are de-facto standardized. For example, `(lv:warn, text:"I'm sorry, Dave. I'm afraid I can't do that.", from:hal)`. This simplifies extension with new fields and a gradual shift towards more structured, less textual messages.
+The proposed convention is that a log message is represented by a record of ad-hoc fields, whose roles and data types are de-facto standardized. For example, `(lv:warn, text:"I'm sorry, Dave. I'm afraid I can't do that.", msg:(event:(...),state:(...)) from:hal)`. This supports extension with new fields and structured content.
 
-In context of transaction machines with incremental computing and fork-based concurrency, the conventional notion of streaming log messages is not a good fit. A better presentation is a tree, with branches based on stable fork choices, and methods to animate the tree over time. Additionally, we'll generally want to render log outputs from failed transactions (perhaps in a faded color), e.g. using some reflection mechanism. 
+Initially, log messages will simply write to standard error. Messages may be colored based on 'lv'. However, this could be improved significantly. I hope to eventually support a graphical tree-view of 'fork' processes where each process has its own stable subset of log messages, and we can scrub or search the timeline.
 
 ### Random Data
 
-For optimization and security purposes, it's necessary to distinguish non-deterministic choice from reading random data. Relevantly, 'fork' is not random (cf. *Transaction Fusion* selecting optimizable schedules), and 'random' does not implicitly search on failure (e.g. cryptographic PRNG per fork under hood). A viable API:
+Non-deterministic 'fork' is not random because a scheduler can heuristically search for choices that lead to success. Similarly, 'random' is not necessarily non-deterministic. These two ideas must be distinguished. A viable API:
 
 * **random:N** - response is cryptographically random binary of N bytes.
 
-Most apps should use PRNGs or noise models instead of external random input. But access to secure random data is necessary for some use cases, such as cryptographic protocols.
+The implementation of random must backtrack on failure, such that we aren't implicitly searching for a successful string of random bits. It is possible to use a separate 'random' source per stable thread (i.e. per fork path) to further stabilize the system. Performance should be good, e.g. users are free to directly use random for simulating dice.
 
-## Inter-App Communication APIs
+### Filesystem
 
-Some ideas for communication between applications or components of a large application. 
+Filesystems are awful and ubiquitous, so we might as well provide access. Relatedly, console IO will be modeled as filesystem access with `std:in`, `std:out`, and `std:err` as implicit open file references. (By default, `std:err` is also used by the logging system.)
 
-### Channels 
+A proposed API:
 
-A channel communicates with a remote process using reliable, ordered message passing. If channels are fine-grained and can be communicated, we can easily represent object-oriented software design patterns. A viable effects API:
+* **file:FileOp** - namespace for file operations. An open file is essentially a cursor into a file resource, with access to buffered data. 
+ * **open:(name:FileName, as:FileRef, for:Interaction)** - Response is unit, or failure if the FileRef is already in use. Binds a new filesystem interaction to the given FileRef. Usually does not wait on OS (see 'status').
+  * *read* - read file as stream. Status is set to 'done' when last byte is available, even if it hasn't been read yet.
+  * *write* - open file and write from beginning. Will delete content in existing file.
+  * *append* - open file and write start writing at end. Will create a new file if needed.
+  * *delete* - remove a file. Use status to observe potential error.
+  * *move:NewFileName* - rename a file. Use status to observe error.
+ * **close:FileRef** - Release the file reference.
+ * **read:(from:FileRef, count:Nat)** - Response is list of up to Count available bytes taken from input stream. Returns fewer than Count if input buffer is empty. 
+ * **write:(to:FileRef, data:Binary)** - write a list of bytes to file. Fails if not opened for write or append. Use 'busy' status for heuristic pushback.
+ * **status:FileRef** - Returns a record that may contain one or more flags and values describing the status of an open file.
+  * *init* - the 'open' request has not yet been seen by OS.
+  * *ready* - further interaction is possible, e.g. read buffer has data available, or you're free to write.
+  * *busy* - has an active background task.
+  * *done* - successful termination of interaction.
+  * *error:Message* - reports an error, with some extra description.
+ * **ref:list** - return a list of open file references. 
+ * **ref:move:(from:FileRef, to:FileRef)** - reorganize references. Fails if 'to' ref is in use. 
+
+**dir:DirOp** - namespace for directory/folder operations. This includes browsing files, watching files. 
+ * **open:(name:DirName, as:DirRef, for:Interaction)** - create new system objects to interact with the specified directory resource in a requested manner. Fails if DirRef is already in use, otherwise returns unit. Potential Interactions:
+  * *list* - read a list of entries from the directory. Reaches Done state after all items are read.
+  * *move:NewDirName* - rename or move a directory. Use status to observe error.
+  * *delete:(recursive?)* - remove an empty directory, or flag for recursive deletion.
+ * **close:DirRef** - release the directory reference.
+ * **read:DirRef** - read a file system entry, or fail if input buffer is empty. This is a record with ad-hoc fields including at least 'type' and 'name'. Some potential fields:
+  * *type:Symbol* (always) - usually a symbol 'file' or 'dir'
+  * *name:Path* (always) - a full filename or directory name, usually a string
+  * *mtime:TimeStamp* (optional) - modify time 
+  * *ctime:TimeStamp* (optional) - creation time 
+  * *size:Nat* (optional) - number of bytes
+ * **status:DirRef** ~ same as file status
+ * **ref:list** - return a list of open directory references.
+ * **ref:move:(from:DirRef, to:DirRef)** - reorganize directory references. Fails if 'to' ref is in use.
+ * **cwd** - return current working directory. Non-rooted file references are relative to this.
+ * **sep** - return preferred directory separator substring for current OS, usually "/" or "\".
+
+It is feasible to extend directory operations with option to 'watch' a directory for updates.
+
+### Environment Variables
+
+A simple API for access to OS environment variables, such as GLAS_PATH.
+
+* **env:get:String** - read-only access to environment variables. 
+* **env:list** - returns a list of defined environment variables.
+
+Glas applications won't directly update environment variables. However, it is possible to simulate updates using the env/eff handler.
+
+### Shared Database
+
+I hate working directly with files, with all the messy serialization and parsing. So, for shared state within and between Glas applications, I propose support a shared key-value database. 
+
+Proposed API:
+
+* **db:get:Key** - returns value associated with key; fails if key is undefined
+* **db:put:(k:Key, v:Value)** - sets value associated with a key
+* **db:del:Key** - removes key from database; sets key to undefined
+* **db:list** - returns complete list of defined keys; arbitrary stable order.
+
+Keys are arbitrary Glas values but should be small (otherwise performance suffers). Associated values do not have any size constraint, and will leverage [Glas Object](GlasObject.md) to support lazy loading and incremental updates. Updates are transactional, durable, and become visible to other applications upon commit. 
+
+The shared database can be represented in the filesystem. If the GLAS_DATA environment variable is defined, it must specify a folder for storing shared data. Otherwise we'll default to a user-specific location such as `~/.glas/` in Linux.
+
+### Network
+
+Most network interactions with external services can be supported by TCP or UDP. Support for raw Ethernet might also be useful, but it's low priority for now.
+
+* **tcp:TcpOp** - namespace for TCP operations
+ * **l:ListenerOp** - namespace for TCP listener operations.
+  * **create:(port?Port, addr?Addr, as:ListenerRef)** - Create a new ListenerRef. Return unit. Whether listener is successfully created is observable via 'state' a short while after the request is committed.
+   * *port* - indicates which local TCP port to bind. If omitted, OS chooses port.
+   * *addr* - indicates which local network cards or ethernet interfaces to bind. Can be a string or bitstring. If omitted, attempts to bind all interfaces.
+  * **accept:(from:ListenerRef, as:TcpRef)** - Receive an incoming connection, and bind the new connection to the specified TcpRef. This operation will fail if there is no pending connection. 
+  * **status:ListenerRef** ~ same as file status
+  * **info:ListenerRef** - For active listener, returns a list of local `(port:Port, addr:Addr)` pairs for that are being listened on. Fails in case of 'init' or 'error' status.
+  * **close:ListenerRef** - Release listener reference and associated resources.
+  * **ref:list** - returns list of open listener refs 
+  * **ref:move:(from:ListenerRef, to:ListenerRef)** - reorganize references. Cannot move to an open ref.
+ * **connect:(dst:(port:Port, addr:Addr), src?(port?Port, addr?Addr), as:TcpRef)** - Create a new connection to a remote TCP port. Fails if TcpRef is already in use, otherwise returns unit. Whether the connection is successful is observable via 'state' a short while after the request is committed. Destination port and address must be specified, but source port and address are usually unspecified and determined dynamically by the OS.
+ * **read:(from:TcpRef, count:N)** - read 1 to N bytes, limited by available data, returned as a list. Fails if no bytes are available - see 'status' to diagnose error vs. end of input. 
+ * **write:(to:TcpRef, data:Binary)** - write binary data to the TCP connection. The binary is represented by a list of bytes. Use 'busy' status for heuristic pushback.
+ * **limit:(of:Ref, cap:Count)** - fails if number of bytes pending in the write buffer is greater than Count or if connection is closed, otherwise succeeds returning unit. Not necessarily accurate or precise. This method is useful for pushback, to limit a writer that is faster than a remote reader.
+ * **status:TcpRef** ~ same as file status
+ * **info:TcpRef** - Returns a `(dst:(port, addr), src:(port, addr))` pair after TCP connection is active. May fail in some cases (e.g. 'init' or 'error' status).
+ * **close:TcpRef**
+ * **ref:list** - returns list of open TCP refs 
+ * **ref:move:(from:TcpRef, to:TcpRef)** - reorganize TCP refs. Fails if 'to' ref is in use.
+
+* **udp:UdpOp** - namespace for UDP operations. UDP messages use `(port, addr, data)` triples, with port and address refering to the remote endpoint.
+ * **connect:(port?Port, addr?Addr, as:UdpRef)** - Bind a local UDP port, potentially across multiple ethernet interfaces. Fails if UdpRef is already in use, otherwise returns unit. Whether binding is successful is observable via 'state' after the request is committed. Options:
+  * *port* - normally included to determine which port to bind, but may be left to dynamic allocation. 
+  * *addr* - indicates which local ethernet interfaces to bind; if unspecified, attempts to binds all interfaces.
+ * **read:(from:UdpRef)** - returns the next available UDP message value. 
+ * **write(to:UdpRef, data:Message)** - output a UDP message
+ 
+  using same `(port, addr, data)` record as messages read. Returns unit. Write may fail if the connection is in an error state, and attempting to write to an invalid port or address or oversized packets may result in an error state.
+ * **status:UdpRef** ~ same as file status
+ * **info:UdpRef** - Returns a list of `(port:Port, addr:Addr)` pairs for the local endpoint.
+ * **close:UdpRef** - Return reference to unused state, releasing system resources.
+ * **ref:list** - returns list of open UDP refs.
+ * **ref:move:(from:UdpRef, to:UdpRef)** - reorganize UDP refs. Fails if 'to' ref is in use.
+
+A port is a fixed-width 16-bit number. An addr is a fixed-width 32-bit or 128-bit bitstring (IPv4 or IPv6) or a text string such as "www.example.com" or "192.168.1.42" or "2001:db8::2:1". Later, I might add a dedicated API for DNS lookup, or perhaps for 'raw' Ethernet.
+
+### Channels
+
+A channel communicates with a remote process using reliable, ordered message passing. If channels are fine-grained and can be communicated, we can easily represent object-oriented software design patterns. A viable API:
 
 * **c:send:(data:Value, over:ChannelRef)** - send a value over a channel. Return value is unit.
 * **c:recv:(from:ChannelRef)** - receive data from a channel. Return value is the data. Fails if no input available or if next input isn't data (try 'accept').
@@ -154,13 +258,38 @@ A channel communicates with a remote process using reliable, ordered message pas
 * **c:drop:ChannelRef** - detach channel from calling process, enabling host to recycle associated resources. Indirectly observable via 'test'.
 * **c:test:ChannelRef** - Succeeds, returning unit, if the channel has any pending inputs or is still remotely connected. Otherwise fails. If the remote endpoint of a channel is copied, all copies must be dropped before 'test' will fail.
 
-Objects are services that repeatedly 'accept' and handle calls. Each call is represented by a distinct subchannel. Typically, the caller will attach/create a subchannel per call, write parameters to that channel before committing, then await a response from the call channel in a future transaction. However, this is easily extended to support streams or interactive sessions. The channel that handles method calls serves as the object reference.
+To integrate channels with the outside world, and build a network between Glas applications, we can support binding to TCP. In this case, data will be serialized using [Glas Object](GlasObject.md). A viable API:
 
-To program these objects would benefit from a dedicated language module that knows how to compile procedural method calls into multiple steps. It would also benefit from named/versioned 'yield' points to stabilize the resulting state machines in context of live coding. It is feasible for transaction fusion to collapse unnecessary waits, but we could also try some annotations to stabilize the optimizations.
+* **c:tcp:bind:(wrap:TcpRef, as:ChannelRef)** - removes TcpRef from scope, binds ChannelRef. This implements the channel (and subchannels) over TCP. The TCP connection will support some protocol-layer interactions to support features such as querying for globs, providing access to a content-distribution network, or routing pipes efficiently.
+* **c:tcp:l:bind:(wrap:ListenerRef, as:ChannelRef)** - removes ListenerRef from Scope, binds ChannelRef. This ChannelRef will only ever return subchannels, one for each TCP connection.
 
-There is some risk with channels of a fast producer outpacing a slow consumer of data, resulting in a space leak. This should usually be solved at the protocol layer for streaming data, e.g. require the consumer to provide some feedback such as acknowledgements or readiness tokens. Buffer limits and pushback aren't built into the channels because they interact awkwardly with transaction boundaries.
+Support for data channels over TCP is the foundation for networked Glas systems.
 
-A weakness of this API is that the network has a lot of implicit state related to routes (implicitly built via attach/accept/pipe) and buffers. Unlike private application state, the network state is not accessible for update in case of changes to code or configuration. Old connections can be inconsistent with new security policies. This can be mitigated by designing APIs that constrain the maximum age of connections, e.g. favoring short-lived connections or periodic regeneration of long-lived connections (like subscriptions). 
+## Misc Thoughts
+
+### Console Applications
+
+See [Glas command line interface](GlasCLI.md).
+
+### GUI Apps
+
+No direct support for GUI. Indirectly, we could potentially use network access to X11 and sound APIs, or write a web server that serves a GUI.
+
+### Notebook Applications
+
+I like the idea of building notebook-style applications, where each statement is also a little application serving its own little GUI. Live coding should be implicit. The notebook pages should be highly reactive to changes in code, avoiding overuse of history-dependent behavior. 
+
+The GUI must be efficiently composable, such that a composite application can combine GUI views from component applications. Ideally, we can also support multiple views and concurrent users, e.g. an application serves multiple GUIs.
+
+Component applications would be composed and connected. I like the idea of using *Reactive Dataflow Networks* for communication because it works nicely with live coding, so we might assume the notebook has some access to a loopback port and possibly to user model and GUI requests via reactive dataflow.
+
+### User Interface APIs
+
+Initial GUI for command line interface applications will likely just be serving HTTP connections. But for notebook applications, we might benefit from a higher level API such that we can do more structured composition before converting the GUI to lower level code. About the only idea I'm solid on is that processes should accept and 'serve' GUI connections, which can easily support running headless or multiple users and views. 
+
+### Web Applications
+
+A promising target for Glas is web applications, compiling applications to JavaScript and using effects oriented around on Document Object Model, XMLHttpRequest, WebSockets, and Local Storage. Transaction machines are a decent fit for web apps. And we could also adapt notebook applications to the web target.
 
 ### Reactive Dataflow Networks
 
@@ -184,24 +313,6 @@ A weakness of this model is that it can be difficult to predict or control which
 
 Supporting synchronous remote procedure calls, i.e. within a transaction, is technically feasible but I'm not convinced it's a good idea. Doing so complicates the application model (to allow for reentrant calls), resists local reasoning and optimizations, and hinders integration with non-transactional systems. At least for now, I would suggest that distributed transaction be explicitly modeled between applications as needed.
 
-## Misc Thoughts
+### FFI
 
-### Console Applications
-
-See [Glas command line interface](GlasCLI.md).
-
-### Notebook Applications
-
-I like the idea of building notebook-style applications, where each statement is also a little application serving its own little GUI. Live coding should be implicit. The notebook pages should be highly reactive to changes in code, avoiding overuse of history-dependent behavior. 
-
-The GUI must be efficiently composable, such that a composite application can combine GUI views from component applications. Ideally, we can also support multiple views and concurrent users, e.g. an application serves multiple GUIs.
-
-Component applications would be composed and connected. I like the idea of using *Reactive Dataflow Networks* for communication because it works nicely with live coding, so we might assume the notebook has some access to a loopback port and possibly to user model and GUI requests via reactive dataflow.
-
-### User Interface APIs
-
-Initial GUI for command line interface applications will likely just be serving HTTP connections. But for notebook applications, we might benefit from a higher level API such that we can do more structured composition before converting the GUI to lower level code. About the only idea I'm solid on is that processes should accept and 'serve' GUI connections, which can easily support running headless or multiple users and views. 
-
-### Web Applications
-
-A promising target for Glas is web applications, compiling applications to JavaScript and using effects oriented around on Document Object Model, XMLHttpRequest, WebSockets, and Local Storage. Transaction machines are a decent fit for web apps. And we could also adapt notebook applications to the web target.
+Direct support for FFI is a bad idea. But it might be useful to eventually include DLLs and headers as modules, and somehow use them when compiling an application. 

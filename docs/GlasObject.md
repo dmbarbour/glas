@@ -87,10 +87,10 @@ Glas Object provides a few specialized nodes to support serialization of indexed
 * *short array* - header (0xA0-0xAF) encodes length of 1 to 16 items, otherwise as array.
 * *binary* - header (0x0B) followed by length (varnat + 1) then by that many bytes. Represents a list containing the binary data. Each byte corresponds to an 8-bit bitstring, msb to lsb. 
 * *short binary* - header (0xB0-0xBF) encodes length of 1 to 16 items, otherwise as binary.
-* *concat* - header (0x0C) followed by offset to list-like value, then immediately by the remainder value. A list-like value has a right spine that terminates in a leaf node. Logically equivalent to replacing that leaf with the remainder value.
+* *concat* - header (0x0C) followed by offset to a list, then immediately by the remainder value. This is logically equivalent to substituting the unit terminal from the list with the remainder. (Usually, the remainder is also a list, resulting in logical concatenation.)
 
-        concat (A,AS) B = (A,concat AS B)
-        concat () B = B
+        concat (A, AS) B = (A, concat AS B)
+        concat ()      B = B
 
 Indexing of concat nodes will additionally rely on inserting some *list take* nodes (from *Accessors*) to cache size information.
 
@@ -110,12 +110,12 @@ Internal ref nodes are useful for structure sharing within a glob, and external 
 Accessors support fine-grained structure sharing between globs. For example, we may define a common dictionary then use accessors to reference individual definitions.
 
 * *path select* - headers use same encoding of path bits as stem nodes (ttt = 100), followed by an offset to the target value. Represents the value reached by following the path into target.
-* *list drop* - header (0x08) followed by count (varnat + 1) then by offset to list-like value. Represents value reached by following path of count '1' bits.
-* *list take* - header (0x09) followed by count (varnat + 1) then by immediate list-like value. Represents value after replacing the node immediately after count '1' bits with a leaf node (unit). In practice, mostly used to cache information about list length.
+* *list drop* - header (0x08) followed by count (varnat + 1) then by offset to right-associative sequence of pairs. Returns value from dropping 'count' pairs from the sequence.
+* *list take* - header (0x09) followed by count (varnat + 1) then immediately by a right-associative sequence of pairs. Returns a list containing 'count' elements from the sequence and terminating in unit. Useful to cache information about list length.
 
 The 'path select' nodes include 'internal reference' (node 0x88 - select an empty path). All path select nodes use a reference to the target value, but an inline value can effectively be expressed via zero offset.
 
-The 'list-like' values for the two list accessors only require a contiguous right spine of given length. But these accessors will be much more efficient if applied to an indexed list (see *Lists* below). 
+The 'list drop' and 'list take' operators won't check whether the list has a valid termination, but do require that lists are formed of pairs.
 
 ### Annotations
 
@@ -236,6 +236,9 @@ It is feasible to make Glas Object extensible with arbitrary encodings. Consider
 
 * *codec* - header is followed by offset to value representing a codec, then immediately by the encoded value.
 
-A 'codec' might be represented as '(encode:Program, decode:Program, ...)'. These programs would be large and frequently used, so would often reference content-addressed storage to simplify caching and reuse. A runtime can potentially recognize and accelerate codecs for use together with accelerated representations of data.
+A codec might be represented as 'codec:(encode:Program, decode:Program, ...)', and usually referenced via content-addressed storage. A runtime could recognize certain codecs to support accelerated data representations.
 
-However, this sacrifices some simplicity and indexability. These might be recovered a little: For simplicity, use a program model that structurally guarantees termination. For indexability, support lazy partial evaluation, similar to patches. Even better if encode and decode can be written as a combined program that runs forwards or backwards. In any case, a lot more design work is needed to make this fit my design goals for Glas Object, and it isn't necessary to do that work immediately.
+However, codecs don't fit my vision for Glas Object. They aren't simple and would complicate reasoning about termination and performance. The data will not be directly indexable. That said, some working on the program model could potentially simplify reasoning and support limited indexing via lazy partial evaluation.
+
+
+
