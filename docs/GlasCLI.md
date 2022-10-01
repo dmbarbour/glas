@@ -75,7 +75,6 @@ Mostly, we'll just return 0 for okay or -1 for errors. Details on why things fai
 
 The effects API for Glas CLI is essentially everything listed in [Glas Apps](GlasApps.md) plus the 'load' effect described for language modules.
 
-* **load:ModuleRef** - load value of referenced module.
+* **load:ModuleRef** - load current value of referenced module, or fail if the module cannot be compiled. References are the same as used by language modules.
 
-The 'load' effect should return updated values if module source has updated between transactions. This is intended to provide a basis for live coding.
-
+The ability to update source code and load updated module values, together with accelerated evaluation, can provide an effective basis for live coding in Glas systems. In context of incremental computing, 'load' is potentially stable until the module is updated.

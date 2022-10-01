@@ -1,120 +1,121 @@
 namespace Glas
 
-// Glas values can directly be encoded as a node with two optional children:
-//
-//     type Value = { L: Value option; R: Value option }
-//
-// However, Glas often uses non-branching path segments to encode symbols or
-// numbers. If an allocation is required per bit, this is much too inefficient.
-// So, I favor a radix tree structure that compacts the non-branching stem:
-//
-//     type Value = { Stem: Bits; Term: (Value * Value) option }
-//
-// This is barely adequate, but Glas programs assume that lists are accelerated 
-// using a finger-tree encoding for efficient split, append, and indexing. To 
-// support this, we can represent structures of form `(A * (B * (C * D)))` as
-// finger-tree lists, restricting the final value to be a non-pair. 
-// 
-//     type Value = { Stem: Bits; Spine: (Value * FTList<Value> * NonPairVal) option }
-//
-// This enables us to efficiently check whether a value is a list, and to manipulate
-// list values with expected algorithmic efficiencies. But it is still missing some
-// desirable features, such as rope-like compact representation of binary data and
-// content-addressed storage (stowage) of large data.
-//
-// This representation can be taken as a proof-of-concept, and perhaps is adequate
-// for bootstrap. If performance is not sufficient, we could perhaps model large 
-// values using objects instead, applying compact representations where feasible.
-[<Struct; CustomComparison; CustomEquality>]
-type Value = 
-    { Stem : Bits
-    ; Spine: Option<struct(Value * FTList<Value> * NonPairVal)> 
-    }
-
-    // Custom Equality and Comparison
-    static member private OfSE s e =
-        match FTList.tryViewL s with
-        | Some (s0, s') -> { Stem = Bits.empty; Spine = Some struct(s0,s',e) }
-        | None -> e.Value
-
-    static member private Cmp rs x y = 
-        let cmpStem = Bits.cmp (x.Stem) (y.Stem)
-        if 0 <> cmpStem then cmpStem else
-        if LanguagePrimitives.PhysicalEquality x.Spine y.Spine then 
-            // this includes None None and fast-matches subtrees by ref.
-            match rs with
-            | (struct(x',y')::rs') -> Value.Cmp rs' x' y'
-            | [] -> 0
-        else 
-            match x.Spine, y.Spine with
-            | Some struct(x', sx, ex), Some struct(y', sy, ey) ->
-                let rs' = struct(Value.OfSE sx ex, Value.OfSE sy ey) :: rs
-                Value.Cmp rs' x' y'
-            | l,r -> 
-                assert (Option.isSome l <> Option.isSome r)
-                compare (Option.isSome l) (Option.isSome r)
-
-    static member private Eq rs x y =
-        if (x.Stem <> y.Stem) then false else
-        if LanguagePrimitives.PhysicalEquality x.Spine y.Spine then
-            // this includes the None None case and fast-matches subtrees by ref 
-            match rs with
-            | (struct(x',y')::rs') -> Value.Eq rs' x' y'
-            | [] -> true
-        else
-            match x.Spine, y.Spine with
-            | Some struct(x',sx,ex), Some struct(y',sy,ey) ->
-                let rs' = struct(Value.OfSE sx ex, Value.OfSE sy ey) :: rs
-                Value.Eq rs' x' y'
-            | l,r -> assert (Option.isSome l <> Option.isSome r); false
-
-    override x.Equals yobj =
-        match yobj with
-        | :? Value as y -> Value.Eq (List.empty) x y
-        | _ -> false
-
-    interface System.IEquatable<Value> with
-        member x.Equals y = 
-            Value.Eq (List.empty) x y
-
-    interface System.IComparable with
-        member x.CompareTo yobj =
-            match yobj with
-            | :? Value as y -> Value.Cmp (List.empty) x y
-            | _ -> invalidArg (nameof yobj) "Comparison between Value and Non-Value"
-
-    interface System.IComparable<Value> with
-        member x.CompareTo y =
-            Value.Cmp (List.empty) x y        
-
-    static member inline private HMix a b = 
-        16777619 * (a ^^^ b) // FNV-1a
-
-    static member private Hash rs h v = 
-        match (v.Spine) with
-        | None ->
-            let h' = (hash v.Stem) |> Value.HMix h |> Value.HMix 0
-            match rs with
-            | (r::rs') -> Value.Hash rs' h' r
-            | [] -> h'
-        | Some struct(l, s, e) ->
-            let h' = (hash v.Stem) |> Value.HMix h |> Value.HMix 1
-            let rs' = (Value.OfSE s e)::rs
-            Value.Hash rs' h' l
-
-    override x.GetHashCode() =
-        Value.Hash (List.empty) (int 2166136261ul) x 
-
-
-and [<Struct>] NonPairVal = 
-    // restriction via smart constructor
-    val Value : Value
-    new(v : Value) =
-        if Option.isSome v.Spine && Bits.isEmpty v.Stem then 
-            invalidArg (nameof v) "NonPairVal must not be a pair"
-        { Value = v }
-
 module Value =
+
+    // Glas values can directly be encoded as a node with two optional children:
+    //
+    //     type Value = { L: Value option; R: Value option }
+    //
+    // However, Glas often uses non-branching path segments to encode symbols or
+    // numbers. If an allocation is required per bit, this is much too inefficient.
+    // So, I favor a radix tree structure that compacts the non-branching stem:
+    //
+    //     type Value = { Stem: Bits; Term: (Value * Value) option }
+    //
+    // This is barely adequate, but Glas programs assume that lists are accelerated 
+    // using a finger-tree encoding for efficient split, append, and indexing. To 
+    // support this, we can represent structures of form `(A * (B * (C * D)))` as
+    // finger-tree lists, restricting the final value to be a non-pair. 
+    // 
+    //     type Value = { Stem: Bits; Spine: (Value * FTList<Value> * NonPairVal) option }
+    //
+    // This enables us to efficiently check whether a value is a list, and to manipulate
+    // list values with expected algorithmic efficiencies. But it is still missing some
+    // desirable features, such as rope-like compact representation of binary data and
+    // content-addressed storage (stowage) of large data.
+    //
+    // This representation can be taken as a proof-of-concept, and perhaps is adequate
+    // for bootstrap. If performance is not sufficient, we could perhaps model large 
+    // values using objects instead, applying compact representations where feasible.
+    [<Struct; CustomComparison; CustomEquality>]
+    type Value = 
+        { Stem : Bits
+        ; Spine: Option<struct(Value * FTList<Value> * NonPairVal)> 
+        }
+
+        // Custom Equality and Comparison
+        static member private OfSE s e =
+            match FTList.tryViewL s with
+            | Some (s0, s') -> { Stem = Bits.empty; Spine = Some struct(s0,s',e) }
+            | None -> e.Value
+
+        static member private Cmp rs x y = 
+            let cmpStem = Bits.cmp (x.Stem) (y.Stem)
+            if 0 <> cmpStem then cmpStem else
+            if LanguagePrimitives.PhysicalEquality x.Spine y.Spine then 
+                // this includes None None and fast-matches subtrees by ref.
+                match rs with
+                | (struct(x',y')::rs') -> Value.Cmp rs' x' y'
+                | [] -> 0
+            else 
+                match x.Spine, y.Spine with
+                | Some struct(x', sx, ex), Some struct(y', sy, ey) ->
+                    let rs' = struct(Value.OfSE sx ex, Value.OfSE sy ey) :: rs
+                    Value.Cmp rs' x' y'
+                | l,r -> 
+                    assert (Option.isSome l <> Option.isSome r)
+                    compare (Option.isSome l) (Option.isSome r)
+
+        static member private Eq rs x y =
+            if (x.Stem <> y.Stem) then false else
+            if LanguagePrimitives.PhysicalEquality x.Spine y.Spine then
+                // this includes the None None case and fast-matches subtrees by ref 
+                match rs with
+                | (struct(x',y')::rs') -> Value.Eq rs' x' y'
+                | [] -> true
+            else
+                match x.Spine, y.Spine with
+                | Some struct(x',sx,ex), Some struct(y',sy,ey) ->
+                    let rs' = struct(Value.OfSE sx ex, Value.OfSE sy ey) :: rs
+                    Value.Eq rs' x' y'
+                | l,r -> assert (Option.isSome l <> Option.isSome r); false
+
+        override x.Equals yobj =
+            match yobj with
+            | :? Value as y -> Value.Eq (List.empty) x y
+            | _ -> false
+
+        interface System.IEquatable<Value> with
+            member x.Equals y = 
+                Value.Eq (List.empty) x y
+
+        interface System.IComparable with
+            member x.CompareTo yobj =
+                match yobj with
+                | :? Value as y -> Value.Cmp (List.empty) x y
+                | _ -> invalidArg (nameof yobj) "Comparison between Value and Non-Value"
+
+        interface System.IComparable<Value> with
+            member x.CompareTo y =
+                Value.Cmp (List.empty) x y        
+
+        static member inline private HMix a b = 
+            16777619 * (a ^^^ b) // FNV-1a
+
+        static member private Hash rs h v = 
+            match (v.Spine) with
+            | None ->
+                let h' = (hash v.Stem) |> Value.HMix h |> Value.HMix 0
+                match rs with
+                | (r::rs') -> Value.Hash rs' h' r
+                | [] -> h'
+            | Some struct(l, s, e) ->
+                let h' = (hash v.Stem) |> Value.HMix h |> Value.HMix 1
+                let rs' = (Value.OfSE s e)::rs
+                Value.Hash rs' h' l
+
+        override x.GetHashCode() =
+            Value.Hash (List.empty) (int 2166136261ul) x 
+
+
+    and [<Struct>] NonPairVal = 
+        // restriction via smart constructor
+        val Value : Value
+        new(v : Value) =
+            if Option.isSome v.Spine && Bits.isEmpty v.Stem then 
+                invalidArg (nameof v) "NonPairVal must not be a pair"
+            { Value = v }
+
     // intermediate construct to help insert/delete/pair ops
     let inline private _ofSE s e = 
         match FTList.tryViewL s with
@@ -765,9 +766,9 @@ module Value =
     // would reproduce the value. Obviously we could write `data:Value`,
     // but we could use compression mechanisms on the value.
 
+type Value = Value.Value
 
-// Performance of lists, especially binaries, isn't great in prior representation.
-// Developing alternative model based around the Glob representation of values.
+// Developing alternative value model aligned to Glob representation
 module GlobValue =
 
     // immutable arrays with efficient slicing
@@ -835,59 +836,114 @@ module GlobValue =
             if (tolerance >= (a.Data.Length - a.Length)) then a else
             ImmArray(a.ToArray())
 
-    // TODO: potential support for optimized slicing of lists.
+        // todo: append one or many items  
 
-    [<Struct; NoEquality; NoComparison>] // TODO: CustomEquality, CustomComparison
-    type Value = { Stem : Bits; Term : Node }
-    and Node =
+        interface System.Collections.Generic.IEnumerable<'T> with
+            member a.GetEnumerator() =
+                // borrow existing implementation
+                let s = System.ArraySegment(a.Data, a.Offset, a.Length)
+                let e = s :> System.Collections.Generic.IEnumerable<'T>
+                e.GetEnumerator()
+
+        interface System.Collections.IEnumerable with
+            member a.GetEnumerator() =
+                let e = a :> System.Collections.Generic.IEnumerable<'T>
+                e.GetEnumerator() :> System.Collections.IEnumerator
+
+
+    [<NoEquality; NoComparison>]
+    type Value =
         // basic tree structure.
         | Leaf
+        | Stem of uint64 * Value        // encodes 1..63 bits, e.g. `abc1000..0` is 3 bits.
         | Branch of Value * Value
 
-        // Optimized Lists (and list-like structures)
-        | Array of ImmArray<Value>      // optimized list of values (non-empty!)
-        | Binary of ImmArray<uint8>     // optimized list of bytes (non-empty!)
-        | Concat of uint64 * Node * Value  // truncate left and concat (non-zero truncate!)
+        // optimized lists 
+        | Array of ImmArray<Value>      // optimized list of values (non-empty)
+        | Binary of ImmArray<uint8>     // optimized list of bytes (non-empty)
+        | Concat of Value * Value
+        | Take of uint64 * Value        // non-zero list take (to cache concat size)
 
-        // Once had Stem64, but felt like unnecessary complexity.
-        // For now eliding external refs, Glob representation, etc..
-        // It might be worth supporting a value interface that can
-        // abstract these things, however.
+        // CURRENTLY ELIDING:
+        //
+        //  External Refs
+        //  Accessor Nodes (follow, list drop)
+        //  Annotations
+        // 
+        // These features aren't likely to be necessary for boostrap.
 
-    let inline ofNode v =
-        { Stem = Bits.empty; Term = v }
+    module StemBits =
+        // support for encoding compact bitstrings into stem nodes
 
-    let inline ofBits b =
-        { Stem = b; Term = Leaf }
+        let hibit = (1UL <<< 63)
+        let lobit = 1UL
+        let inline lenbit len = (hibit >>> len)
+        let inline match_mask mask bits = ((mask &&& bits) = mask) 
+        let inline msb bits = match_mask hibit bits 
+        let inline lsb bits = match_mask lobit bits
+        let inline isValid bits = (bits <> 0UL)
+        let empty = hibit
+        let inline head bits = msb bits
+        let inline tail bits = (bits <<< 1)
+        let inline isEmpty bits = (bits = empty)
+        let inline isFull bits = lsb bits
+        let inline match_len len bits =
+            let lb = lenbit len
+            let mask = (lb ||| (lb - 1UL))
+            (lb = (mask &&& bits)) 
 
-    let inline private wrapConcat n l r =
-        if (0UL = n) then r else
-        if not (Bits.isEmpty l.Stem) then failwith "invalid concat" else
-        ofNode <| Concat(n, l.Term, r)
+        let len bits = 
+            // 6-step computation of size via binary division.
+            let mutable v = bits
+            let mutable n = 0
+            if (0UL <> (0xFFFFFFFFUL &&& v)) then n <- n + 32 else v <- v >>> 32
+            if (0UL <> (    0xFFFFUL &&& v)) then n <- n + 16 else v <- v >>> 16
+            if (0UL <> (      0xFFUL &&& v)) then n <- n +  8 else v <- v >>>  8
+            if (0UL <> (       0xFUL &&& v)) then n <- n +  4 else v <- v >>>  4
+            if (0UL <> (       0x3UL &&& v)) then n <- n +  2 else v <- v >>>  2
+            if (0UL <> (       0x1UL &&& v)) then      n +  1 else n
+
+        type Builder = (struct(uint64 * Value)) // non-full bits
+
+        let toBuilder (v : Value) : Builder =
+            match v with
+            | Stem(bits,v') when not (isFull bits) -> struct(bits, v')
+            | _ -> struct(empty, v)
+
+        let ofBuilder (struct(bits, v) : Builder) : Value = 
+            assert(isValid bits)
+            if isEmpty bits then v else Stem(bits,v)
+
+        let consBit (b : bool) (struct(bits, v) : Builder) : Builder =
+            let bits' = (if b then hibit else 0UL) ||| (bits >>> 1)
+            if isFull bits' 
+                then struct(empty, Stem(bits', v)) 
+                else struct(bits', v)
+        
+        let consByte (n : uint8) (sb0 : Builder) : Builder =
+            let inline cb ix sb = consBit (0uy <> ((1uy <<< ix) &&& n)) sb
+            sb0 |> cb 0 |> cb 1 |> cb 2 |> cb 3 
+                |> cb 4 |> cb 5 |> cb 6 |> cb 7
+
+    let inline wrapStem bits v =
+        StemBits.ofBuilder (struct(bits,v))
 
     // add a single bit to a stem. 
     let consBit (b : bool) (v : Value) : Value =
-        { v with Stem = Bits.cons b (v.Stem) }
+        v |> StemBits.toBuilder |> StemBits.consBit b |> StemBits.ofBuilder
 
     // add a full byte to a stem. Used for symbols, etc..
     let consByte (b : uint8) (v : Value) : Value =
-        { v with Stem = Bits.consByte b (v.Stem) }
+        v |> StemBits.toBuilder |> StemBits.consByte b |> StemBits.ofBuilder
 
     // add multiple bytes
     let consBytes (b : uint8 array) (v:Value) : Value =
-        { v with Stem = Array.foldBack (Bits.consByte) b (v.Stem) }
+        v |> StemBits.toBuilder |> Array.foldBack (StemBits.consByte) b |> StemBits.ofBuilder
 
-    let unit = 
-        ofNode Leaf
-
-    let inline pair a b =
-        ofNode (Branch(a,b))
-
-    let inline left v =
-        consBit false v
-
-    let inline right v =
-        consBit true v
+    let unit = Leaf
+    let inline pair a b = Branch(a,b)
+    let inline left v = consBit false v
+    let inline right v = consBit true v
 
     let variant (s : string) (v : Value) : Value =
         consBytes (System.Text.Encoding.UTF8.GetBytes(s)) v
@@ -898,17 +954,129 @@ module GlobValue =
     let inline ofByte (b:uint8) : Value = 
         consByte b unit
 
-    let ofNat64 (n0 : uint64) : Value =
-        ofBits (Bits.ofNat64 n0)
+    let inline isByte (v:Value) : bool =
+        match v with
+        | Stem(bits, Leaf) when (StemBits.match_len 8 bits) -> true
+        | _ -> false
+
+
+    let ofNat (n0 : uint64) : Value =
+        let rec loop sb n =
+            if (0UL = n) then StemBits.ofBuilder sb else
+            let sb' = StemBits.consBit (0UL <> (1UL &&& n)) sb
+            loop sb' (n >>> 1)
+        loop (StemBits.toBuilder unit) n0
+
+    module VList =
+        // This section will implement utilities to support finger-tree ropes.
+        //
+        // This is based on treating certain patterns of 'concat' and 'take' nodes
+        // as finger trees. If not applied to a finger tree rope, manipulations
+        // will still be efficient and gradually balance towards a finger-tree.
+        //
+        // However, shorter lists will favor arrays or binaries! 
+
+        // Concat  (L1 ++ L2)
+        // Take    (Size . List)
+        // Digits(k) - up to four digits, logically concatenated
+        //    1Dk     Dk
+        //    2Dk     Dk ++ 1Dk
+        //    3Dk     Dk ++ 2Dk
+        //    4Dk     Dk ++ 3Dk
+        // Digit(k) (or Dk)
+        //    k=0 # primary data!
+        //        Array
+        //        Binary
+        //    k>0 # 2-3 nodes
+        //        Size . (2Dk | 3Dk)
+        // FTRope(k)
+        //    Empty   Unit
+        //    Small   Digits(k)
+        //    Full    Size . (Digits(k) ++ (FTRope(k+1) ++ Digits(k)))
+        // List 
+        //    FTRope(0)
+        //    Pair(elem, List)
+
+        let rec private appTakeLoop n v =
+            if (0UL = n) then struct(Leaf, 0UL) else
+            match v with
+            | Concat(l, r) ->
+                // I'm assuming reasonably well-balanced ropes.
+                // So, no need to worry about stack depth here.
+                let struct(l',nRem) = appTakeLoop n l
+                let struct(r',n') = appTakeLoop nRem r
+                let v' = 
+                    match r' with
+                    | Leaf -> l'
+                    | _ -> Concat(l',r')
+                struct(v',n')
+            | Take(n',v') ->
+                if (n' >= n)
+                    then struct(Take(n, v'), 0UL)
+                    else struct(v, (n - n'))
+            | Array a ->
+                let aLen = uint64 a.Length
+                if (aLen >= n)
+                    then struct(Array (a.Take(int n)), 0UL)
+                    else struct(v, n - aLen)
+            | Binary b ->
+                let bLen = uint64 b.Length
+                if (bLen >= n)
+                    then struct(Binary (b.Take(int n)), 0UL)
+                    else struct(v, n - bLen)
+            | Branch (l, r) ->
+                // Naive representation of lists! Stack depth is a concern!
+                // Using a specialized subloop to control stack depth.
+                appTakeLoopB [l] (n - 1UL) r
+            | Leaf | Stem _ -> 
+                failwith "target of 'take' is not a valid list"
+        and private appTakeLoopB ls n v =
+            match v with
+            | Branch(l,r) when (n > 0UL) ->
+                appTakeLoopB (l::ls) (n - 1UL) r
+            | _ ->
+                let struct(v',n') = appTakeLoop n v
+                let fn r l = Branch(l,r)
+                let bs = List.fold fn v' ls
+                struct(bs, n')
+
+        let tryApplyTake n v =
+            let struct(v',n') = appTakeLoop n v
+            if(0UL = n') then Some v' else None
+
+        let applyTake n v =
+            let struct(v',n') = appTakeLoop n v
+            if (0UL = n') then v' else
+            failwith "take more than list length" 
+
+        // computing list length. Assumes valid 'Take' nodes.
+        let rec private lenLoop1 acc cs v =
+            match v with
+            | Concat(l,r)-> lenLoop1 acc (r::cs) l
+            | Take(n,_) -> lenLoop (acc + n) cs // assume valid take
+            | Leaf -> lenLoop acc cs
+            | Array(a) -> lenLoop (acc + (uint64 a.Length)) cs
+            | Binary(b) -> lenLoop (acc + (uint64 b.Length)) cs
+            | Branch(_,r) -> lenLoop1 (acc + 1UL) cs r
+            | Stem _ -> None
+        and private lenLoop acc cs =
+            match cs with
+            | (v::cs') -> lenLoop1 acc cs' v
+            | [] -> Some acc
+
+        let tryLen v =
+            lenLoop1 0UL [] v 
+        let len v =
+            match tryLen v with
+            | Some n -> n
+            | None -> failwith "input is not a valid list"
+
 
     let ofImmArray (a : ImmArray<Value>) : Value =
-        if (0 = a.Length) then unit else
-        if (1 = a.Length) then pair a.[0] unit else
-        ofNode (Array a)
+        if (0 = a.Length) then unit else Array a
 
     let ofImmBinary (b : ImmArray<uint8>) : Value =
-        if (0 = b.Length) then unit else
-        ofNode (Binary b)
+        if (0 = b.Length) then unit else Binary b
 
     let ofArray (a : Value array) : Value =
         ofImmArray (ImmArray.OfArray a)
@@ -922,39 +1090,46 @@ module GlobValue =
     let ofBinary (b : uint8 array) : Value =
         ofImmBinary (ImmArray.OfArray b)
 
+    let ofBinarySeq (b : uint8 seq) : Value =
+        ofImmBinary (ImmArray.OfSeq b)
+
     let ofString (s : string) : Value =
-        // using UnsafeOfArray to avoid copying bytes twice.
+        // using UnsafeOfArray to avoid extra copy of bytes. Safe here.
         let b = System.Text.Encoding.UTF8.GetBytes(s)
         ofImmBinary (ImmArray.UnsafeOfArray b)
 
     // basic pattern matching support for tree structured data.
-    //  L(v) - stem left (value)
-    //  R(v) - stem right (value)
+    //  L(v) - left (value)
+    //  R(v) - right (value)
     //  P(a,b) - pair (a,b)
-    //  U - unit (leaf node)
+    //  U - unit
     let rec (|L|R|P|U|) v =
-        if Bits.isEmpty v.Stem then
-            match v.Term with
-            | Leaf -> U
-            | Branch(a,b) -> P(a,b)
-            | Array a -> P(a.[0], ofImmArray (a.Drop(1)))
-            | Binary b -> P(ofByte b.[0], ofImmBinary (b.Drop(1)))
-            | Concat(nL,l,r) ->
-                match ofNode l with
-                | { Term = Concat(nLL0, ll, lr) } ->
-                    // flatten concat nodes to reduce depth
-                    let nLL = min nL nLL0 // truncation
-                    let v' = ofNode <| Concat(nLL, ll, wrapConcat (nL - nLL) lr r)
-                    (|L|R|P|U|) v'
-                | P(a,l') ->
-                    assert(nL > 0UL)
-                    P(a, wrapConcat (nL - 1UL) l' r) // head of list
-                | _ -> failwith "invalid concat node"
-        else
-            let inR = Bits.head v.Stem
-            let v' = { v with Stem = (Bits.tail v.Stem) }
-            if inR then R(v') else L(v')
-
+        match v with
+        | Leaf -> U
+        | Stem (bits, v') ->
+            let vRem = wrapStem (StemBits.tail bits) v'
+            if StemBits.head bits 
+                then R(vRem)
+                else L(vRem)
+        | Branch(a,b) -> P(a,b)
+        | Array a -> P(a.[0], ofImmArray (a.Drop(1)))
+        | Binary b -> P(ofByte b.[0], ofImmBinary (b.Drop(1)))
+        | Concat (l, r) ->
+            match l with
+            | Concat (ll, lr) -> 
+                // flatten concat then retry 
+                let v' = Concat(ll, Concat(lr, r))
+                (|L|R|P|U|) v'
+            | P(a,l') ->
+                P(a, Concat(l',r)) // head of list
+            | U -> // done with l
+                (|L|R|P|U|) r 
+            | _ -> failwith "invalid concat node"
+        | Take(n,v) ->
+            // apply take node then continue
+            match VList.tryApplyTake n v with
+            | Some v' -> (|L|R|P|U|) v'
+            | None -> failwith "invalid take node"
 
     let inline isUnit v =
         match v with
@@ -976,17 +1151,15 @@ module GlobValue =
         | R _ -> true
         | _ -> false
 
-    let inline isBitString v =
-        match v.Term with
+    let rec isBits v =
+        match v with
+        | Stem(_,v') -> isBits v'
         | Leaf -> true
         | _ -> false
 
     // todo: 
     //  radix tree operations
     //  stem and record matching
-    //  roughly balanced finger-tree-rope ops (append, split, etc.)
 
-    module List =
-        let inline singleton v = 
-            ofNode <| Branch(v, ofNode Leaf)
-        
+
+// type Value = Value.Value

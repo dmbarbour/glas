@@ -232,11 +232,11 @@ Glas systems assume memoization as a solution to many performance issues that wo
 
 Networked Glas systems will support [content distribution networks (CDNs)](https://en.wikipedia.org/wiki/Content_delivery_network) to improve performance when repeatedly serving large values. This feature is tightly aligned with *Stowage*.
 
-The Glas CDN network is not fully trusted, so all data distributed through it is encrypted. This is achieved by splitting the 512-bit secure hash (SHA3-512) into two parts: a 256-bit lookup key, and a 256-bit decryption key. The client will query the CDN using the lookup key, download the encrypted binary, decrypt then decompress locally, and verify against the original secure hash.
+The machines within the CDN are not fully trusted, so all data distributed through the CDN is encrypted. This is achieved by splitting the 512-bit secure hash (SHA3-512) into two parts: a 256-bit lookup key, and a 256-bit decryption key. The client will query the CDN using the lookup key, download the encrypted binary, decrypt then decompress locally, and verify against the original secure hash.
 
 The encrypted binary includes a non-encrypted header that records encryption algorithm, compression algorithm, decompressed size, and optional metadata. 
 
-When uploading data, the CDN must receive the the lookup key, encrypted binary, and a list of dependencies. The dependencies are provided as an array of lookup keys. The CDN requires all transitive dependencies before distributing the value, and may use remember this list to support garbage collection. The CDN should never see the decryption key.
+When uploading data, the proxy must receive the the lookup key, encrypted binary, and a list of dependencies. The dependencies are provided as an array of lookup keys. The CDN will require all transitive dependencies before distributing the value, and may remember this list for other purposes such as garbage collection or propagating scoped access to data for accounting purposes.
 
 ### Acceleration
 

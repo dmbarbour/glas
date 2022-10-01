@@ -11,11 +11,11 @@ Although Glas Object is designed for Glas, it should be a very good representati
 * *indexed* - Data access to specific elements of lists and dicts does not need to parse or scan unrelated regions of the glob file. Dictionaries can be organized as radix trees. Lists can be organized as finger trees or ropes.
 * *compact* - Common data and binaries can be efficiently embedded. Can easily share common structure within a glob. 
 * *scalable* - Larger-than-memory values can be loaded partially, leaving most data in content-addressed storage. All sizes use variable-sized numbers. Content-addressed storage is persistent, can support databases.
-* *simple* - Should not have a complicated parser. Composition and decomposition should be easy. Avoid headers and footers. A minimalist writer (i.e. without compression passes) should also be easy.
+* *simple* - Should not have a complicated parser. Composition and decomposition should be easy. A minimalist writer (i.e. without compression passes) should also be easy. Header is optional.
 
 ## Encoding
 
-A parser for Glas Object will first read a header byte that indicates how to read the remainder of a node. A glob binary starts with such a header byte, which represents the value for that binary. *Accessor* nodes support fine-grained structure sharing between globs.
+A parser for Glas Object will first read a header byte that indicates how to read the remainder of a node. The first byte of a glob binary is the 'root value' for the glob, and all relevant data in the glob must be accessible from the root.
 
 ### Basic Data
 
@@ -27,7 +27,7 @@ Glas data is binary trees. We could distinguish basic tree types as leaves, stem
 
 Glas Object uses stems heavily to encode bitstrings. Numbers, symbols, etc. are encoded into as bitstrings. Thus, compaction of stems is essential. Additionally, we could save some bytes (one byte per symbol, number, or branch within a radix tree) by merging stem-leaf and stem-branch.
 
-The proposed encoding for Basic Nodes uses 96 header types:
+The proposed encoding for Basic Nodes consumes 96 header types:
 
         ttt0 abc1 - 3 bits in header (H3)
         ttt0 ab10 - 2 bits in header (H2)
@@ -39,9 +39,9 @@ The proposed encoding for Basic Nodes uses 96 header types:
             nnn - 1-8 byte.
 
         ttt0 0000 . ofnn nnnn . (Bytes or Offset) - Extended PBC 
-            o - offset (1) or inline bytes (0)
+            o - offset (1) or inline path bytes (0)
             f - full (1) or partial (0) first byte
-            nnn nnnn - 1-64 bytes.
+            nn nnnn - 1-64 bytes.
 
         partial byte: (1 to 7 bits)
             abcdefg1 - 7 bits (msb first)
@@ -51,7 +51,7 @@ The proposed encoding for Basic Nodes uses 96 header types:
             10000000 - 0 bits (unused in practice)
             00000000 - unused
 
-        ttt:
+        ttt values:
             001 - Leaf and Stem-Leaf Nodes 
             010 - Stem Nodes 
             011 - Branch and Stem-Branch Nodes
@@ -64,13 +64,13 @@ The proposed encoding for Basic Nodes uses 96 header types:
             ...
             standard glob impl will max at 63 data bits.
 
-This compactly encodes symbols, numbers, composite variants, radix trees, etc. without spending bytes on expensive structure. Common stems can optionally share bytes via External PBC encoding, though this is only worthwhile for large, common stems. In practice, most stems will be relatively short.
+This compactly encodes symbols, numbers, composite variants, radix trees, etc. without spending bytes on expensive structure. It is feasible to share stem bits within a glob via External PBC encoding, potentially useful for compressing large, common stems. In practice, most stems should be short.
 
 *Aside:* The H0 Stem header (0x58 - 0101 1000) doesn't encode any stem bits, and is followed by a child node. This represents the no-op for Glas Object.
 
 ### Lists
 
-Lists are a simple data structure formed from a right-spine of pairs terminating in unit (leaf). 
+Lists are a simple data structure formed from a right-spine of pairs (branch nodes), terminating in unit value (a leaf node).
 
                  /\     type List = (Value * List) | ()
                 a /\
@@ -79,43 +79,43 @@ Lists are a simple data structure formed from a right-spine of pairs terminating
                    d /\     [a,b,c,d,e]
                     e  ()
 
-In Glas systems, lists are used for almost any sequential data structure - arrays, tuples, stacks, queues, deques, binaries, etc.. Sparse lists, where elements are optional, are also useful in some contexts. However, direct representation of lists is awkward and inefficient for most use-cases. Thus, Glas systems will often use specialized representations under-the-hood, such as arrays or[finger-tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_(data_structure)).
+In Glas systems, lists are used for almost any sequential data structure - arrays, tuples, stacks, queues, deques, binaries, etc.. However, the direct representation of lists is awkward and inefficient for many use-cases. Thus, Glas systems use specialized representations under-the-hood, such as [finger-tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_(data_structure)). These structures must be preserved for serialization.
 
-Glas Object provides a few specialized nodes to support serialization of indexed lists (or any sufficiently list-like structure). Binary data is explicitly supported because it's the most common data type for interfacing between Glas systems and other systems.
+To preserve performance in context of serialization, Glas Object will also support common optimized representations of lists. 
 
-* *array* - header (0x0A) followed by length (varnat + 1) then by that many value offsets. The varnat encoding of the offsets is denormalized so they're all the same width. All offsets are relative to just after the last one. Represents a list of values.
-* *short array* - header (0xA0-0xAF) encodes length of 1 to 16 items, otherwise as array.
+* *array* - header (0x0A) followed by length (varnat + 1) then by that many value offsets. The varnat encoding of offsets must be denormalized so they're all the same width. All offsets are relative to the final offset, i.e. a '0' offset would mean a value immediately following the array of offsets. Represents a list of values.
 * *binary* - header (0x0B) followed by length (varnat + 1) then by that many bytes. Represents a list containing the binary data. Each byte corresponds to an 8-bit bitstring, msb to lsb. 
-* *short binary* - header (0xB0-0xBF) encodes length of 1 to 16 items, otherwise as binary.
-* *concat* - header (0x0C) followed by offset to a list, then immediately by the remainder value. This is logically equivalent to substituting the unit terminal from the list with the remainder. (Usually, the remainder is also a list, resulting in logical concatenation.)
+* *short array* - header (0xA0-0xAF) encodes a length of 1 to 16 items. Short for '0x0A (length)'. 
+* *short binary* - header (0xB0-0xBF) encodes length of 1 to 16 bytes. Short for '0x0B (length)'.
+* *concat* - header (0x0C) is followed by offset to left list, then by right value (usually a list). Logically concatenates left list onto right value.
 
-        concat (A, AS) B = (A, concat AS B)
-        concat ()      B = B
+        concat () y = y
+        concat (x,xs) y = (x, concat xs y)
 
-Indexing of concat nodes will additionally rely on inserting some *list take* nodes (from *Accessors*) to cache size information.
+A rope structure is constructed from concat nodes and list-take nodes (to cache size info) with array or binary binary fragments (instead of individual list elements) at the leaves. A finger-tree rope is a rope structure that is balanced in such a way that access to the first and last items requires constant time. See *Encoding Finger Tree Ropes*.
 
 ### References
 
 Glas Object supports internal references within a glob file, and external references between glob files.
 
-* *external ref* - header (0x03) followed by 64-byte secure hash (SHA3-512) of another glob.
+* *external ref* - header (0x02) followed by 64-byte secure hash (SHA3-512) of another glob.
+* *external bin* - header (0x03) followed by 64-byte secure hash (SHA3-512) of binary value. 
 * *internal ref* - header (0x88) followed by offset to later value within current glob.
 
-Internal ref nodes are useful for structure sharing within a glob, and external refs can control memory use and support structure sharing between globs. External refs must be combined with *Accessors* to support fine-grained structure sharing, i.e. sharing component values between globs.
-
-*Note:* I originally wanted to support an offset into external refs, but that greatly complicates precise GC analysis and other tooling. Instead, we can support a pattern for random access if we want one.
+Internal ref nodes are useful for structure sharing within a glob, while external refs can control memory use and support structure sharing between globs. Binary references are intended to simplify reflection and integration with external tools. References can be combined with *Accessor* nodes for fine-grained sharing.
 
 ### Accessors
 
 Accessors support fine-grained structure sharing between globs. For example, we may define a common dictionary then use accessors to reference individual definitions.
 
-* *path select* - headers use same encoding of path bits as stem nodes (ttt = 100), followed by an offset to the target value. Represents the value reached by following the path into target.
-* *list drop* - header (0x08) followed by count (varnat + 1) then by offset to right-associative sequence of pairs. Returns value from dropping 'count' pairs from the sequence.
-* *list take* - header (0x09) followed by count (varnat + 1) then immediately by a right-associative sequence of pairs. Returns a list containing 'count' elements from the sequence and terminating in unit. Useful to cache information about list length.
+* *follow* - headers (0x80-0x9F) use same encoding of path bits as stem nodes (except ttt = 100), followed by an offset to the target value. Represents the value reached by following the path into target.
+* *drop*  - header (0x08) followed by count (varnat + 1) then by offset ot value. Equivalent to following a path of count '1' bits. 
+* *take* - header (0x09) followed by count (varnat + 1) then by a right-associative sequence of pairs. Equivalent to a sublist from taking the first count items.
 
-The 'path select' nodes include 'internal reference' (node 0x88 - select an empty path). All path select nodes use a reference to the target value, but an inline value can effectively be expressed via zero offset.
+        take 0 _ = ()
+        take n (x,xs) = (x, take (n-1) xs)
 
-The 'list drop' and 'list take' operators won't check whether the list has a valid termination, but do require that lists are formed of pairs.
+The 'path select' nodes include the internal reference (0x88) via selecting the empty path. All path select nodes use a reference to the target value, but an inline value can effectively be expressed via zero offset. 
 
 ### Annotations
 
@@ -125,15 +125,26 @@ Annotations can include rendering hints for projectional editing, metadata for p
 
 A runtime may feasibly drop these annotations or provide effectful access to read and write certain annotations. Glas Object annotations emphatically *do not* replace annotations at other layers, such as the Glas program model. 
 
-*Security Note:* Security or privacy sensitive data should paired with some random bits to resist guesswork (cf. [Tahoe's convergence secret](https://tahoe-lafs.readthedocs.io/en/tahoe-lafs-1.12.1/convergence-secret.html)). Further, it should be marked as sensitive via annotation so runtimes and tools know to aggressively expunge that data and avoid sharing it as part of a larger glob that should is logically unreachable due to use of accessors.
+*Security Note:* Sensitive data should be marked by annotation and paired with some random entropy bits to resist certain attacks (cf. [Tahoe's convergence secret](https://tahoe-lafs.readthedocs.io/en/tahoe-lafs-1.12.1/convergence-secret.html)). This would make it easier for Glas system tools and runtimes to recognize and erase sensitive data, rather than amortizing updates for performance reasons.
+
+## Glob Headers
+
+Metadata about a glob is supported by a simple convention of starting any glob binary with an internal reference, then encoding header immediately following the offset.
+
+        0x88 (offset to root data) (header data) (root data)
+
+Header data would an extensible record, i.e. `(attribute:Value, ...)`, encoded using Glas Object. These header attributes should be meaningful at the representation layer, i.e. describing properties of the glob container. In contrast, *annotations* apply to the represented values.
+
+Some use cases for glob headers include indicating glob version, adding hints for *Amortized Update* or *Random Access* patterns (see below), and so on.
 
 ## Summary of Node Headers
 
-        0x03        External Ref
+        0x02        External Ref
+        0x03        External Bin
         0x04        Annotation
 
-        0x08        List Drop
-        0x09        List Take
+        0x08        Drop
+        0x09        Take
         0x0A        Array
         0x0B        Binary
         0x0C        Concat
@@ -141,13 +152,13 @@ A runtime may feasibly drop these annotations or provide effectful access to rea
         0x20-0x3F   Stem-Leaf and Leaf (0x28) 
         0x40-0x5F   Stem Nodes and No-op (0x48)
         0x60-0x7F   Stem-Branch and Branch (0x68)
-        0x80-0x9F   Path Select and Internal Ref (0x88)
-        0xA0-0xAF   Short Arrays (lengths 1 to 16)
-        0xB0-0xBF   Short Binaries (lengths 1 to 16)
+        0x80-0x9F   Follow and Internal Ref (0x88)
+        0xA0-0xAF   Short Arrays (length 1 to 16)
+        0xB0-0xBF   Short Binaries (length 1 to 16)
 
         UNUSED:
-        0x00-0x02
-        0x05-0x07
+        0x00-0x01
+        0x05-0x09
         0x0D-0x0F
         0xC0-0xFF
 
@@ -155,7 +166,7 @@ A runtime may feasibly drop these annotations or provide effectful access to rea
 
 Some ideas about how we might leverage Glas Object for more use cases.
 
-### Amortized Update
+### Amortized Updates
 
 When we update a radix tree or finger tree, the result is a new value with some shared structure. If the original tree is represented in a separate glob, shared structure can be represented via accessor nodes. Heuristically, we can copy data that is small enough that referencing it isn't worthwhile (adjusting for what we've already copied).
 
@@ -171,9 +182,40 @@ This technique is unlikely to pay for its overheads in all cases. However, I exp
 
 ### Dictionary Based Communication
 
-We can serialize messages between machines as globs. Referencing a common dictionary with every message is quite affordable, i.e. 65 bytes for the external ref plus ~6 bytes per dictionary word. The dictionary would be available upon request.
+[Glas Channels](GlasChannels.md) will serialize messages between messages using the glob format. It is feasible for every message to reference a shared dictionary - this costs about 65 bytes per message to reference an external dictionary, then ~6 bytes for each access to the dictionary. The dictionary can be accessed upon request.
 
 This allows messages to carry their full 'meaning' unlike most communication today that references an implicit dictionary. It also ensures the meaning is immutable, except insofar as we explicitly model references within our values.
+
+### Encoding Finger Tree Ropes
+
+It is feasible to combine list-take (Size) and concatenation nodes in a way that provides enough hints of finger-tree structure to support balanced operations. 
+
+    Concat  (L1 ++ L2)
+    Take    (Size . List)
+
+    Digits(k) - up to four digits, logically concatenated
+        1Dk     Dk
+        2Dk     Dk ++ 1Dk
+        3Dk     Dk ++ 2Dk
+        4Dk     Dk ++ 3Dk
+
+    Digit(k) (or Dk)
+        k=0 # primary data!
+            Array
+            Binary
+        k>0 # 2-3 nodes
+            Size . (2Dk | 3Dk)
+
+    FTRope(k)
+        Empty   Unit
+        Small   Digits(k)
+        Full    Size . (Digits(k) ++ (FTRope(k+1) ++ Digits(k)))
+
+    List 
+        FTRope(0)
+        Pair(elem, List)
+
+If applied to other ropes, this won't result in a balanced finger-tree, but operations such as enqueue/dequeue/split/append will incrementally shift towards a finger-tree!
 
 ## Potential Future Extensions
 
@@ -219,7 +261,7 @@ An alternative is to represent a matrix within a single list via [row-major or c
 * *chunkify* - header is followed by length K (varnat+1) then by a list value whose total length must be an exact multiple of K. Outcome is a logical list of lists of length K, formed by taking the first K (0..K-1), second K (K..2K-1), etc. items from the original list.
 * *transpose* - header is followed by a matrix (a list of lists of constant length). Logically transposes this matrix.
 
-Providing this feature at the Glas Object layer is currently a premature optimization. It is necessary to first observe how matrix functions and accelerators develop in practice. It may prove that we prefer to represent matrices directly in programs as a single list or binary (for unboxed matrices of floating point numbers) paired with metadata to describe structure.
+However, before introducing this feature to Glas Object, it is necessary to observe how things are handled in practice. I suspect that we're mostly interested in 'unboxed' matrices - e.g. a binary value, together with some header info, representing a matrix of floating point numbers. We might choose to operate directly on the binary instead of trying to form a list of lists.
 
 ### Structs and Tables
 

@@ -129,11 +129,26 @@ Non-deterministic 'fork' is not random because a scheduler can heuristically sea
 
 The implementation of random must backtrack on failure, such that we aren't implicitly searching for a successful string of random bits. It is possible to use a separate 'random' source per stable thread (i.e. per fork path) to further stabilize the system. Performance should be good, e.g. users are free to directly use random for simulating dice.
 
+### Shared Database
+
+Glas applications can provide access to a key-value database that is shared with concurrent and future applications. This is much more convenient than working directly with the filesystem. Proposed API:
+
+* **db:get:Key** - returns value associated with key; fails if key is undefined
+* **db:put:(k:Key, v:Value)** - sets value associated with a key
+* **db:del:Key** - removes key from database; sets key to undefined
+* **db:list** - returns complete list of defined keys. Order is arbitrary.
+
+Keys should be small values, otherwise performance suffers. Partitioning of the database is based on structured keys. Associated values can be very large, leveraging the stowage subsystem for performance. Updates to the database are transactional, with AcID (atomic, isolated (serializable), durable) semantics. Consistency is left to application logic.
+
+The database will represented in the filesystem. If the GLAS_DATA environment variable is defined, it must specify a folder for storing shared data. Otherwise we'll default to a user-specific location such as `~/.glas/` in Linux.
+
 ### Filesystem
 
-Filesystems are awful and ubiquitous, so we might as well provide access. Relatedly, console IO will be modeled as filesystem access with `std:in`, `std:out`, and `std:err` as implicit open file references. (By default, `std:err` is also used by the logging system.)
+Filesystems are ubiquitous and awkward. The filesystem API is mostly supported for integration with external tools. If you just want some persistent state, use the *Shared Database* API instead.
 
-A proposed API:
+Console IO will be modeled as filesystem access with `std:in`, `std:out`, and `std:err` as implicit open file references. (By default, `std:err` is also used by the logging system, so there may be some interference.)
+
+Proposed API:
 
 * **file:FileOp** - namespace for file operations. An open file is essentially a cursor into a file resource, with access to buffered data. 
  * **open:(name:FileName, as:FileRef, for:Interaction)** - Response is unit, or failure if the FileRef is already in use. Binds a new filesystem interaction to the given FileRef. Usually does not wait on OS (see 'status').
@@ -183,21 +198,6 @@ A simple API for access to OS environment variables, such as GLAS_PATH.
 
 Glas applications won't directly update environment variables. However, it is possible to simulate updates using the env/eff handler.
 
-### Shared Database
-
-I hate working directly with files, with all the messy serialization and parsing. So, for shared state within and between Glas applications, I propose support a shared key-value database. 
-
-Proposed API:
-
-* **db:get:Key** - returns value associated with key; fails if key is undefined
-* **db:put:(k:Key, v:Value)** - sets value associated with a key
-* **db:del:Key** - removes key from database; sets key to undefined
-* **db:list** - returns complete list of defined keys; arbitrary stable order.
-
-Keys are arbitrary Glas values but should be small (otherwise performance suffers). Associated values do not have any size constraint, and will leverage [Glas Object](GlasObject.md) to support lazy loading and incremental updates. Updates are transactional, durable, and become visible to other applications upon commit. 
-
-The shared database can be represented in the filesystem. If the GLAS_DATA environment variable is defined, it must specify a folder for storing shared data. Otherwise we'll default to a user-specific location such as `~/.glas/` in Linux.
-
 ### Network
 
 Most network interactions with external services can be supported by TCP or UDP. Support for raw Ethernet might also be useful, but it's low priority for now.
@@ -241,10 +241,13 @@ A port is a fixed-width 16-bit number. An addr is a fixed-width 32-bit or 128-bi
 
 ### Channels
 
-A channel communicates with a remote process using reliable, ordered message passing. If channels are fine-grained and can be communicated, we can easily represent object-oriented software design patterns. A viable API:
+A channel communicates using reliable, ordered, buffered message passing. Unlike TCP, channels will support structured data and fine-grained subchannels. This can support distributed object-oriented systems, for example. A viable API:
 
-* **c:send:(data:Value, over:ChannelRef)** - send a value over a channel. Return value is unit.
-* **c:recv:(from:ChannelRef)** - receive data from a channel. Return value is the data. Fails if no input available or if next input isn't data (try 'accept').
+* **c:send:(data:Value, over:ChannelRef, many?)** - send a value over a channel. Return value is unit. Extensions:
+ * *multi* - optional flag. Value must be a list. Equivalent to separately sending each value in that list in order.
+* **c:recv:(from:ChannelRef, many?Count, exact?)** - receive data from a channel. Return value is the data. Fails if no input available or if next input isn't data (try 'accept'). Extensions:
+ * *many:Count* - optional. If specified, will return up to Count data items (at least one, otherwise read fails) as a list. If Count is zero, returns all available data items (still at least one).
+ * *exact* - optional flag. Used with 'many:Count', adjusts behavior to return exactly Count items as a list, otherwise fail. Always fails if 'many' is unspecified or Count is zero.
 * **c:attach:(over:ChannelRef, chan:ChannelRef, mode:(copy|move|bind))** - connect a channel over a channel. Behavior varies depending on mode:
  * *copy* - a copy of 'chan' is sent (see 'copy')
  * *move* - 'chan' is detached from calling process. (attach copy then drop original)
@@ -254,16 +257,23 @@ A channel communicates with a remote process using reliable, ordered message pas
  * *copy* - a copy of the channels is connected; original refs can tap communications.
  * *move* - piped channels are detached from caller (see 'close'), managed by host system.
  * *bind* - new channel is created between two references. Fails if either ChannelRef is already in use.
-* **c:copy:(of:ChannelRef, as:ChannelRef)** - duplicate a channel and its future content. Both original and copy will recv/accept the same inputs in the same order (transitively copying subchannels). Messages sent to either channel are routed to the same destination. Send order is preserved for each copy independently, e.g. if a transaction copies A as B then sends over ABABAB, the receive order can be AAABBB or BBABAA depending on implementation details.
+* **c:copy:(of:ChannelRef, as:ChannelRef)** - duplicate a channel, its pending inputs, and future inputs including subchannels. Writes to the copy and original will be merged in some non-deterministic order.
 * **c:drop:ChannelRef** - detach channel from calling process, enabling host to recycle associated resources. Indirectly observable via 'test'.
-* **c:test:ChannelRef** - Succeeds, returning unit, if the channel has any pending inputs or is still remotely connected. Otherwise fails. If the remote endpoint of a channel is copied, all copies must be dropped before 'test' will fail.
+* **c:test:ChannelRef** - Fails if the channel is known by system to be defunct, supporting no possibility of further interaction. Succeeds otherwise, returning unit. Interaction includes reading messages or writing messages and having them read.
+* **c:tune:(chan:ChannelRef, with:Flags)** - Inform the system about your specific use-case for this channel, such that it can perform some extra optimizations. May restrict operations. Monotonic (no take-backs!). Multiple flags may be composed into a record. Flags:
+ * *no-write* - disables future 'send' and 'attach' operations for this channel. Future attempted writes will fail. 
+ * *no-read* - disables future 'recv' and 'accept' operations for this channel. Clears input buffer and arranges to silently drop future inputs. 
 
-To integrate channels with the outside world, and build a network between Glas applications, we can support binding to TCP. In this case, data will be serialized using [Glas Object](GlasObject.md). A viable API:
+Channels over TCP is a viable foundation for networked Glas systems. See [Glas Channels](GlasChannels.md) for more discussion on this.
 
-* **c:tcp:bind:(wrap:TcpRef, as:ChannelRef)** - removes TcpRef from scope, binds ChannelRef. This implements the channel (and subchannels) over TCP. The TCP connection will support some protocol-layer interactions to support features such as querying for globs, providing access to a content-distribution network, or routing pipes efficiently.
-* **c:tcp:l:bind:(wrap:ListenerRef, as:ChannelRef)** - removes ListenerRef from Scope, binds ChannelRef. This ChannelRef will only ever return subchannels, one for each TCP connection.
+* **c:tcp:bind:(wrap:TcpRef, as:ChannelRef)** - removes TcpRef from scope, binds ChannelRef. This implements the channel (and subchannels) over TCP, using [Glas Object](GlasObject.md) to represent values. The TCP connection will also handle protocol-layer interactions to support features such as querying for globs, providing access to a content-distribution network, or routing pipes efficiently.
+* **c:tcp:l:bind:(wrap:ListenerRef, as:ChannelRef)** - removes ListenerRef from Scope, binds ChannelRef. This ChannelRef can only 'accept' new subchannels, one for each received TCP connection.
 
-Support for data channels over TCP is the foundation for networked Glas systems.
+General reference manipulation:
+
+* **c:ref:list** - return a list of open channel references
+* **c:ref:move:(from:ChannelRef, to:ChannelRef)** - rename a ChannelRef. Fails if target reference is in use.
+
 
 ## Misc Thoughts
 
