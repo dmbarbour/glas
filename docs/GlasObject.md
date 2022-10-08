@@ -193,29 +193,30 @@ It is feasible to combine list-take (Size) and concatenation nodes in a way that
     Concat  (L1 ++ L2)
     Take    (Size . List)
 
-    Digits(k) - up to four digits, logically concatenated
-        1Dk     Dk
-        2Dk     Dk ++ 1Dk
-        3Dk     Dk ++ 2Dk
-        4Dk     Dk ++ 3Dk
-
     Digit(k) (or Dk)
         k=0 # primary data!
             Array
             Binary
-        k>0 # 2-3 nodes
-            Size . (2Dk | 3Dk)
+        k>0 # 2-3 nodes 
+            2-Node      Size . Digit(k-1) ++ Digit(k-1)
+            3-Node      Size . Digit(k-1) ++ (Digit(k-1) ++ Digit(k-1))
+            Large Array or Binary
 
+    Digits(k) - up to four concatenated digits
+    LDigits(k) - (A ++ (B ++ (C ++ D)))    left associative Digits(k)
+    RDigits(k) - (((A ++ B) ++ C) ++ D)    right associative Digits(k)
     FTRope(k)
+        LDigits(k) ++ (Spine(k) ++ RDigits(k))
+    Spine(k)
         Empty   Unit
-        Small   Digits(k)
-        Full    Size . (Digits(k) ++ (FTRope(k+1) ++ Digits(k)))
+        Full    Size . FTRope(k+1)
+    List                    (distinction)
+        Empty               Leaf
+        Digit(0)            Array or Binary
+        FTRope(0)           Concat nodes
+        Pair(elem, List)    Branch nodes
 
-    List 
-        FTRope(0)
-        Pair(elem, List)
-
-If applied to other ropes, this won't result in a balanced finger-tree, but operations such as enqueue/dequeue/split/append will incrementally shift towards a finger-tree!
+The basic idea is to build arrays and binaries that are large enough to mitigate rope overhead and improve locality. However, ropes would still work adequately even with very short arrays and binaries. 
 
 ## Potential Future Extensions
 

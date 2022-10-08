@@ -8,21 +8,23 @@ Design goals for Glas include purpose-specific syntax, compositionality, extensi
 
 Modules are currently represented by files or folders in the filesystem. Each module compiles to a value, and may depend (acyclically) upon compiled values from other modules.
 
-Modules are global or local. Global modules are folders found by searching the GLAS_PATH environment variable. Eventually, GLAS_PATH will also support curated network repositories. Local modules are files or subfolders found in the same folder of the file currently being compiled.
+The syntax for a file depends on file extension. For example, to compile a file named "foo.ext" we'll first compile the global module 'language-ext' then apply the defined 'compile' function, which must represent a valid program. This compile function is then applied to the file binary. Folders simply compile to the value of the contained 'public' file (of any extension).
 
-The syntax for a file depends on file extension. For example, to compile a file named "foo.ext" we'll first compile the global module 'language-ext' then apply the 'compile' function, which must represent a valid Glas program. This compile function is then applied to the file binary. Folders simply compile to the value of the contained 'public' file (of any extension).
+Modules are local or global. Local modules are files or subfolders found in the same folder as the file currently being compiled. Global modules are found based on configuration of the glas command line tool. There is no implicit fallback; local and global are entirely separate namespaces.
 
-To bootstrap this system, [language-g0](../glas-src/language-g0/README.md) will be defined using '.g0' files. The g0 language is a Forth-like macro-assembly aligned closely with the Glas program model.
+To bootstrap the Glas system, [language-g0](../glas-src/language-g0/README.md) is known to the command line and may be defined using '.g0' files. The g0 language is a Forth-like macro-assembly aligned closely to the Glas program model.
 
-*Aside:* File extensions compose, for example "foo.x.y" will process the file binary via language-y, then the result via language-x. Conversely, a file without any extension implicitly compiles to the raw file binary.
+*Note:* File extensions compose, for example "foo.x.y" will process the file binary via language-y, then the result via language-x. Conversely, a file without any extension implicitly compiles to the raw binary.
 
 ## Command Line
 
-The Glas system starts with a command-line tool 'glas'. This tool knows how to compile modules and how to bootstrap language-g0. After compiling modules, the command line tool can extract binary data or interpret simple applications, depending on command line arguments.
+The Glas system starts with a command-line tool 'glas'. This tool knows how to compile modules and how to bootstrap language-g0. After compiling modules, the command line tool can extract binary data or run simple applications, depending on command line arguments.
 
 Extraction of binary data is via `glas --extract modulename.label`, outputting binary data to standard output. This feature is primarily used for bootstrap of the glas command line tool, avoiding need for effects.
 
-To support user-extensible tooling, there is a simple syntactic sugar where `glas opname arg1 arg2 arg3` rewrites to `glas --run glas-cli-opname.main -- arg1 arg2 arg3`. Thus, adding new features to the glas command line mostly involves adding some glas-cli-* modules to GLAS_PATH. Users can define operations for pretty-printing, inferring types, linting, etc..
+To support user-defined operations, `glas opname arg1 arg2 arg3` rewrites to `glas --run glas-cli-opname.main -- arg1 arg2 arg3`. The latter evaluates an [application](GlasApps.md) with limited effects, including network and filesystem access. The intention is that users will define operations for typechecking, linting, REPLs, IDE support, etc..
+
+Environment variables such as GLAS_PATH and GLAS_DATA configure any parameters that should be shared across multiple commands: global module search, persistent memoization, content-addressed storage, shared database, and so on.
 
 See [Glas CLI](GlasCLI.md) for details.
 
@@ -39,32 +41,28 @@ To efficiently represent non-branching path fragments, Glas values use a represe
         type Bits = compact Bool list
         type T = (Bits * (1 + (T * T)))
 
-Glas systems will encode small, simple values directly into bitstrings. A bitstring is a tree with a single, non-branching path. For example, a byte is an 8-bit bitstring, msb to lsb, such that `00010110` is byte 22. A variable-width natural number 22 is almost the same but loses the zeroes prefix `10110`. Negative integers invert natural number bits, so -22 is `01001`. 
+Glas systems will encode small, simple values directly into bitstrings. A bitstring is a tree with a single, non-branching path. For example, a byte is an 8-bit bitstring, msb to lsb, such that `00010110` is byte 22. A variable-width natural number 22 is almost the same but loses the zeroes prefix `10110`. Negative integers can be represented by inverting all the bits, so -22 is `01001`. 
 
-Glas systems encode most sequential structures as lists. Logically, a list is tree representing a right-associative sequence of pairs, terminating in unit - `type List = (Elem * List) | ()`. This is similar to cons cells in Lisp.
+Glas systems encode most sequential structures as lists. Logically, a list is tree representing a right-associative sequence of pairs, terminating in unit, i.e. `type List = (Elem * List) | ()`. 
 
         /\
        1 /\     the list [1,2,3]
         2 /\
          3  ()
 
-However, direct representation of lists is awkward and inefficient for many use-cases such as tuples, arrays, dequeues. Thus, Glas systems will often represent lists under-the-hood using [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_(data_structure)). This structure can efficiently represent index, slice, append, enqueue, and dequeue operations. Binary fragments (sublists of bytes, specifically) can be further optimized.
+However, direct representation of lists is awkward and inefficient for many use-cases such as random access or queues. Thus, Glas systems will often represent lists under-the-hood using [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_(data_structure)). Binaries (lists of bytes) are even more heavily optimized, being the most popular type for interfacing with external systems (filesystems, networks, etc.).
 
-Beyond lists, Glas systems may eventually support specialized representations for matrices, tables, and other common structures. See *Acceleration*.
+Glas systems can be further extended with specialized representations for tables, matrices, and other common types. This is related to *Acceleration*, which extends performance primitives without affecting formal semantics.
 
-Glas values are scalable, capable of representing entire databases. This is supported via content-addressed references. Values may also be content-addressed for network communication between Glas systems. See *Stowage*.
+Glas values may scale to represent entire databases. Subtrees of larger-than-memory values can be semi-transparently stored to disk then content-addressed by secure hash, optionally guided by program annotations. This pattern is called *Stowage* and it also contributes to performance of persistence, communication, and memoization.
 
 ## Programs
 
-Glas programs are represented by values with a standard interpretation, designed for simplicity and compositionality. Linking is static. Evaluation is eager and sequential. There are no variables to complicate metaprogramming. Annotations within the program can support performance, analysis, and debugging.
-
-A consequence of this design is that all higher-order programming must be staged via macros or templates. Additionally, if we aren't careful to maintain structure sharing, program size can literally become a huge problem.
-
-Glas programs use backtracking for conditional behavior. Effects are also backtracked. This design is convenient for pattern matching or parsers, and is a great fit for the transaction-machine based *Process* model. But it does constrain the effects API to whatever can be supported transactionally, such as reading and writing local buffers. 
+Programs are values with a known interpretation. This specific program model is the one Glas systems use for language module compile functions and runnable command line applications. It is designed for simplicity, compositionality, local reasoning, and lightweight metaprogramming - functions are second-class, linking is static, evaluation is eager and sequential, conditionals are backtracking. Embedded annotations can support performance, static analysis, and runtime debugging. 
 
 ### Stack Operators
 
-Glas programs manipulate a data stack. 
+Glas programs manipulate an implicit data stack. All operations apply to data near top of the stack.
 
 * **copy** - copy top item on data stack
 * **drop** - remove top item on data stack
@@ -103,9 +101,8 @@ Glas programs must have static stack arity, i.e. the 'try-then' arity must match
  * *loop:(until:P, do:Q)* - run P. If that fails, run Q then repeat loop. Otherwise, exit loop.
  * 'do' field is optional, defaults to nop.
 * **eq** - Remove two items from data stack. If identical, continue, otherwise fail.
-* **fail** - always fail
-* **tbd:Message** - always diverge (like infinite loop). Message is for humans. Connotation is that the program is incomplete. 
- * *tbd:unreachable* - says that a given operation should not be reachable. This might be useful in context of dependent types inference, or static reachability analysis.
+* **fail** - always fail, allows backtracking
+* **tbd:Message** - logically diverges (like infinite loop), no backtracking. Message is for humans. 
 
         seq:[]              ∀S . S → S
         seq:(Op :: Ops)     (as SEQ)
@@ -143,11 +140,11 @@ Operators:
 
 * **get** ((label:V|R) label -- V) - given label and record, extract value from record. Fails if label is not in record.
 * **put** (V (label?_|R) label -- (label:V|R)) - given a label, record, and value on the data stack, create new record with the given label associated with the given value. Will replace existing label in record.
-* **del** ((label?_|R) label -- R) - remove label from record. Equivalent to adding label then removing it except for any prefix shared with other labels in the record.
+* **del** ((label?_|R) label -- R) - remove label from record, including any suffix of the label that is not shared by other labels in the same record. If label is not in record, is equivalent to adding label first then removing it.
 
-Labels don't need to be textual, but they must be valid bitstrings. Use of a non-label input as the top stack argument to get, put, or del will diverge (same as 'tbd') instead of failing. It's preferable if the labels are statically known values in most use cases.
+Labels are bitstrings that often share prefixes but are distinguished by suffix. It is possible to operate on multiple fields within a record by operating on the shared prefix directly. *Note:* If the label input is not a bitstring, behavior is divergence instead of backtracking failure.
 
-Glas programs do not have any math operators. Those must be awkwardly constructed using get/put/del and loops.
+Although optimized for records, these operators are used to build all data manipulation in Glas programs. Performance will often depend on *Acceleration*.
 
 ### Effects and Environments
 
@@ -198,7 +195,7 @@ A compile program must be 1--1 arity. The input is usually a binary (with except
 
 ### Useful Languages
 
-First, developing a few data-entry languages early on could be very convenient. For example, we could support `.txt` files that verify unicode input, remove the byte order mark, convert to UTF-8, and perhaps even detect language and run a spellcheck and grammar check. We could support JSON, MsgPack, Cap'n Proto, SQLite, or [0GlasObject](GlasObject.md) files for structured data entry.
+First, developing a few data-entry languages early on could be very convenient. For example, we could support `.txt` files that verify unicode input, remove the byte order mark, convert to UTF-8, and perhaps even detect language and run a spellcheck and grammar check. We could support JSON, MsgPack, Cap'n Proto, SQLite, or [Glas Object](GlasObject.md) files for structured data entry.
 
 For programming languages, perhaps some programmers would favor a more Lisp-like or C-like syntax. But I'm also very interested in structured programming, where our programs are recorded into a database.
 
@@ -232,11 +229,11 @@ Glas systems assume memoization as a solution to many performance issues that wo
 
 Networked Glas systems will support [content distribution networks (CDNs)](https://en.wikipedia.org/wiki/Content_delivery_network) to improve performance when repeatedly serving large values. This feature is tightly aligned with *Stowage*.
 
-The machines within the CDN are not fully trusted, so all data distributed through the CDN is encrypted. This is achieved by splitting the 512-bit secure hash (SHA3-512) into two parts: a 256-bit lookup key, and a 256-bit decryption key. The client will query the CDN using the lookup key, download the encrypted binary, decrypt then decompress locally, and verify against the original secure hash.
+The CDN service is not fully trusted, so data distributed through the CDN should be encrypted. A lookup key and encryption key are derived from the content secure hash (e.g. take 256 bits each). The client will query the CDN using the lookup key, download the encrypted binary, decrypt then decompress locally, and finally verify against the original secure hash. 
 
-The encrypted binary includes a non-encrypted header that records encryption algorithm, compression algorithm, decompressed size, and optional metadata. 
+The encrypted binary may include a non-encrypted header that indicates encryption algorithm, compression algorithm, decompressed size, and metadata.
 
-When uploading data, the proxy must receive the the lookup key, encrypted binary, and a list of dependencies. The dependencies are provided as an array of lookup keys. The CDN will require all transitive dependencies before distributing the value, and may remember this list for other purposes such as garbage collection or propagating scoped access to data for accounting purposes.
+A list of dependencies (lookup keys) will also be uploaded such that the CDN can request any missing dependencies or track dependencies for purpose of accounting, scoping sessions, or automatic garbage collection.
 
 ### Acceleration
 

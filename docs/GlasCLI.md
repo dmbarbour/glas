@@ -65,16 +65,28 @@ The referenced value must be a Glas program, representing a process with a 'prog
 
         type Process = (init:Args | step:State) -- [Eff] (step:State | halt:Result) | Fail
 
-Initial arguments are the command-line arguments, `init:["List", "Of", "Args"]`. Final result should be a bitstring that we'll cast to an int. 
+Initial arguments are the command-line arguments, `init:["List", "Of", "Args"]`. Final result should be `halt:ExitCode` where ExitCode is a bitstring interpreted as a signed integer. 
 
-## Exit Codes
+## Environment Variables
 
-Mostly, we'll just return 0 for okay or -1 for errors. Details on why things failed should be in the log (stderr, by default). The application may use its own exit codes.
+Currently, using only two environment variables:
+
+* **GLAS_DATA** - a folder for content-addressed storage, persistent memoization cache, shared database, and extended configuration. If unspecified, defaults to a user-specific folder such as `~/.glas`.
+* **GLAS_PATH** - search path for global modules. Follows OS conventions for PATH environment variables. Potentially extended or overridden by configuration files in GLAS_DATA.
 
 ## Effects API
 
-The effects API for Glas CLI is essentially everything listed in [Glas Apps](GlasApps.md) plus the 'load' effect described for language modules.
+The effects API for runnable applications is essentially everything listed in [Glas Apps](GlasApps.md) plus the 'load' effect used by language modules. This is slightly tweaked for context:
 
-* **load:ModuleRef** - load current value of referenced module, or fail if the module cannot be compiled. References are the same as used by language modules.
+* **load:ModuleRef** - load current value of the referenced module, or fail if the module cannot be compiled. A 'local' module is relative to the working directory.
 
-The ability to update source code and load updated module values, together with accelerated evaluation, can provide an effective basis for live coding in Glas systems. In context of incremental computing, 'load' is potentially stable until the module is updated.
+The ability to observe updates to a module between transactions can be useful for live coding if paired with accelerated evaluation.
+
+## Exit Codes
+
+Keeping it simple.
+
+         0  okay
+        -1  not okay
+
+Glas systems will rely on log messages more than exit codes to describe errors. No reason to think hard about this.

@@ -48,9 +48,9 @@ Further, we could varify that critical transactions evaluate with worst-case tim
 
 ### Live Coding
 
-Transaction machines don't solve live coding, but they do lower a few barriers. Application code can be updated atomically between transactions. Threads can be regenerated according to the new code. Unhandled cases can simply diverge (e.g. via 'tbd' operator) to await programmer intervention and won't hinder concurrent progress.
+Transaction machines don't solve live coding, but they do lower a few barriers. Application code can be updated atomically between transactions. Threads can be regenerated according to stable non-deterministic choice in the updated code. Divergence or 'tbd' programs simply never commit; they await programmer intervention and do not interfere with concurrent behavior.
 
-Remaining challenges include stabilizing application state across minor changes, versioning major state changes, or tracing compiled code back to sources to render live data inline. These issues must be solved in other layers.
+Remaining challenges include stabilizing application state across minor changes, versioning major changes, provenance tracking across compilation stages, rendering live data nearby the relevant code.
 
 ## Procedural Programming on Transaction Machines
 
@@ -131,16 +131,15 @@ The implementation of random must backtrack on failure, such that we aren't impl
 
 ### Shared Database
 
-Glas applications can provide access to a key-value database that is shared with concurrent and future applications. This is much more convenient than working directly with the filesystem. Proposed API:
+Glas applications provide access to a lightweight, hierarchical key-value database that is shared with concurrent and future applications. For many use-cases, this database is more convenient than working with the filesystem. Proposed API:
 
-* **db:get:Key** - returns value associated with key; fails if key is undefined
-* **db:put:(k:Key, v:Value)** - sets value associated with a key
-* **db:del:Key** - removes key from database; sets key to undefined
-* **db:list** - returns complete list of defined keys. Order is arbitrary.
+* **db:get:Key** - get value associated with Key. Fails if no associated value.
+* **db:put:(k:Key, v:Value)** - set value associated with Key.
+* **db:del:Key** - remove Key from database.
 
-Keys should be small values, otherwise performance suffers. Partitioning of the database is based on structured keys. Associated values can be very large, leveraging the stowage subsystem for performance. Updates to the database are transactional, with AcID (atomic, isolated (serializable), durable) semantics. Consistency is left to application logic.
+Keys are bitstrings, and the database is implicitly a radix tree, a dict value. It is possible to operate on volumes of the database via shared key prefix, e.g. to take snapshots or clear the database. Transactions on the database are atomic, isolated, and durable. Consistency is left to the applications. Conventions to avoid naming conflicts or carve out application-private spaces are left to the community. 
 
-The database will represented in the filesystem. If the GLAS_DATA environment variable is defined, it must specify a folder for storing shared data. Otherwise we'll default to a user-specific location such as `~/.glas/` in Linux.
+In context of the glas command line, this database is normally represented under GLAS_DATA or `~/.glas`. This database cannot reasonably be separated from the content-addressed storage layer, and GLAS_DATA may also contain a persistent memoization cache that mitigates need for persistent state.
 
 ### Filesystem
 
