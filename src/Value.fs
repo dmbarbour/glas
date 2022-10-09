@@ -819,16 +819,16 @@ module GlobValue =
             let ok = (a.Length >= ct) && (ct >= 0)
             if not ok then failwith "invalid slice (drop)" else
             ImmArray(a.Data, a.Offset + ct, a.Length - ct)
-        member a.Slice(offset, len) =
+        member inline a.Slice(offset, len) =
             a.Drop(offset).Take(len)
-        member a.GetSlice(optIxStart, optIxEnd) = // support for .[1..3] slices.
+        member inline a.GetSlice(optIxStart, optIxEnd) = // support for .[1..3] slices.
             let ixStart = Option.defaultValue 0 optIxStart
             let ixEnd = Option.defaultValue (a.Length - 1) optIxEnd
             a.Slice(ixStart, (ixEnd - ixStart + 1))
 
         member a.CopyTo(dst, dstOffset) =
             Array.blit a.Data a.Offset dst dstOffset a.Length
-        member a.ToArray() =
+        member inline a.ToArray() =
             let arr = Array.zeroCreate a.Length
             a.CopyTo(arr, 0)
             arr
@@ -836,11 +836,30 @@ module GlobValue =
             if (tolerance >= (a.Data.Length - a.Length)) then a else
             ImmArray(a.ToArray())
 
-        // todo: append one or many items  
+        member a.Insert(ix : int, v : 'T) : ImmArray<'T> =
+            let lhs = a.Take(ix)
+            let rhs = a.Drop(ix)
+            let arr = Array.zeroCreate (1 + a.Length)
+            lhs.CopyTo(arr,0)
+            arr[ix] <- v 
+            rhs.CopyTo(arr,ix+1)
+            ImmArray(arr)
+        member inline a.Cons(v) = a.Insert(0,v)
+        member inline a.Snoc(v) = a.Insert(a.Length,v)
+
+        // we'll append up to 3 items in context of finger-trees.
+        static member Append3(a : ImmArray<'T>, b : ImmArray<'T>, c : ImmArray<'T>) : ImmArray<'T> =
+            let arr = Array.zeroCreate (a.Length + b.Length + c.Length)
+            a.CopyTo(arr,0)
+            b.CopyTo(arr,a.Length)
+            c.CopyTo(arr,a.Length + b.Length)
+            ImmArray(arr)
+        static member inline Append(a : ImmArray<'T>, b : ImmArray<'T>) : ImmArray<'T> =
+            ImmArray.Append3(a,b,ImmArray<'T>.Empty)
 
         interface System.Collections.Generic.IEnumerable<'T> with
             member a.GetEnumerator() =
-                // borrow existing implementation
+                // borrow ArraySegment implementation
                 let s = System.ArraySegment(a.Data, a.Offset, a.Length)
                 let e = s :> System.Collections.Generic.IEnumerable<'T>
                 e.GetEnumerator()
@@ -850,30 +869,53 @@ module GlobValue =
                 let e = a :> System.Collections.Generic.IEnumerable<'T>
                 e.GetEnumerator() :> System.Collections.IEnumerator
 
-
-    [<NoEquality; NoComparison>]
-    type Value =
+    // Values encoded similarly to Glas Object. 
+    //
+    // Features:
+    // - Finger-tree rope structure.
+    // - Compact, embedded binary data.
+    // - Non-allocating short bitstrings.
+    //
+    // Elided Glas Object Features:
+    // - External references
+    // - Accessor nodes (useless without external refs)
+    // - Annotations
+    // - Concat node doesn't support ad-hoc list terminals.
+    //
+    // Known Weaknesses:
+    // - O(N) check for 'bitstring' type.
+    // - Representing invalid data is possible (via Take or Concat)
+    //
+    // 0..63 Stem bits are encoded into a uint64, with lowest '1' bit
+    // indicating length, e.g. `abc10...0` encodes 3 bits, msb first.
+    //
+    // This design is intended to reduce allocation for variants,
+    // radix trees, symbols, and numbers.
+    type Term =
         // basic tree structure.
         | Leaf
-        | Stem of uint64 * Value        // encodes 1..63 bits, e.g. `abc1000..0` is 3 bits.
+        | Stem64 of uint64 * Term       // extended with 64 stem bits (msb to lsb)
         | Branch of Value * Value
-
         // optimized lists 
         | Array of ImmArray<Value>      // optimized list of values (non-empty)
         | Binary of ImmArray<uint8>     // optimized list of bytes (non-empty)
-        | Concat of Value * Value
-        | Take of uint64 * Value        // non-zero list take (to cache concat size)
-
+        | Concat of Value * Value       // logical concatenation of list values.
+        | Take of uint64 * Value        // non-zero list take (caches concat size)
         // CURRENTLY ELIDING:
         //
         //  External Refs
-        //  Accessor Nodes (follow, list drop)
+        //  Accessor Nodes (follow path, list drop)
         //  Annotations
         // 
-        // These features aren't likely to be necessary for boostrap.
+    and [<Struct>] Value = { Stem: uint64; Term : Term } // partial stem
+
 
     module StemBits =
         // support for encoding compact bitstrings into stem nodes
+        //
+        // length is encoded via lowest '1' bit, e.g. abc10..0 will
+        // encode three data bits. Exception is 64-bit stem, which
+        // doesn't include a length indicator.
 
         let hibit = (1UL <<< 63)
         let lobit = 1UL
@@ -883,10 +925,14 @@ module GlobValue =
         let inline lsb bits = match_mask lobit bits
         let inline isValid bits = (bits <> 0UL)
         let empty = hibit
+        let inline cons b bits = (if b then hibit else 0UL) ||| (bits >>> 1)
         let inline head bits = msb bits
         let inline tail bits = (bits <<< 1)
+        let inline head64 bits = msb bits
+        let inline tail64 bits = (bits <<< 1) ||| lobit
         let inline isEmpty bits = (bits = empty)
         let inline isFull bits = lsb bits
+
         let inline match_len len bits =
             let lb = lenbit len
             let mask = (lb ||| (lb - 1UL))
@@ -903,180 +949,149 @@ module GlobValue =
             if (0UL <> (       0x3UL &&& v)) then n <- n +  2 else v <- v >>>  2
             if (0UL <> (       0x1UL &&& v)) then      n +  1 else n
 
-        type Builder = (struct(uint64 * Value)) // non-full bits
+        let negate bits =
+            let lb = lenbit (len bits)
+            let m = lb ||| (lb - 1UL) // non data bits mask
+            (bits &&& m) ||| ((~~~bits) &&& (~~~m))
 
-        let toBuilder (v : Value) : Builder =
-            match v with
-            | Stem(bits,v') when not (isFull bits) -> struct(bits, v')
-            | _ -> struct(empty, v)
+        let rec erasePrefixOf b bits =
+            let bDone = isEmpty bits || (b <> head bits)
+            if bDone then bits else
+            erasePrefixOf b (tail bits)
 
-        let ofBuilder (struct(bits, v) : Builder) : Value = 
-            assert(isValid bits)
-            if isEmpty bits then v else Stem(bits,v)
+    module VTerm =
+        let inline isLeaf t =
+            match t with
+            | Leaf -> true
+            | _ -> false
 
-        let consBit (b : bool) (struct(bits, v) : Builder) : Builder =
-            let bits' = (if b then hibit else 0UL) ||| (bits >>> 1)
-            if isFull bits' 
-                then struct(empty, Stem(bits', v)) 
-                else struct(bits', v)
-        
-        let consByte (n : uint8) (sb0 : Builder) : Builder =
-            let inline cb ix sb = consBit (0uy <> ((1uy <<< ix) &&& n)) sb
-            sb0 |> cb 0 |> cb 1 |> cb 2 |> cb 3 
-                |> cb 4 |> cb 5 |> cb 6 |> cb 7
+        let inline isStem64 t =
+            match t with
+            | Stem64 _ -> true
+            | _ -> false
 
-    let inline wrapStem bits v =
-        StemBits.ofBuilder (struct(bits,v))
+        let rec isBits t =
+            match t with
+            | Stem64 (_,t') -> isBits t'
+            | Leaf -> true
+            | _ -> false
+
+    let inline ofTerm t = 
+        { Stem = StemBits.empty; Term = t }
+    let inline ofStem bits =
+        assert(StemBits.isValid bits)
+        { Stem = bits; Term = Leaf}
+
+    let unit = ofTerm Leaf
+    let inline isUnit v =
+        (StemBits.isEmpty v.Stem) && (VTerm.isLeaf v.Term)
 
     // add a single bit to a stem. 
-    let consBit (b : bool) (v : Value) : Value =
-        v |> StemBits.toBuilder |> StemBits.consBit b |> StemBits.ofBuilder
+    let consStemBit (b : bool) (v : Value) : Value =
+        let bits' = StemBits.cons b v.Stem
+        if StemBits.isFull v.Stem
+            then { Stem = StemBits.empty; Term = Stem64(bits',v.Term) }
+            else { Stem = bits'; Term = v.Term }
 
-    // add a full byte to a stem. Used for symbols, etc..
-    let consByte (b : uint8) (v : Value) : Value =
-        v |> StemBits.toBuilder |> StemBits.consByte b |> StemBits.ofBuilder
+    let consStemByte (n : uint8) (v0 : Value) : Value =
+        let inline cb ix v = consStemBit (0uy <> ((1uy <<< ix) &&& n)) v
+        v0 |> cb 0 |> cb 1 |> cb 2 |> cb 3
+           |> cb 4 |> cb 5 |> cb 6 |> cb 7
 
-    // add multiple bytes
-    let consBytes (b : uint8 array) (v:Value) : Value =
-        v |> StemBits.toBuilder |> Array.foldBack (StemBits.consByte) b |> StemBits.ofBuilder
+    let inline isStem v =
+        (not (StemBits.isEmpty v.Stem)) || (VTerm.isStem64 v.Term)
 
-    let unit = Leaf
-    let inline pair a b = Branch(a,b)
-    let inline left v = consBit false v
-    let inline right v = consBit true v
+    let stemHead v =
+        if StemBits.isEmpty v.Stem 
+          then
+            match v.Term with
+            | Stem64 (bits, _) -> StemBits.head64 bits
+            | _ -> failwith "stemHead at end of stem"
+          else StemBits.head v.Stem
+
+    let stemTail v =
+        if StemBits.isEmpty v.Stem
+          then
+            match v.Term with
+            | Stem64 (bits, v') -> { Stem = StemBits.tail64 bits; Term = v' }
+            | _ -> failwith "stemTail at end of stem"
+          else { Stem = (StemBits.tail v.Stem); Term = v.Term }
+
+    let inline isBits v = 
+        VTerm.isBits (v.Term)
 
     let variant (s : string) (v : Value) : Value =
-        consBytes (System.Text.Encoding.UTF8.GetBytes(s)) v
+        // encode a null-terminated utf-8 string into stem
+        let utf8_bytes = System.Text.Encoding.UTF8.GetBytes(s)
+        v |> consStemByte 0uy // null terminal
+          |> Array.foldBack consStemByte utf8_bytes
 
     let inline symbol (s : string) : Value =
         variant s unit
 
-    let inline ofByte (b:uint8) : Value = 
-        consByte b unit
+    [<return: Struct>]
+    let inline (|Bits|_|) v =
+        if isBits v then ValueSome(v) else ValueNone
+
+    let inline pair a b = ofTerm (Branch(a,b))
+    let inline left v = consStemBit false v
+    let inline right v = consStemBit true v
+
+    let inline ofByte (n:uint8) : Value = 
+        // consStemByte b unit
+        //   optimized impl
+        let bits = ((uint64 n) <<< 56) ||| (StemBits.hibit >>> 8)
+        { Stem = bits; Term = Leaf }
 
     let inline isByte (v:Value) : bool =
-        match v with
-        | Stem(bits, Leaf) when (StemBits.match_len 8 bits) -> true
-        | _ -> false
+        (StemBits.match_len 8 v.Stem) && (VTerm.isLeaf v.Term)
 
+    let rec private eraseStemPrefixOf b v =
+        if not ((isStem v) && (b = stemHead v)) then v else
+        eraseStemPrefixOf b (stemTail v) 
 
-    let ofNat (n0 : uint64) : Value =
-        let rec loop sb n =
-            if (0UL = n) then StemBits.ofBuilder sb else
-            let sb' = StemBits.consBit (0UL <> (1UL &&& n)) sb
-            loop sb' (n >>> 1)
-        loop (StemBits.toBuilder unit) n0
+    let ofNat (n : uint64) : Value =
+        if (0UL <> (n &&& (1UL <<< 63))) then ofTerm (Stem64 (n, Leaf)) else
+        ofStem <| StemBits.erasePrefixOf false ((n <<< 1) ||| 1UL)
 
-    module VList =
-        // This section will implement utilities to support finger-tree ropes.
-        //
-        // This is based on treating certain patterns of 'concat' and 'take' nodes
-        // as finger trees. If not applied to a finger tree rope, manipulations
-        // will still be efficient and gradually balance towards a finger-tree.
-        //
-        // However, shorter lists will favor arrays or binaries! 
+    [<return: Struct>]
+    let (|Nat|_|) v =
+        match v.Term with
+        | Leaf when ((StemBits.isEmpty v.Stem) || (StemBits.head v.Stem)) -> 
+            // 63 bits or fewer
+            let spacer = 63 - StemBits.len v.Stem
+            ValueSome((v.Stem >>> 1) >>> spacer)
+        | Stem64(bits, Leaf) when ((StemBits.isEmpty v.Stem) && (StemBits.head bits)) -> 
+            // 64-bit natural numbers
+            ValueSome(bits)
+        | _ -> ValueNone
 
-        // Concat  (L1 ++ L2)
-        // Take    (Size . List)
-        // Digits(k) - up to four digits, logically concatenated
-        //    1Dk     Dk
-        //    2Dk     Dk ++ 1Dk
-        //    3Dk     Dk ++ 2Dk
-        //    4Dk     Dk ++ 3Dk
-        // Digit(k) (or Dk)
-        //    k=0 # primary data!
-        //        Array
-        //        Binary
-        //    k>0 # 2-3 nodes
-        //        Size . (2Dk | 3Dk)
-        // FTRope(k)
-        //    Empty   Unit
-        //    Small   Digits(k)
-        //    Full    Size . (Digits(k) ++ (FTRope(k+1) ++ Digits(k)))
-        // List 
-        //    FTRope(0)
-        //    Pair(elem, List)
+    let private i64_min = 
+        ofTerm <| Stem64 (((1UL <<< 63) - 1UL), Leaf)
 
-        let rec private appTakeLoop n v =
-            if (0UL = n) then struct(Leaf, 0UL) else
-            match v with
-            | Concat(l, r) ->
-                // I'm assuming reasonably well-balanced ropes.
-                // So, no need to worry about stack depth here.
-                let struct(l',nRem) = appTakeLoop n l
-                let struct(r',n') = appTakeLoop nRem r
-                let v' = 
-                    match r' with
-                    | Leaf -> l'
-                    | _ -> Concat(l',r')
-                struct(v',n')
-            | Take(n',v') ->
-                if (n' >= n)
-                    then struct(Take(n, v'), 0UL)
-                    else struct(v, (n - n'))
-            | Array a ->
-                let aLen = uint64 a.Length
-                if (aLen >= n)
-                    then struct(Array (a.Take(int n)), 0UL)
-                    else struct(v, n - aLen)
-            | Binary b ->
-                let bLen = uint64 b.Length
-                if (bLen >= n)
-                    then struct(Binary (b.Take(int n)), 0UL)
-                    else struct(v, n - bLen)
-            | Branch (l, r) ->
-                // Naive representation of lists! Stack depth is a concern!
-                // Using a specialized subloop to control stack depth.
-                appTakeLoopB [l] (n - 1UL) r
-            | Leaf | Stem _ -> 
-                failwith "target of 'take' is not a valid list"
-        and private appTakeLoopB ls n v =
-            match v with
-            | Branch(l,r) when (n > 0UL) ->
-                appTakeLoopB (l::ls) (n - 1UL) r
-            | _ ->
-                let struct(v',n') = appTakeLoop n v
-                let fn r l = Branch(l,r)
-                let bs = List.fold fn v' ls
-                struct(bs, n')
+    let ofInt (n : int64) : Value =
+        if (n >= 0) then ofNat (uint64 n) else
+        if (n = System.Int64.MinValue) then i64_min else
+        ofStem <| StemBits.erasePrefixOf true (((uint64 (n - 1L)) <<< 1) ||| 1UL)
 
-        let tryApplyTake n v =
-            let struct(v',n') = appTakeLoop n v
-            if(0UL = n') then Some v' else None
-
-        let applyTake n v =
-            let struct(v',n') = appTakeLoop n v
-            if (0UL = n') then v' else
-            failwith "take more than list length" 
-
-        // computing list length. Assumes valid 'Take' nodes.
-        let rec private lenLoop1 acc cs v =
-            match v with
-            | Concat(l,r)-> lenLoop1 acc (r::cs) l
-            | Take(n,_) -> lenLoop (acc + n) cs // assume valid take
-            | Leaf -> lenLoop acc cs
-            | Array(a) -> lenLoop (acc + (uint64 a.Length)) cs
-            | Binary(b) -> lenLoop (acc + (uint64 b.Length)) cs
-            | Branch(_,r) -> lenLoop1 (acc + 1UL) cs r
-            | Stem _ -> None
-        and private lenLoop acc cs =
-            match cs with
-            | (v::cs') -> lenLoop1 acc cs' v
-            | [] -> Some acc
-
-        let tryLen v =
-            lenLoop1 0UL [] v 
-        let len v =
-            match tryLen v with
-            | Some n -> n
-            | None -> failwith "input is not a valid list"
-
+    [<return: Struct>]
+    let (|Int|_|) v =
+        match v.Term with
+        | Leaf ->
+            if StemBits.isEmpty v.Stem then ValueSome(0L) else
+            let spacer = 63 - StemBits.len v.Stem
+            if StemBits.head v.Stem 
+              then ValueSome(int64 ((v.Stem >>> 1) >>> spacer))
+              else ValueSome(1L + ((int64 v.Stem) >>> 1) >>> spacer)
+        | Stem64(bits, Leaf) when (StemBits.isEmpty v.Stem) && (bits = ((1UL <<< 63) - 1UL)) ->
+            ValueSome(System.Int64.MinValue)
+        | _ -> ValueNone
 
     let ofImmArray (a : ImmArray<Value>) : Value =
-        if (0 = a.Length) then unit else Array a
+        if (0 = a.Length) then unit else ofTerm (Array a)
 
     let ofImmBinary (b : ImmArray<uint8>) : Value =
-        if (0 = b.Length) then unit else Binary b
+        if (0 = b.Length) then unit else ofTerm (Binary b)
 
     let ofArray (a : Value array) : Value =
         ofImmArray (ImmArray.OfArray a)
@@ -1098,6 +1113,211 @@ module GlobValue =
         let b = System.Text.Encoding.UTF8.GetBytes(s)
         ofImmBinary (ImmArray.UnsafeOfArray b)
 
+    module Rope =
+
+        // 2-3 Finger Tree Rope Structure, encoded into Glas Object nodes.
+        //
+        //  Concat  (L1 ++ L2)
+        //  Take    Size . List
+        //  Digit(k)
+        //     k=0 # primary data!
+        //         Array
+        //         Binary
+        //     k>0 # collects 2 or 3 smaller digits, caches size info
+        //         Size . Digit(k-1) ++ Digit(k-1)
+        //         Size . Digit(k-1) ++ (Digit(k-1) ++ Digit(k-1))
+        //         (a larger array or binary is also good)
+        //  Digits(k) - one to four digits composed via concat nodes
+        //  LDigits(k) - e.g. (A ++ (B ++ C)), left-associative digits 
+        //  RDigits(k) - e.g. ((A ++ B) ++ C), right-associative digits
+        //  FTRope(k) - LDigits(k) ++ (Spine(k) ++ RDigits(k))
+        //  Spine(k) - 
+        //      Empty               Leaf
+        //      Full                Size . FTRope(k+1)
+        //  List
+        //      Empty               Leaf
+        //      Digit(0)            Array or Binary
+        //      FTRope(0)           via Concat Nodes
+        //      Pair(item,List)     via Branch Nodes
+        //
+        // Ropes have O(1) access to both ends and size computation, O(lg(N))
+        // slice and append, and can be memory-efficient if array fragments 
+        // are reasonably large. Managing array size is heuristic in nature.
+        // 
+        // Array and binary sizes are very heuristic in nature, and we can 
+        // optionally produce larger arrays or binaries for Digit(k+1) up to
+        // some heuristic threshold. 
+        //
+        // Programs should explicitly convert lists formed of pairs into
+        // the finger-tree representation, via accelerated functions.
+
+        // some support for non-allocating pattern matching
+        [<Struct>]
+        type LR = { L: Value; R: Value }
+
+        [<Struct>]
+        type NV = { N: uint64; V:Value }
+
+        [<return: Struct>]
+        let inline (|CC|_|) v =
+            match v.Term with
+            | Concat(l,r) when (StemBits.isEmpty v.Stem) ->
+                ValueSome { L=l; R=r }
+            | _ -> ValueNone
+
+        [<return: Struct>]
+        let inline (|Arr|_|) v =
+            match v.Term with
+            | Array a when (StemBits.isEmpty v.Stem) -> ValueSome a
+            | _ -> ValueNone
+
+        [<return: Struct>]
+        let inline (|Bin|_|) v =
+            match v.Term with
+            | Binary b when (StemBits.isEmpty v.Stem) -> ValueSome b
+            | _ -> ValueNone
+
+        // heuristic thresholds
+        //  small - how much to build up to in Digit(0) (i.e. via cons/snoc)
+        //  large - how much to build up to in Digit(>0) (i.e. via mkNode2/3)
+        let len_small_arr = 12
+        let len_small_bin = 48
+        let len_large_arr = 512
+        let len_large_bin = 4096
+
+        // Note: Heuristics for array sizes will occasionally result in fragments
+        // of imbalanced size, such as (1 ++ (256 ++ 1)). However, this has the 
+        // same overhead as balanced sizes such as (86 ++ (86 ++ 86)). The benefit
+        // is reducing average overhead per list element.
+
+        // length computation (non-allocating)
+        let rec lenLoop acc v =
+            if StemBits.isEmpty v.Stem then
+                match v.Term with 
+                | Concat(l,r) -> lenLoop (lenLoop acc r) l
+                | Take(n,_) -> acc + n
+                | Array(a) -> acc + uint64 a.Length
+                | Binary(b) -> acc + uint64 b.Length
+                | Leaf -> acc
+                | Branch(_,r) -> lenLoop (1UL + acc) r
+                | Stem64 _ -> failwith "invalid list"
+            else failwith "invalid list"
+        let len v = lenLoop 0UL v
+
+        let empty = unit
+        let inline isEmpty v = isUnit v
+
+        let inline wrapCC a b = ofTerm <| Concat(a,b)
+        let inline sized v = ofTerm <| Take((len v),v)
+
+        // mkNode(*) will heuristically compact small arrays or binaries into large ones
+        // this heuristic isn't perfect, just aims to be adequate.
+        let mkNode2 d1 d2 =
+            match d1, d2 with
+            | Arr a1, Arr a2 when (len_large_arr >= (a1.Length + a2.Length)) ->
+                ofImmArray <| ImmArray.Append(a1,a2) 
+            | Bin b1, Bin b2 when (len_large_bin >= (b1.Length + b2.Length)) ->
+                ofImmBinary <| ImmArray.Append(b1,b2)
+            | _ -> sized <| wrapCC d1 d2
+
+        let mkNode3 d1 d2 d3 = 
+            match d1,d2,d3 with
+            | Arr a1, Arr a2, Arr a3 when (len_large_arr >= (a1.Length + a2.Length + a3.Length)) ->
+                ofImmArray <| ImmArray.Append3(a1,a2,a3)
+            | Bin b1, Bin b2, Bin b3 when (len_large_bin >= (b1.Length + b2.Length + b3.Length)) ->
+                ofImmBinary <| ImmArray.Append3(b1,b2,b3)
+            | _ -> sized <| wrapCC d1 (wrapCC d2 d3)
+
+        let inline mkFTRope l s r = 
+            wrapCC l (wrapCC s r)
+
+(*
+        // how to 'take' nodes?
+        // I'd like to operate at level of lists, not of digits per-se.
+
+        let rec private appTakeLoop n v =
+            if (0UL = n) then struct(Leaf, 0UL) else
+            match v with
+            | Concat(l, r) ->
+                // I'm assuming reasonably well-balanced ropes.
+                // So, no need to worry about stack depth here.
+                let struct(l',nRem) = appTakeLoop n l
+                let struct(r',n') = appTakeLoop nRem r
+                let v' = wrapConcat l' r'
+                struct(v',n')
+            | Take(n',v') ->
+                if (n' >= n)
+                    then struct(Take(n, v'), 0UL)
+                    else struct(v, (n - n'))
+            | Array a ->
+                let aLen = uint64 a.Length
+                if (aLen >= n)
+                    then struct(Array (a.Take(int n)), 0UL)
+                    else struct(v, n - aLen)
+            | Binary b ->
+                let bLen = uint64 b.Length
+                if (bLen >= n)
+                    then struct(Binary (b.Take(int n)), 0UL)
+                    else struct(v, n - bLen)
+            | Branch (l, r) ->
+                // Naive representation of lists! Stack depth is a concern!
+                // Using a specialized subloop to control stack depth.
+                appTakeLoopB [l] (n - 1UL) r
+            | Leaf | Stem _ -> 
+                failwith "invalid take operation"
+        and private appTakeLoopB ls n v =
+            match v with
+            | Branch(l,r) when (n > 0UL) ->
+                appTakeLoopB (l::ls) (n - 1UL) r
+            | _ ->
+                let struct(v',n') = appTakeLoop n v
+                let fn r l = Branch(l,r)
+                let bs = List.fold fn v' ls
+                struct(bs, n')
+
+        let tryApplyTake n v =
+            let struct(v',n') = appTakeLoop n v
+            if(0UL = n') then Some v' else None
+
+        let applyTake n v =
+            let struct(v',n') = appTakeLoop n v
+            if (0UL = n') then v' else
+            failwith "take more than list length" 
+
+*)
+        module ConcatList =
+            // convert a concat-list to an F# list of digits
+            // assumes a balanced rope, otherwise may bust stack
+            let rec private toListLoop (v : Value) (rs : Value list) =
+                match v.Term with
+                | Concat(l,r) when StemBits.isEmpty v.Stem ->
+                    toListLoop l (toListLoop r rs)
+                | Leaf when StemBits.isEmpty v.Stem -> rs
+                | _ -> (v::rs)
+            let toList v = toListLoop v []
+
+            // chunkify a list of digits
+            let rec chunkify (lv : Value list) : Value list =
+                match lv with
+                | (b1::b2::rem) -> 
+                    match rem with 
+                    | [] -> [mkNode2 b1 b2] // 2 elems
+                    | [b3] -> [mkNode3 b1 b2 b3] // 3 elems
+                    | [b3;b4] -> [mkNode2 b1 b2; mkNode2 b3 b4] // 4 elems
+                    | (b3::lv') -> (mkNode3 b1 b2 b3)::(chunkify lv') // 5+ elems
+                | _ -> invalidArg (nameof lv) "not enough data to chunkify" // 0 or 1 elems
+
+            let inline chunkifiable (lv : Value list) : bool =
+                match lv with 
+                | [] | [_] -> false
+                | _ -> true
+
+
+
+
+
+
+(*
     // basic pattern matching support for tree structured data.
     //  L(v) - left (value)
     //  R(v) - right (value)
@@ -1111,25 +1331,23 @@ module GlobValue =
             if StemBits.head bits 
                 then R(vRem)
                 else L(vRem)
+
+        // might want to change the following for a list-head
         | Branch(a,b) -> P(a,b)
         | Array a -> P(a.[0], ofImmArray (a.Drop(1)))
         | Binary b -> P(ofByte b.[0], ofImmBinary (b.Drop(1)))
         | Concat (l, r) ->
             match l with
-            | Concat (ll, lr) -> 
-                // flatten concat then retry 
-                let v' = Concat(ll, Concat(lr, r))
-                (|L|R|P|U|) v'
             | P(a,l') ->
                 P(a, Concat(l',r)) // head of list
             | U -> // done with l
                 (|L|R|P|U|) r 
             | _ -> failwith "invalid concat node"
         | Take(n,v) ->
-            // apply take node then continue
-            match VList.tryApplyTake n v with
-            | Some v' -> (|L|R|P|U|) v'
-            | None -> failwith "invalid take node"
+            if(0UL = n) then U else
+            match v with
+            | P(a,v') -> P(a, Take((n - 1UL), v'))
+            | _ -> failwith "invalid take node"
 
     let inline isUnit v =
         match v with
@@ -1156,7 +1374,7 @@ module GlobValue =
         | Stem(_,v') -> isBits v'
         | Leaf -> true
         | _ -> false
-
+*)
     // todo: 
     //  radix tree operations
     //  stem and record matching

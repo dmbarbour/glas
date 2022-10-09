@@ -153,6 +153,14 @@ let print (vref:string) : int =
     | None ->
         EXIT_FAIL
 
+// supports negative integers via one's complement of bits
+let toInt bits =
+    let fn acc b = (acc <<< 1) ||| (if b then 1 else 0)
+    let bNat = (Bits.isEmpty bits) || (Bits.head bits)
+    if bNat 
+        then Bits.fold fn 0 bits
+        else 1 + Bits.fold fn (-1) bits 
+
 let run (vref:string) (args : string list) : int = 
     let ll = getLoader <| consoleErrLogger ()
     match getProgVal ll vref with
@@ -172,9 +180,7 @@ let run (vref:string) (args : string list) : int =
                 | Value.Variant "step" _ -> 
                     loop st'
                 | Value.Variant "halt" (Value.Bits b) ->
-                    // cast b to int for exit code
-                    let fn n b = (n * 2) + (if b then 1 else 0)
-                    Bits.fold fn 0 b 
+                    toInt b // app controlled exit code
                 | _ ->
                     logErrorV ll (sprintf "program %s reached unrecognized state" vref) st'
                     EXIT_FAIL
