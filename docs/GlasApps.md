@@ -275,10 +275,17 @@ General reference manipulation:
 
 ### Runtime Extensions
 
-A runtime can provide a few effects for manipulating itself. May be implementation-dependent and not very portable. Ideas:
+A runtime can provide a few effects for manipulating itself. May be implementation-dependent and not very portable. A few ideas:
 
 * **rt:version** - return record of ad-hoc version information about the runtime.
 * **rt:time:now** - same as 'time:now' except not frozen per transaction. This logically involves reflection over instructions computed by the runtime. Mostly intended for manual profiling.
+* **rt:gc:tune:(...)** - tune GC parameters
+* **rt:gc:force** - ask runtime to perform a GC immediately(-ish)
+* **rt:stat:Var** - return some useful metadata about the runtime
+
+### OS Extensions
+
+I could support OS operations under an 'os:' prefix, and perhaps OS-specialized actions under a header such as 'os:posix:...'. Not really sure what I need, or how much of the OS should be exposed. Might develop incrementally as needed.
 
 ## Misc Thoughts
 

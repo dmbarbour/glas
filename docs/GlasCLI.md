@@ -7,13 +7,13 @@ The glas command line must support only a few built-in operations:
         glas --version
         glas --help
 
-Other operations may be introduced with the '--' prefix, but it's a better fit for my vision of Glas systems if most operations are user-defined. User-defined operations are supported via lightweight syntactic sugar:
+User-defined operations are supported via lightweight syntactic sugar:
 
         glas opname a b c 
             # implicitly rewrites to
         glas --run glas-cli-opname.main -- a b c
 
-User-defined operations can feasibly support pretty-printers, REPLs, linters, language-server support for IDE integration, and much more. But it is sufficient to use '--extract' to support basic compilation via the glas modle system.
+The vision for glas systems is that most operations will be user-defined. Logic for features such as REPLs or pretty-printing should be represented in the module system instead of adding many built-in operations.
 
 ## Bootstrap
 
@@ -33,21 +33,28 @@ In practice, we need different binaries for different operating systems and mach
 
 ## Value References
 
-The '--run' and '--extract' commands must reference values in the Glas module system. However, it isn't necessary to reference arbitrary values, just enough to support user-defined commands and early development.
+The '--run' and '--extract' commands reference values in the Glas module system. 
 
-        ValueRef = ModuleRef ComponentPath
+        ValueRef = (ModuleRef)(ComponentPath)
         ModuleRef = LocalModule | GlobalModule
         LocalModule = './'Word
         GlobalModule = Word
         ComponentPath = ('.'Word)*
         Word = WFrag('-'WFrag)*
-        WFrag = [a-z][a-z0-9]
- 
-A value reference starts by identifying a specific module, local or global. Global modules are folders found by searching GLAS_PATH environment variable, while local modules identify files or subfolders within the current working directory. The specified module is compiled to a Glas value.
+        WFrag = [a-z][a-z0-9]*
 
-A subcomponent of the module's value may then be indicated by dotted path. This path is limited to simple null-terminated text labels. There is no attempt to generalize, at least not for the built-in commands. 
+A global module is a subfolder found based on configuration of the glas command line, e.g. via GLAS_PATH environment variable. A local module is a file or subfolder in the current working directory. The component path allows limited selection of fields from record values.
 
-User-defined commands can feasibly extended the ValueRef mini-language. However, I think it's usually better to put any desired logic into the module system where it's accessible, rather than embedded in external scripts.
+These value references are highly constrained, e.g. there is no option to slice a list. However, this concern is greatly mitigated by *Application Macros*.
+
+## Environment Variables
+
+Proposed environment variables:
+
+* **GLAS_DATA** - a folder for content-addressed storage, persistent memoization cache, the shared database, or extended configurations. If unspecified, defaults to a user-specific folder such as `~/.glas`.
+* **GLAS_PATH** - search path for global modules. Follows OS conventions for PATH environment variables. Global modules must be subfolders found on this path.
+
+Configuration within GLAS_DATA may extend, override, and deprecate environment variables. But this is still useful as a list of features we might want to configure.
 
 ## Extracting Binaries
 
@@ -65,51 +72,45 @@ The glas command line knows how to interpret some values as runnable application
 
 The glas command line will support a few different application types, distinguished by header such as 'prog' or 'macro'. For performance, the glas command line may JIT compile and cache the application value rather than directly interpreting it. 
 
-Arguments after '--' are passed to the application as a list of strings. This may be elided if there are no arguments. Other than command line arguments, applications may also be configured via a few environment variables.
+Arguments after the ValueRef are passed to the application as a list of strings. Other than command line arguments, some behavior can be configured via environment variables.
 
-### Basic Applications
+### Application Processes
 
-Basic applications are distinguished by the 'prog' header, i.e. `prog:(do:Program, ... Annotations)`. The program should represent a transactional step function, which may evaluate an arbitrary number of steps.
+Process applications are distinguished by the 'prog' header, i.e. `prog:(do:Program, ... Annotations)`. The program should represent a transactional step function. The runtime will repeatedly evaluate this function so long as it returns 'step' or fails. Failure implicitly waits for external changes.
 
         type Process = (init:Args | step:State) -- [Eff] (step:State | halt:Result) | Fail
 
-This process starts with `init:["List", "Of", "Args"]` and ends with `halt:ExitCode`. The ExitCode should be a short bitstring, representing an integer. Annotations are more ad-hoc but might serve a useful role such as hints for tab completion. See *Basic Effects API*.
+In context of the console application, this process starts with `init:["List", "Of", "Args"]` and ends with `halt:ExitCode`. The ExitCode should be a short bitstring, representing an integer. IO is based around the full *Effects API*.
 
-### Macro Applications
+*Aside:* At the application layer, we could recognize a few annotations to support tab completion and related tooling.
 
-Macro applications are distinguished by the 'macro' header.
+### Application Macros
+
+Application macros are distinguished by the 'macro' header.
 
         macro:Program
 
-We'll further separate static and dynamic arguments:
+To simplify caching, arguments are optionally staged via '--':
 
         glas --run MacroRef -- Static Args -- Dynamic Args
 
-The macro program must be 1--1 arity and receives the `["Static", "Args"]` as input. It must return another application value. The returned application is then interpreted receiving dynamic arguments. If all arguments are static, the separator may be elided, but use of the separator may simplify caching.
+The program must be 1--1 arity and will receive `["Static", "Args"]` on the data stack. The returned value must represent an application, which then is run receiving dynamic arguments. Returning another application macro is permitted but usually unnecessary.
 
-Macro applications have access to language module effects: 'log' and 'load'. Effectively, macro applications extend the glas command line with a little DSL.
+The program has access to language module effects, i.e. 'log' and 'load'. Application macros might usefully be viewed as language extensions for the command line interface. For best aesthetics, combine with user-defined operations.
 
-### Concurrency and Distribution (Incomplete)
+### Process Networks (Defer)
 
-It is difficult to optimize a glas process to fully leverage transaction machine features - incremental computing, replication on fork, etc.. An effective option to work around this is to model the concurrency and components more explicitly and declaratively. I'd like to eventually support an 'app' header that makes concurrency and logical distribution more visible to a compile-time analysis.
+For robust transaction machine optimizations (incremental computing, replication on fork, transaction fusion, distribution of cliques, etc.) it is useful to develop an expanded model that makes these opportunities obvious and controls effects as needed. I propose to develop this later under an different header (perhaps 'app' or 'net').
 
-## Basic Effects API
+## Effects API
 
-Basic applications will support most effects described for [glas applications](GlasApps.md), plus a few effects for convenient access to Glas modules:
+Applications will support most effects described for [glas applications](GlasApps.md), plus effects for convenient access to the glas module system, live coding, and interactive development that might be difficult in separately compiled applications. Proposed extensions:
 
 * **load:ModuleRef** - load current value of a module. Modules may update due to source changes, but this can only be observed between transactions.
-* **rt:reload** - (runtime extension) rebuild and redeploy current application from the module system, if possible. Fails if application cannot be rebuilt. On success, applies to future transactions.
+* **rt:reload** - (a runtime extension) rebuild and redeploy current application from the module system. Rebuild includes recomputing application macros. Fails if application cannot be rebuilt.
+* **help:Value** - the Value here may represent an effect or part of one (e.g. namespace 'db' or operation 'db:put' or parameter 'db:put:k'). Response is a record such as `(text:"Description Here", related:[List, Of, Values])`.
 
-These effects support live coding on a per-app basis, although they aren't a complete, independent solution. Computations on the module system must implicitly be incremental, using cached results to avoid unnecessary rework.
-
-## Environment Variables
-
-Proposed environment variables:
-
-* **GLAS_DATA** - a folder for content-addressed storage, persistent memoization cache, the shared database, or extended configurations. If unspecified, defaults to a user-specific folder such as `~/.glas`.
-* **GLAS_PATH** - search path for global modules. Follows OS conventions for PATH environment variables. Global modules must be subfolders found on this path.
-
-Configuration within GLAS_DATA may extend, override, and deprecate environment variables. But this is still useful as a list of features we might want to configure.
+Access to the module system should be stable with respect to incremental computing.
 
 ## Exit Codes
 
