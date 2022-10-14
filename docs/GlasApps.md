@@ -60,9 +60,7 @@ For example, with sequential composition the halt:Result of one process becomes 
 
 A blocking call at the procedure layer becomes a process that sends a message, yields, then awaits a response at the start of the next transaction.
 
-## Concrete API Design
-
-### Performance-Risk Mitigation
+## Performance-Risk Mitigation
 
 Initially, application programs must use the 'prog' header, i.e. `prog:(do:GlasProgram, app, ...)`. However, optimizations on this representation are not easy.
 
@@ -76,11 +74,13 @@ Use of 'fork' for concurrency is not very efficient without the incremental comp
 
 This would be inefficient because we don't have incremental computing, but predictable and effective in case we try running an app that uses fork-based concurrency.
 
-### Robust References
+## Robust References
 
 Applications are in charge of allocating local references to objects, i.e. instead of `var foo = open filename` I favor an API style closer to `open filename as "foo"`. This allows for static allocation, hierarchical regions, or decentralization for dynamic allocations. References can carry convenient information for debugging. Importantly, it avoids concerns related to abstraction or forgery for references. 
 
 This design essentially makes references second-class, in the sense that they cannot be directly communicated between scopes. Indirect communication of references is still feasible, e.g. we could include an API that allows establishing a subchannel over an existing channel, or allows connecting two channels.
+
+## Effects API
 
 ### Time
 
@@ -133,13 +133,13 @@ The implementation of random must backtrack on failure, such that we aren't impl
 
 Glas applications provide access to a lightweight, hierarchical key-value database that is shared with concurrent and future applications. For many use-cases, this database is more convenient than working with the filesystem. Proposed API:
 
-* **db:get:Key** - get value associated with Key. Fails if no associated value.
-* **db:put:(k:Key, v:Value)** - set value associated with Key.
-* **db:del:Key** - remove Key from database.
+* **db:get:Key** - get value associated with Key. May fail.
+* **db:put:(k:Key, v:Value)** - set value associated with Key. May fail. 
+* **db:del:Key** - remove Key from database. May fail.
 
-Keys are bitstrings, and the database is implicitly a radix tree, a dict value. It is possible to operate on volumes of the database via shared key prefix, e.g. to take snapshots or clear the database. Transactions on the database are atomic, isolated, and durable. Consistency is left to the applications. Conventions to avoid naming conflicts or carve out application-private spaces are left to the community. 
+Keys are bitstrings, and the database is usually a record/dict value. Keys should be short, but very large values can be supported via structure sharing with previous versions using stowage. In context of the glas command line, this database will be located under GLAS_DATA (environment variable); basic transactions are atomic, isolated, and as durable as the backing filesystem.
 
-In context of the glas command line, this database is normally represented under GLAS_DATA or `~/.glas`. This database cannot reasonably be separated from the content-addressed storage layer, and GLAS_DATA may also contain a persistent memoization cache that mitigates need for persistent state.
+Consistency and security are left to applications. For example, a program could track keys updated then perform a consistency check before committing. An effects handler could restrict read or write access to certain keys, or rewrite keys to logically chroot the subprogram and mount shared memory regions.
 
 ### Filesystem
 
@@ -195,7 +195,7 @@ A simple API for access to OS environment variables, such as GLAS_PATH.
 * **env:get:String** - read-only access to environment variables. 
 * **env:list** - returns a list of defined environment variables.
 
-Glas applications won't directly update environment variables. However, it is possible to simulate updates using the env/eff handler.
+Glas applications won't update environment variables. However, it is possible to simulate the environment for a subprogram via effects handlers. 
 
 ### Network
 
@@ -273,6 +273,12 @@ General reference manipulation:
 * **c:ref:list** - return a list of open channel references
 * **c:ref:move:(from:ChannelRef, to:ChannelRef)** - rename a ChannelRef. Fails if target reference is in use.
 
+### Runtime Extensions
+
+A runtime can provide a few effects for manipulating itself. May be implementation-dependent and not very portable. Ideas:
+
+* **rt:version** - return record of ad-hoc version information about the runtime.
+* **rt:time:now** - same as 'time:now' except not frozen per transaction. This logically involves reflection over instructions computed by the runtime. Mostly intended for manual profiling.
 
 ## Misc Thoughts
 

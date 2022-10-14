@@ -51,36 +51,65 @@ User-defined commands can feasibly extended the ValueRef mini-language. However,
 
 ## Extracting Binaries
 
-The command-line tool will always include an option to directly extract binary data. 
+The glas command line can directly extract binary data to stdout.
 
         glas --extract ValueRef
 
-The reference must evaluate to a binary (a list of bytes). This binary is written to stdout, then the command halts.
+The reference must evaluate to a binary value, a list of bytes. This binary is written to stdout, then the command halts. Binary extraction is primarily intended to reduce requirements for bootstrap: compile then extract of an executable binary without implementing a complete effects API. However, this feature may prove broadly useful in treating glas as a build system.
 
 ## Running Applications
 
+The glas command line knows how to interpret some values as runnable applications, with access to ad-hoc effects including filesystem and network. See [glas applications](GlasApps.md).
+
         glas --run ValueRef -- List Of Args
 
-The referenced value must be a Glas program, representing a process with a 'prog' header. This might be extended later, for performance reasons. See the [application model](GlasApps.md) for general information.
+The glas command line will support a few different application types, distinguished by header such as 'prog' or 'macro'. For performance, the glas command line may JIT compile and cache the application value rather than directly interpreting it. 
+
+Arguments after '--' are passed to the application as a list of strings. This may be elided if there are no arguments. Other than command line arguments, applications may also be configured via a few environment variables.
+
+### Basic Applications
+
+Basic applications are distinguished by the 'prog' header, i.e. `prog:(do:Program, ... Annotations)`. The program should represent a transactional step function, which may evaluate an arbitrary number of steps.
 
         type Process = (init:Args | step:State) -- [Eff] (step:State | halt:Result) | Fail
 
-Initial arguments are the command-line arguments, `init:["List", "Of", "Args"]`. Final result should be `halt:ExitCode` where ExitCode is a bitstring interpreted as a signed integer. 
+This process starts with `init:["List", "Of", "Args"]` and ends with `halt:ExitCode`. The ExitCode should be a short bitstring, representing an integer. Annotations are more ad-hoc but might serve a useful role such as hints for tab completion. See *Basic Effects API*.
+
+### Macro Applications
+
+Macro applications are distinguished by the 'macro' header.
+
+        macro:Program
+
+We'll further separate static and dynamic arguments:
+
+        glas --run MacroRef -- Static Args -- Dynamic Args
+
+The macro program must be 1--1 arity and receives the `["Static", "Args"]` as input. It must return another application value. The returned application is then interpreted receiving dynamic arguments. If all arguments are static, the separator may be elided, but use of the separator may simplify caching.
+
+Macro applications have access to language module effects: 'log' and 'load'. Effectively, macro applications extend the glas command line with a little DSL.
+
+### Concurrency and Distribution (Incomplete)
+
+It is difficult to optimize a glas process to fully leverage transaction machine features - incremental computing, replication on fork, etc.. An effective option to work around this is to model the concurrency and components more explicitly and declaratively. I'd like to eventually support an 'app' header that makes concurrency and logical distribution more visible to a compile-time analysis.
+
+## Basic Effects API
+
+Basic applications will support most effects described for [glas applications](GlasApps.md), plus a few effects for convenient access to Glas modules:
+
+* **load:ModuleRef** - load current value of a module. Modules may update due to source changes, but this can only be observed between transactions.
+* **rt:reload** - (runtime extension) rebuild and redeploy current application from the module system, if possible. Fails if application cannot be rebuilt. On success, applies to future transactions.
+
+These effects support live coding on a per-app basis, although they aren't a complete, independent solution. Computations on the module system must implicitly be incremental, using cached results to avoid unnecessary rework.
 
 ## Environment Variables
 
-Currently, using only two environment variables:
+Proposed environment variables:
 
-* **GLAS_DATA** - a folder for content-addressed storage, persistent memoization cache, shared database, and extended configuration. If unspecified, defaults to a user-specific folder such as `~/.glas`.
-* **GLAS_PATH** - search path for global modules. Follows OS conventions for PATH environment variables. Potentially extended or overridden by configuration files in GLAS_DATA.
+* **GLAS_DATA** - a folder for content-addressed storage, persistent memoization cache, the shared database, or extended configurations. If unspecified, defaults to a user-specific folder such as `~/.glas`.
+* **GLAS_PATH** - search path for global modules. Follows OS conventions for PATH environment variables. Global modules must be subfolders found on this path.
 
-## Effects API
-
-The effects API for runnable applications is essentially everything listed in [Glas Apps](GlasApps.md) plus the 'load' effect used by language modules. This is slightly tweaked for context:
-
-* **load:ModuleRef** - load current value of the referenced module, or fail if the module cannot be compiled. A 'local' module is relative to the working directory.
-
-The ability to observe updates to a module between transactions can be useful for live coding if paired with accelerated evaluation.
+Configuration within GLAS_DATA may extend, override, and deprecate environment variables. But this is still useful as a list of features we might want to configure.
 
 ## Exit Codes
 
@@ -89,4 +118,4 @@ Keeping it simple.
          0  okay
         -1  not okay
 
-Glas systems will rely on log messages more than exit codes to describe errors. No reason to think hard about this.
+Glas systems will rely on log messages more than exit codes to describe errors. No reason to think hard about this. 
