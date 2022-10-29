@@ -34,7 +34,7 @@ let helpMsg = String.concat "\n" [
     ""
     "    glas --run ValueRef -- Args"
     "        evaluate an application process, represented as a"
-    "        transactional step function. Incomplete effects API!"
+    "        transactional step function. Incomplete effects."
     ""
     "    glas --version"
     "        print a version string"
@@ -60,8 +60,8 @@ let helpMsg = String.concat "\n" [
 
 let ver = "glas pre-bootstrap 0.2 (dotnet)"
 
-let EXIT_OK = 0
-let EXIT_FAIL = -1
+let EXIT_OKAY = 0
+let EXIT_FAIL = 1
 
 // parser for value ref.
 module ValueRef =
@@ -107,18 +107,38 @@ let getValue (ll:Loader) (vref : string): Value option =
         logError ll (sprintf "reference %s fails to parse: %s" vref msg)
         None
 
-// as getValue but checks for 'prog' header, valid AST, arity.
-let getProgVal (ll:Loader) (vref : string) : Value option = 
+let inline sepListOn sep l =
+    match List.tryFindIndex ((=) sep) l with
+    | None -> (l, [])
+    | Some ix -> (List.take ix l, List.skip (1 + ix) l)
+
+// get app value will also apply application macros, consuming args.
+let getAppValue (ll:Loader) (vref : string) (args0 : string list) : (Value * string list) option = 
     match getValue ll vref with
-    | Some ((Value.Variant "prog" _) as p) when isValidProgramAST p ->
-        match stackArity p with
-        | Arity(1,1) -> Some p
-        | ar ->
-            logError ll (sprintf "value %s has wrong arity %A" vref ar)
-            None
-    | Some _ ->
-        logError ll (sprintf "value %s is not a valid Glas program" vref)
-        None
+    | Some v0 -> 
+        // might need to expand application macros to interpret some args
+        let rec macroLoop v args =
+            match v with
+            | (Value.Variant "macro" p) ->
+                let (staticArgs,dynamicArgs) = sepListOn "--" args
+                let sa = staticArgs |> List.map Value.ofString |> Value.ofList
+                match eval p ll [sa] with
+                | Some [p'] -> 
+                    macroLoop p' dynamicArgs
+                | _ ->
+                    logError ll (sprintf "application macro expansion failure in %s" vref)
+                    None
+            | Value.Variant "prog" _ ->
+                match stackArity v with
+                | Arity(1,1) -> 
+                    Some(v, args)
+                | _ ->
+                    logError ll (sprintf "%s has invalid arity" vref)
+                    None
+            | _ -> 
+                logError ll (sprintf "%s not recognized as an application" vref)
+                None
+        macroLoop v0 args0
     | None -> None // error reported by getValue
 
 let getLoader (logger:IEffHandler) =
@@ -135,7 +155,7 @@ let extract (vref:string) : int =
     | Some (Value.Binary b) ->
         let stdout = System.Console.OpenStandardOutput()
         stdout.Write(b,0,b.Length)
-        EXIT_OK
+        EXIT_OKAY
     | Some _ ->
         // This pre-bootstrap is limited to extracting 2GB. That's okay. The glas
         // executable should be small, a few megabytes at most. Larger files must
@@ -149,7 +169,7 @@ let print (vref:string) : int =
     | Some v ->
         let s = Value.prettyPrint v
         System.Console.WriteLine(s)
-        EXIT_OK
+        EXIT_OKAY
     | None ->
         EXIT_FAIL
 
@@ -161,11 +181,16 @@ let toInt bits =
         then Bits.fold fn 0 bits
         else 1 + Bits.fold fn (-1) bits 
 
+[<return: Struct>]
+let (|Int32|_|) v =
+    let okBits = (Value.isBits v) && (31 >= Bits.length (v.Stem))
+    if okBits then ValueSome (toInt (v.Stem)) else ValueNone
+
 let run (vref:string) (args : string list) : int = 
     let ll = getLoader <| consoleErrLogger ()
-    match getProgVal ll vref with
+    match getAppValue ll vref args with
     | None -> EXIT_FAIL
-    | Some p ->
+    | Some(p, args') ->
         let eff = runtimeEffects ll 
         let pfn = eval p eff
         let rec loop st =
@@ -179,16 +204,16 @@ let run (vref:string) (args : string list) : int =
                 match st' with
                 | Value.Variant "step" _ -> 
                     loop st'
-                | Value.Variant "halt" (Value.Bits b) ->
-                    toInt b // app controlled exit code
+                | Value.Variant "halt" (Int32 exit_code) -> 
+                    exit_code
                 | _ ->
                     logErrorV ll (sprintf "program %s reached unrecognized state" vref) st'
                     EXIT_FAIL
-            | Some _ ->
+            | _ ->
                 logError ll (sprintf "program %s halted on arity error" vref)
                 EXIT_FAIL
         try
-            let v0 = args |> List.map Value.ofString |> Value.ofList |> Value.variant "init"
+            let v0 = args' |> List.map Value.ofString |> Value.ofList |> Value.variant "init"
             loop v0
         with 
         | e -> 
@@ -201,12 +226,14 @@ let rec main' (args : string list) : int =
         extract b
     | ("--run" :: p :: "--" :: args') ->
         run p args'
+    | ["--run"; p] -> // no args to app
+        run p []
     | ["--version"] -> 
         System.Console.WriteLine(ver)
-        EXIT_OK
+        EXIT_OKAY
     | ["--help"] -> 
         System.Console.WriteLine(helpMsg)
-        EXIT_OK
+        EXIT_OKAY
     | ["--print"; v] ->
         print v 
     | (verb::args') when not (verb.StartsWith("-")) ->

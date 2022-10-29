@@ -159,9 +159,9 @@ Dependent types or session types may be required to precisely describe an effect
 
 ### Annotations
 
-Annotations in Glas programs support tooling without affecting formal program behavior. 
+Annotations in Glas programs support tooling without affecting formal program behavior. The 'prog' header is also used as the required toplevel header for Glas programs in many cases, even if no annotations are needed.
 
-* **prog:(do:P, ...)** - runs program P. If 'do' is elided, defaults to nop. All fields other than 'do' are annotations and must not affect behavior of program.
+* **prog:(do:P, ...)** - runs program P. If 'do' is elided, defaults to nop. All fields other than 'do' are annotations and must not affect formal behavior of program.
 
 Annotations can affect performance (acceleration, stowage, memoization, optimization), static analysis (types, preconditions, postconditions), debugging (tracing, profiling, assertions, breakpoints), decompilation (variable names, comments, etc.), and essentially anything other than program meaning or behavior. 
 
@@ -184,12 +184,12 @@ See [Glas applications](GlasApps.md) for details.
 
 ## Language Modules
 
-Language modules have a module name of form `language-ext`, binding to files with extension `.ext`. A language module must compile to a record value of form `(compile:Program, ...)`. Other than 'compile', language modules may define functions for linting, code completion, read-eval-print-loop, decompiler, documentation, interactive tutorials, etc..
+Language modules are global modules with a simple naming convention: `language-xyz` is used as the compiler function for files with extension `.xyz`. The language module must compile to a value of form `(compile:prog:(do:Program, ...), ...)`.  
 
-A compile program must be 1--1 arity. The input is usually a binary (with exceptions for composing file extensions) and the output is the compiled module value (or failure). Compile-time effects are extremely limited to simplify reasoning about caching, sharing, and reproducibility:
+The compiler program must be a Glas program with 1--1 arity. Program input is usually a file binary (modulo multiple file extensions). Output must be the compiled module value, or failure if the input cannot be compiled. Compile-time effects are extremely limited to simplify reasoning about caching, sharing, and reproducibility:
 
 * **load:ModuleRef** - Response is compiled value for the indicated module. The request may fail, e.g. if the module cannot be found or compiled, with cause implicitly logged. Currently propose a few forms of ModuleRef: 
- * *global:String* - sequentially search GLAS_PATH for a folder with the matching name.
+ * *global:String* - search for global module with matching name, usually via GLAS_PATH.
  * *local:String* - search files and subfolders local to file currently being compiled.
 * **log:Message** - Message should be a record, e.g. `(text:"Uh oh, you messed up!", lv:warn)`, so that it can be flexibly extended with metadata. Response is unit. Behavior depends on development environment, e.g. might print the message to stderr with color based on level.
 
