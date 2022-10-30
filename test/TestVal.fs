@@ -126,27 +126,27 @@ let tests =
         testCase "record lookup" <| fun () ->
             // singleton lookup
             match record_lookup (Bits.ofList [false; true]) (left (right (u8 27uy))) with
-            | Some (U8 27uy) -> ()
+            | ValueSome (U8 27uy) -> ()
             | x -> failtest (sprintf "singleton record lookup -> %A" x)
 
             match record_lookup (Bits.ofList [false; true]) (left (left (u8 27uy))) with
-            | None -> ()
+            | ValueNone -> ()
             | x -> failtest "singleton lookup should fail"
 
 
             // multi-value lookup
             let r = pair (pair (u8 27uy) (u8 42uy)) (pair (u8 108uy) (u8 22uy))
             match record_lookup (Bits.ofList [false; false]) r with
-            | Some (U8 27uy) -> ()
+            | ValueSome (U8 27uy) -> ()
             | x -> failtest (sprintf "saturated lookup 00 -> %A" x)
             match record_lookup (Bits.ofList [false; true]) r with
-            | Some (U8 42uy) -> ()
+            | ValueSome (U8 42uy) -> ()
             | x -> failtest (sprintf "saturated lookup 01 -> %A" x)
             match record_lookup (Bits.ofList [true; false]) r with
-            | Some (U8 108uy) -> ()
+            | ValueSome (U8 108uy) -> ()
             | x -> failtest (sprintf "saturated lookup 10 -> %A" x)
             match record_lookup (Bits.ofList [true; true]) r with
-            | Some (U8 22uy) -> ()
+            | ValueSome (U8 22uy) -> ()
             | x -> failtest (sprintf "saturated lookup 11 -> %A" x)
         
         testCase "record delete" <| fun () ->
@@ -162,8 +162,8 @@ let tests =
         testCase "record insert" <| fun () ->
             let checkElem k m r =
                 match (record_lookup (Bits.ofByte k) r), (Map.tryFind k m) with
-                | Some (Nat n), Some n' -> Expect.equal n n' "equal lookup"
-                | None, None -> ()
+                | ValueSome (Nat n), Some n' -> Expect.equal n n' "equal lookup"
+                | ValueNone, None -> ()
                 | _ -> failtest "mismatch"
             let mutable m = Map.empty
             let mutable r = unit
@@ -177,8 +177,8 @@ let tests =
         testCase "record insert delete" <| fun () ->
             let checkElem k m r =
                 match (record_lookup (Bits.ofByte k) r), (Map.tryFind k m) with
-                | Some (Nat n), Some n' -> Expect.equal n n' "equal lookup"
-                | None, None -> ()
+                | ValueSome (Nat n), Some n' -> Expect.equal n n' "equal lookup"
+                | ValueNone, None -> ()
                 | _ -> failtest "mismatch"
             let mutable m = Map.empty
             let mutable r = unit
@@ -204,7 +204,7 @@ let tests =
             let v = asRecord ["fe"; "fi"; "fo"; "fum"] (List.map u8 [1uy .. 4uy])
             match v with
             | Record ["fe"; "fi"; "fo"; "foo"] 
-               ([Some (U8 1uy); Some (U8 2uy); Some (U8 3uy); None]
+               ([ValueSome (U8 1uy); ValueSome (U8 2uy); ValueSome (U8 3uy); ValueNone]
                ,Variant "fum" (U8 4uy)) -> ()
             | _ -> failwith "record match failed"
             Expect.isTrue (isRecord v) "v is a labeled record"

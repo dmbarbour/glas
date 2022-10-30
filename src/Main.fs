@@ -87,25 +87,25 @@ module ValueRef =
     let parse : P<(ModuleRef * Word list)> = 
         parseModuleRef .>>. many (pchar '.' >>. parseWord) 
 
-let getValue (ll:Loader) (vref : string): Value option =
+let getValue (ll:Loader) (vref : string): Value voption =
     match FParsec.CharParsers.run (ValueRef.parse) vref with
     | FParsec.CharParsers.Success ((m,idx),_,_) ->
         let mv = 
             match m with
             | ValueRef.Local m' -> ll.LoadLocalModule m'
             | ValueRef.Global m' -> ll.LoadGlobalModule m'
-        if Option.isNone mv then None else // error already printed
+        if ValueOption.isNone mv then ValueNone else // error already printed
         let fn vOpt s =
             match vOpt with
-            | None -> None
-            | Some v -> Value.record_lookup (Value.label s) v
+            | ValueNone -> ValueNone
+            | ValueSome v -> Value.record_lookup (Value.label s) v 
         let result = List.fold fn mv idx
-        if Option.isNone result then
+        if ValueOption.isNone result then
             logError ll (sprintf "value of module %A does not have path .%s" m (String.concat "." idx))
         result
     | FParsec.CharParsers.Failure (msg, _, _) ->
         logError ll (sprintf "reference %s fails to parse: %s" vref msg)
-        None
+        ValueNone
 
 let inline sepListOn sep l =
     match List.tryFindIndex ((=) sep) l with
@@ -113,9 +113,9 @@ let inline sepListOn sep l =
     | Some ix -> (List.take ix l, List.skip (1 + ix) l)
 
 // get app value will also apply application macros, consuming args.
-let getAppValue (ll:Loader) (vref : string) (args0 : string list) : (Value * string list) option = 
+let getAppValue (ll:Loader) (vref : string) (args0 : string list) : (Value * string list) voption = 
     match getValue ll vref with
-    | Some v0 -> 
+    | ValueSome v0 -> 
         // might need to expand application macros to interpret some args
         let rec macroLoop v args =
             match v with
@@ -127,36 +127,36 @@ let getAppValue (ll:Loader) (vref : string) (args0 : string list) : (Value * str
                     macroLoop p' dynamicArgs
                 | _ ->
                     logError ll (sprintf "application macro expansion failure in %s" vref)
-                    None
+                    ValueNone
             | Value.Variant "prog" _ ->
                 match stackArity v with
                 | Arity(1,1) -> 
-                    Some(v, args)
+                    ValueSome(v, args)
                 | _ ->
                     logError ll (sprintf "%s has invalid arity" vref)
-                    None
+                    ValueNone
             | _ -> 
                 logError ll (sprintf "%s not recognized as an application" vref)
-                None
+                ValueNone
         macroLoop v0 args0
-    | None -> None // error reported by getValue
+    | ValueNone -> ValueNone // error reported by getValue
 
 let getLoader (logger:IEffHandler) =
     match tryBootStrapLoader logger with
-    | Some ll -> ll
-    | None -> 
+    | ValueSome ll -> ll
+    | ValueNone -> 
         logWarn logger "failed to bootstrap language-g0; using built-in"
         nonBootStrapLoader logger
 
 let extract (vref:string) : int =
     let ll = getLoader <| consoleErrLogger ()
     match getValue ll vref with
-    | None -> EXIT_FAIL
-    | Some (Value.Binary b) ->
+    | ValueNone -> EXIT_FAIL
+    | ValueSome (Value.Binary b) ->
         let stdout = System.Console.OpenStandardOutput()
         stdout.Write(b,0,b.Length)
         EXIT_OKAY
-    | Some _ ->
+    | ValueSome _ ->
         // This pre-bootstrap is limited to extracting 2GB. That's okay. The glas
         // executable should be small, a few megabytes at most. Larger files must
         // wait until after bootstrap. 
@@ -166,11 +166,11 @@ let extract (vref:string) : int =
 let print (vref:string) : int = 
     let ll = getLoader <| consoleErrLogger ()
     match getValue ll vref with
-    | Some v ->
+    | ValueSome v ->
         let s = Value.prettyPrint v
         System.Console.WriteLine(s)
         EXIT_OKAY
-    | None ->
+    | ValueNone ->
         EXIT_FAIL
 
 // supports negative integers via one's complement of bits
@@ -189,8 +189,8 @@ let (|Int32|_|) v =
 let run (vref:string) (args : string list) : int = 
     let ll = getLoader <| consoleErrLogger ()
     match getAppValue ll vref args with
-    | None -> EXIT_FAIL
-    | Some(p, args') ->
+    | ValueNone -> EXIT_FAIL
+    | ValueSome(p, args') ->
         let eff = runtimeEffects ll 
         let pfn = eval p eff
         let rec loop st =

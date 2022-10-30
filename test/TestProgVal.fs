@@ -54,7 +54,8 @@ let doEval p io s0 =
 let failEval p io s0 =
     match eval p io s0 with
     | None -> () // pass - expected failure
-    | Some _ -> failtestf "eval unexpectedly successful for program %A stack %A" p (List.map Value.prettyPrint s0)
+    | Some _ -> 
+        failtestf "eval unexpectedly successful for program %A stack %A" p (List.map Value.prettyPrint s0)
 
 type ACV = 
     | Aborted of Value 
@@ -83,8 +84,8 @@ type EffLogger =
             match v with
             | Value.Variant "log" vMsg ->
                 x.CurrLog <- FTList.snoc (x.CurrLog) vMsg
-                Some (Value.unit)
-            | _ -> None
+                ValueSome (Value.unit)
+            | _ -> ValueNone
     interface Effects.ITransactional with
         member x.Try () = 
             //printf "try %d\n" x.id

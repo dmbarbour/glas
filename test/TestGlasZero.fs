@@ -210,6 +210,11 @@ module Glas.TestGlasZero
                 Expect.equal (wordsShadowed p4) Set.empty "progs are okay"
         ]
 
+    let inline toVOpt opt =
+        match opt with
+        | Some v -> ValueSome v
+        | None -> ValueNone
+
     // Simple effects handler to test loading of modules.
     // Note that we aren't testing the log function, since
     // the logging behavior isn't very well specified.
@@ -221,13 +226,13 @@ module Glas.TestGlasZero
                     printfn "%s: %s" src (Value.prettyPrint request)
                 match request with
                 | Value.Variant "load" (Value.Variant "global" (Value.String m)) ->
-                    Map.tryFind (Global m) ns
+                    toVOpt <| Map.tryFind (Global m) ns
                 | Value.Variant "load" (Value.Variant "local" (Value.String m)) ->
-                    Map.tryFind (Local m) ns
+                    toVOpt <| Map.tryFind (Local m) ns
                 | Value.Variant "log" msg ->
-                    Some (Value.unit)
+                    ValueSome (Value.unit)
                 | _ ->
-                    None
+                    ValueNone
           interface ITransactional with
             member __.Try () = ()
             member __.Commit () = ()
@@ -236,10 +241,10 @@ module Glas.TestGlasZero
 
     let doCompile ll s = 
         match compile ll s with
-        | Some r ->
+        | ValueSome r ->
             //printfn "COMPILED TO %s" (Value.prettyPrint r) 
             r
-        | None ->
+        | ValueNone ->
             failtestf "program does not compile"
 
     let doEval p e ds = 
@@ -307,9 +312,9 @@ module Glas.TestGlasZero
         testCase "compile and test a simple g0 program" <| fun () ->
             let getfn m w =
                 match Value.record_lookup (Value.label w) m with
-                | None -> failtestf "unable to find word %s" w
-                | Some v when ProgVal.isValidProgramAST v -> v
-                | Some _ -> failtestf "unable to parse program for word %s" w
+                | ValueNone -> failtestf "unable to find word %s" w
+                | ValueSome v when ProgVal.isValidProgramAST v -> v
+                | ValueSome _ -> failtestf "unable to parse program for word %s" w
 
             let ll0 = testLoadEff "" (Map.empty) 
             let mPrims = doCompile ll0 prims

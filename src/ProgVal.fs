@@ -29,13 +29,15 @@ module ProgVal =
 
     let inline Op b =
         Value.ofBits b
+
+    [<return: Struct>]
     let (|Op|_|) v =
         match v with
         | Bits b ->
             match record_lookup b symOpsRec with
-            | Some U -> Some b
-            | _ -> None
-        | _ -> None
+            | ValueSome U -> ValueSome b
+            | _ -> ValueNone
+        | _ -> ValueNone
 
     // structured subprograms
     let lDip = label "dip"
@@ -60,23 +62,29 @@ module ProgVal =
     let Nop = lv lSeq unit
 
     let Dip v = lv lDip v
+
+    [<return: Struct>]
     let (|Dip|_|) v =
         match v with
-        | Stem lDip p -> Some p
-        | _ -> None
+        | Stem lDip p -> ValueSome p
+        | _ -> ValueNone
 
     let Data vData = lv lData vData
+
+    [<return: Struct>]
     let (|Data|_|) v =
         match v with
-        | Stem lData vData -> Some vData
-        | _ -> None
+        | Stem lData vData -> ValueSome vData
+        | _ -> ValueNone
     
     // adding 'P' prefix to avoid conflict with F# Seq
     let PSeq lV = lv lSeq (ofFTList lV)
+
+    [<return: Struct>]
     let (|PSeq|_|) v =
         match v with
-        | Stem lSeq (FTList lV) -> Some lV
-        | _ -> None
+        | Stem lSeq (FTList lV) -> ValueSome lV
+        | _ -> ValueNone
 
     let private record_insert_unless_nop lbl v r =
         if v = Nop 
@@ -88,65 +96,74 @@ module ProgVal =
              |> record_insert_unless_nop lThen pThen
              |> record_insert_unless_nop lElse pElse
              |> lv lCond
+
+    [<return: Struct>]
     let (|Cond|_|) v =
         match v with
-        | Stem lCond (RecL [lTry; lThen; lElse] ([Some pTry; optThen; optElse], U)) ->
-            let pThen = Option.defaultValue Nop optThen
-            let pElse = Option.defaultValue Nop optElse
-            Some (pTry, pThen, pElse)
-        | _ -> None
+        | Stem lCond (RecL [lTry; lThen; lElse] ([ValueSome pTry; optThen; optElse], U)) ->
+            let pThen = ValueOption.defaultValue Nop optThen
+            let pElse = ValueOption.defaultValue Nop optElse
+            ValueSome (pTry, pThen, pElse)
+        | _ -> ValueNone
 
 
     let While (pWhile, pDo) =
         unit |> record_insert lWhile pWhile
              |> record_insert_unless_nop lDo pDo
              |> lv lLoop
+
+    [<return: Struct>]
     let (|While|_|) v =
         match v with
-        | Stem lLoop (RecL [lWhile;lDo] ([Some pWhile; optDo], U)) ->
-            let pDo = Option.defaultValue Nop optDo 
-            Some (pWhile, pDo)
-        | _ -> None
+        | Stem lLoop (RecL [lWhile;lDo] ([ValueSome pWhile; optDo], U)) ->
+            let pDo = ValueOption.defaultValue Nop optDo 
+            ValueSome (pWhile, pDo)
+        | _ -> ValueNone
 
     let Until (pUntil, pDo) =
         unit |> record_insert lUntil pUntil
              |> record_insert_unless_nop lDo pDo
              |> lv lLoop
 
+    [<return: Struct>]
     let (|Until|_|) v =
         match v with
-        | Stem lLoop (RecL [lUntil; lDo] ([Some pUntil; optDo], U)) ->
-            let pDo = Option.defaultValue Nop optDo
-            Some (pUntil, pDo)
-        | _ -> None
+        | Stem lLoop (RecL [lUntil; lDo] ([ValueSome pUntil; optDo], U)) ->
+            let pDo = ValueOption.defaultValue Nop optDo
+            ValueSome (pUntil, pDo)
+        | _ -> ValueNone
 
     let Env (pWith, pDo) =
         unit |> record_insert lWith pWith
              |> record_insert lDo pDo
              |> lv lEnv
 
+    [<return: Struct>]
     let (|Env|_|) v =
         match v with
-        | Stem lEnv (RecL [lWith; lDo] ([Some pWith; Some pDo], U)) ->
-            Some (pWith, pDo)
-        | _ -> None
+        | Stem lEnv (RecL [lWith; lDo] ([ValueSome pWith; ValueSome pDo], U)) ->
+            ValueSome (pWith, pDo)
+        | _ -> ValueNone
 
     let Prog (vAnno, pDo) =
         vAnno |> record_insert_unless_nop lDo pDo
               |> lv lProg
 
+    [<return: Struct>]
     let (|Prog|_|) v =
         match v with
         | Stem lProg (RecL [lDo] ([optDo], vAnno)) ->
-            let pDo = Option.defaultValue Nop optDo
-            Some (vAnno, pDo)
-        | _ -> None
+            let pDo = ValueOption.defaultValue Nop optDo
+            ValueSome (vAnno, pDo)
+        | _ -> ValueNone
 
     let TBD vMsg = lv lTBD vMsg
+
+    [<return: Struct>]
     let (|TBD|_|) v =
         match v with
-        | Stem lTBD vMsg -> Some vMsg
-        | _ -> None
+        | Stem lTBD vMsg -> ValueSome vMsg
+        | _ -> ValueNone
 
     /// Utility function. Add annotations to a program.
     let addAnno k v p =
@@ -160,7 +177,7 @@ module ProgVal =
     let getAnno k p =
         match p with
         | Prog(anno, _) -> Value.record_lookup k anno
-        | _ -> None
+        | _ -> ValueNone
 
     /// Return a sequence of program component values that are invalid programs.
     let rec invalidProgramComponents v =

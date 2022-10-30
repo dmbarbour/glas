@@ -36,8 +36,8 @@ module Value =
         // Custom Equality and Comparison
         static member private OfSE s e =
             match FTList.tryViewL s with
-            | Some (s0, s') -> { Stem = Bits.empty; Spine = Some struct(s0,s',e) }
-            | None -> e.Value
+            | ValueSome (s0, s') -> { Stem = Bits.empty; Spine = Some struct(s0,s',e) }
+            | ValueNone -> e.Value
 
         static member private Cmp rs x y = 
             let cmpStem = Bits.cmp (x.Stem) (y.Stem)
@@ -119,8 +119,8 @@ module Value =
     // intermediate construct to help insert/delete/pair ops
     let inline private _ofSE s e = 
         match FTList.tryViewL s with
-        | Some (s0, s') -> { Stem = Bits.empty; Spine = Some struct(s0,s',e) }
-        | None -> e.Value
+        | ValueSome (s0, s') -> { Stem = Bits.empty; Spine = Some struct(s0,s',e) }
+        | ValueNone -> e.Value
 
     // remove shared prefix without recording the prefix.
     let rec private dropSharedPrefix a b =
@@ -274,21 +274,21 @@ module Value =
         accumSharedPrefixLoop (Bits.empty) a b
 
     /// Access a value within a record. Essentially a radix tree lookup.
-    let rec record_lookup (p:Bits) (r:Value) : Value option =
+    let rec record_lookup (p:Bits) (r:Value) : Value voption =
         let struct(p',stem') = dropSharedPrefix p (r.Stem)
-        if (Bits.isEmpty p') then Some { r with Stem = stem' } else
-        if not (Bits.isEmpty stem') then None else
+        if (Bits.isEmpty p') then ValueSome { r with Stem = stem' } else
+        if not (Bits.isEmpty stem') then ValueNone else
         match r.Spine with
         | Some struct(l, s, e) -> _rlu_spine p' l s e
-        | None -> None
+        | None -> ValueNone
     and private _rlu_spine p l s e =
         let p' = Bits.tail p
         if not (Bits.head p) then record_lookup p' l else
         match FTList.tryViewL s with
-        | None -> record_lookup p' (e.Value)
-        | Some (l', s') -> 
+        | ValueNone -> record_lookup p' (e.Value)
+        | ValueSome (l', s') -> 
             if not (Bits.isEmpty p') then _rlu_spine p' l' s' e else 
-            Some { Stem = Bits.empty; Spine = Some struct(l', s', e) } 
+            ValueSome { Stem = Bits.empty; Spine = Some struct(l', s', e) } 
 
 
     // same as `Bits.append (Bits.rev a) b`.
@@ -366,23 +366,25 @@ module Value =
         (|RecL|) (List.map label ks)
 
     /// Record containing all listed keys.
+    [<return: Struct>]
     let (|FullRec|_|) ks r =
         let (vs, r') = (|Record|) ks r
-        if List.exists Option.isNone vs then None else
-        Some (List.map Option.get vs, r')
+        if List.exists ValueOption.isNone vs then ValueNone else
+        ValueSome (List.map ValueOption.get vs, r')
 
 
     let private isFlagField opt = 
         match opt with
-        | Some U | None -> true
+        | ValueSome U | ValueNone -> true
         | _ -> false
 
     /// Extract flags as booleans. A flag is a label within a record whose only data
     /// is presence vs. absence.  
+    [<return: Struct>]
     let (|Flags|_|) ks r =
         let (vs, r') = (|Record|) ks r
-        if List.exists (isFlagField >> not) vs then None else
-        Some (List.map Option.isSome vs, r')
+        if List.exists (isFlagField >> not) vs then ValueNone else
+        ValueSome (List.map ValueOption.isSome vs, r')
 
 
     // edge is `01` for left, `10` for right. accum in reverse order
@@ -487,8 +489,8 @@ module Value =
     /// We can directly convert from an FTList of values. O(1)
     let ofFTList (fv : FTList<Value>) : Value =
         match FTList.tryViewL fv with
-        | None -> unit // empty list
-        | Some (fv0, fv') ->
+        | ValueNone -> unit // empty list
+        | ValueSome (fv0, fv') ->
             { Stem = Bits.empty; Spine = Some struct(fv0, fv', NonPairVal(unit)) }
 
     let ofList (lv : Value list) : Value =
@@ -501,8 +503,8 @@ module Value =
 
     let rec private _tryBinary l arr ix =
         match FTList.tryViewL l with
-        | Some (U8 n, l') -> Array.set arr ix n; _tryBinary l' arr (ix + 1)
-        | None when (Array.length arr = ix) -> Some arr
+        | ValueSome (U8 n, l') -> Array.set arr ix n; _tryBinary l' arr (ix + 1)
+        | ValueNone when (Array.length arr = ix) -> Some arr
         | _ -> None
 
     let tryBinary (v : Value) : uint8 array option =
@@ -586,7 +588,7 @@ module Value =
     /// implementation.
     let isRecord (v:Value) : bool =
         if isUnit v then true else
-        if Option.isSome (record_lookup (Bits.ofByte 0uy) v) then false else
+        if ValueOption.isSome (record_lookup (Bits.ofByte 0uy) v) then false else
         _isRecord [] 0 1 v
 
     let rec private _recordBytes m ct b v =
@@ -770,7 +772,7 @@ module Value =
 //
 // The main benefit of this implementation is support for compact arrays
 // of values or bytes. This is important because binary inputs and outputs
-// are the initial basis for bootstrap (via --extract) 
+// are very common. 
 module GlobValue =
 
     // immutable arrays with efficient slicing

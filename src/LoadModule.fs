@@ -55,23 +55,23 @@ module LoadModule =
         let preLinkedEval = eval p ll 
         fun v ->
             match preLinkedEval [v] with
-            | Some [r] -> Some r 
-            | _ -> None
+            | Some [r] -> ValueSome r 
+            | _ -> ValueNone
     
     // factored out some error handling
-    let private _expectCompiler (ll:IEffHandler) (src:string) (vOpt:Value option) =
+    let private _expectCompiler (ll:IEffHandler) (src:string) (vOpt:Value voption) =
         match vOpt with
-        | Some (Value.FullRec ["compile"] ([pCompile], _)) ->
+        | ValueSome (Value.FullRec ["compile"] ([pCompile], _)) ->
             match stackArity pCompile with
             | Arity (a,b) when ((a = b) && (1 >= a)) -> 
-                Some pCompile
+                ValueSome pCompile
             | ar ->
                 logError ll (sprintf "%s.compile has incorrect arity %A" src ar)
-                None
-        | Some _ ->
+                ValueNone
+        | ValueSome _ ->
             logError ll (sprintf "%s does not define 'compile'" src)
-            None
-        | None -> None
+            ValueNone
+        | ValueNone -> ValueNone
 
     type Loader =
         // Effects other than 'load'. Logging is assumed.
@@ -81,10 +81,10 @@ module LoadModule =
         val mutable private Loading : FilePath list
 
         // Cache results per file.
-        val mutable private Cache : Map<FilePath, Value option>
+        val mutable private Cache : Map<FilePath, Value voption>
 
         // Cached compiler functions. The "g0" compiler is added at construction.
-        val mutable private Compilers : Map<string, ((Value -> Value option) option)>
+        val mutable private Compilers : Map<string, ((Value -> Value voption) voption)>
 
         new (linkG0,eff0) as ll =
             { NonLoadEff = eff0
@@ -93,43 +93,43 @@ module LoadModule =
             ; Compilers = Map.empty
             } then // link the g0 compiler 
             let g0c = linkG0 (ll :> IEffHandler)
-            ll.Compilers <- Map.add "g0" (Some g0c) (ll.Compilers)
+            ll.Compilers <- Map.add "g0" (ValueSome g0c) (ll.Compilers)
 
-        member private ll.GetCompiler (fileExt : string) : (Value -> Value option) option =
-            if String.IsNullOrEmpty(fileExt) then None else
+        member private ll.GetCompiler (fileExt : string) : (Value -> Value voption) voption =
+            if String.IsNullOrEmpty(fileExt) then ValueNone else
             match Map.tryFind fileExt ll.Compilers with
             | Some result -> result // cached result
             | None ->
                 let m = "language-" + fileExt
                 let result = 
                     match _expectCompiler ll m (ll.LoadGlobalModule m) with
-                    | Some pCompile -> Some (_compilerFn pCompile ll)
-                    | None -> None
+                    | ValueSome pCompile -> ValueSome (_compilerFn pCompile ll)
+                    | ValueNone -> ValueNone
                 ll.Compilers <- Map.add fileExt result ll.Compilers
                 result
 
-        member private ll.Compile fileExt (v0 : Value) : Value option = 
+        member private ll.Compile fileExt (v0 : Value) : Value voption = 
             match ll.GetCompiler fileExt with
-            | Some p -> p v0
-            | None -> None
+            | ValueSome p -> p v0
+            | ValueNone -> ValueNone
 
-        member private ll.LoadFileBasic (fp : FilePath) : Value option =
+        member private ll.LoadFileBasic (fp : FilePath) : Value voption =
             let appLang fileSuffix vOpt =
                 match vOpt with
-                | Some v -> ll.Compile fileSuffix v
-                | None -> None
+                | ValueSome v -> ll.Compile fileSuffix v
+                | ValueNone -> ValueNone
             let langs = Path.GetFileName(fp).Split('.') |> Array.toList |> List.tail
             let v0 = 
-                try fp |> File.ReadAllBytes |> Value.ofBinary |> Some
+                try fp |> File.ReadAllBytes |> Value.ofBinary |> ValueSome
                 with 
                 | e -> 
                     logError ll (sprintf "error loading file %s:  %A" fp e)
-                    None
+                    ValueNone
             // extensions apply from outer to inner
             List.foldBack appLang langs v0
 
         /// Load a specified file as a module.
-        member ll.LoadFile (fp : FilePath) : Value option =
+        member ll.LoadFile (fp : FilePath) : Value voption =
             match Map.tryFind fp (ll.Cache) with
             | Some r -> // use cached value 
                 logInfo ll (sprintf "using cached result for file %s" fp)
@@ -138,7 +138,7 @@ module LoadModule =
                 // report cyclic dependency, leave to programmers to solve.
                 let cycle = List.rev <| fp :: List.takeWhile ((<>) fp) ll.Loading
                 logError ll (sprintf "dependency cycle detected! %s" (String.concat ", " cycle))
-                None
+                ValueNone
             | None -> 
                 logInfo ll (sprintf "loading file %s" fp)
                 let ld0 = ll.Loading
@@ -150,7 +150,7 @@ module LoadModule =
                 finally
                     ll.Loading <- ld0
 
-        member ll.LoadLocalModule (m : ModuleName) : Value option =
+        member ll.LoadLocalModule (m : ModuleName) : Value voption =
             let localDir = 
                 match ll.Loading with
                 | (fp::_) -> Path.GetDirectoryName(fp)
@@ -159,21 +159,21 @@ module LoadModule =
             | [fp] -> ll.LoadFile fp
             | [] ->
                 logWarn ll (sprintf "local module %s not found in %s" m localDir)
-                None
+                ValueNone
             | ps ->
                 logWarn ll (sprintf "local module %s ambiguous in %s" m localDir)
-                None
+                ValueNone
 
-        member ll.LoadGlobalModule (m : ModuleName) : Value option =
+        member ll.LoadGlobalModule (m : ModuleName) : Value voption =
             match findGlobalModule m with
             | [fp] -> ll.LoadFile fp
             | [] ->
                 logWarn ll (sprintf "global module %s not found" m)
-                None
+                ValueNone
             | fps ->
                 // most likely cause is more than one 'public' file.
                 logWarn ll (sprintf "global module %s ambiguous [%s]" m (String.concat "; " fps))
-                None
+                ValueNone
 
         interface IEffHandler with
             // Handle 'load' effects. Forward everything else.
@@ -187,7 +187,7 @@ module LoadModule =
                         ll.LoadGlobalModule m
                     | _ -> 
                         logWarn ll (sprintf "unrecognized ModuleRef %s" (Value.prettyPrint vLoad)) 
-                        None
+                        ValueNone
                 | Value.Variant "log" vMsg ->
                     // add filepath to log messages
                     let vMsg' = 
@@ -212,7 +212,7 @@ module LoadModule =
         | Value.String s -> Zero.compile ll s
         | _ -> 
             logError ll "built-in g0 requires string input"
-            None
+            ValueNone
 
     /// Loader without bootstrapping. Simply use the built-in g0.
     let nonBootStrapLoader (nle : IEffHandler) : Loader =
@@ -220,24 +220,24 @@ module LoadModule =
 
     /// Attempt to bootstrap the g0 language, then use the language-g0
     /// module for the loader.
-    let tryBootStrapLoader (nle : IEffHandler) : Loader option = 
+    let tryBootStrapLoader (nle : IEffHandler) : Loader voption = 
         let ll0 = nonBootStrapLoader nle
         let src0 = "language-g0 via built-in g0"
         match _expectCompiler ll0 src0 (ll0.LoadGlobalModule "language-g0") with
-        | None -> None
-        | Some p0 ->
+        | ValueNone -> ValueNone
+        | ValueSome p0 ->
             // logInfo nle "bootstrap: language-g0 compiled using built-in g0"
             let ll1 = Loader(_compilerFn p0, nle)
             let src1 = "language-g0 via language-g0"
             match _expectCompiler ll1 src1 (ll1.LoadGlobalModule "language-g0") with
-            | None -> None 
-            | Some p1 -> 
+            | ValueNone -> ValueNone 
+            | ValueSome p1 -> 
                 // logInfo nle "bootstrap: language-g0 compiled using language-g0"
                 let ll2 = Loader(_compilerFn p1, nle)
                 match ll2.LoadGlobalModule "language-g0" with
-                | Some (Value.FullRec ["compile"] ([p2],_)) when (p2 = p1) ->
+                | ValueSome (Value.FullRec ["compile"] ([p2],_)) when (p2 = p1) ->
                     // logInfo nle "language-g0 bootstrap successful!"
-                    Some ll2 
+                    ValueSome ll2 
                 | _ -> 
                     logError nle "language-g0 compile fails to exactly rebuild itself"
-                    None
+                    ValueNone

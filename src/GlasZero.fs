@@ -337,15 +337,15 @@ module Zero =
         // lookup, allowing for hierarchical words.
         let rec tryLink (struct(w,ws)) d =
             match Value.record_lookup (Value.label w) d with
-            | Some (Value.Variant "data" d') ->
+            | ValueSome (Value.Variant "data" d') ->
                 match ws with
                 | (w'::ws') -> tryLink (struct(w',ws')) d'
                 | [] -> LinkData d'
-            | Some ((Value.Variant "prog" _) as p) when (List.isEmpty ws) -> 
+            | ValueSome ((Value.Variant "prog" _) as p) when (List.isEmpty ws) -> 
                 LinkProg p
-            | Some (Value.Variant "macro" m) when (List.isEmpty ws) -> 
+            | ValueSome (Value.Variant "macro" m) when (List.isEmpty ws) -> 
                 LinkMacro m
-            | Some v when (List.isEmpty ws) -> 
+            | ValueSome v when (List.isEmpty ws) -> 
                 LinkFail (ErrorFlags.UnknownDefType)
             | _ ->
                 LinkFail (ErrorFlags.WordUndefined)
@@ -460,37 +460,37 @@ module Zero =
             | None -> struct(Value.unit, ErrorFlags.NoError)
             | Some m ->
                 match loadModule ll m with
-                | None ->
+                | ValueNone ->
                     logError ll (sprintf "'open' failed to load %s" (mstr m))
                     struct(Value.unit, ErrorFlags.LoadError)
-                | Some d0 ->
+                | ValueSome d0 ->
                     struct(d0, ErrorFlags.NoError)
 
         let applyImportAs (cte0:CTE) (m:ModuleRef) (w:Word) : CTE =
             let ll = cte0.LL
             match loadModule ll m with
-            | None ->
+            | ValueNone ->
                 logError ll (sprintf "failed to load module %s" (mstr m))
                 addErr (ErrorFlags.LoadError) cte0
-            | Some v ->
+            | ValueSome v ->
                 addDef w (Value.variant "data" v) cte0
 
         let applyImportList (cte0:CTE) (ws:ImportList) (dSrc:Value) =
             let applyImport cte (struct(w,asW)) =
                 match Value.record_lookup (Value.label w) dSrc with
-                | Some wDef ->
+                | ValueSome wDef ->
                     addDef asW wDef cte
-                | None ->
+                | ValueNone ->
                     addAlert (struct(asW,[])) (ErrorFlags.WordUndefined) cte
             List.fold applyImport cte0 ws
 
         let applyFromModule (cte0:CTE) (m:ModuleRef) (lImports:ImportList) =
             let ll = cte0.LL
             match loadModule ll m with
-            | None ->
+            | ValueNone ->
                 logError ll (sprintf "failed to load module %s" (mstr m))
                 addErr ErrorFlags.LoadError cte0
-            | Some dSrc ->
+            | ValueSome dSrc ->
                 applyImportList cte0 lImports dSrc
 
         let applyFromData (cte0:CTE) (b:Block) (lImports:ImportList) =
@@ -534,7 +534,7 @@ module Zero =
             | Some _ ->
                 logError ll (sprintf "arity error %s" dbg) 
                 addErr (ErrorFlags.BadStaticArity) cte'
-            | _ ->
+            | None ->
                 logError ll (sprintf "eval failed %s" dbg)
                 addErr (ErrorFlags.BadStaticEval) cte'
 
@@ -616,8 +616,8 @@ module Zero =
     ///
     /// Effects handler must support 'log' and 'load' effects. Any
     /// errors are logged implicitly.
-    let compile (ll:Effects.IEffHandler) (s:string) : Value option =
+    let compile (ll:Effects.IEffHandler) (s:string) : Value voption =
         let cte = Compile.compile ll s 
         if Compile.ErrorFlags.NoError = cte.Errors 
-            then Some (cte.Dict) 
-            else None
+            then ValueSome (cte.Dict) 
+            else ValueNone

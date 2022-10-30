@@ -140,37 +140,37 @@ module FT =
             | D3 (d1,d2,d3) -> mkT (D1(d1)) Empty (D2(d2,d3))
             | D4 (d1,d2,d3,d4) -> mkT (D2(d1,d2)) Empty (D2(d3,d4))
 
-        let rec viewL<'V when 'V :> ISized> (t : T<'V>) : struct('V * T<'V>) option =
+        let rec viewL<'V when 'V :> ISized> (t : T<'V>) : struct('V * T<'V>) voption =
             match t with
-            | Empty -> None
-            | Single v -> Some (v, Empty)
+            | Empty -> ValueNone
+            | Single v -> ValueSome (v, Empty)
             | Many (prefix=p; finger=f; suffix=s) ->
                 match p with
-                | D4 (d1, d2, d3, d4) -> Some struct(d1, mkT (D3(d2,d3,d4)) f s)
-                | D3 (d1, d2, d3) -> Some struct(d1, mkT (D2(d2,d3)) f s)
-                | D2 (d1, d2) -> Some struct(d1, mkT (D1(d2)) f s)
+                | D4 (d1, d2, d3, d4) -> ValueSome struct(d1, mkT (D3(d2,d3,d4)) f s)
+                | D3 (d1, d2, d3) -> ValueSome struct(d1, mkT (D2(d2,d3)) f s)
+                | D2 (d1, d2) -> ValueSome struct(d1, mkT (D1(d2)) f s)
                 | D1 (d1) ->
                     let t' = 
                         match viewL f with
-                        | Some struct(b, f') -> mkT (B.toD b) f' s
-                        | None -> ofD s
-                    Some struct(d1, t')
+                        | ValueSome struct(b, f') -> mkT (B.toD b) f' s
+                        | ValueNone -> ofD s
+                    ValueSome struct(d1, t')
         
-        let rec viewR<'V when 'V :> ISized> (t : T<'V>) : struct(T<'V> * 'V) option =
+        let rec viewR<'V when 'V :> ISized> (t : T<'V>) : struct(T<'V> * 'V) voption =
             match t with
-            | Empty -> None
-            | Single v -> Some struct(Empty, v)
+            | Empty -> ValueNone
+            | Single v -> ValueSome struct(Empty, v)
             | Many (prefix=p; finger=f; suffix=s) ->
                 match s with
-                | D4 (d1, d2, d3, d4) -> Some struct(mkT p f (D3(d1,d2,d3)), d4)
-                | D3 (d1, d2, d3) -> Some struct(mkT p f (D2(d1,d2)), d3)
-                | D2 (d1, d2) -> Some struct(mkT p f (D1(d1)), d2)
+                | D4 (d1, d2, d3, d4) -> ValueSome struct(mkT p f (D3(d1,d2,d3)), d4)
+                | D3 (d1, d2, d3) -> ValueSome struct(mkT p f (D2(d1,d2)), d3)
+                | D2 (d1, d2) -> ValueSome struct(mkT p f (D1(d1)), d2)
                 | D1 (d1) ->
                     let t' =
                         match viewR f with
-                        | Some struct(f', b) -> mkT p f' (B.toD b)
-                        | None -> ofD p
-                    Some struct(t', d1)
+                        | ValueSome struct(f', b) -> mkT p f' (B.toD b)
+                        | ValueNone -> ofD p
+                    ValueSome struct(t', d1)
 
         let rec cons<'V when 'V :> ISized> (v : 'V) (t : T<'V>) : T<'V> =
             match t with
@@ -236,8 +236,8 @@ module FT =
                     let rt = 
                         if List.isEmpty r then
                             match viewL f with
-                            | Some struct(b, f') -> mkT (B.toD b) f' s
-                            | None -> ofD s
+                            | ValueSome struct(b, f') -> mkT (B.toD b) f' s
+                            | ValueNone -> ofD s
                         else mkT (D.ofList r) f s
                     struct(ofList l, x, rt)
                 else if n < pfz then // split f
@@ -247,14 +247,14 @@ module FT =
                     let lt = 
                         if List.isEmpty lb then
                             match viewR lf with
-                            | Some struct(lf', b') -> mkT p lf' (B.toD b')
-                            | None -> ofD p
+                            | ValueSome struct(lf', b') -> mkT p lf' (B.toD b')
+                            | ValueNone -> ofD p
                         else mkT p lf (D.ofList lb)
                     let rt =
                         if List.isEmpty rb then
                             match viewL rf with
-                            | Some struct(b', rf') -> mkT (B.toD b') rf' s
-                            | None -> ofD s
+                            | ValueSome struct(b', rf') -> mkT (B.toD b') rf' s
+                            | ValueNone -> ofD s
                         else mkT (D.ofList rb) rf s
                     struct(lt, x, rt)
                 else // split s
@@ -263,8 +263,8 @@ module FT =
                     let lt = 
                         if List.isEmpty l then
                             match viewR f with
-                            | Some struct(f', b) -> mkT p f' (B.toD b)
-                            | None -> ofD p
+                            | ValueSome struct(f', b) -> mkT p f' (B.toD b)
+                            | ValueNone -> ofD p
                         else mkT p f (D.ofList l)
                     struct(lt, x, ofList r)
             | Empty -> failwith "inner split on empty tree; should be impossible"
@@ -315,19 +315,19 @@ module FT =
 
         let rec eqAtoms (l : T<Atom<'a>>) (r : T<Atom<'a>>) = 
             match viewL l, viewL r with
-            | Some struct(l0,l'), Some struct(r0,r') ->
+            | ValueSome struct(l0,l'), ValueSome struct(r0,r') ->
                 if (l0.V) <> (r0.V) then false else eqAtoms l' r'
-            | None, None -> true
+            | ValueNone, ValueNone -> true
             | _ -> false
 
         let rec cmpAtoms (l : T<Atom<'a>>) (r : T<Atom<'a>>) =
             match viewL l, viewL r with
-            | Some struct(l0, l'), Some struct(r0,r') ->
+            | ValueSome struct(l0, l'), ValueSome struct(r0,r') ->
                 let cmp = compare (l0.V) (r0.V)
                 if (0 <> cmp) then cmp else cmpAtoms l' r'
-            | Some _, None -> 1
-            | None, Some _ -> -1
-            | None, None -> 0
+            | ValueSome _, ValueNone -> 1
+            | ValueNone, ValueSome _ -> -1
+            | ValueNone, ValueNone -> 0
     
 
 open FT
@@ -368,17 +368,19 @@ module FTList =
 
     let inline tryViewL l = 
         match T.viewL (toT l) with
-        | Some struct(e,t') -> Some (e.V, ofT t')
-        | None -> None
+        | ValueSome struct(e,t') -> ValueSome (e.V, ofT t')
+        | ValueNone -> ValueNone
 
+    [<return: Struct>]
     let inline (|ViewL|_|) l = 
         tryViewL l
 
     let inline tryViewR l = 
         match T.viewR (toT l) with
-        | Some struct(t',e) -> Some (ofT t', e.V)
-        | None -> None
+        | ValueSome struct(t',e) -> ValueSome (ofT t', e.V)
+        | ValueNone -> ValueNone
 
+    [<return: Struct>]
     let inline (|ViewR|_|) l = 
         tryViewR l
 
@@ -408,13 +410,13 @@ module FTList =
 
     let rec fold fn (st0 : 'ST) ftl =
         match T.viewL (toT ftl) with
-        | Some struct(e, t') -> fold fn (fn st0 (e.V)) (ofT t')
-        | None -> st0
+        | ValueSome struct(e, t') -> fold fn (fn st0 (e.V)) (ofT t')
+        | ValueNone -> st0
 
     let rec foldBack fn ftl (st0 : 'ST) =
         match T.viewR (toT ftl) with
-        | Some struct(t', e) -> foldBack fn (ofT t') (fn (e.V) st0)
-        | None -> st0
+        | ValueSome struct(t', e) -> foldBack fn (ofT t') (fn (e.V) st0)
+        | ValueNone -> st0
 
     let collect fn =
         let collectFn l x = append l (fn x)
@@ -427,8 +429,8 @@ module FTList =
     let toSeq (ftl : FTList<'a>) : 'a seq =
         let unf (t : T<Atom<'a>>) =
             match T.viewL t with
-            | Some struct(x, t') -> Some (x.V, t')
-            | None -> None
+            | ValueSome struct(x, t') -> Some (x.V, t')
+            | ValueNone -> None
         Seq.unfold unf (ftl.T) 
 
     let toArray (ftl : FTList<'a>) : 'a array =
@@ -440,11 +442,11 @@ module FTList =
         let mutable t = toT ftl
         while (ix < arr.Length) do
             match T.viewL t with
-            | Some struct(e, t') ->
+            | ValueSome struct(e, t') ->
                 Array.set arr ix (e.V)
                 ix <- ix + 1
                 t <- t'
-            | None ->  
+            | ValueNone ->  
                 // this shouldn't happen...
                 failwith "tree size or view is invalid"
         arr

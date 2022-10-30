@@ -73,14 +73,14 @@ module Effects =
             ///
             /// Glas effects are also transactional, via the ITransactional interface.
             ///  
-            abstract member Eff : Value -> Value option
+            abstract member Eff : Value -> Value voption
         end
 
 
     /// No effects. All requests fail. Transactions are ignored.
     let noEffects =
         { new IEffHandler with
-            member __.Eff _ = None
+            member __.Eff _ = ValueNone
           interface ITransactional with
             member __.Try () = ()
             member __.Commit () = ()
@@ -150,8 +150,8 @@ module Effects =
                 match v with
                 | Value.Variant "log" msg -> 
                     self.Log(msg)
-                    Some Value.unit
-                | _ -> None
+                    ValueSome Value.unit
+                | _ -> ValueNone
         interface ITransactional with
             member self.Try () = self.PushTX ()
             member self.Commit () = self.PopTX true

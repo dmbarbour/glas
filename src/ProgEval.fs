@@ -100,8 +100,8 @@ module ProgEval =
                 match kv with
                 | Bits k ->
                     match record_lookup k r with
-                    | Some v -> cc { rte with DataStack = (v::ds') }
-                    | None -> (cte.FK) rte
+                    | ValueSome v -> cc { rte with DataStack = (v::ds') }
+                    | ValueNone -> (cte.FK) rte
                 | _ -> badLabel rte kv
             | _ -> underflow rte
 
@@ -278,9 +278,9 @@ module ProgEval =
             match rte.DataStack with
             | (request::ds') ->
                 match io.Eff request with
-                | Some response ->
+                | ValueSome response ->
                     cc { rte with DataStack = (response::ds') }
-                | None -> (cte.FK) rte
+                | ValueNone -> (cte.FK) rte
             | [] -> underflow rte
 
         let dataStack ds = 
