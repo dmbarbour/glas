@@ -382,9 +382,7 @@ module Zero =
         let private addDataOpsRev (revOps:Program list) (ds:Value list) =
             List.append (List.map (ProgVal.Data) ds) revOps
 
-        // The resulting values tend to be a little messy. Trying to prettify
-        // them heuristically. Removing extraneous 'prog' headers. Flattening
-        // tree-structured 'seq' calls. But only at the surface layer.
+        // Very lightweight simplification:
         //
         //   prog:do:Program                        non-annotated prog.
         //   seq:[seq:[...], op, seq:[...], ...]    deep sequences
@@ -395,6 +393,13 @@ module Zero =
                 expandOp pDo
             | PSeq (List l) -> l
             | _ -> Rope.singleton op
+
+        // list of ops to a program with a few simplifications
+        let opsToProg ops = 
+            let ops' = ops |> Seq.map expandOp |> Rope.concat
+            match ops' with
+            | Rope.ViewL(op, Leaf) -> op
+            | _ -> PSeq (ofTerm ops')
 
         // add any extra compile-time effects
         let ctEval progVal cte =
@@ -457,14 +462,7 @@ module Zero =
                 | LinkFail e ->
                     _compileBadCall (addAlert hw e cte0) revOps ds b'
             | [] ->
-                let ops = addDataOpsRev revOps ds 
-                        |> List.rev 
-                        |> Seq.map expandOp
-                        |> Rope.concat
-                let p = 
-                    match ops with
-                    | Rope.ViewL(op0,Leaf) -> op0
-                    | _ -> PSeq (ofTerm ops)
+                let p = addDataOpsRev revOps ds |> List.rev |> opsToProg
                 let ar = stackArity p
                 let cte' =
                     if ArityDyn <> ar then cte0 else

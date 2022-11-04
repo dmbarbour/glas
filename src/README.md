@@ -5,7 +5,7 @@ This implementation of the `glas` command-line tool is written in F#, using dotn
 Most relevant material:
 
 * [Glas CLI](../docs/GlasCLI.md) - design of the command line executable
-* [Glas Object](../docs/GlasObject.md) - serialized data representation, guides in-memory rep and rope representation, might eventually be used for caching.
-* [The g0 language](../glas-src/language-g0/README.md) - the bootstrap language, has implementation within F#
+* [Glas Object](../docs/GlasObject.md) - a serialized data representation, guides in-memory data representation and describes a useful pattern for finger-tree ropes. 
+* [The g0 language](../glas-src/language-g0/README.md) - the bootstrap language, requires implementation within
 
 This bootstrap implementation currently doesn't bother with stowage systems or most effects for command line apps.

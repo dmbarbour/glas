@@ -1,10 +1,12 @@
 # Glas Applications
 
-A Glas application, at least for [Glas CLI](GlasCLI.md) verbs, is represented by a step function that is repeatedly evaluated over time until it successfully halts, with each evaluation in a transaction. A failed evaluation does not halt the application, but retries with the original input over time, implicitly waiting for external conditions (or any non-deterministic choices) to change. 
+A basic glas application, in context of [Glas CLI](GlasCLI.md), is represented by a transactional step function. 
 
-        type Process = init:Params | step:State -> [Effects] (halt:Result | step:State) | FAILURE
+        type Step = init:Params | step:State -> [Effects] (halt:Result | step:State) | Fail
 
-This application model, which I call *Transaction Machine*, provides a robust foundation for reactivity, concurrency, and process control. 
+A step that returns successfully is committed. A failed step is aborted then retried, implicitly waiting for changes to external conditions. The first step receives 'init' and the final step returns 'halt'. Intermediate steps receive and return 'step'. This is an example of a *transaction machine* - modeling an application as a repeating transaction. 
+
+Transaction machines are conceptually simple yet offer a robust foundation for reactivity, concurrency, and process control. However, these benefits rely on optimizations that are difficult to implement for a basic step function. To solve this, I develop a process network model within this document.
 
 ## Transaction Machines
 
@@ -52,6 +54,26 @@ Transaction machines don't solve live coding, but they do lower a few barriers. 
 
 Remaining challenges include stabilizing application state across minor changes, versioning major changes, provenance tracking across compilation stages, rendering live data nearby the relevant code.
 
+## Process Networks
+
+In context of application processes, the process network aims to simplify static optimizations related to incremental computing, concurrency, distribution, and transaction fusion. It is always possible to compile a process network to a single process that has the same formal behavior, but it would be more difficult to optimize. 
+
+
+In context of application processes, the process network aims to simplify static optimizations related to incremental computing, concurrency, distribution, and transaction fusion. Additionally, there are design goals for stability and incremental deployment in context of live coding, and to simplify live extensions, system overlays, administration, and debugging.
+
+To support these features, the process network has its own variation on transactional sequences and loops, with explicitly labeled locations and steps. Effects require a lot of attention - e.g. effects handlers might also be distinguished as stateless, shared-state, and forkable, and individual effects are typefully distinguished based on how they impact stability for incremental computing. Forks are also much more explicit, labeled and partitioned into logical 'spaces' that may restrict some forms of communication or may align with abstract physical locations.
+
+The lowest level 'steps' may include application processes (i.e. the 'prog' header) but may also include specialized operations (communication effects, data transformers, etc.).
+
+
+In context of application processes, the process network aims to simplify static optimizations related to incremental computing, concurrency, distribution, and transaction fusion. Additionally, there are design goals for stability and incremental deployment in context of live coding, and to simplify live extensions, system overlays, administration, and debugging.
+
+To support these features, the process network has its own variation on transactional sequences and loops, with explicitly labeled locations and steps. Effects require a lot of attention - e.g. effects handlers might also be distinguished as stateless, shared-state, and forkable, and individual effects are typefully distinguished based on how they impact stability for incremental computing. Forks are also much more explicit, labeled and partitioned into logical 'spaces' that may restrict some forms of communication or may align with abstract physical locations.
+
+The lowest level 'steps' may include application processes (i.e. the 'prog' header) but may also include specialized operations (communication effects, data transformers, etc.).
+
+
+
 ## Procedural Programming on Transaction Machines
 
 In context of a transaction machine, a procedure will evaluated over multiple process steps.
@@ -59,20 +81,6 @@ In context of a transaction machine, a procedure will evaluated over multiple pr
 For example, with sequential composition the halt:Result of one process becomes init:Param to the next. If the first step yields before completion, the composite process must add information to the 'step:State' to remember that it's the first step that yielded. This effectively records the program counter within State. We can similarly define conditionals and loops in terms of composing processes.
 
 A blocking call at the procedure layer becomes a process that sends a message, yields, then awaits a response at the start of the next transaction.
-
-## Performance-Risk Mitigation
-
-Initially, application programs must use the 'prog' header, i.e. `prog:(do:GlasProgram, app, ...)`. However, optimizations on this representation are not easy.
-
-Eventually, we might extend representation or application programs with specialized variants to simplify essential transaction machine optimizations - i.e. nodes explicitly for checkpointing, stable forks, and fine-grained partitioning of state. This opportunity mitigates risk in case annotations prove awkward or inadequate for the task.
-
-Use of 'fork' for concurrency is not very efficient without the incremental computing and replication optimizations. We should avoid it where feasible. But we can still support fork concurrency to a limited degree by 'scheduling' forks instead of randomizing them:
-
-* after evaluation of a fork succeeds, try that fork again soon.
-* ordered cycle through failed forks; guarantee opportunity to run.
-* when all forks seem to be failing, wait briefly before retry.
-
-This would be inefficient because we don't have incremental computing, but predictable and effective in case we try running an app that uses fork-based concurrency.
 
 ## Robust References
 
@@ -263,7 +271,7 @@ A channel communicates using reliable, ordered, buffered message passing. Unlike
  * *no-write* - disables future 'send' and 'attach' operations for this channel. Future attempted writes will fail. 
  * *no-read* - disables future 'recv' and 'accept' operations for this channel. Clears input buffer and arranges to silently drop future inputs. 
 
-Channels over TCP is a viable foundation for networked Glas systems. See [Glas Channels](GlasChannels.md) for more discussion on this.
+Channels over TCP is a viable foundation for networked glas systems. See [Glas Channels](GlasChannels.md) for more discussion on this.
 
 * **c:tcp:bind:(wrap:TcpRef, as:ChannelRef)** - removes TcpRef from scope, binds ChannelRef. This implements the channel (and subchannels) over TCP, using [Glas Object](GlasObject.md) to represent values. The TCP connection will also handle protocol-layer interactions to support features such as querying for globs, providing access to a content-distribution network, or routing pipes efficiently.
 * **c:tcp:l:bind:(wrap:ListenerRef, as:ChannelRef)** - removes ListenerRef from Scope, binds ChannelRef. This ChannelRef can only 'accept' new subchannels, one for each received TCP connection.
@@ -287,6 +295,7 @@ A runtime can provide a few effects for manipulating itself. May be implementati
 
 I could support OS operations under an 'os:' prefix, and perhaps OS-specialized actions under a header such as 'os:posix:...'. Not really sure what I need, or how much of the OS should be exposed. Might develop incrementally as needed.
 
+
 ## Misc Thoughts
 
 ### Console Applications
@@ -308,7 +317,7 @@ I like the idea of building notebook-style applications with live coding. But I'
 
 ### Web Applications
 
-A promising target for Glas is web applications - compiling applications to JavaScript with read-write effects based on the Document Object Model, Web Sockets (or XMLHttpRequest), and Local Storage. Transaction machines are a reasonable fit for web apps, assuming something like React for rendering updated trees between transactions.
+A promising target for glas is web applications - compiling applications to JavaScript with read-write effects based on the Document Object Model, Web Sockets (or XMLHttpRequest), and Local Storage. Transaction machines are a reasonable fit for web apps, assuming something like React for rendering updated trees between transactions.
 
 ### Reactive Dataflow Networks
 

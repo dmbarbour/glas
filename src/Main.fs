@@ -173,12 +173,6 @@ let print (vref:string) : int =
     | ValueNone ->
         EXIT_FAIL
 
-[<return: Struct>]
-let (|Int32|_|) v =
-    match v with
-    | Value.Int(n) when ((int64 System.Int32.MaxValue >= n) && (n >= int64 System.Int32.MinValue)) ->
-        ValueSome(int(n))
-    | _ -> ValueNone
 
 let run (vref:string) (args : string list) : int = 
     let ll = getLoader <| consoleErrLogger ()
@@ -198,7 +192,7 @@ let run (vref:string) (args : string list) : int =
                 match st' with
                 | Value.Variant "step" _ -> 
                     loop st'
-                | Value.Variant "halt" (Int32 exit_code) -> 
+                | Value.Variant "halt" (Value.Int32 exit_code) -> 
                     exit_code
                 | _ ->
                     logErrorV ll (sprintf "program %s reached unrecognized state" vref) st'

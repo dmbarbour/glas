@@ -15,22 +15,6 @@ User-defined operations are supported via lightweight syntactic sugar:
 
 My vision for glas systems is that most operations will be user-defined. Logic is visible and accessible via the module system. Different versions of 'glas' mostly affect performance. However, more built-ins may be introduced to support bootstrap development or system configuration.
 
-## Bootstrap
-
-The bootstrap implementation for glas command line only needs to support the '--extract' command. Assuming suitable module definitions, bootstrap can be expressed with just a few lines of bash:
-
-    # build
-    /usr/bin/glas --extract glas-binary > /tmp/glas
-    chmod +x /tmp/glas
-
-    # verify
-    /tmp/glas --extract glas-binary | cmp /tmp/glas
-
-    # install
-    sudo mv /tmp/glas /usr/bin/
-
-In practice, we need different binaries for different operating systems and machine architectures. This can be conveniently supported by defining a global 'target' module that describes our compilation target, then switch targets via configuring global module search. Alternatively, we could define target-specific modules such as 'glas-binary-linux-x64'.
-
 ## Value References
 
 The '--run' and '--extract' commands reference values in the Glas module system. 
@@ -72,21 +56,19 @@ The glas command line knows how to interpret some values as runnable application
 
 The application model is extensible: interpretation is based on value header such as 'prog' or 'macro' (see below). For performance, the glas command line may implicitly compile and cache application behavior, but that won't be directly exposed to the user. Args following '--' are passed to the application.
 
-### Application Processes
+### Process
 
-Process applications are distinguished by the 'prog' header.
+A basic application process uses the 'prog' header, and is represented by a glas program.
 
         prog:(do:Program, ...) 
 
 This program represents an application process as a transactional step function.
 
-        type Process = (init:Args | step:State) -- [Eff] (step:State | halt:Result) | Fail
+        type Step = init:Params | step:State -> [Effects] (halt:Result | step:State) | Fail
 
-In context of the console application, this process starts with `init:["List", "Of", "Args"]`, and finishes with `halt:ExitCode`. The exit code should be a short bitstring (0 to 31 bits) representing a signed integer. The State is private to the app (modulo extensions or debugging). The process function is repeatedly evaluated until 'halt' is returned, committing successful steps and retrying failed steps.
+In context of the console application, this process starts with `init:["List", "Of", "Args"]` and finishes with `halt:ExitCode`. The ExitCode should be a short bitstring representing a 32-bit integer. Between init and halt, the process may commit any number of intermediate steps, forwarding the State value.
 
-The transactional nature has a significant influence on design of the effects API. See also *Effects API* and [Glas Apps](GlasApps.md). 
-
-### Application Macros
+### Macros
 
 Application macros are distinguished by the 'macro' header.
 
@@ -100,24 +82,39 @@ The program must be 1--1 arity and will receive `["Static", "Args"]` on the data
 
 The macro program has access to the same effects API as language modules, i.e. 'log' and 'load'. Application macros can usefully be viewed as user-defined language extensions for glas command line arguments. The expectation is that they'll usually be combined with user-defined operations.
 
-### Brainstorming
+### Process Networks
 
-Potential future extensions to application model:
+Process networks use the 'proc' header.
 
-* *declarative process network* - make it easy to recognize and optimize for incremental computing, concurrency, and distribution.
-* *virtual machine bytecode* - develop a representation that is closer to the machine, perhaps an intermediate representation.
+        proc:(do:Process, Annotations)
 
-Extensions are low priority for now, but are a viable path to enhance glas system flexibility, scalability, and performance.
+The process network also represents a transactional step function (it could be compiled into one) but in a manner that makes sequences, concurrency, partitioning, incremental computing, communication, etc. much more obvious to an optimizer. The glas command line can take advantage of this to improve performance.
 
-## Effects API
+Design of process networks is ongoing, within the [glas applications](GlasApps.md) document.
 
-Applications will support most effects described in [glas apps](GlasApps.md), plus a few effects to support live coding and integrate the glas module system. Proposed extensions:
+## Extended Effects API
 
-* **load:ModuleRef** - load current value of a module. Value may update between transactions.
-* **rt:reload** - (a runtime extension) rebuild and redeploy current application, i.e. the original ValueRef and any staged macros, while preserving application state. Fails if application cannot be rebuilt. Otherwise returns unit and applies to future transactions after commit.
+In context of glas command line, I propose a few specialized extensions to the effects API:
+
+* **load:ModuleRef** - load current value of a module. Value of module may update between transactions. 
+* **reload** - rebuild and redeploy application from source while preserving application state. Fails if application cannot be rebuilt or if redeployment is infeasible. Otherwise returns unit and applies after commit.
 * **help:Effect** - access to integrated documentation. The Effect here may represent an effect or part of one (e.g. namespace 'db' or operation 'db:put' or parameter 'db:put:k'). Response is an ad-hoc record such as `(text:"Description Here", class:op, related:[List, Of, Values])`, or failure.
 
-The module system can be considered stable with respect to incremental computing, i.e. 'load' and 'rt:reload' may be evaluated continuously.
+## Bootstrap
+
+The bootstrap implementation for glas command line only needs to support the '--extract' command. Assuming suitable module definitions, bootstrap can be expressed with just a few lines of bash:
+
+    # build
+    /usr/bin/glas --extract glas-binary > /tmp/glas
+    chmod +x /tmp/glas
+
+    # verify
+    /tmp/glas --extract glas-binary | cmp /tmp/glas
+
+    # install
+    sudo mv /tmp/glas /usr/bin/
+
+In practice, we need different binaries for different operating systems and machine architectures. This can be conveniently supported by defining a global 'target' module that describes our compilation target, then switch targets via configuring global module search. Alternatively, we could define target-specific modules such as 'glas-binary-linux-x64'.
 
 ## Exit Codes
 

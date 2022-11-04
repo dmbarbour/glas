@@ -325,7 +325,7 @@ module ProgVal =
             let arInfer = stackArity p
             let arAnno = 
                 match anno with
-                | FullRec ["arity"] ([FullRec ["i";"o"] ([Nat i; Nat o], _)], _) ->
+                | FullRec ["arity"] ([FullRec ["i";"o"] ([Nat64 i; Nat64 o], _)], _) ->
                     Some(int i, int o)
                 | _ -> None
             match arInfer, arAnno with
@@ -340,7 +340,4 @@ module ProgVal =
         match stackArity p with
         | Arity (a,b) -> Some struct(a,b) 
         | _ -> None
-
-
-
 

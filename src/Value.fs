@@ -336,7 +336,7 @@ module Value =
         ofStem <| StemBits.eraseOnesPrefix ((n1c <<< 1) ||| 1UL) 
 
     [<return: Struct>]
-    let (|Nat|_|) v =
+    let (|Nat64|_|) v =
         match v.Term with
         | Leaf when (StemBits.msb v.Stem) -> // non-negative
             let sp = 63 - StemBits.len v.Stem
@@ -348,7 +348,14 @@ module Value =
         | _ -> ValueNone
 
     [<return: Struct>]
-    let (|Int|_|) v =
+    let (|Nat32|_|) v =
+        match v with
+        | Nat64(n) when ((uint64 System.UInt32.MaxValue) >= n) ->
+            ValueSome(uint32 n)
+        | _ -> ValueNone
+
+    [<return: Struct>]
+    let (|Int64|_|) v =
         match v.Term with
         | Leaf when (StemBits.msb v.Stem) -> // non-negative
             let sp = 63 - StemBits.len v.Stem
@@ -363,6 +370,14 @@ module Value =
             // only one int64 value needs 64 bits
             ValueSome(System.Int64.MinValue)
         | _ -> ValueNone
+
+    [<return: Struct>]
+    let (|Int32|_|) v =
+        match v with
+        | Int64(n) when ((int64 System.Int32.MaxValue >= n) && (n >= int64 System.Int32.MinValue)) ->
+            ValueSome(int n)
+        | _ -> ValueNone
+
 
     let ofImmArray (a : ImmArray<Value>) : Value =
         if (0 = a.Length) then unit else ofTerm (Array a)
@@ -1328,7 +1343,7 @@ module Value =
                     yield! _ppKV (Seq.head kvSeq)
                     yield! kvSeq |> Seq.tail |> Seq.collect (fun kv -> seq { yield ", "; yield! _ppKV kv})
                     yield ")"
-            | Int n when not bLR -> 
+            | Int64 n when not bLR -> 
                 yield (n.ToString())
             | String s ->
                 yield "\""
