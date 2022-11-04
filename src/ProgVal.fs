@@ -56,8 +56,7 @@ module ProgVal =
     let lProg = label "prog"
     let lTBD = label "tbd"
 
-    let lv l v =  
-        { v with Stem = Bits.append l (v.Stem) }
+    let lv l v = withLabel l v
 
     let Nop = lv lSeq unit
 
@@ -78,16 +77,21 @@ module ProgVal =
         | _ -> ValueNone
     
     // adding 'P' prefix to avoid conflict with F# Seq
-    let PSeq lV = lv lSeq (ofFTList lV)
+    let PSeq body = lv lSeq body
 
     [<return: Struct>]
     let (|PSeq|_|) v =
         match v with
-        | Stem lSeq (FTList lV) -> ValueSome lV
+        | Stem lSeq body -> ValueSome body
         | _ -> ValueNone
 
-    let private record_insert_unless_nop lbl v r =
-        if v = Nop 
+    let isNop v =
+        match v with
+        | Stem lSeq Unit -> true
+        | _ -> false
+
+    let record_insert_unless_nop lbl v r =
+        if isNop v
             then record_delete lbl r 
             else record_insert lbl v r
 
@@ -187,8 +191,8 @@ module ProgVal =
                 ()
             | Dip p -> 
                 yield! invalidProgramComponents p
-            | PSeq lP -> 
-                yield! lP |> FTList.toSeq |> Seq.collect invalidProgramComponents
+            | PSeq (List lP) -> 
+                yield! lP |> Rope.toSeq |> Seq.collect invalidProgramComponents
             | Cond (pTry, pThen, pElse) ->
                 yield! invalidProgramComponents pTry
                 yield! invalidProgramComponents pThen
@@ -301,9 +305,9 @@ module ProgVal =
             | Arity (a,b) -> Arity (a+1, b+1)
             | ar -> ar
         | Data _ -> Arity(0,1)
-        | PSeq lP  -> 
+        | PSeq (List lP) -> 
             let fn ar op = compSeqArity ar (stackArity op)
-            FTList.fold fn (Arity (0,0)) lP
+            Rope.fold fn (Arity (0,0)) lP
         | Cond (c, a, b) -> 
             compCondArity (stackArity c) (stackArity a) (stackArity b)
         | While (c, a) -> 

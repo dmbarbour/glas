@@ -193,12 +193,6 @@ The compiler program must be a Glas program with 1--1 arity. Program input is us
  * *local:String* - search files and subfolders local to file currently being compiled.
 * **log:Message** - Message should be a record, e.g. `(text:"Uh oh, you messed up!", lv:warn)`, so that it can be flexibly extended with metadata. Response is unit. Behavior depends on development environment, e.g. might print the message to stderr with color based on level.
 
-### Useful Languages
-
-First, developing a few data-entry languages early on could be very convenient. For example, we could support `.txt` files that verify unicode input, remove the byte order mark, convert to UTF-8, and perhaps even detect language and run a spellcheck and grammar check. We could support JSON, MsgPack, Cap'n Proto, SQLite, or [Glas Object](GlasObject.md) files for structured data entry.
-
-For programming languages, perhaps some programmers would favor a more Lisp-like or C-like syntax. But I'm also very interested in structured programming, where our programs are recorded into a database.
-
 ## Automated Testing
 
 Static assertions when compiling modules are useful for automated testing. However, build-time is deterministic and under pressure to resolve swiftly. This leaves an open niche for long-running or non-deterministic tests, such as overnight fuzz-testing. Use of a non-deterministic 'fork' effect would be useful for testing:
@@ -254,6 +248,20 @@ A compiler can squeeze out some parallelism via dataflow analysis. For example, 
 For robust parallelism at scale, it is feasible to *accelerate* evaluation of a distributed, confluent, monotonic virtual machine. [Kahn process network](https://en.wikipedia.org/wiki/Kahn_process_networks) and [Lafont Interaction Networks](https://en.wikipedia.org/wiki/Interaction_nets) can provide some inspiration.
 
 ## Thoughts
+
+### Useful Languages
+
+The Glas system will need many language modules. 
+
+The g0 language is used for bootstrap. It is a Forth-inspired language with expressive metaprogramming features. But it's intended as a stable starting point, not a final language or something to significantly improve over time.
+
+There is room for more programming languages. The g0 language falls short on many features: recursive definitions, visibility of pattern matching and data plumbing, type annotations and implicit type checking, process/procedure layer composition (involving multiple transactional steps), type-guided overrides and program search, etc..
+
+Data languages will often be more convenient than embedding data within a programming language. In part because this simplifies working with external tools. We could support ".txt" files (e.g. convert UTF-16 to UTF-8, remove byte-order mark, check spelling, etc.). We can also support structured data files - JSON, XML, CSV, MsgPack, SQLite, Cap'n Proto, or even [Glas Object](GlasObject.md).
+
+A generic text preprocessor language that can import, define, and invoke character-level macros can be widely useful. Users could apply the preprocessor anywhere it might be useful via composing file extensions, e.g. ".g0.m" vs. ".json.m", while keeping it separate from the underlying language.
+
+It is feasible to explore graphical and structured editors for certain modules. This would generally require that all files are of types recognized by the editor, but also have consistent interpretations by Glas language modules.
 
 ### Abstract and Linear Data
 

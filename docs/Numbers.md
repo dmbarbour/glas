@@ -1,35 +1,33 @@
 # Proposed Representations of Numbers
 
-The proposed representation for variable-width natural numbers is a bitstring, msb to lsb, with no leading zeroes.
+## Naturals and Integers
 
-        0       (empty bitstring)
-        1       1
-        2       10
-        3       11                          
-        23      10111
-        42      101010
+Basic natural numbers and integers. Integers are one's complement of natural numbers. There is no negative zero, and values have a rather nice symmetry.
 
-This encoding has the advantage of being simple, conventional, easily explained and understood. It has several disadvantages, too.
+        42  101010
+        23  10111
+        4   100
+        3   11
+        2   10
+        1   1
+        0   (empty)
+        -1  0
+        -2  01
+        -3  00
+        -4  011
+        -23 01000
+        -42 010101
 
-## Integers
-
-Natural numbers can be transparently extended with negative integers by simply inverting all the bits. This corresponds to a one's complement encoding with no leading ones. Conveniently, we cannot encode a negative zero, and this gives a complete bijection between bitstrings and integers.
-
-        -1      0
-        -2      01
-        -3      00             
-        -23     01000          
-        -42     010101
-
-Alternatively, we could negate only the msb. However, I believe the complement is easier to explain and understand. 
+In some contexts, if we know we have a positive integer, we could erase the first '1' bit prefix then implicitly add it as needed. Saving a bit isn't very important, but it would resist representing invalid numbers.
 
 ## Rational Numbers
 
-A lightweight encoding for an exact rational number is perhaps an integer, natural pair where the natural has an implicit '1' prefix.
+A compact encoding for an exact rational number:
 
+        NZNatural - positive integer but drop the first '1' bit.
         (Integer * NZNatural)
 
-However, I'm uncertain we'll use this much. Might favor floating point. Or just use `ratio:(n:Int, d:Nat)`. 
+In some contexts, we might favor something closer to 'ratio:(n:Int, d:Nat)'
 
 ## Floating Point
 
@@ -41,6 +39,5 @@ OTOH, in practice we'll often want to accelerate vector and matrix operations wi
 
 ## Vectors and Matrices
 
-
-
+Might be more convenient to work directly with binary data, perhaps add some metadata headers about type (float32, posit32, etc.) and layout (row-major, column-major, z-order, etc..). 
 

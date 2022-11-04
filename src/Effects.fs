@@ -101,15 +101,15 @@ module Effects =
     /// transactionally aborted.
     type TXLogSupport =
         val private WriteLog : Value -> unit
-        val private Recant : FTList<Value> -> FTList<Value>
-        val mutable private TXStack : FTList<Value> list
+        val private Recant : Rope -> Rope
+        val mutable private TXStack : Rope list
 
         /// Set the committed output destination. Default behavior for aborted
         /// transactions is to insert a '~' flag to every message.
         new (out) = 
             let recantMsg = Value.record_insert (Value.label "~") (Value.unit)
             { WriteLog = out
-            ; Recant = FTList.map recantMsg
+            ; Recant = Value.Rope.map recantMsg
             ; TXStack = [] 
             }
 
@@ -124,13 +124,13 @@ module Effects =
         member self.Log(msg : Value) : unit =
             match self.TXStack with
             | (tx0::txs) ->
-                self.TXStack <- (FTList.snoc tx0 msg)::txs
+                self.TXStack <- (Value.Rope.snoc tx0 msg)::txs
             | [] -> 
                 // not in a transaction, forward to wrapped eff
                 self.WriteLog msg
 
         member self.PushTX () : unit = 
-            self.TXStack <- (FTList.empty) :: self.TXStack
+            self.TXStack <- (Value.Rope.empty) :: self.TXStack
 
         member self.PopTX (bCommit : bool) : unit =
             match self.TXStack with
@@ -139,10 +139,10 @@ module Effects =
                 let tx0' = if bCommit then tx0 else self.Recant tx0
                 match tx0Rem with
                 | (tx1::txs) -> // commit into lower transaction
-                    self.TXStack <- (FTList.append tx1 tx0')::txs 
+                    self.TXStack <- (Value.Rope.append tx1 tx0')::txs 
                 | [] -> // commit to output
                     self.TXStack <- List.empty
-                    for msg in FTList.toSeq tx0' do
+                    for msg in Value.Rope.toSeq tx0' do
                         self.WriteLog msg
 
         interface IEffHandler with
@@ -199,8 +199,7 @@ module Effects =
             | Value.Variant "error" _ -> System.ConsoleColor.Red
             | _ -> 
                 // randomly associate color with non-standard level
-                // but keep it stable per level
-                match (hash lv) % 8 with
+                match (hash (lv.Stem)) % 8 with
                 | 0 -> System.ConsoleColor.Magenta
                 | 1 -> System.ConsoleColor.Cyan
                 | 2 -> System.ConsoleColor.DarkGreen

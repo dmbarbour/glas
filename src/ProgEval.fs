@@ -85,7 +85,7 @@ module ProgEval =
         let eq cte cc rte =
             match rte.DataStack with
             | (a::b::ds') ->
-                if (a = b) 
+                if Value.eq a b 
                     then cc { rte with DataStack = ds' }
                     else (cte.FK) rte
             | _ -> underflow rte
@@ -238,8 +238,9 @@ module ProgEval =
             let eh' cte cc = (effStatePop cte (opWith { cte with EH = eh0 } (effStatePush cte cc)))
             effStatePush cte0 (opDo { cte0 with EH = eh'} (effStatePop cte0 cc0))
 
-        let pseq (ops:FTList<Op>) cte cc0 =
-            FTList.foldBack (fun op cc -> op cte cc) ops cc0
+        let pseq (ops : Op array) cte cc0 =
+            let fn op cc = op cte cc
+            Array.foldBack fn ops cc0
 
         let rec compile (p:Program) : Op =
             match p with
@@ -254,7 +255,8 @@ module ProgEval =
             | Stem lDel U -> del
             | Dip p' -> dip (compile p')
             | Data v -> data v 
-            | PSeq ps -> pseq (FTList.map (compile) ps)
+            | PSeq (ValueArray ops) -> 
+                pseq (Array.map compile ops) 
             | Cond (pTry, pThen, pElse) ->
                 cond (compile pTry) (lazy (compile pThen)) (lazy (compile pElse))
             | While (pWhile, pDo) ->

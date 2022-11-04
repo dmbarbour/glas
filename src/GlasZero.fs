@@ -90,7 +90,7 @@ module Zero =
             let hword = wordBody .>>. many (pchar '/' >>. wordBody)
             (hword .>> wsep) <?> "d/word" |>> fun (w,ws) -> struct(w,ws)
         
-        let parseSymbol : P<Bits> =
+        let parseSymbol : P<Value> =
             ((pchar '\'' >>. parseWord) <?> "symbol") |>> Value.label
 
         let hexN (cp : byte) : byte =
@@ -103,29 +103,32 @@ module Zero =
             // wat?
             invalidArg (nameof cp) "not a valid hex byte"
 
-        let consNbl (nbl : byte) (b : Bits) : Bits =
-            let inline cb n acc = Bits.cons (0uy <> ((1uy <<< n) &&& nbl)) acc
+        let consNbl (nbl : byte) (b : Value) : Value =
+            let inline cb n acc = Value.consStemBit (0uy <> ((1uy <<< n) &&& nbl)) acc
             b |> cb 0 |> cb 1 |> cb 2 |> cb 3
 
-        let parseHex : P<Bits> =
+        let parseHex : P<Value> =
             pstring "0x" >>. many1Satisfy isHex .>> wsep |>> fun s -> 
+                let fn cp acc = consNbl (hexN cp) acc
                 let arr = System.Text.Encoding.ASCII.GetBytes(s)
-                Array.foldBack (fun cp acc -> consNbl (hexN cp) acc) arr (Bits.empty)
+                Array.foldBack fn arr Value.unit
 
         let isBinChar c = 
             (('0' = c) || ('1' = c))
 
-        let parseBin : P<Bits> =
-            pstring "0b" >>. many1Satisfy isBinChar .>> wsep |>> fun s ->
+        let parseBin : P<Value> =
+            pstring "0b" >>. manySatisfy isBinChar .>> wsep |>> fun s ->
+                let fn cp acc = Value.consStemBit (48uy <> cp) acc
                 let arr = System.Text.Encoding.ASCII.GetBytes(s)
-                Array.foldBack (fun cp acc -> Bits.cons (48uy <> cp) acc) arr (Bits.empty)
+                Array.foldBack fn arr Value.unit
 
-        let parsePosNat : P<Bits> =
-            many1Satisfy2L (fun c -> isDigit c && (c <> '0')) isDigit "non-zero number" .>> wsep |>> 
-                (System.Numerics.BigInteger.Parse >> Bits.ofI) 
-
-        let parseNat : P<Bits> =
-            parsePosNat <|> (pchar '0' .>> wsep >>% Bits.empty)
+        let parseInt : P<Value> =
+            let pzero = pstring "0"
+            let isNzDigit c = (isDigit c) && (c <> '0')
+            let ppos = many1Satisfy2 (isNzDigit) (isDigit)
+            let pneg = pstring "-" .>>. ppos |>> fun (s,n) -> s + n
+            choice [pzero; ppos; pneg ] .>> wsep |>> fun (s:string) -> 
+                Value.ofInt (int64(s))
 
         let isStrChar (c : char) : bool =
             let cp = int c
@@ -134,12 +137,12 @@ module Zero =
         let parseString : P<string> =
             pchar '"' >>. manySatisfy isStrChar .>> pchar '"' .>> wsep
 
-        let parseBitString : P<Bits> =
-            parseBin <|> parseHex <|> parseSymbol <|> parseNat
+        let parseBitString : P<Value> =
+            choice [parseBin; parseHex; parseSymbol; parseInt ]
 
         let parseData : P<Value> =
             choice [
-                parseBitString |>> Value.ofBits
+                parseBitString 
                 parseString |>> Value.ofString
             ]
 
@@ -390,8 +393,25 @@ module Zero =
             match op with
             | Prog (U, pDo) ->
                 expandOp pDo
-            | PSeq l -> l
-            | _ -> FTList.singleton op
+            | PSeq (List l) -> l
+            | _ -> Rope.singleton op
+
+        // add any extra compile-time effects
+        let ctEval progVal cte =
+            // ability to access dictionary via 'load:dict:Path'
+            let lld = 
+                { new IEffHandler with
+                    member __.Eff v = 
+                        match v with
+                        | Variant "load" (Variant "dict" (Bits path)) ->
+                            Value.record_lookup path cte.Dict
+                        | _ -> cte.LL.Eff(v)
+                interface ITransactional with
+                    member __.Try () = cte.LL.Try()
+                    member __.Commit () = cte.LL.Commit()
+                    member __.Abort () = cte.LL.Abort()
+                }
+            eval progVal lld
 
         // Compile a program block into a value. 
         let rec compileBlock (dbgCx:string) (cte0:CTE) (b:Block) : struct(CTE * Program) =
@@ -399,6 +419,7 @@ module Zero =
             let struct(cte2,p) = _compileBlock cte1 [] [] b
             struct({cte2 with DbgCx = cte0.DbgCx }, p)
         and private _compileCallProg cte revOps ds p b =
+            // any effect will cause failure here.
             match pureEval p ds with
             | Some ds' ->
                 _compileBlock cte revOps ds' b
@@ -426,7 +447,7 @@ module Zero =
                 | LinkProg p ->
                     _compileCallProg cte0 revOps ds p b'
                 | LinkMacro m ->
-                    match eval m (cte0.LL) ds with
+                    match ctEval m cte0 ds with
                     | Some (p :: ds') ->
                         _compileCallProg cte0 revOps ds' p b'
                     | _ ->
@@ -436,11 +457,14 @@ module Zero =
                 | LinkFail e ->
                     _compileBadCall (addAlert hw e cte0) revOps ds b'
             | [] ->
-                let ops = addDataOpsRev revOps ds |> List.rev |> FTList.collect expandOp
+                let ops = addDataOpsRev revOps ds 
+                        |> List.rev 
+                        |> Seq.map expandOp
+                        |> Rope.concat
                 let p = 
-                    match ops.T with
-                    | FT.Single op -> op.V
-                    | _ -> PSeq ops
+                    match ops with
+                    | Rope.ViewL(op0,Leaf) -> op0
+                    | _ -> PSeq (ofTerm ops)
                 let ar = stackArity p
                 let cte' =
                     if ArityDyn <> ar then cte0 else
@@ -455,8 +479,8 @@ module Zero =
                 | Local s -> Value.variant "local" (Value.ofString s)
             ll.Eff(Value.variant "load" mRefVal)
 
-        let initDict ll openOpt =
-            match openOpt with
+        let initDict ll tlv =
+            match tlv.Open with
             | None -> struct(Value.unit, ErrorFlags.NoError)
             | Some m ->
                 match loadModule ll m with
@@ -464,7 +488,12 @@ module Zero =
                     logError ll (sprintf "'open' failed to load %s" (mstr m))
                     struct(Value.unit, ErrorFlags.LoadError)
                 | ValueSome d0 ->
-                    struct(d0, ErrorFlags.NoError)
+                    // erase words defined within this file.
+                    // this simplifies 'load:dict' effects.
+                    let ws = wordsDefined tlv
+                    let fn d w = Value.record_delete (Value.label w) d 
+                    let d' = Set.fold fn d0 ws 
+                    struct(d', ErrorFlags.NoError)
 
         let applyImportAs (cte0:CTE) (m:ModuleRef) (w:Word) : CTE =
             let ll = cte0.LL
@@ -500,7 +529,7 @@ module Zero =
                 | struct(_,w)::_ -> (sprintf "def %s" w)
                 | [] -> failwith "invalid from data"
             let struct(cte', pData) = compileBlock dbg cte0 b
-            match eval pData ll [] with
+            match ctEval pData cte' [] with
             | Some [dSrc] ->
                 applyImportList cte' lImports dSrc
             | Some _ ->
@@ -528,7 +557,7 @@ module Zero =
             let ll = cte0.LL
             let dbg = sprintf "def %s" w
             let struct(cte', pData) = compileBlock dbg cte0 b
-            match eval pData ll [] with
+            match ctEval pData cte' [] with
             | Some [vData] -> 
                 addDef w (Value.variant "data" vData) cte'
             | Some _ ->
@@ -542,11 +571,11 @@ module Zero =
             let ll = cte0.LL
             let dbg = sprintf "assert ln %d" ln
             let struct(cte', pAssert) = compileBlock dbg cte0 b
-            match eval pAssert ll [] with
+            match ctEval pAssert cte' [] with
             | Some results ->
                 if not (List.isEmpty results) then
                     logInfoV ll (sprintf "%s passed with outputs" dbg) 
-                                (Value.ofFTList (FTList.ofList results)) 
+                                (Value.ofList  results) 
                 cte'
             | None ->
                 logError ll (sprintf "%s failed" dbg)
@@ -565,7 +594,7 @@ module Zero =
         let applyExportFn cte0 b = 
             let ll = cte0.LL
             let struct(cte', pExport) = compileBlock "export" cte0 b
-            match eval pExport ll [cte0.Dict] with
+            match ctEval pExport cte' [] with
             | Some [vExport] -> 
                 { cte' with Dict = vExport }
             | Some vs -> // requires arity error
@@ -603,7 +632,7 @@ module Zero =
                     if Set.isEmpty wsSh then ErrorFlags.NoError else
                     logError ll (sprintf "shadowed words: %s" (String.concat ", " wsSh))
                     ErrorFlags.WordShadowed
-                let struct(dOpen,eOpen) = initDict ll (tlv.Open) 
+                let struct(dOpen,eOpen) = initDict ll tlv 
                 let cte0 = initCTE ll (eShadow ||| eOpen) dOpen
                 let cte' = List.fold applyEnt cte0 (tlv.Ents)
                 applyExport cte' (tlv.Export)

@@ -137,9 +137,9 @@ Glas applications provide access to a lightweight, hierarchical key-value databa
 * **db:put:(k:Key, v:Value)** - set value associated with Key. May fail. 
 * **db:del:Key** - remove Key from database. May fail.
 
-Keys are bitstrings, and the database is usually a record/dict value. Keys should be short, but very large values can be supported via structure sharing with previous versions using stowage. In context of the glas command line, this database will be located under GLAS_DATA (environment variable); basic transactions are atomic, isolated, and as durable as the backing filesystem.
+Keys are bitstrings, and the database is usually a record/dict value. Operating on the prefix of a key will operate on the record of all keys with a matching prefix. Keys should be short, but large values are supported via stowage. Updates are atomic, isolated, and durable. Consistency and security are left to applications. 
 
-Consistency and security are left to applications. For example, a program could track keys updated then perform a consistency check before committing. An effects handler could restrict read or write access to certain keys, or rewrite keys to logically chroot the subprogram and mount shared memory regions.
+Operations may fail due to implicit validation, e.g. verify invariants upon put or commit. In some contexts, an effects handler might also rewrite keys, modeling a logical chroot or virtual memory.
 
 ### Filesystem
 
@@ -227,9 +227,7 @@ Most network interactions with external services can be supported by TCP or UDP.
   * *port* - normally included to determine which port to bind, but may be left to dynamic allocation. 
   * *addr* - indicates which local ethernet interfaces to bind; if unspecified, attempts to binds all interfaces.
  * **read:(from:UdpRef)** - returns the next available UDP message value. 
- * **write(to:UdpRef, data:Message)** - output a UDP message
- 
-  using same `(port, addr, data)` record as messages read. Returns unit. Write may fail if the connection is in an error state, and attempting to write to an invalid port or address or oversized packets may result in an error state.
+ * **write(to:UdpRef, data:Message)** - output a UDP message. Message uses same `(port, addr, data)` record as messages read. Returns unit, and buffers message to send upon commit.
  * **status:UdpRef** ~ same as file status
  * **info:UdpRef** - Returns a list of `(port:Port, addr:Addr)` pairs for the local endpoint.
  * **close:UdpRef** - Return reference to unused state, releasing system resources.
@@ -237,6 +235,8 @@ Most network interactions with external services can be supported by TCP or UDP.
  * **ref:move:(from:UdpRef, to:UdpRef)** - reorganize UDP refs. Fails if 'to' ref is in use.
 
 A port is a fixed-width 16-bit number. An addr is a fixed-width 32-bit or 128-bit bitstring (IPv4 or IPv6) or a text string such as "www.example.com" or "192.168.1.42" or "2001:db8::2:1". Later, I might add a dedicated API for DNS lookup, or perhaps for 'raw' Ethernet.
+
+*Aside:* No support for unix sockets at the moment, but could be introduced if needed.
 
 ### Channels
 
@@ -291,27 +291,24 @@ I could support OS operations under an 'os:' prefix, and perhaps OS-specialized 
 
 ### Console Applications
 
-See [Glas command line interface](GlasCLI.md).
+See [Glas command line](GlasCLI.md).
 
-### GUI Apps
+### Lightweight GUI
 
-No direct support for GUI. Indirectly, we could potentially use network access to X11 and sound APIs, or write a web server that serves a GUI.
+Console apps will support GUI indirectly via file and network APIs:
+
+* networked GUI, e.g. web-apps, X, RDP, dbus (configured for TCP) 
+* textual UI (TUI) with graphics extensions, e.g. kitty or sixel
+
+These mechanisms benefit from buffering of IO, which conveniently aligns with transaction machines. Support for native GUI is non-trivial and low priority, but may eventually be supported via extended effects API.
 
 ### Notebook Applications
 
-I like the idea of building notebook-style applications, where each statement is also a little application serving its own little GUI. Live coding should be implicit. The notebook pages should be highly reactive to changes in code, avoiding overuse of history-dependent behavior. 
-
-The GUI must be efficiently composable, such that a composite application can combine GUI views from component applications. Ideally, we can also support multiple views and concurrent users, e.g. an application serves multiple GUIs.
-
-Component applications would be composed and connected. I like the idea of using *Reactive Dataflow Networks* for communication because it works nicely with live coding, so we might assume the notebook has some access to a loopback port and possibly to user model and GUI requests via reactive dataflow.
-
-### User Interface APIs
-
-Initial GUI for command line interface applications will likely just be serving HTTP connections. But for notebook applications, we might benefit from a higher level API such that we can do more structured composition before converting the GUI to lower level code. About the only idea I'm solid on is that processes should accept and 'serve' GUI connections, which can easily support running headless or multiple users and views. 
+I like the idea of building notebook-style applications with live coding. But I'm uncertain how to best integrate everything. 
 
 ### Web Applications
 
-A promising target for Glas is web applications, compiling applications to JavaScript and using effects oriented around on Document Object Model, XMLHttpRequest, WebSockets, and Local Storage. Transaction machines are a decent fit for web apps. And we could also adapt notebook applications to the web target.
+A promising target for Glas is web applications - compiling applications to JavaScript with read-write effects based on the Document Object Model, Web Sockets (or XMLHttpRequest), and Local Storage. Transaction machines are a reasonable fit for web apps, assuming something like React for rendering updated trees between transactions.
 
 ### Reactive Dataflow Networks
 
@@ -338,3 +335,6 @@ Supporting synchronous remote procedure calls, i.e. within a transaction, is tec
 ### FFI
 
 Direct support for FFI is a bad idea. But it might be useful to eventually include DLLs and headers as modules, and somehow use them when compiling an application. 
+
+
+

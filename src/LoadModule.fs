@@ -235,7 +235,7 @@ module LoadModule =
                 // logInfo nle "bootstrap: language-g0 compiled using language-g0"
                 let ll2 = Loader(_compilerFn p1, nle)
                 match ll2.LoadGlobalModule "language-g0" with
-                | ValueSome (Value.FullRec ["compile"] ([p2],_)) when (p2 = p1) ->
+                | ValueSome (Value.FullRec ["compile"] ([p2],_)) when (Value.eq p2 p1) ->
                     // logInfo nle "language-g0 bootstrap successful!"
                     ValueSome ll2 
                 | _ -> 

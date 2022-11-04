@@ -152,7 +152,7 @@ let extract (vref:string) : int =
     let ll = getLoader <| consoleErrLogger ()
     match getValue ll vref with
     | ValueNone -> EXIT_FAIL
-    | ValueSome (Value.Binary b) ->
+    | ValueSome (Value.BinaryArray b) ->
         let stdout = System.Console.OpenStandardOutput()
         stdout.Write(b,0,b.Length)
         EXIT_OKAY
@@ -173,18 +173,12 @@ let print (vref:string) : int =
     | ValueNone ->
         EXIT_FAIL
 
-// supports negative integers via one's complement of bits
-let toInt bits =
-    let fn acc b = (acc <<< 1) ||| (if b then 1 else 0)
-    let bNat = (Bits.isEmpty bits) || (Bits.head bits)
-    if bNat 
-        then Bits.fold fn 0 bits
-        else 1 + Bits.fold fn (-1) bits 
-
 [<return: Struct>]
 let (|Int32|_|) v =
-    let okBits = (Value.isBits v) && (31 >= Bits.length (v.Stem))
-    if okBits then ValueSome (toInt (v.Stem)) else ValueNone
+    match v with
+    | Value.Int(n) when ((int64 System.Int32.MaxValue >= n) && (n >= int64 System.Int32.MinValue)) ->
+        ValueSome(int(n))
+    | _ -> ValueNone
 
 let run (vref:string) (args : string list) : int = 
     let ll = getLoader <| consoleErrLogger ()
