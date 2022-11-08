@@ -26,16 +26,19 @@ The top-level of a g0 file consists of imports, definitions, assertions, and exp
         # static assertions for lightweight verification
         assert [ Program ]
 
-        # rewrite or filter final module value
+        # control final compiled value of module
         export [ Program ] # or an import list
+        # alternatively may specify export word list
 
 Most declarations may appear in any order and quantity. The exceptions are 'open' and 'export' which, if included, must respectively be first and last. 
 
 ## Dictionary
 
-A valid g0 module initially compiles to a dictionary, represented as a record (a radix tree) of form `(word:deftype:Value, ...)`. The g0 language handles 'prog', 'macro', and 'data' deftypes. The deftype determines how the Value will be handled at the call site for a word. Other deftypes may be imported or exported but cannot be called from a g0 program.
+A valid g0 module initially compiles to a dictionary, represented as a record (a radix tree) of form `(word:deftype:Value, ...)`. The g0 language supports the 'prog', 'macro', and 'data' deftypes. The deftype determines how the Value will be handled at the call site for a word. Other deftypes may be imported or exported, and are accessible via static *load:dict* effects, but cannot be directly called within a g0 program.
 
-The compiled dictionary is statically linked, i.e. definitions do not contain g0 words or other symbolic references. Logically, every call is inlined. This relies on structure sharing at the data layer to control consumption of memory.
+Hierarchical dictionaries are supported via the 'data' deftype. See *Hierarchical Definitions*.
+
+The prog, macro, and data deftypes do not include symbolic references back to the dictionary. That is, each definition in g0 is effectively stand-alone. This won't necessarily be the case for all glas system languages.
 
 ## Words
 
@@ -51,7 +54,7 @@ In context of a single g0 file, each word has exactly one definition, and must b
 
 Imports provide convenient access to the module system. 
 
-* **open ModuleRef** - start with dictionary defined in another module, but immediately delete all words defined later within the current file (words have at most one definition within a g0 file). If present, must be first declaration ignoring comments and whitespace.
+* **open ModuleRef** - start with dictionary defined in another module, but immediately delete all words defined later within the current file (for purpose of 'load:dict' effects). If present, must be first declaration in file.
 * **from ModuleRef import ImportList** - add selected words from another module into the local namespace. Assumes compiled value of referenced module is a dictionary. Fails if any words from import list are undefined.
 * **import ModuleRef as Word** - import the compiled value of the referenced module as data. This is primarily intended for use with hierarchical definitions, e.g. 'import math as m' then later call 'm/sqrt'. However, this can also be convenient for import of arbitrary data.
 
@@ -102,7 +105,7 @@ The g0 language currently does not provide syntax optimized for constructing arb
 
 A 'prog' definition defines a normal runtime behavior. Any call to a prog word will apply the word's behavior at runtime, albeit subject to partial evaluation if there is sufficient input on the data stack and no effects are required. 
 
-Compiles to 'w1:prog:(do:GlasProgram, ...)' entry in the dictionary.
+Compiles to 'w1:prog:(do:GlasProgram, ...)' entry in the dictionary. (Does not reduce to a 'data' definition even if the optimized program is just 'data:Value'.)
 
 ### Data Definitions
 
@@ -118,7 +121,7 @@ Compiles to a 'w2:data:Value' entry in the dictionary.
 
 Macro definitions support staged metaprogramming. The program must have static stack arity. A macro call will be evaluated at compile-time, taking inputs from the data stack. This relies on partial evaluation. The top data stack result must represent a valid Glas program, which is then applied.
 
-Compiles to 'w3:macro:GlasProgram' entry in the dictionary.
+Compiles to 'w3:macro:GlasProgram' entry in the dictionary. (Does not reduce to a 'prog' definition even if the macro is equivalent to a program.)
 
 ### Procedural Definitions
 
@@ -170,12 +173,12 @@ In case of a list, only words in the list are exported. They may optionally be r
 
 Static evaluation is performed in context of macro calls, data definitions, procedural definitions, static assertions, and the export function. In all cases, static evaluation has access to compile-time effects. The basic effects:
 
-* *log:Message* - same as language modules. Message is assumed to be a record value. Compiler may implicitly add location fields.
-* *load:Ref* - same as language modules, except we support 'dict' refs in addition to 'local' and 'global' module refs.
- * *dict* - return dictionary value prior to current toplevel declaration. In context of 'open', this dictionary will exclude any words 
- * *dict:Path* - equivalent to 'load:dict' followed by 'get' with Path (a bitstring). This can access specific definitions. Theoretically simplifies dependency tracking and incremental computing.
+* *log:Message* - same as language modules. Message is assumed to be a record value. Compiler may implicitly add some metadata about location.
+* *load:Ref* - as language modules, but extended with references to the current dictionary.
+ * *dict* - return a dictionary value that includes words defined earlier in file. Excludes any words that are defined later within the file (i.e. words implicitly imported via 'open' are deleted if defined later).
+ * *dict:Path* - equivalent to 'load:dict' effect followed by 'get' on Path. This can theoretically simplify incremental computing and precise dependency tracking compared to 'load:dict'.
 
-These basic effects may be extended by the compiler function, e.g. introduce some [compiler directives](https://en.wikipedia.org/wiki/Directive_%28programming%29) to manage warnings, guide optimizations, tune static analysis, or manage compile time evaluation quotas.
+These effects may be extended by the compiler, e.g. introduce [compiler directives](https://en.wikipedia.org/wiki/Directive_%28programming%29) to manage warnings, guide optimizations, tune static analysis, or manage quotas.
 
 ## Partial Evaluation
 
@@ -195,21 +198,22 @@ If a new analysis would suddenly reject many existing programs (even for legitim
 
 *Note:* A 'future-error' should be distinguished from a 'warning' in certain contexts, such as understanding ecosystem health, or when using compiler directives to convert errors to warnings. Use of a to-be-deprecated API would similarly warrant a 'future-error' message.
 
-## Compilation Strategy
+## Compilation Strategy for Blocks
 
-After parse, the AST for g0 programs is essentially a list of `data:Value | block:AST | call:Word`, perhaps extended with location data to support debugging.
+This section describes a strategy for compiling a block of g0 code into a program value. I find it convenient to separate parser and linker passes.
 
-A first compilation pass walks left to right over the g0 AST, linking words and compiling blocks, producing a list of `data:Value | prog:Program | macro:Program`. Embedded data and calls to data words trivially evaluate to 'data'. A block compiles a g0 AST recursively (including any optimization passes), then provides the program as data. A prog call evaluates to 'prog', linking the program definition. A macro call evaluates to 'macro', linking the macro definition.
+        type AST = List of (data:Value | call:Ref | block:AST)
+        type LinkedAST = List of (data:Value | prog:Program | macro:Program | block:LinkedAST)
 
-A second compilation pass performs partial evaluation of 'prog' calls and eliminates all 'macro' calls, producing a list of `data:Value | prog:Program`. Each 'prog' is partially evaluated if there is sufficient 'data' and evaluation returns successfully without requiring any runtime effects. Each 'macro' is statically evaluated in context of available data, then the top data result is rewritten to a 'prog', which may be partially evaluated. Compilation of the g0 module fails if any macro call cannot be evaluated.
+        parse   : Text -> AST                   # parser combinators?
+        link    : Dict -> AST -> LinkedAST      # mostly dict lookups
+        compile : LinkedAST -> Program          # partial and static eval, blocks to data 
 
-After the second pass, we wrap the resulting list with 'seq' then may pass the program to a Glas program optimizer. The optimizer is free to perform ad-hoc program to program rewrites and partial evaluations, e.g. based on abstract interpretation. Ideally, the optimizer should preserve static arity via annotations in case of optimizations that affect arity, otherwise we may have inconsistent partial evaluation behavior depending on optimizer version.
+The g0 language performs linking very eagerly compared to most programming languages. A consequence is that g0 programs are non-polymorphic and rely on structure sharing at the data layer for memory performance.
 
-*Note:* A 'prog' definition always results in 'prog' header in the dictionary, even if it could be optimized to 'data'. Similarly, 'macro' is not optimized to 'prog' even if it could be. The idea here is to preserve programmer intentions.
+The compilation pass can be a simple left-to-right pass that evaluates each 'prog' call if possible (i.e. sufficient 'data' input based on arity, no runtime effects attempted) and must successfully evaluate every 'macro' call (with access to compile-time effects). Each block is compiled recursively, then compiles to 'data:Program'.
 
-## Compilation Quotas
-
-With static evaluation, we can easily have compilations take arbitrary amounts of time. To guard against infinite loops, a g0 compiler could use quotas, and support compiler directives (via compile-time effects) to tune quotas in case they are too small for a specific module. 
+The compile step may optimize the returned program. For stability of partial evaluation, if any optimization would affect arity of the program, an arity annotation should also be inserted.
 
 ## Bootstrap 
 
@@ -241,5 +245,4 @@ I've found this pattern is common in practice. It is tempting to provice a speci
 
         reject [ test code ]
 
-However, I hesitate to do so. I feel it might be a bit confusing that any effects within 'reject' will be backtracked.
-
+However, I hesitate to do so. I feel it might be a bit confusing if compiler directive effects within 'reject' are backtracked.

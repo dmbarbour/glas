@@ -1,11 +1,9 @@
 # Glas Command Line Interface
 
-The glas command line should support only a few built-in operations:
+The glas command line supports two primary operations:
 
         glas --extract ValueRef
         glas --run ValueRef -- Args
-        glas --version
-        glas --help
 
 User-defined operations are supported via lightweight syntactic sugar:
 
@@ -13,11 +11,11 @@ User-defined operations are supported via lightweight syntactic sugar:
             # implicitly rewrites to
         glas --run glas-cli-opname.main -- a b c
 
-My vision for glas systems is that most operations will be user-defined. Logic is visible and accessible via the module system. Different versions of 'glas' mostly affect performance. However, more built-ins may be introduced to support bootstrap development or system configuration.
+Most operations used in practice should be user-defined. This ensures logic is visible and accessible in the module system. New versions of the glas command line executable may improve performance or update the effects API, but should not significantly affect behavior of applications that rely on stable APIs.
 
 ## Value References
 
-The '--run' and '--extract' commands reference values in the Glas module system. 
+The '--run' and '--extract' commands are parameterized by a reference to a value in the glas module system.
 
         ValueRef = (ModuleRef)(ComponentPath)
         ModuleRef = LocalModule | GlobalModule
@@ -27,9 +25,9 @@ The '--run' and '--extract' commands reference values in the Glas module system.
         Word = WFrag('-'WFrag)*
         WFrag = [a-z][a-z0-9]*
 
-A local module is identified within the current working directory. A global module is found based on prior configuration of glas command line, such as via the GLAS_PATH environment variable. The component path allows limited dictionary access.
+A local module is found the current working directory. A global module is found based on configuration of glas command line, such as via GLAS_PATH environment variable. 
 
-Value references are limited, e.g. there is no option to index a list or use emoji in the component path. If more flexible value references are desired, use *Application Macros*.
+These references are simplistic, e.g. no support for emoji characters or indexing a list. If flexible value references are desired, write an application macro.
 
 ## Environment Variables
 
@@ -54,11 +52,11 @@ The glas command line knows how to interpret some values as runnable application
 
         glas --run ValueRef -- Args To App
 
-The application model is extensible: interpretation is based on value header such as 'prog' or 'macro' (see below). For performance, the glas command line may implicitly compile and cache application behavior, but that won't be directly exposed to the user. Args following '--' are passed to the application.
+The application model is extensible: interpretation is based on value header such as 'prog', 'proc', or 'macro' (see below). For performance, the glas command line may implicitly compile and cache application behavior, but that won't be directly exposed to the user. Args following '--' are passed to the application.
 
-### Process
+### Basic Applications
 
-A basic application process uses the 'prog' header, and is represented by a glas program.
+A basic application process uses the 'prog' header.
 
         prog:(do:Program, ...) 
 
@@ -66,9 +64,17 @@ This program represents an application process as a transactional step function.
 
         type Step = init:Params | step:State -> [Effects] (halt:Result | step:State) | Fail
 
-In context of the console application, this process starts with `init:["List", "Of", "Args"]` and finishes with `halt:ExitCode`. The ExitCode should be a short bitstring representing a 32-bit integer. Between init and halt, the process may commit any number of intermediate steps, forwarding the State value.
+In context of the console application, this process starts with `init:["List", "Of", "Args"]` and finishes with `halt:ExitCode`. The ExitCode should be a short bitstring representing a 32-bit integer. Between init and halt, the process may commit any number of intermediate steps, forwarding the State value. 
 
-### Macros
+### Scalable Applications
+
+For robust concurrency and incremental computing, favor the 'proc' header.
+
+        proc:(do:Process, Annotations)
+
+Design of 'proc' is ongoing within the [glas applications](GlasApps.md) document. The core idea is to expose and manage control flow and communication to support robust optimizations. Every proc is equivalent to a 'prog' app step function, so use of 'proc' should primarily impact performance and scalability.
+
+### Application Macros
 
 Application macros are distinguished by the 'macro' header.
 
@@ -78,19 +84,9 @@ To simplify caching, arguments are implicitly staged via '--':
 
         glas --run MacroRef -- Static Args -- Dynamic Args
 
-The program must be 1--1 arity and will receive `["Static", "Args"]` on the data stack. The returned value must represent an application, which then is run receiving `["Dynamic", "Args"]`. Returning another application macro is permitted.
+The macro program must be 1--1 arity and here would receive `["Static", "Args"]` on the data stack. The returned value must represent an application, which then is run receiving `["Dynamic", "Args"]`. The '--' separator may be omitted if it would be the last argument.
 
-The macro program has access to the same effects API as language modules, i.e. 'log' and 'load'. Application macros can usefully be viewed as user-defined language extensions for glas command line arguments. The expectation is that they'll usually be combined with user-defined operations.
-
-### Process Networks
-
-Process networks use the 'proc' header.
-
-        proc:(do:Process, Annotations)
-
-The process network also represents a transactional step function (it could be compiled into one) but in a manner that makes sequences, concurrency, partitioning, incremental computing, communication, etc. much more obvious to an optimizer. The glas command line can take advantage of this to improve performance.
-
-Design of process networks is ongoing, within the [glas applications](GlasApps.md) document.
+The macro program has access to the same effects API as language modules, i.e. 'log' and 'load'. Application macros are essentially user-defined languages for the command line interface, and combine nicely with the syntactic sugar for user-defined operations. 
 
 ## Extended Effects API
 

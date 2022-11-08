@@ -106,47 +106,6 @@ module Value =
                 let e = a :> System.Collections.Generic.IEnumerable<'T>
                 e.GetEnumerator() :> System.Collections.IEnumerator
 
-    // Values encoded similarly to Glas Object. 
-    //
-    // Features:
-    // - Finger-tree rope structure.
-    // - Compact, embedded binary data.
-    // - Non-allocating short bitstrings.
-    //
-    // Elided Glas Object Features:
-    // - External references
-    // - Accessor nodes (useless without external refs)
-    // - Annotations
-    //
-    // Known Weaknesses:
-    // - O(N) check for 'bitstring' type.
-    // - Representing invalid data is possible (via Take or Concat)
-    // - list-like ropes terminating in non-Leaf is not supported
-    //
-    // 0..63 Stem bits are encoded into a uint64, with lowest '1' bit
-    // indicating length, e.g. `abc10...0` encodes 3 bits, msb first.
-    //
-    // This design is intended to reduce allocation for variants,
-    // radix trees, symbols, and numbers.
-    type Term =
-        // basic tree structure.
-        | Leaf
-        | Stem64 of uint64 * Term       // extended with 64 stem bits (msb to lsb)
-        | Branch of Value * Value
-        // optimized lists 
-        | Array of ImmArray<Value>      // optimized list of values (non-empty)
-        | Binary of ImmArray<uint8>     // optimized list of bytes (non-empty)
-        | Concat of Term * Term         // logical concatenation of list values.
-        | Take of uint64 * Term         // non-zero list take (caches concat size)
-        // CURRENTLY ELIDING:
-        //
-        //  External Refs
-        //  Accessor Nodes (follow path, list drop)
-        //  Annotations
-        // 
-    and [<Struct>] Value = { Stem: uint64; Term : Term } // partial stem
-
-
     module StemBits =
         // support for encoding compact bitstrings into stem nodes
         //
@@ -169,6 +128,12 @@ module Value =
         let inline tail64 bits = (bits <<< 1) ||| lobit
         let inline isEmpty bits = (bits = empty)
         let inline isFull bits = lsb bits
+        let inline consByte (n : uint8) (bits) = 
+            assert(0UL = (bits &&& 0xFFUL))
+            ((uint64 n) <<< 56) ||| (bits >>> 8)
+        let inline ofByte (b : uint8) = 
+            consByte b hibit
+
 
         // true if exactly len bits.
         let inline match_len len bits =
@@ -204,6 +169,178 @@ module Value =
 
         let rec eraseOnesPrefix bits =
             if msb bits then eraseOnesPrefix (tail bits) else bits
+
+
+    // Values encoded similarly to Glas Object. 
+    //
+    // Features:
+    // - Finger-tree rope structure.
+    // - Compact, embedded binary data.
+    // - Non-allocating short bitstrings.
+    //
+    // Elided Glas Object Features:
+    // - External references
+    // - Accessor nodes (useless without external refs)
+    // - Annotations
+    //
+    // Known Weaknesses:
+    // - O(N) check for 'bitstring' type.
+    // - Representing invalid data is possible (via Take or Concat)
+    // - list-like ropes terminating in non-Leaf is not supported
+    //
+    // 0..63 Stem bits are encoded into a uint64, with lowest '1' bit
+    // indicating length, e.g. `abc10...0` encodes 3 bits, msb first.
+    //
+    // This design is intended to reduce allocation for variants,
+    // radix trees, symbols, and numbers.
+    [<CustomEquality; NoComparison>]
+    type Term =
+        // basic tree structure.
+        | Leaf
+        | Stem64 of uint64 * Term       // extended with 64 stem bits (msb to lsb)
+        | Branch of Value * Value
+        // optimized lists 
+        | Array of ImmArray<Value>      // optimized list of values (non-empty)
+        | Binary of ImmArray<uint8>     // optimized list of bytes (non-empty)
+        | Concat of Term * Term         // concatenation of list values (non-empty)
+        | Take of uint64 * Term         // non-zero list take (caches concat size)
+
+        // some utility functions to support custom equality attribute
+        // (I really hate that we cannot use normal functions in this)
+        member t.ListLen() =
+            t.ListLenAcc(0UL)
+
+        member private t.ListLenAcc(acc) =
+            match t with
+            | Array(a) -> acc + uint64 a.Length
+            | Binary(b) -> acc + uint64 b.Length
+            | Concat(l,r) -> r.ListLenAcc(l.ListLenAcc(acc))
+            | Take(sz,_) -> acc + sz
+            | Leaf -> acc
+            | Branch(l,r) when StemBits.isEmpty r.Stem -> 
+                r.Term.ListLenAcc(1UL + acc)
+            | _ -> failwith "not a list"
+
+        member t.ApplyTake(sz) =
+            if(0UL = sz) then Leaf else
+            match t with
+            | Array a when ((uint64 a.Length) >= sz) ->
+                Array(a.Take(int sz))
+            | Binary b when ((uint64 b.Length) >= sz) ->
+                Binary(b.Take(int sz))
+            | Concat(l,r) ->
+                let szL = l.ListLen()
+                if (sz < szL) then l.ApplyTake(sz) else
+                if (sz = szL) then l else
+                Concat(l, r.ApplyTake(sz - szL))
+            | Take(n, t') when (n >= sz) ->
+                Take(sz, t')
+            | Branch(l, _) when (1UL = sz) ->
+                Branch(l, Value.Unit)
+            | Branch(l, r) when (StemBits.isEmpty r.Stem) ->
+                let r' = Value.OfTerm (Take((sz - 1UL), r.Term))
+                Branch(l, r')
+            | _ -> 
+                failwith "invalid list take"
+
+        member t.AsPair() =
+            match t with
+            | Branch(l, r) -> 
+                struct(l, r)
+            | Array(a) ->
+                let l = a[0]
+                let r = if (1 = a.Length) then Value.Unit else Value.OfTerm (Array(a.Drop(1)))
+                struct(l, r)
+            | Binary(b) ->
+                let l = Value.OfByte b[0]
+                let r = if (1 = b.Length) then Value.Unit else Value.OfTerm (Binary(b.Drop(1)))
+                struct(l, r)
+            | Concat(lt, rt) ->
+                match lt with
+                | Leaf -> 
+                    rt.AsPair()
+                | Concat(llt, lrt) -> 
+                    let t' = Concat(llt, Concat(lrt, rt))
+                    t'.AsPair()
+                | _ ->
+                    let struct(lv0,lvRem) = lt.AsPair()
+                    assert(StemBits.isEmpty lvRem.Stem)
+                    let r = Value.OfTerm (Concat(lvRem.Term, rt))
+                    struct(lv0,r)
+            | Take(sz, t') -> 
+                t'.ApplyTake(sz).AsPair()
+            | _ -> failwith "not a pair"
+
+        static member Eq(a,b) = Term.Eq1([],a,b)
+        static member private Eq1(cc,a,b) =
+            match a with
+            | Leaf -> 
+                match b with
+                | Leaf -> 
+                    match cc with
+                    | struct(a,b)::cc' -> Term.Eq1(cc',a,b)
+                    | [] -> true
+                | _ -> false
+            | Stem64(aBits, a') ->
+                match b with
+                | Stem64(bBits, b') when (aBits = bBits) ->
+                    Term.Eq1(cc, a', b')
+                | _ -> false
+            | Concat(Leaf, a') | Concat(a', Leaf) -> 
+                Term.Eq1(cc, a', b)
+            | _ ->
+                match b with
+                | Leaf | Stem64 _ -> false
+                | Concat(Leaf, b') | Concat(Leaf, b') -> 
+                    Term.Eq1(cc, a, b')
+                | _ ->
+                    let struct(al,ar) = a.AsPair()
+                    let struct(bl,br) = b.AsPair()
+                    let eqStems = (al.Stem = bl.Stem) && (ar.Stem = br.Stem)
+                    if not eqStems then false else
+                    let cc' = struct(ar.Term,br.Term)::cc
+                    Term.Eq1(cc', al.Term, bl.Term)
+
+        override t.GetHashCode() =
+            Term.Hash(0,[],t)
+
+        static member private Hash(acc,cc,t) =
+            match t with
+            | Leaf ->
+                let acc' = hash(struct(acc, 0x1eaf))
+                match cc with
+                | (t'::cc') -> Term.Hash(acc',cc',t')
+                | [] -> acc'
+            | Stem64(bits,t') -> 
+                let acc' = hash(struct(acc, bits))
+                Term.Hash(acc', cc, t')
+            | _ ->
+                let struct(tl, tr) = t.AsPair()
+                let acc' = hash(struct(acc, tl.Stem, tr.Stem))
+                let cc' = (tr.Term)::cc
+                Term.Hash(acc', cc', tl.Term)
+
+        interface System.IEquatable<Term> with
+            member a.Equals(b) =
+                Term.Eq(a,b)
+
+        override a.Equals(b) =
+            match b with
+            | :? Term as tb -> (a :> System.IEquatable<_>).Equals(tb)
+            | _ -> false
+
+        // CURRENTLY ELIDING:
+        //
+        //  External Refs
+        //  Accessor Nodes (follow path, list drop)
+        //  Annotations
+        // 
+    and [<Struct>] Value = 
+        { Stem: uint64; Term : Term } // partial stem
+        static member OfStem(s) = { Stem = s; Term = Leaf }
+        static member OfTerm(t) = { Stem = StemBits.empty; Term = t }
+        static member Unit = Value.OfStem (StemBits.empty)
+        static member OfByte(n) = Value.OfStem (StemBits.ofByte n)
 
     module VTerm =
         let inline isLeaf t =
@@ -309,8 +446,7 @@ module Value =
     let inline ofByte (n:uint8) : Value = 
         // consStemByte b unit
         //   optimized impl
-        let bits = ((uint64 n) <<< 56) ||| (1UL <<< 55)
-        ofStem bits
+        ofStem (StemBits.ofByte n)
 
     let inline isByte (v:Value) : bool =
         (StemBits.match_len 8 v.Stem) && (VTerm.isLeaf v.Term)
@@ -453,21 +589,9 @@ module Value =
 
         let empty = Leaf
 
-        let rec _len acc t =
-            match t with 
-            | Concat(l,r) -> // assume balanced rope structure
-                _len (_len acc l) r
-            | Take(n,_) -> acc + n // cached length
-            | Array(a) -> acc + uint64 a.Length
-            | Binary(b) -> acc + uint64 b.Length
-            | Leaf -> acc
-            | Branch(_,r) when (StemBits.isEmpty r.Stem) -> 
-                // this is why we have an accumulator
-                _len (1UL + acc) (r.Term)
-            | _ -> failwith "invalid list"
-
         // length computation (non-allocating; O(1) within ropes)
-        let len t = _len 0UL t
+        let inline len (t : Term) = 
+            t.ListLen() 
 
         let inline wrapSize t = 
             Take((len t), t)
@@ -507,39 +631,20 @@ module Value =
 
         // invariant: 0 < sz < len t
         // preserves rope digits structure
-        let rec digitsTake sz t = 
-            match t with
-            | Array(a) -> 
-                assert((uint64 a.Length) > sz)
-                Array(a.Take(int sz))
-            | Binary(b) -> 
-                assert((uint64 b.Length) > sz)
-                Binary(b.Take(int sz))
-            | Concat(l,r) ->
-                let szL = len l
-                if sz < szL then digitsTake sz l else
-                if sz = szL then l else
-                Concat(l, (digitsTake (sz - szL) r))
-            | Take(n, t') -> 
-                assert (n > sz)
-                Take(sz, t') // lazy take
-            | Branch(l, _) when (sz = 1UL) ->
-                Branch(l, unit)
-            | Branch(l, r) when (StemBits.isEmpty r.Stem) && (sz > 1UL) ->
-                // shouldn't appear in practice; lazy take
-                let r' = ofTerm (Take((sz - 1UL), r.Term))
-                Branch(l, r')
-            | _ -> failwith "invalid digits take"
+        let digitsTake sz (t:Term) =
+            assert(0UL < sz)
+            t.ApplyTake(sz)
 
         // invariant: 0 < sz < len t
         // preserves rope digits structure
         let rec digitsDrop sz t =
+            assert(0UL < sz)
             match t with
             | Array(a) -> 
-                assert((uint64 a.Length) > sz)
+                assert(sz < (uint64 a.Length))
                 Array(a.Drop(int sz))
             | Binary(b) -> 
-                assert((uint64 b.Length) > sz)
+                assert(sz < (uint64 b.Length))
                 Binary(b.Drop(int sz))
             | Concat(l,r) ->
                 let szL = len l
@@ -547,12 +652,12 @@ module Value =
                 if sz = szL then r else
                 digitsDrop (sz - szL) r
             | Take(n, t') -> 
-                assert (n > sz)
-                Take((n - sz), (digitsDrop sz t'))
+                assert (sz < n)
+                Take((n - sz), (digitsDrop sz t')) // eager drop
             | Branch(l, r) when (StemBits.isEmpty r.Stem) ->
                 // shouldn't appear in practice
                 if (1UL = sz) then (r.Term) else
-                digitsDrop (sz - 1UL) (r.Term)
+                digitsDrop (sz - 1UL) (r.Term) // eager drop (tail recursive)
             | _ -> failwith "invalid digits drop"
             
         // unwrapSize and applySize are optimized assuming most nodes
@@ -1401,7 +1506,6 @@ module Value =
     /// render as symbols by accident.
     let prettyPrint (v:Value) : string =
         v |> _ppV false |> String.concat "" 
-
 
 
 type Value = Value.Value

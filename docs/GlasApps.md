@@ -6,7 +6,7 @@ A basic glas application, in context of [Glas CLI](GlasCLI.md), is represented b
 
 A step that returns successfully is committed. A failed step is aborted then retried, implicitly waiting for changes to external conditions. The first step receives 'init' and the final step returns 'halt'. Intermediate steps receive and return 'step'. This is an example of a *transaction machine* - modeling an application as a repeating transaction. 
 
-Transaction machines are conceptually simple yet offer a robust foundation for reactivity, concurrency, and process control. However, these benefits rely on optimizations that are difficult to implement for a basic step function. To solve this, I develop a process network model within this document.
+Transaction machines are conceptually simple yet offer a robust foundation for reactivity, concurrency, and process control. However, these benefits rely on optimizations that are difficult to robustly implement on step functions. To resolve this, I develop the 'proc' program model.
 
 ## Transaction Machines
 
@@ -54,33 +54,21 @@ Transaction machines don't solve live coding, but they do lower a few barriers. 
 
 Remaining challenges include stabilizing application state across minor changes, versioning major changes, provenance tracking across compilation stages, rendering live data nearby the relevant code.
 
-## Process Networks
+## Procedures and Processes
 
-In context of application processes, the process network aims to simplify static optimizations related to incremental computing, concurrency, distribution, and transaction fusion. It is always possible to compile a process network to a single process that has the same formal behavior, but it would be more difficult to optimize. 
+The 'proc' program model described here supports robust transaction machine optimizations and improves system stability in context of live coding or overlay extensions. A primary design constraint is that it must be possible to compile a proc to an equivalent step function (modulo performance and scalability).
 
+* **proc:(do:Process, ... Annotations)** - All fields other than 'do' are annotations. If 'do' is omitted, defaults to a nop. Also used as a common variant header for processes.
 
-In context of application processes, the process network aims to simplify static optimizations related to incremental computing, concurrency, distribution, and transaction fusion. Additionally, there are design goals for stability and incremental deployment in context of live coding, and to simplify live extensions, system overlays, administration, and debugging.
+* *sequence* - similar to a prog sequence, except every step requires a unique identifier to stabilize behavior in context of inserting/deleting instructions for live coding.
+* *forking* - must be explicit, at least a couple forms - labeled, dynamic fork on list/set
+* *effects* - likely need to distinguish effects by effect on stability 
+* *effects handlers* - likely useful to distinguish read-only effects, shared-state effects, thread-local (forkable) state effects, write-only effects (e.g. build a set of values for future step).
+* *conditional* - need at least a couple forms, one is more of a stable conditional behavior and the other computes the condition as a normal sequence of steps.
+* *loop* - similar to sequence, but conditionally or forever repeats a transactional step.
+* *partitioning* - want ability to robustly control communications between component processes, in some way that makes automatic distribution viable.
+* *communication* - might specially handle static channels/wiring between component processes, and shared state of any form.
 
-To support these features, the process network has its own variation on transactional sequences and loops, with explicitly labeled locations and steps. Effects require a lot of attention - e.g. effects handlers might also be distinguished as stateless, shared-state, and forkable, and individual effects are typefully distinguished based on how they impact stability for incremental computing. Forks are also much more explicit, labeled and partitioned into logical 'spaces' that may restrict some forms of communication or may align with abstract physical locations.
-
-The lowest level 'steps' may include application processes (i.e. the 'prog' header) but may also include specialized operations (communication effects, data transformers, etc.).
-
-
-In context of application processes, the process network aims to simplify static optimizations related to incremental computing, concurrency, distribution, and transaction fusion. Additionally, there are design goals for stability and incremental deployment in context of live coding, and to simplify live extensions, system overlays, administration, and debugging.
-
-To support these features, the process network has its own variation on transactional sequences and loops, with explicitly labeled locations and steps. Effects require a lot of attention - e.g. effects handlers might also be distinguished as stateless, shared-state, and forkable, and individual effects are typefully distinguished based on how they impact stability for incremental computing. Forks are also much more explicit, labeled and partitioned into logical 'spaces' that may restrict some forms of communication or may align with abstract physical locations.
-
-The lowest level 'steps' may include application processes (i.e. the 'prog' header) but may also include specialized operations (communication effects, data transformers, etc.).
-
-
-
-## Procedural Programming on Transaction Machines
-
-In context of a transaction machine, a procedure will evaluated over multiple process steps.
-
-For example, with sequential composition the halt:Result of one process becomes init:Param to the next. If the first step yields before completion, the composite process must add information to the 'step:State' to remember that it's the first step that yielded. This effectively records the program counter within State. We can similarly define conditionals and loops in terms of composing processes.
-
-A blocking call at the procedure layer becomes a process that sends a message, yields, then awaits a response at the start of the next transaction.
 
 ## Robust References
 
