@@ -108,7 +108,7 @@ module Zero =
             b |> cb 0 |> cb 1 |> cb 2 |> cb 3
 
         let parseHex : P<Value> =
-            pstring "0x" >>. many1Satisfy isHex .>> wsep |>> fun s -> 
+            pstring "0x" >>. manySatisfy isHex .>> wsep |>> fun s -> 
                 let fn cp acc = consNbl (hexN cp) acc
                 let arr = System.Text.Encoding.ASCII.GetBytes(s)
                 Array.foldBack fn arr Value.unit

@@ -11,7 +11,7 @@
     <Compile Include="TestRope.fs" />
     <Compile Include="TestVal.fs" />
     <Compile Include="TestProgVal.fs" />
-    <!-- <Compile Include="TestGlasZero.fs" /> -->
+    <Compile Include="TestGlasZero.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
 

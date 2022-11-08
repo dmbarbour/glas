@@ -1,8 +1,12 @@
 module Glas.TestGlasZero
     open Expecto
     open FParsec
+    open RandVal
+    open Value
     open Glas.Zero
     open Glas.Effects
+
+    let ofBitList l = List.foldBack consStemBit l unit
 
     let doParse p s =
         match run (p .>> eof) s with
@@ -20,11 +24,11 @@ module Glas.TestGlasZero
 
     let rec _toBits acc bitct n =
         if (bitct < 1) then acc else
-        let acc' = Bits.cons (0UL <> (n &&& 1UL)) acc
+        let acc' = consStemBit (0UL <> (n &&& 1UL)) acc
         _toBits acc' (bitct - 1) (n >>> 1)
 
     let toB bitct n =
-        _toBits (Bits.empty) bitct n
+        _toBits (unit) bitct n
 
 
     let inline impAs w a = struct(w,a)
@@ -62,7 +66,7 @@ module Glas.TestGlasZero
             testCase "bitstring data" <| fun () ->
                 let zpd = Parser.parseBitString
                 let pd s = doParse zpd s
-                assert(toB 6 23UL = Bits.ofList [false; true; false; true; true; true])
+                assert(toB 6 23UL = ofBitList [false; true; false; true; true; true])
 
                 Expect.equal (toB 6 23UL) (pd "0b010111") "equal bit strings"
                 Expect.equal (toB 1 1UL) (pd "0b1") "minimal bit string 1"
@@ -70,14 +74,14 @@ module Glas.TestGlasZero
                 Expect.equal (toB 8 23UL) (pd "0x17") "equal hex strings"
                 Expect.equal (toB 5 23UL) (pd "23 # comment\n") "equal min-width numbers"
                 Expect.equal (Value.label "seq") (pd "'seq  ") "equal symbols"
-                Expect.equal (Bits.empty) (pd "0") "zero is unit"
-                Expect.equal (Bits.ofByte 0xABuy) (pd "0xaB") "hex cases"
+                Expect.equal (unit) (pd "0") "zero is unit"
+                Expect.equal (Value.ofByte 0xABuy) (pd "0xaB") "hex cases"
                 Expect.equal (toB 12 0xabcUL) (pd "0xAbC") "hex nibble alignment"
+                Expect.equal (unit) (pd "0b") "0b is now accepted."
+                Expect.equal (unit) (pd "0x") "0x is now accepted."
 
                 failParse zpd ""
                 failParse zpd "'"
-                failParse zpd "0b"
-                failParse zpd "0x"
                 failParse zpd "0332"
                 failParse zpd "0xH"
                 failParse zpd "'3foo"
