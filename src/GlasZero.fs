@@ -432,9 +432,9 @@ module Zero =
                 let revOps' = p :: (addDataOpsRev revOps ds)
                 _compileBlock cte revOps' [] b
         and private _compileBadCall cte revOps ds b =
-            // replace failed operation with 'tbd'
-            let tbdOp = TBD (Value.symbol "undefined")
-            let revOps' = tbdOp :: addDataOpsRev revOps ds
+            // replace failed operation with 'halt'
+            let haltOp = Halt (Value.symbol "undefined")
+            let revOps' = haltOp :: addDataOpsRev revOps ds
             _compileBlock cte revOps' [] b
         and private _compileBlock (cte0:CTE) (revOps:Program list) (ds:Value list) (b:Block) =
             match b with

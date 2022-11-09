@@ -127,8 +127,8 @@ module ProgEval =
         let eff cte cc = // rte implicit
             (cte.EH) cte cc
 
-        let tbd msg cte cc rte =
-            raise <| RTError(rte, ProgVal.TBD msg)
+        let halt msg cte cc rte =
+            raise <| RTError(rte, ProgVal.Halt msg)
 
         // We can logically flatten 'dip:P' into the sequence:
         //   dipBegin P dipEnd
@@ -269,7 +269,7 @@ module ProgEval =
                 // memoization, stowage, or acceleration could be annotated here.
                 // TODO: acceleration of several useful functions!
                 compile p' 
-            | Stem lTBD msg -> tbd msg
+            | Stem lHalt msg -> halt msg
             | _ -> 
                 // not a valid program. This could be detected by analysis. But
                 // if we skip analysis, it will be reported at runtime.

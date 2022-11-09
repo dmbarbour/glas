@@ -222,13 +222,13 @@ module LoadModule =
     /// module for the loader.
     let tryBootStrapLoader (nle : IEffHandler) : Loader voption = 
         let ll0 = nonBootStrapLoader nle
-        let src0 = "language-g0 via built-in g0"
+        let src0 = "(as compiled by built-in g0) language-g0"
         match _expectCompiler ll0 src0 (ll0.LoadGlobalModule "language-g0") with
         | ValueNone -> ValueNone
         | ValueSome p0 ->
             // logInfo nle "bootstrap: language-g0 compiled using built-in g0"
             let ll1 = Loader(_compilerFn p0, nle)
-            let src1 = "language-g0 via language-g0"
+            let src1 = "(as compiled by language-g0) language-g0"
             match _expectCompiler ll1 src1 (ll1.LoadGlobalModule "language-g0") with
             | ValueNone -> ValueNone 
             | ValueSome p1 -> 
@@ -239,5 +239,5 @@ module LoadModule =
                     // logInfo nle "language-g0 bootstrap successful!"
                     ValueSome ll2 
                 | _ -> 
-                    logError nle "language-g0 compile fails to exactly rebuild itself"
+                    logError nle "language-g0.compile fails to exactly rebuild itself"
                     ValueNone

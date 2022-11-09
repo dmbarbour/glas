@@ -54,7 +54,7 @@ module ProgVal =
     let lEnv = label "env"
     let lWith = label "with"
     let lProg = label "prog"
-    let lTBD = label "tbd"
+    let lHalt = label "halt"
 
     let lv l v = withLabel l v
 
@@ -161,12 +161,12 @@ module ProgVal =
             ValueSome (vAnno, pDo)
         | _ -> ValueNone
 
-    let TBD vMsg = lv lTBD vMsg
+    let Halt vMsg = lv lHalt vMsg
 
     [<return: Struct>]
-    let (|TBD|_|) v =
+    let (|Halt|_|) v =
         match v with
-        | Stem lTBD vMsg -> ValueSome vMsg
+        | Stem lHalt vMsg -> ValueSome vMsg
         | _ -> ValueNone
 
     /// Utility function. Add annotations to a program.
@@ -187,7 +187,7 @@ module ProgVal =
     let rec invalidProgramComponents v =
         seq {
             match v with
-            | Op _ | Data _ | TBD _ -> 
+            | Op _ | Data _ | Halt _ -> 
                 ()
             | Dip p -> 
                 yield! invalidProgramComponents p
@@ -299,7 +299,7 @@ module ProgVal =
         | Stem lPut U -> Arity (3,1)
         | Stem lDel U -> Arity (2,1)
         | Stem lEff U -> Arity (1,1)
-        | Stem lFail U | Stem lTBD _ -> ArityFail 0
+        | Stem lFail U | Stem lHalt _ -> ArityFail 0
         | Dip p ->
             match stackArity p with
             | Arity (a,b) -> Arity (a+1, b+1)
