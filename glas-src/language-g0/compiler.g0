@@ -1,5 +1,4 @@
-from prims import fail
-
+open prims
 
 # Binary -- WordFragment Binary | FAILURE
 prog parse-word-fragment [
@@ -11,4 +10,4 @@ prog parse-word [
 
 ]
 
-prog compile [  fail ]
+prog compile [ fail ]

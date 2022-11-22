@@ -10,23 +10,15 @@ The glas system starts with a command line tool 'glas'. This tool knows how to c
 
 ## Modules and Syntax
 
-Modules are global or local, and are represented by files and folders. Every module either compiles to a glas value, or fails to compile. In addition to producing a compiled value, the compiler may generate a sequence of log messages to support development.
+Modules are global or local. Global modules are represented by folders, and are found based on configuration of the glas command line. Local modules are represented by files or subfolders in the same folder as a file currently being compiled or (if no such file) the current directory. Every valid module compiles to an arbitrary glas value.
 
-### Compiling Files
+A folder compiles the contained 'public' file. This file may have any extension, such as "public.g0" or "public.json". Glas does not provide any mechanism to reference specific files across folder boundaries, thus the compiled value of a folder depends only on its content and global modules rather than its context.
 
-A file is compiled based on its file extensions. For example, to process the file "foo.ext", the glas command line will first load a global module named language-ext, then extract a value representing a compiler function. This function receives the file binary and outputs the compiled value for the module (or fails), and has access to limited effects such as loading other modules and logging warnings for the programmer (see *Language Modules* later).
+A file is compiled based on its file extensions. For example, to process a file named "foo.ext", the glas command line will load a global module named language-ext then extract a value representing a compiler function. This function is interpreted, receiving the file binary as input and producing the compiled value as output. 
 
-File extensions may compose, e.g. "foo.json.m4" could be expanded by language-m4 that implements a macro preprocessor, then parsed into structured data by language-json. In the general case, a compiler might further process structured data. Conversely, a file with no extensions compiles to its raw binary.
+File extensions may compose, e.g. "foo.x.y" would imply a two-pass compile, first by language-y then by language-x. The value passed to language-x may be structured data. Use cases for composition include text preprocessors and building higher level compilers based on structured data.
 
-### Compiling Folders
-
-A folder compiles based on the contained 'public' file, which may have any file extension. Glas does not allow referencing across folder boundaries. This greatly simplifies local reasoning and refactoring. Global modules are always represented by folders, in part to provide a convenient space for README and LICENSE files.
-
-### Module Search
-
-When loading a module, whether it is 'global' or 'local' is explicit, essentially forming two distinct namespaces with no implicit fallback. File extensions are not included in the module name. Global modules are found based on configuration of the command line. By default, this involves sequentially searching GLAS_PATH (a list of folders) for a subfolder with a matching name. Local modules are files or subfolders found in the same folder as the current file, or within the current directory if no file is being compiled.  
-
-Dependencies between modules must be acyclic, forming a directed acyclic graph. Cyclic dependencies will be detected and reported as an error.
+The compiler function has a very limited effects API. Other than producing a value, it may load other modules and log some messages, e.g. describing warnings or errors to support debugging. The constraint on effects ensures a deterministic and cacheable outcome. Dependencies between modules must form a directed acyclic graph, otherwise the glas system will report dependency cycles as errors.
 
 ## Values
 
@@ -96,7 +88,7 @@ The stack in glas is really an intermediate data plumbing model. User syntax cou
 Glas programs must have static stack arity, i.e. the 'try-then' arity must match the 'else' arity, or a loop 'while-then' must have the same input and output arity. This is designed to be easy to verify.
 
 * **seq:\[List, Of, Operators\]** - sequential composition of operators. 
- * *nop* - do nothing, identity function - can be represented explicitly by empty seq.  
+ * *nop* - identity function, can be represented by empty seq (or by 'prog')  
 * **cond:(try:P, then:Q, else:R)** - run P; if P does not fail, run Q; if P fails, undo P then run R. Variants:
  * 'then' and 'else' clauses are optional, default to nop.
 * **loop:(while:P, do:Q)** - run P. If successful, run Q then repeat loop. Otherwise, exit loop. Variants:
@@ -104,7 +96,7 @@ Glas programs must have static stack arity, i.e. the 'try-then' arity must match
  * 'do' field is optional, defaults to nop.
 * **eq** - Remove two items from data stack. If identical, continue, otherwise fail.
 * **fail** - always fail, allows backtracking
-* **tbd:Message** - logically diverges (like infinite loop), no backtracking. Message is for humans. 
+* **halt:Message** - logically diverges, like an infinite loop. Message should indicate cause: undefined behavior, type-error, todo, etc.. 
 
         seq:[]              ∀S . S → S
         seq:(Op :: Ops)     (as SEQ)
@@ -130,7 +122,9 @@ Glas programs must have static stack arity, i.e. the 'try-then' arity must match
             LOOP-UNTIL ⊲ S → S'
         eq : ∀S,A,B . ((S * A) * B) → S | FAIL
         fail : ∀S . S → FAIL
-        tbd:_ : ∀S,S' . S → S'
+        halt:_ : ∀S,S' . S → S'
+
+In context of transaction machines, 'halt' will effectively abort the entire transaction.
 
 User syntax can extend the effective set of control operators, e.g. compiling a mutually recursive function group into a central loop. Glas does not provide an 'eval' operator, but an 'eval' function may potentially be accelerated.
 
@@ -180,11 +174,9 @@ The glas command line knows how to run applications with access to filesystem an
 
         type Step = init:Params | step:State -> [Effects] (halt:Result | step:State) | Fail
 
-To support robust optimizations, some applications will be represented as process networks. These are described more thoroughly within the [glas applications](GlasApps.md) document.
+This application model has many nice properties related to live coding, extenbsibility, debuggability, reactivity, concurrency, distribution, and orthogonal persistence. It is an excellent fit for my vision of glas systems. However, achieving these benefits requires optimizations that are difficult to guarantee for a step function. To mitigate this, the glas command line will also support a program model specialized for applications.
 
-This application model has many nice properties related to live coding, extenbsibility, debuggability, reactivity, concurrency, distribution, and orthogonal persistence. It is an excellent fit for my vision of glas systems.
-
-Alternatively, we can use glas as a build system then extract an executable binary. Bootstrap of the glas command line executable is supported this way.
+Alternatively, we can extract an executable binary from the glas module system. This would use glas modules as a build system.
 
 ## Language Modules
 
@@ -193,8 +185,8 @@ Language modules are global modules with a simple naming convention: `language-x
 The compiler program must be a glas program with 1--1 arity. Program input is usually a file binary (modulo multiple file extensions). Output must be the compiled module value, or failure if the input cannot be compiled. Compile-time effects are extremely limited to simplify reasoning about caching, sharing, and reproducibility:
 
 * **load:ModuleRef** - Response is compiled value for the indicated module. The request may fail, e.g. if the module cannot be found or compiled, with cause implicitly logged. Currently propose a few forms of ModuleRef: 
- * *global:String* - search for global module with matching name, usually via GLAS_PATH.
- * *local:String* - search files and subfolders local to file currently being compiled.
+ * *global:String* - search for global module based on configuration of CLI
+ * *local:String* - search for module in same folder as file being compiled
 * **log:Message** - Message should be a record, e.g. `(text:"Uh oh, you messed up!", lv:warn)`, so that it can be flexibly extended with metadata. Response is unit. Behavior depends on development environment, e.g. might print the message to stderr with color based on level.
 
 *Note:* The glas command line will have a built-in implementation of the ".g0" compiler. This is be used to bootstrap [language-g0](../glas-src/language-g0/README.md) module, if possible. If bootstrap fails, the command line will log a warning but continue with the built-in.
@@ -209,7 +201,7 @@ A test might be represented as a 0--0 arity program that is pass/fail. In additi
 
 ## Type Checking
 
-Glas systems will at least check for stack arity ahead of time. A more precise static type analysis is optional, but can be supported via annotations. Memoization is required to mitigate rework. In some cases, types might be checked at runtime, as we do with label inputs to get/put/del - in that case, `tbd:type-error` is an effective way to handle a runtime type error. 
+Glas systems will at least check for stack arity ahead of time. A more precise static type analysis is optional, but can be supported via annotations. Memoization is required to mitigate rework. In some cases, types might be checked at runtime, as we do with label inputs to get/put/del - in that case, `halt:type-error` is an effective way to handle a runtime type error. 
 
 ## Performance
 
@@ -239,19 +231,15 @@ A list of dependencies (lookup keys) will also be uploaded such that the CDN can
 
 Acceleration is an optimization pattern. The idea to annotate specific subprograms for accelerated evaluation, then a compiler or interpreter should recognize the annotation then silently substitute a specialized implementation. Accelerated functions are often coupled with specialized data representations. For example, a glas runtime may represent lists using finger trees.
 
-Essentially, accelerators extend performance primitives without affecting formal semantics. However, performance is an important part of correctness for many programs. To stabilize performance, a compiler must accelerate only where explicitly annotated, and must report where requested acceleration cannot be achieved.
+Acceleration of virtual machines is especially fruitful. For example, if we accelerate a simulation of a processor that is specialized for bit-banging operations, we could extend glas systems to support domains that rely heavily on bit-banging, such as compression and cryptography, instead of accelerating individual algorithms. For highly parallel computations, we might accelerate evaluation of a process network.
 
-The cost of acceleration is implementation complexity and risk to correctness, security, and portability. The complexity tradeoff is most worthy where acceleration enables use of glas in new domains. Further, risk is mitigated by the reference implementation, which can be leveraged to support automatic testing. 
+Essentially, accelerators extend performance primitives without affecting formal semantics. Explicit annotations help to stabilize performance, e.g. allowing a compiler to report when acceleration would fail.
 
-*Aside:* To reduce cycle time while experimenting, we may allow acceleration to behave as a compiler built-in, e.g. `prog:(do:tbd, accel:list-append)`. The proper reference implementation can wait for behavior to stabilize.
+### Application Layer
 
-### Parallelism
+We can develop specialized program models for running applications via the glas command line interface or compilation then extraction of executable binaries. This is sometimes more convenient than developing an accelerator, though it might hinder high-performance build-time simulation/testing of the program. 
 
-Glas program model is not designed for parallelism.
-
-A compiler can squeeze out some parallelism via dataflow analysis. For example, assuming F and G are both 1--1 arity and one of F or G is pure (no effects), we can evaluate `seq:[F, dip:G]` in parallel. However, this technique has limited applicability and scalability.
-
-For robust parallelism at scale, it is feasible to *accelerate* evaluation of a distributed, confluent, monotonic virtual machine. [Kahn process network](https://en.wikipedia.org/wiki/Kahn_process_networks) and [Lafont Interaction Networks](https://en.wikipedia.org/wiki/Interaction_nets) can provide some inspiration.
+The 'proc' model described in [glas applications](GlasApps.md), when adequately developed, will be an example of this.
 
 ## Thoughts
 
@@ -277,41 +265,11 @@ Linear types can potentially support in-place updates, reducing garbage collecti
 
 But I think this is better to explore after the glas system is more mature. Binary trees provide a simple foundation, while acceleration and, later, full data abstraction for applications provides an effective means to escape the limits of this foundation.
 
-### Object Oriented Programming
+### Databases as Modules
 
-Glas program model isn't designed to support OOP, and I don't intend to encourage OOP. However, as a thought experiment:
+It is feasible to design language modules that parse MySQL database files, or other binary database formats (LMDB, MessagePack, Glas Object, etc.). Doing so might simplify use of tooling that outputs such files from a visual or graphical programming environment. 
 
-One option is to model objects as communicating glas processes. In each step, a process can send and receive some messages. This design keeps code separate from data in the glas program layer, and simplifies live coding. However, all method calls become asynchronous, similar to actors model. It is feasible to reify each method call as a new session or subchannel between objects.
-
-An alternative is to model and accelerate virtual machines that host a collection of objects. The virtual machine state would use an optimized internal representation associated with JIT-compiled code. If carefully designed, we could also support migration of volumes of objects, i.e. composing and decomposing the collection based on regions.
-
-Either of these options have some advantages. Modeling objects as processes would fit distributed and concurrent programming styles. Accelerating a virtual machine could be widely useful in many other cases, and would make scope obvious. 
-
-### Reactive Systems Programming 
-
-Robust reactive systems benefit from precise temporal semantics, abstracting over variable latency and arrival-order non-determinism, and modeling precise synchronization of outputs.
-
-[Kahn process networks](https://en.wikipedia.org/wiki/Kahn_process_networks) (KPNs) are a viable foundation. We can extend KPNs with temporal semantics - every process and message has an implicit logical time, and a process can observe which channel has the next message in temporal order. This can be combined with dynamic channels to model open systems. 
-
-KPNs could then be compiled into a lower level model that exposes arrival-order non-determinism, such as glas applications.
-
-### Static Routing of Effects? Reject.
-
-Currently 'eff' always runs the same handler for an effect. It is feasible to modify 'eff' to support static routing, i.e. use `eff:Operator` and an environment of type `Operator -> Handler`.
-
-This solution hinders dynamic 'eval'. We must statically identify the runtime effects potentially used by a subprogram. Another issue is that it's tempting to treat 'eff' as a macro namespace, with Operator containing Program values that are integrated into the Handler - it easily becomes awkward to manage namespaces correctly.
-
-The current form of eff/env fits my goals of maintaining simplicity and comprehensibility, albeit at the cost of shifting more optimization work to depend on abstract interpretation.
-
-#### Bracketed Effects? Reject.
-
-Bracketing currently requires explicit commands to modify state around an operation, i.e. `seq:[StartEff, Operation, StopEff]`. This is error prone, though it can be mitigated by language modules that abstract over the pattern. It's tempting to build this pattern into the glas program model. But with retrospect, I don't want to extend glas program model only to support patterns. That's the responsibility of the language layer.
-
-### Database Modules
-
-It is feasible to design language modules that parse MySQL database files, or other binary database formats (LMDB, MessagePack, Glas Object, etc.). Doing so can simplify tooling that supports interactive or graphical programming styles. 
-
-A relevant concern is that database files will tend to be much larger than text files, and will receive more edits by concentrating program representation into fewer files. This makes fine-grained memoization more important.
+A relevant concern is that database files will tend to be much larger than text files, and will receive more edits. This could be mitigated by partitioning a database into multiple files. But mostly I think we'll need to rely more upon explicit memoization instead of implicit caching per module.
 
 ### Program Search
 
@@ -326,27 +284,3 @@ Memoization can mitigate rework insofar as we have [consistent heuristics](https
 Manually tracing data to its sources is challenging and error-prone. Glas further hinders manual tracking because language module compiler functions cannot refer to file or module names. This ensures code can be moved or shared without changing its meaning. Only content-addressed provenance is possible, e.g. based on secure hash of binary, or notation within the code.
 
 I hope to support provenance tracking in a more systematic manner, such that all data is traced to its sources without any explicit effort by the programmers. This might involve something similar to [SHErrLoc project's](https://research.cs.cornell.edu/SHErrLoc/) heuristics, e.g. assuming that widely used/tested dependencies (such as language parser code) contributes 'less' as a source.
-
-### Extended Tacit Environment? Reject.
-
-Instead of a single data stack, I could extend glas programs to work with an auxilliary stack for temporary data storage. The 'dip' behavior already does this to some degree, but doesn't make it easy to access data deep within a loop. A second data stack would complicate arity descriptions but could simplify some data plumbing. However, I think this isn't very flexible compared to trying to improve data plumbing purely at the syntax layer.
-
-### Abstract Operators and Namespaces? Defer.
-
-I'm tempted to extend glas programs with abstract operators that can be defined in context. Something like:
-
-* **op:OpRef** - call an abstract operator specified by OpRef. OpRef could be symbolic, but could also be structured to model a macro or DSL.
-* **ns:(do:P, with:Defs)** - evaluate P, but replace each 'op:OpRef' by its definition (if defined). 
-
-Unfortunately, composition of 'ns' subprograms is awkward: either we replicate common definitions or require a lot of extra computation to tease them out. Unless 'ns' supports higher order staged programming, we'll still be using macro abstractions at the language layer. It's tempting to unify 'ns' with env/eff, but more difficult to consistently model system state.
-
-Without this feature, we still benefit from structure sharing and content-addressed storage for common subprograms. Memoization can reduce rework when processing common subprograms. A compression pass can later produce an intermediate representation with a namespace for common subprograms. Language modules can provide their own namespace logic. 
-
-Compositionality is a primary design goal for glas. I will eschew namespaces at the glas program layer until I have a solution that doesn't interfere with compositionality.
-
-### Decompilation? Defer.
-
-An interesting possibility is to support 'decompile' functions on language modules, then to support access to the decompiler via something like 'load:global:"foo.xyzzy"' as fully compiling module 'foo' then subsequently decompiling with language-xyzzy, and perhaps automatically verifying the round-trip (that applying language-xyzzy 'compile' results in the original decompiled value).
-
-This would make access to language-layer representations a lot more accessible without leaking information about the original syntax. It would also encourage compilers to maintain suitable metadata for a precise decompilation.
-

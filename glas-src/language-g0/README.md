@@ -6,7 +6,7 @@ The g0 syntax isn't suitable for all programs or programmers. It's especially aw
 
 ## Top Level
 
-The top-level of a g0 file consists of imports, definitions, assertions, and export declarations. Simple line comments are also supported.
+The top-level of a g0 file consists of imports, definitions, assertions, and export declarations. Simple line comments are also supported but skipped by the parser.
 
         # comments start with # and run to end of line.
 
@@ -28,9 +28,8 @@ The top-level of a g0 file consists of imports, definitions, assertions, and exp
 
         # control final compiled value of module
         export [ Program ] # or an import list
-        # alternatively may specify export word list
 
-Most declarations may appear in any order and quantity. The exceptions are 'open' and 'export' which, if included, must respectively be first and last. 
+Most declarations may appear in any order and quantity. The exceptions are 'open' and 'export' which, if present, must respectively be first and last declarations. 
 
 ## Dictionary
 
@@ -67,7 +66,7 @@ A ModuleRef may be one of:
         Word            # loads  global:"Word"
         './'Word        # loads  local:"Word"
 
-The g0 language can only conveniently reference modules whose names are valid g0 words. Use of compile-time 'load' effects don't have this naming constraint.
+The g0 language can conveniently access modules whose names are also valid g0 words. Other modules can be accessed indirectly via 'load' effects, but I would prefer to encourage use of simple module names.
 
 ### ImportList 
 
@@ -162,12 +161,12 @@ Static assertions serve a role in lightweight unit and integration tests. They c
 
 ## Export
 
-If present, must be final declaration ignoring comments and whitespace. Export may take two forms - list or function. If elided, the final dictionary is exported unmodified.
+If present, export must be final declaration in a g0 file. Export may take two forms - list or function. If elided, the final dictionary is exported.
 
         export ImportList
         export [ Program ]
 
-In case of a list, only words in the list are exported. They may optionally be renamed via 'as' clauses. The function option is more flexible: it's handled like a data definition except the computed value becomes the module's compiled value. This enables g0 modules to have any value type, not limited to dictionaries. If rewriting the dictionary, use the 'load:dict' effect. 
+In case of an import list, the output is a dictionary that includes only words in the list. Use of 'as' clauses is permitted to rename words. In case of an export function, the program is evaluated as a data definition, then that data becomes the compiled module value. If the final dictionary value is needed, the export function must use the 'load:dict' effect.
 
 ## Static Evaluation
 
@@ -176,7 +175,7 @@ Static evaluation is performed in context of macro calls, data definitions, proc
 * *log:Message* - same as language modules. Message is assumed to be a record value. Compiler may implicitly add some metadata about location.
 * *load:Ref* - as language modules, but extended with references to the current dictionary.
  * *dict* - return a dictionary value that includes words defined earlier in file. Excludes any words that are defined later within the file (i.e. words implicitly imported via 'open' are deleted if defined later).
- * *dict:Path* - equivalent to 'load:dict' effect followed by 'get' on Path. This can theoretically simplify incremental computing and precise dependency tracking compared to 'load:dict'.
+ * *dict:Path* - equivalent to 'load:dict' effect followed by 'get' on bitstring Path (usually a word). This can theoretically simplify incremental computing and precise dependency tracking compared to 'load:dict'.
 
 These effects may be extended by the compiler, e.g. introduce [compiler directives](https://en.wikipedia.org/wiki/Directive_%28programming%29) to manage warnings, guide optimizations, tune static analysis, or manage quotas.
 
@@ -207,7 +206,7 @@ This section describes a strategy for compiling a block of g0 code into a progra
 
         parse   : Text -> AST                   # parser combinators?
         link    : Dict -> AST -> LinkedAST      # mostly dict lookups
-        compile : LinkedAST -> Program          # partial and static eval, blocks to data 
+        compile : LinkedAST -> Program          # static eval; blocks to data 
 
 The g0 language performs linking very eagerly compared to most programming languages. A consequence is that g0 programs are non-polymorphic and rely on structure sharing at the data layer for memory performance.
 
@@ -217,32 +216,28 @@ The compile step may optimize the returned program. For stability of partial eva
 
 ## Bootstrap 
 
-The glas command line executable will have a built-in g0 compiler that is used only for bootstrap. Bootstrap will be logically recomputed every time we use the executable, but the rework can be mitigated by caching.
+The glas command line interface will have a built-in g0 compiler that is used for bootstrap. Bootstrap will be logically performed every time we use the interface, though rework may implicitly be mitigated by caching.
 
-The built-in g0 is used to compile module language-g0, producing a value of form `(compile:P0, ...)`. Program P0 is then used to rebuild language-g0, producing `(compile:P1, ...)`. P0 and P1 should have the same *behavior* but may differ structurally due to variations in optimizations or annotations. It's difficult to check that the behaviors are the same, but we can easily use P1 to rebuild language-g0 once more, producing `(compile:P2, ...)`. If P1 and P2 are exactly the same, we have successfully bootstrapped language-g0. Otherwise, time to debug!
+The built-in g0 is used to compile module language-g0, producing a value of form `(compile:P0, ...)`. Program P0 is then interpreted to rebuild language-g0, producing `(compile:P1, ...)`. P0 and P1 should have the same *behavior* but may differ structurally due to variation in optimizations or annotations. To prove equivalent behavior, we'll simply rebuild language-g0 using P1, producing `(compile:P2, ...)`. Bootstrap is considered successful if P1 and P2 are the same.
 
 ## Thoughts on Language Extensions
 
-Some ideas that come to mind repeatedly.
+Idle thoughts that insist on idling. Mostly reminders for why I rejected them. 
 
-### Multi-Stage Macros
+### Multi-Stage Macros. Rejected.
 
-I could allow macro calls to return `macro:Program`, to be evaluated as another macro call. This would enable macros to have variable static arity based on data, e.g. scan the static data stack for a sentinel value to build a list. 
+I could permit macro calls to return `macro:Program`, to be evaluated as another macro call. This would enable macros to have variable static arity based on data. For example, a macro could search for a sentinel value on the data stack. However, I'm not convinced this is a good idea. It hinders local reasoning and refactoring, and introduces an inconsistency between compile-time and runtime static stack behavior.
 
-However, I'm uncertain that I want to enable or encourage ad-hoc scanning of the data stack. It creates a huge inconsistency between compile-time and runtime programming. Further, this feature complicates local reasoning and refactoring because programmers cannot just look at arity. Decided to reject unless I find a very strong use-case. 
+### Local Variables. Rejected.
 
-### Local Variables
+Interaction of variables and macros introduces a lot of complexity that I'd prefer to avoid. Something to leave for future language modules.
 
-To make variables work well, e.g. such that we can access and update a local variable from deep within a loop, I need macros that operate on an abstract g0 AST instead of program values. Although this is feasible, it isn't a complication I want for the g0 language. My decision is to support variables in higher-level language modules.
+### Negative Assertions. Rejected.
 
-### Negative Assertions 
+I could design an assertions model that accepts only *failed* programs.
 
-Currently, it is feasible to express a negative assertion with a macro that verifies a program halts with a backtracking failure.
-
-        assert [ [test code] verify-not ]
-
-I've found this pattern is common in practice. It is tempting to provice a specialized syntax for the same behavior.
-
+        assert [ [test code] reject ]
+         # with suitable 'reject' macro, becomes
         reject [ test code ]
 
-However, I hesitate to do so. I feel it might be a bit confusing if compiler directive effects within 'reject' are backtracked.
+However, the interaction with compile-time effects seems relatively awkward to explain. Sticking to assert is consistent and comprehensible even if slightly less convenient.

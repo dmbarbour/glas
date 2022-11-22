@@ -1,6 +1,6 @@
 # The 'prims' module provides a useful set of words for getting started with
-# the g0 language. Not all are true primitives, just stuff that is relatively
-# concrete, widely useful, low level, and doesn't require loops.
+# the g0 language. This includes defining all the basic Glas program primitives
+# but also a few convenient utility functions.
 #
 # At the moment, list ops, natural number arithmetic, and advanced record ops
 # such as iteration over keys is left to external modules. I might create a
@@ -22,17 +22,27 @@ prog get ['get apply]
 prog put ['put apply]
 prog del ['del apply]
 
+# default halt with empty message.
+prog halt ['halt apply]
+
 prog p-dip [0 'dip put]
 prog p-while-do [0 'do put 'while put 0 'loop put]
 prog p-until-do [0 'do put 'until put 0 'loop put]
 prog p-try-then-else [0 'else put 'then put 'try put 0 'cond put]
 prog p-with-do [0 'do put 'with put 0 'env put]
+prog p-halt-with-msg [0 'halt put]
 
 macro dip [p-dip]
 macro while-do [p-while-do]
 macro until-do [p-until-do]
 macro try-then-else [p-try-then-else]
 macro with-do [p-with-do]
+macro halt-with-msg [p-halt-with-msg]
+
+# halt with certain errors
+prog tbd ['tbd halt-with-msg]
+prog type-error ['type-error halt-with-msg]
+prog unreachable ['unreachable halt-with-msg]
 
 # PAIRS - trees with both the '0' and '1' edges.
 # Pairs are mostly used for construction of lists.
@@ -61,7 +71,6 @@ prog p-curry [[p-data] dip p-seq]
 
 # p-nop     -- []
 #  non-operation in Glas is empty seq
-#  (explicit to prevent annotations from g0 compiler)
 data p-nop ['seq]
 
 assert [1 [2 pair] p-curry apply unpair 2 eq 1 eq]
@@ -98,6 +107,9 @@ prog p-verify-not [[fail] p-try-then [fail] p-try-else]
 macro verify-not [p-verify-not]
 assert [0 [1 eq] verify-not 0 eq]
 assert [0 [[0 eq] verify-not][1][2] try-then-else 2 eq 0 eq]
+
+# reject - same as 'verify-not'
+macro reject [p-verify-not]
 
 # LOOP VARIATIONS
 
@@ -247,6 +259,12 @@ assert [
     'point get 'x get 11 eq
 ]
 
+# Variants aka Tagged Unions
+#
+# We'll represent variants as a singleton record `label:Value`.
+# Access to the value is 
+#
+
 # ANNOTATIONS SUPPORT
 
 # p-prog-body       Program -- Program
@@ -308,27 +326,24 @@ assert [
     p-anno-accel-get 'xyzzy eq
 ]
 
-# Future annotations should support:
+# Future annotations/prims should support:
 #  memoization, stowage
 #  type safety analysis
 #  preconditions and postconditions
-#  labeled inputs and outputs to simplify auto-wiring
 
 # BASIC LOGGING
 #
 # Logging is convenient for debugging or tracking progress of an application.
-# Most application models in Glas systems will support an effect 'log:Message'
-# that should respond with unit value. We'll usually ignore logging failures
-# in case that effect is not supported.
-# 
-# By convention, Message is a record such as `(lv:warn, text:"problem found")`.
-# This may be extended with new fields on an ad-hoc basis, e.g. we could have
-# log messages specifically to support progress bars or notifications.
+# Most effects APIs will include a 'log:Message' or equivalent. This includes
+# compile-time evaluation.
 #
-# Compile-time also produces a log. Thus, g0 can perform compile-time logging
-# via macro calls, data definitions, assertions, or the export function. This
-# is convenient when debugging why an assertion has failed, or warning about a
-# deprecated accelerator that will soon be eliminated.
+# The message should be a record such as (lv:warn, text:"there is an issue").
+# This allows for some extra context to be added to the message, and extension
+# with structured message types. However, messages are ultimately intended for
+# humans.
+#
+# An effects handler may disable log messages for a subprogram. Failure will
+# be silently ignored. 
 #
 
 # log-send      Message --
@@ -352,3 +367,29 @@ prog log-error ['error logmsg-text-lv log-send]
 prog log-info-v ['info logmsg-val-text-lv log-send]
 prog log-warn-v ['warn logmsg-val-text-lv log-send]
 prog log-error-v ['error logmsg-val-text-lv log-send]
+
+# LOADING MODULES OR DEFINITIONS
+#
+# The 'load' effect is supported by language modules and glas CLI apps.
+# The essential idea is to obtain a value from the module system. The
+# basic targets are 'global:"ModuleName"' or 'local:"ModuleName". The
+# g0 compiler extends this to further support 'dict' and 'dict:word'.
+#
+
+# ModuleRef load-ref (any valid ref)
+prog load-ref  [ 'load d1 eff ]
+
+# load-dict (compile-time effect for g0)
+# Load current dictionary as data. 
+# Excludes words defined later within file.
+prog load-dict [ 'dict load-ref ]
+
+# 'word load-word (compile-time effect for g0)
+# This will load a definition as data. 
+prog load-word [ 'dict d1 load-ref ]
+
+# "ModuleName" load-global (load a local module)
+prog load-global [ 'global d1 load-ref ]
+
+# "ModuleName" load-local (load a global module)
+prog load-local [ 'local d1 load-ref ]

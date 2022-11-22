@@ -23,6 +23,7 @@ open Glas.LoadModule
 open Glas.ProgVal
 open Glas.ProgEval
 
+
 let helpMsg = String.concat "\n" [
     "A pre-bootstrap implementation of Glas command line interface."
     ""
@@ -45,6 +46,9 @@ let helpMsg = String.concat "\n" [
     "    glas --print ValueRef"
     "        write value to standard output (ad-hoc, for debugging)"
     ""
+    "    glas --check ValueRef"
+    "        test that module compiles and value is defined"
+    ""
     "User-Defined Commands (no '-' prefix):"
     ""
     "    glas opname Args"
@@ -62,6 +66,20 @@ let ver = "glas pre-bootstrap 0.2 (dotnet)"
 
 let EXIT_OKAY = 0
 let EXIT_FAIL = 1
+
+// a short script to ensure GLAS_HOME is defined and exists.
+let GLAS_HOME = "GLAS_HOME"
+let select_GLAS_HOME () : string =
+    let home = System.Environment.GetEnvironmentVariable(GLAS_HOME)
+    if not (isNull home) then home else
+    // default GLAS_HOME
+    let appDir = System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData)
+    System.IO.Path.Combine(appDir, "glas")
+let prepare_GLAS_HOME () : unit =
+    let home = System.IO.Path.GetFullPath(select_GLAS_HOME ())
+    // printfn "GLAS_HOME=%A" home
+    ignore <| System.IO.Directory.CreateDirectory(home)
+    System.Environment.SetEnvironmentVariable(GLAS_HOME, home)
 
 // parser for value ref.
 module ValueRef =
@@ -173,6 +191,11 @@ let print (vref:string) : int =
     | ValueNone ->
         EXIT_FAIL
 
+let check (vref:string) : int =
+    let ll = getLoader <| consoleErrLogger()
+    match getValue ll vref with
+    | ValueSome _ -> EXIT_OKAY
+    | ValueNone -> EXIT_FAIL
 
 let run (vref:string) (args : string list) : int = 
     let ll = getLoader <| consoleErrLogger ()
@@ -224,6 +247,8 @@ let rec main' (args : string list) : int =
         EXIT_OKAY
     | ["--print"; v] ->
         print v 
+    | ["--check"; v] ->
+        check v
     | (verb::args') when not (verb.StartsWith("-")) ->
         // trivial rewrite supports user-defined behavior
         let p = "glas-cli-" + verb + ".main"
@@ -236,6 +261,7 @@ let rec main' (args : string list) : int =
 [<EntryPoint>]
 let main args = 
     try 
+        prepare_GLAS_HOME ()
         main' (Array.toList args)
     with
     | e -> 

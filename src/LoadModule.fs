@@ -10,7 +10,7 @@ namespace Glas
 module LoadModule =
     open System
     open System.IO
-    open Glas.Effects
+    open Effects
     open ProgVal
     open ProgEval
 
@@ -18,6 +18,23 @@ module LoadModule =
     type FolderPath = string
     type FilePath = string
     type ModuleName = string
+
+    // load global search path from {GLAS_HOME}/sources.txt
+    // currently is limited to 'dir' entries with no attributes.
+    let globalSearchPath (ll : IEffHandler) : FolderPath list =
+        try
+            let home = Path.GetFullPath(Environment.GetEnvironmentVariable("GLAS_HOME"))
+            let src = File.ReadAllText(Path.Combine(home, "sources.txt"))
+            let parseDirEnts (ent : TextTree.TTEnt) =
+                let isBasicDirEnt = (ent.Label = "dir") && (List.isEmpty ent.Attrib)
+                if isBasicDirEnt then [ent.Data] else
+                logWarn ll (sprintf "unhandled entry in sources.txt: %A" ent)
+                []
+            src |> TextTree.parseEnts |> List.collect parseDirEnts
+        with 
+        | e -> 
+            logError ll (sprintf "failed to load sources.txt: %A" e)
+            []
 
     let private findModuleAsFile (m:ModuleName) (dir:FolderPath) : FilePath list =
         let matching_name (fp : FilePath) : bool = 
@@ -34,21 +51,15 @@ module LoadModule =
     let private findLocalModule (m:ModuleName) (localDir:FolderPath): FilePath list =
         List.append (findModuleAsFile m localDir) (findModuleAsFolder m localDir)
 
-    let private findGlobalModule (m:ModuleName) : FilePath list =
-        let envPath = Environment.GetEnvironmentVariable("GLAS_PATH")
-        if isNull envPath then [] else
-        let searchPaths = 
-                envPath.Split(Path.PathSeparator, StringSplitOptions.None)
-                |> Array.map (fun s -> s.Trim()) // remove surrounding whitespace
-                |> List.ofArray
+    let private findGlobalModule (m:ModuleName) (searchPath : FolderPath list): FilePath list =
         let rec loop ps =
             match ps with
-            | (p::ps) ->
+            | (p :: ps') ->
                 match findModuleAsFolder m p with
-                | [] -> loop ps
+                | [] -> loop ps'
                 | findings -> findings
             | [] -> []
-        loop searchPaths
+        loop searchPath
 
     // wrap a compiler function for arity 1--1
     let private _compilerFn (p:Program) (ll:IEffHandler) =
@@ -77,6 +88,9 @@ module LoadModule =
         // Effects other than 'load'. Logging is assumed.
         val private NonLoadEff : IEffHandler 
 
+        // cache global module search path
+        val private GlobalSearchPath : FolderPath list
+
         // To resist cyclic dependencies, track which files we are loading.
         val mutable private Loading : FilePath list
 
@@ -88,6 +102,7 @@ module LoadModule =
 
         new (linkG0,eff0) as ll =
             { NonLoadEff = eff0
+            ; GlobalSearchPath = globalSearchPath eff0
             ; Loading = []
             ; Cache = Map.empty  
             ; Compilers = Map.empty
@@ -165,7 +180,7 @@ module LoadModule =
                 ValueNone
 
         member ll.LoadGlobalModule (m : ModuleName) : Value voption =
-            match findGlobalModule m with
+            match findGlobalModule m (ll.GlobalSearchPath) with
             | [fp] -> ll.LoadFile fp
             | [] ->
                 logWarn ll (sprintf "global module %s not found" m)

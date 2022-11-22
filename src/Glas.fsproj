@@ -12,6 +12,7 @@
     <Compile Include="ProgVal.fs" />
     <Compile Include="ProgEval.fs" />
     <Compile Include="GlasZero.fs" />
+    <Compile Include="TextTree.fs" />
     <Compile Include="LoadModule.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>

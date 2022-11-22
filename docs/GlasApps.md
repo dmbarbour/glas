@@ -54,22 +54,6 @@ Transaction machines don't solve live coding, but they do lower a few barriers. 
 
 Remaining challenges include stabilizing application state across minor changes, versioning major changes, provenance tracking across compilation stages, rendering live data nearby the relevant code.
 
-## Procedures and Processes
-
-The 'proc' program model described here supports robust transaction machine optimizations and improves system stability in context of live coding or overlay extensions. A primary design constraint is that it must be possible to compile a proc to an equivalent step function (modulo performance and scalability).
-
-* **proc:(do:Process, ... Annotations)** - All fields other than 'do' are annotations. If 'do' is omitted, defaults to a nop. Also used as a common variant header for processes.
-
-* *sequence* - similar to a prog sequence, except every step requires a unique identifier to stabilize behavior in context of inserting/deleting instructions for live coding.
-* *forking* - must be explicit, at least a couple forms - labeled, dynamic fork on list/set
-* *effects* - likely need to distinguish effects by effect on stability 
-* *effects handlers* - likely useful to distinguish read-only effects, shared-state effects, thread-local (forkable) state effects, write-only effects (e.g. build a set of values for future step).
-* *conditional* - need at least a couple forms, one is more of a stable conditional behavior and the other computes the condition as a normal sequence of steps.
-* *loop* - similar to sequence, but conditionally or forever repeats a transactional step.
-* *partitioning* - want ability to robustly control communications between component processes, in some way that makes automatic distribution viable.
-* *communication* - might specially handle static channels/wiring between component processes, and shared state of any form.
-
-
 ## Robust References
 
 Applications are in charge of allocating local references to objects, i.e. instead of `var foo = open filename` I favor an API style closer to `open filename as "foo"`. This allows for static allocation, hierarchical regions, or decentralization for dynamic allocations. References can carry convenient information for debugging. Importantly, it avoids concerns related to abstraction or forgery for references. 
@@ -283,6 +267,22 @@ A runtime can provide a few effects for manipulating itself. May be implementati
 
 I could support OS operations under an 'os:' prefix, and perhaps OS-specialized actions under a header such as 'os:posix:...'. Not really sure what I need, or how much of the OS should be exposed. Might develop incrementally as needed.
 
+## Procedures and Processes
+
+The 'proc' model expresses behavior as composition of transactional steps, with constraints on effects and shared state. This can be compiled to an equivalent 'prog' step function, but 'proc' should be easier to optimize for incremental computing, concurrency, and distribution.
+
+In design. Some likely features:
+
+* *annotations* - similar to 'prog' we can have a 'proc' header for annotations and the common variant for processes.
+* *sequence* - similar to a prog sequence, but each operation may require multiple transactions. I may require that each operation is uniquely labeled for some extra stability during live coding. 
+* *forks* - explicit partitioning of applications into multiple subtasks. This should appear within a 'stable' effects context. 
+ * *static forks* - all the forks can be labeled at compile-time and bound to distinct processes.
+ * *dynamic forks* - the set of forks is computed at runtime. The process is the same for every fork, but each may have its own runtime state. Some mechanism to support introducing or terminating forks.
+* *channels* - explicit asynchronous, non-shared-state communication between forks, preferably without assuming external effects. Static channels and subchannels might be especially convenient for optimization.
+ * *rendezvous* - this could be modeled in terms of a single element channel, with special recognition it might simplify optimization of the scheduler.
+* *effects* - instead of a single abstract effects environment with a single state value, it could be useful to distinguish effects with shared state, effects with forkable state, write-only effects similar to channels where write order is flexible. 
+* *conditionals* - likely need a couple layers such as stable conditionals (e.g. depending on configuration data) and instantaneous conditionals (decided as a process step).
+* *overlay* - ability to compose applications in overlay style, wrapping components. We might treat the initial app as an overlay of the identity operation to improve compositionality.
 
 ## Misc Thoughts
 
@@ -319,7 +319,7 @@ A viable API:
 * **d:write:(to:Port, data:Value)** - add data to a dataflow port. Writes within a transaction or between concurrent transactions are monotonic, idempotent, and commutative. Concurrent data is read as a set. Data implicitly expires from the set if not continuously written. Unstable data might be missed by a reader.
 * **d:wire:(with:Port, and:Port)** - When two ports are wired, data that can be read from each port is temporarily written to the other. Applies transitively to hierarchical ports. Like writes, wires expire unless continuously maintained.
 
-Ports are lists to abstract over hierarchical multiplexing. The ports used by a process should be documented. For example, a simple request-response protocol might involve writing `query:"GLAS_PATH"` to port `[env]` then reading responses from port `[env, val:"GLAS_PATH"]`. In this case, a process might describe the 'env' port as providing access to system environment variables. An efficient implementation requires abstracting over the expiration and regeneration of connections, and optimizing stable routes through wires. 
+Ports are lists to abstract over hierarchical multiplexing. The ports used by a process should be documented. For example, a simple request-response protocol might involve writing `query:"GLAS_HOME"` to port `[env]` then reading responses from port `[env, val:"GLAS_HOME"]`. In this case, a process might describe the 'env' port as providing access to system environment variables. An efficient implementation requires abstracting over the expiration and regeneration of connections, and optimizing stable routes through wires. 
 
 Many processes will use a standard pair of loopback ports 'lo' and 'li', applied hierarchically (such that stable writes to `[lo, foo]` are eventually read on `[li, foo]` and vice versa). This enables hierarchical process networks to delegate implementation and optimization of reactive dataflow to runtime or compiler.
 
