@@ -1,12 +1,7 @@
 namespace Glas
 
 
-// Describes the lightweight structured data used in sources.txt.
-// This is a fair bit simpler than XML, but limits data to single
-// lines of text. There are no escape characters or punctuation,
-// but line comments are supported.
-//
-// Structure:
+// Lightweight structured data format used in sources.txt.
 //
 //   # line comment
 //   hdr1 data is remainder of line
@@ -16,12 +11,11 @@ namespace Glas
 //   hdr2 data is remainder of line
 //   ...
 //
-// Blank lines and lines starting with '#' are ignored.
 // Both \r and \n are recognized as line terminals. 
-// Only spaces for indent. Data is trimmed of spaces.
+// Blank lines or lines starting with '#' are skipped.
+// Indentation via spaces. Data is trimmed of spaces.
 module TextTree =
 
-    [<Struct>]
     type TTEnt = 
         { Label : string
         ; Data  : string

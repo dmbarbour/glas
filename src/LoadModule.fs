@@ -1,12 +1,10 @@
 namespace Glas
 
 /// This module describes the FileSystem search algorithms and effects
-/// for Glas modules. The main goal is to find a file with a suitable name.
-/// This implementation does not attempt to recognize or report ambiguity.
-/// 
-/// Normally, GLAS_PATH environment variable is used to determine where
-/// to search if a local search fails. A 'local' search is determined 
-/// based on a file path for a file currently being processed.
+/// for loading Glas modules. 
+///
+/// Global module search is configured via "sources.txt" in GLAS_HOME.
+/// The GLAS_HOME is assigned a default location in Main.fs if needed.
 module LoadModule =
     open System
     open System.IO
@@ -21,13 +19,14 @@ module LoadModule =
 
     // load global search path from {GLAS_HOME}/sources.txt
     // currently is limited to 'dir' entries with no attributes.
+    // Relative 'dir' paths are relative to GLAS_HOME.
     let globalSearchPath (ll : IEffHandler) : FolderPath list =
         try
             let home = Path.GetFullPath(Environment.GetEnvironmentVariable("GLAS_HOME"))
             let src = File.ReadAllText(Path.Combine(home, "sources.txt"))
             let parseDirEnts (ent : TextTree.TTEnt) =
                 let isBasicDirEnt = (ent.Label = "dir") && (List.isEmpty ent.Attrib)
-                if isBasicDirEnt then [ent.Data] else
+                if isBasicDirEnt then [Path.Combine(home, ent.Data)] else
                 logWarn ll (sprintf "unhandled entry in sources.txt: %A" ent)
                 []
             src |> TextTree.parseEnts |> List.collect parseDirEnts
