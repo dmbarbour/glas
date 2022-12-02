@@ -1302,40 +1302,83 @@ module Value =
         if List.exists (isFlagField >> not) vs then ValueNone else
         ValueSome (List.map ValueOption.isSome vs, r')
 
+    module private VerifyUTF8 = 
+        // support to check UTF8 structure incrementally 
+
+        let inline isC1 c = (0x80uy &&& c) = (0x00uy)
+        let inline isCC c = (0xC0uy &&& c) = (0x80uy)
+        let inline isC2 c = (0xE0uy &&& c) = (0xC0uy)
+        let inline isC3 c = (0xF0uy &&& c) = (0xE0uy)
+        let inline isC4 c = (0xF8uy &&& c) = (0xF0uy)
+        let inline isSurrogateHalf c = 
+            (0xDFFF >= c) && (c >= 0xD800)
+
+        let rec verifyLenCC lRev nCC =
+            if(nCC > 3) then false else 
+            match lRev with
+            | [] -> (0 = nCC)
+            | (c::lRev') ->
+                if (isCC c) then verifyLenCC lRev' (1 + nCC)
+                elif (isC2 c) then (nCC >= 1) 
+                elif (isC3 c) then (nCC >= 2)
+                elif (isC4 c) then (nCC >= 3) 
+                else false
+
+        // verify the most recent added character is complete
+        // and within the valid range, and not surrogate half
+        let verifyPrior lRev =
+            match lRev with
+            | [] -> true
+            | (c1::_) when isC1 c1 -> true
+            | (c1::c2::_) when (isC2 c2) && (isCC c1) ->
+                let cp = (((int c2) &&& 0x1F) <<< 6) |||
+                         (((int c1) &&& 0x3F) <<< 0)
+                (cp > 0x7F) 
+            | (c1::c2::c3::_) when (isC3 c3) && (isCC c2) && (isCC c1) ->
+                let cp = (((int c3) &&& 0x0F) <<< 12) |||
+                         (((int c2) &&& 0x3F) <<<  6) |||
+                         (((int c1) &&& 0x3F) <<<  0)
+                (cp > 0x7FF) && (not (isSurrogateHalf cp))
+            | (c1::c2::c3::c4::_) when (isC4 c4) && (isCC c3) && (isCC c2) && (isCC c1) ->
+                let cp = (((int c4) &&& 0x07) <<< 18) |||
+                         (((int c3) &&& 0x3F) <<< 12) |||
+                         (((int c2) &&& 0x3F) <<<  6) |||
+                         (((int c1) &&& 0x3F) <<<  0)
+                (0x10FFFF >= cp) && (cp > 0xFFFF)
+            | _ -> false
+
+        let verifyPartialUTF8 lRev c1 =
+            if isCC c1 
+                then verifyLenCC lRev 1
+                else verifyPrior lRev
 
 
-    let rec private _isRecord rs xct b v =
-        // note: b holds number of bits as high '1' bit.
-        // we'll process full bytes from record symbols, verify UTF-8.
-        // This verification does allow for denormalized UTF-8.
-        if ((b &&& 0x100) = 0x100) then
-            if(xct > 0) then
-                // expecting bit pattern '10xx xxxx'
-                if((b &&& 0b11000000) = 0b10000000)
-                    then _isRecord rs (xct - 1) 1 v
-                    else false 
-            else if(b = 0x100) then
-                // null-terminated label.
-                match rs with
-                | struct(xct', b', v')::rs' -> _isRecord rs' xct' b' v' 
-                | [] -> true // final label
-            else if((b &&& 0b10000000) = 0b00000000) then
-                _isRecord rs 0 1 v   // 1-byte utf-8
-            else if((b &&& 0b11100000) = 0b11000000) then
-                _isRecord rs 1 1 v   // 2-byte utf-8
-            else if((b &&& 0b11110000) = 0b11100000) then
-                _isRecord rs 2 1 v   // 3-byte utf-8
-            else if((b &&& 0b11111000) = 0b11110000) then
-                _isRecord rs 3 1 v   // 4-byte utf-8
-            else false
-        else // build a byte...
+    let private _isRecordLabel lRev = 
+        // may assume valid utf8
+        // could add some extra validation on record labels here
+        true
+
+    let rec private _isRecord rs lb pb v =
+        // lb is reversed.
+        if ((0x100 &&& pb) = 0x100) then
+            // byte completed! I'll do a quick check on the UTF8 structure.
+            let b = uint8 (0xFF &&& pb)
+            if not (VerifyUTF8.verifyPartialUTF8 lb b) then false else
+            if(0uy <> b) then _isRecord rs (b::lb) 1 v else
+            // null terminator is end of label.
+            if not (_isRecordLabel lb) then false else
+            match rs with
+            | struct(lb',pb',v')::rs' -> _isRecord rs' lb' pb' v'
+            | [] -> true
+        else
+            // need more bits!
             match v with
             | U -> false // label is not 8-bit aligned
-            | L v' -> _isRecord rs xct (b <<< 1) v'
-            | R v' -> _isRecord rs xct ((b <<< 1) ||| 1) v'
+            | L v' -> _isRecord rs lb (pb <<< 1) v'
+            | R v' -> _isRecord rs lb ((pb <<< 1) ||| 1) v'
             | P (l,r) -> 
-                let rs' = struct(xct, ((b <<< 1) ||| 1), r)::rs
-                _isRecord rs' xct (b <<< 1) l
+                let rs' = struct(lb, ((pb <<< 1) ||| 1), r)::rs
+                _isRecord rs' lb (pb <<< 1) l
 
     let empty_label = label ""
 
@@ -1349,7 +1392,7 @@ module Value =
     let isRecord (v:Value) : bool =
         if isUnit v then true else
         if ValueOption.isSome (record_lookup empty_label v) then false else
-        _isRecord [] 0 1 v
+        _isRecord [] [] 1 v
 
     let rec private _recordBytes m ct b v =
         if(8 = ct) then Map.add b v m else
@@ -1406,30 +1449,20 @@ module Value =
         | _ -> ValueNone
 
     let inline private _toHex n =
-        if (n < 10) 
-            then char (int '0' + n) 
-            else char (int 'A' + (n - 10))
+        if (n < 10uy) 
+            then char (uint8 '0' + n) 
+            else char (uint8 'A' + (n - 10uy))
 
     // roll my own string escape for pretty-printing strings 
     let private _escape (s0 : string) : string =
         let sb = System.Text.StringBuilder()
-        for c in s0 do
-            match c with
-            | '\\' -> ignore <| sb.Append("\\\\")
-            | '"'  -> ignore <| sb.Append("\\\"")
-            | '\x7F' -> ignore <| sb.Append("\\x7F")
-            | _ when (int c >= 32) -> ignore <| sb.Append(c)
-            | '\n' -> ignore <| sb.Append("\\n")
-            | '\r' -> ignore <| sb.Append("\\r")
-            | '\t' -> ignore <| sb.Append("\\t")
-            | '\a' -> ignore <| sb.Append("\\a")
-            | '\b' -> ignore <| sb.Append("\\b")
-            | '\f' -> ignore <| sb.Append("\\f")
-            | '\v' -> ignore <| sb.Append("\\v")
-            | _ -> 
-                ignore <| sb.Append("\\x")
-                            .Append(_toHex ((0xF0 &&& int c) >>> 4))
-                            .Append(_toHex ((0x0F &&& int c) >>> 0))
+        for c in System.Text.Encoding.UTF8.GetBytes(s0) do
+            let okByte = (0x7Fuy > c) && (c >= 0x20uy) 
+                      && (c <> uint8 '"') && (c <> uint8 '%')
+            if okByte then ignore (sb.Append(char c)) else
+            ignore <| sb.Append('%')
+                        .Append(_toHex ((0xF0uy &&& c) >>> 4))
+                        .Append(_toHex ((0x0Fuy &&& c) >>> 0))
         sb.ToString()
 
     let rec private _ppV (bLR : bool) (v:Value) : string seq = 
@@ -1451,9 +1484,17 @@ module Value =
             | Int64 n when not bLR -> 
                 yield (n.ToString())
             | String s ->
-                yield "\""
-                yield _escape s
-                yield "\""
+                let sLines = s.Split('\n')
+                if (sLines.Length = 1) then
+                    yield "\""
+                    yield _escape s
+                    yield "\""
+                else 
+                    yield "\"\"\""
+                    for line in sLines do
+                        yield "\n "
+                        yield line
+                    yield "\n\"\"\""
             | List l ->
                 yield "["
                 match l with
@@ -1481,7 +1522,7 @@ module Value =
         }
     and private _ppKV (k:string,v:Value) : string seq = 
         seq {
-            yield k
+            yield (_escape k)
             if not (isUnit v) then
                 yield ":"
                 yield! _ppV false v

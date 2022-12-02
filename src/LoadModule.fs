@@ -17,9 +17,14 @@ module LoadModule =
     type FilePath = string
     type ModuleName = string
 
-    // load global search path from {GLAS_HOME}/sources.txt
-    // currently is limited to 'dir' entries with no attributes.
+    // load global search path from GLAS_HOME/sources.txt
+    // 
+    // currently limited to 'dir' entries with no attributes.
     // Relative 'dir' paths are relative to GLAS_HOME.
+    //
+    // Eventually "sources.txt" should support networked resources,
+    // which would be downloaded then cached locally. But that can
+    // wait for after bootstrap.
     let globalSearchPath (ll : IEffHandler) : FolderPath list =
         try
             let home = Path.GetFullPath(Environment.GetEnvironmentVariable("GLAS_HOME"))
@@ -50,15 +55,13 @@ module LoadModule =
     let private findLocalModule (m:ModuleName) (localDir:FolderPath): FilePath list =
         List.append (findModuleAsFile m localDir) (findModuleAsFolder m localDir)
 
-    let private findGlobalModule (m:ModuleName) (searchPath : FolderPath list): FilePath list =
-        let rec loop ps =
-            match ps with
-            | (p :: ps') ->
-                match findModuleAsFolder m p with
-                | [] -> loop ps'
-                | findings -> findings
-            | [] -> []
-        loop searchPath
+    let rec private findGlobalModule (m:ModuleName) (searchPath : FolderPath list): FilePath list =
+        match searchPath with
+        | (p :: searchPath') ->
+            match findModuleAsFolder m p with
+            | [] -> findGlobalModule m searchPath'
+            | findings -> findings
+        | [] -> []
 
     // wrap a compiler function for arity 1--1
     let private _compilerFn (p:Program) (ll:IEffHandler) =
