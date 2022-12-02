@@ -1,10 +1,6 @@
 # The 'prims' module provides a useful set of words for getting started with
 # the g0 language. This includes defining all the basic Glas program primitives
-# but also a few convenient utility functions.
-#
-# At the moment, list ops, natural number arithmetic, and advanced record ops
-# such as iteration over keys is left to external modules. I might create a
-# different module that includes an entire standard library.
+# and several convenient utility functions that don't require loops.
 
 macro apply []
 
@@ -22,30 +18,75 @@ prog get ['get apply]
 prog put ['put apply]
 prog del ['del apply]
 
-# default halt with empty message.
-prog halt ['halt apply]
-
 prog p-dip [0 'dip put]
 prog p-while-do [0 'do put 'while put 0 'loop put]
 prog p-until-do [0 'do put 'until put 0 'loop put]
 prog p-try-then-else [0 'else put 'then put 'try put 0 'cond put]
 prog p-with-do [0 'do put 'with put 0 'env put]
-prog p-halt-with-msg [0 'halt put]
 
 macro dip [p-dip]
 macro while-do [p-while-do]
 macro until-do [p-until-do]
 macro try-then-else [p-try-then-else]
 macro with-do [p-with-do]
+
+# CONDITIONAL VARIATIONS
+# try       ([P]try == [P][][]try-then-else)
+# try-then  ([P][L]try-then == [P][L][]try-then-else)
+# try-else  ([P][R]try-else == [P][][R]try-then-else)
+prog p-try [0 'try put 0 'cond put]
+prog p-try-then [0 'then put 'try put 0 'cond put]
+prog p-try-else [0 'else put 'try put 0 'cond put]
+macro try [p-try]
+macro try-then [p-try-then]
+macro try-else [p-try-else]
+
+# try-else2     
+#   [P1][P2][C]try-else2 == [P1][[P2][C]try-else]try-else
+# try-then-else2  
+#   [P1][B1][P2][B2][C]try-then-else2 == [P1][B1][[P2][B2][C]try-then-else]try-then-else
+# similar for 3-7. 
+#
+# These operations help 'flatten' common conditional behaviors. However, this 
+# grows awkward and unwieldy at higher numbers. Refactoring might help. Or an
+# intermediate data structure DSL could more precisely represent intentions.
+#  
+macro try-else2 [p-try-else p-try-else]
+macro try-else3 [p-try-else p-try-else p-try-else]
+macro try-else4 [p-try-else p-try-else p-try-else p-try-else]
+macro try-else5 [p-try-else p-try-else p-try-else p-try-else p-try-else]
+macro try-else6 [p-try-else p-try-else p-try-else p-try-else p-try-else p-try-else]
+macro try-else7 [p-try-else p-try-else p-try-else p-try-else p-try-else p-try-else p-try-else]
+macro try-then-else2 [p-try-then-else p-try-then-else]
+macro try-then-else3 [p-try-then-else p-try-then-else p-try-then-else]
+macro try-then-else4 [p-try-then-else p-try-then-else p-try-then-else p-try-then-else]
+macro try-then-else5 [p-try-then-else p-try-then-else p-try-then-else p-try-then-else 
+                      p-try-then-else]
+macro try-then-else6 [p-try-then-else p-try-then-else p-try-then-else p-try-then-else 
+                      p-try-then-else p-try-then-else]
+macro try-then-else7 [p-try-then-else p-try-then-else p-try-then-else p-try-then-else 
+                      p-try-then-else p-try-then-else p-try-then-else]
+
+assert [2 [1 eq 'a][2 eq 'b][drop 'c] try-else2 'b eq]
+
+# halt (divergence)
+#  equivalent to entering an infinite loop, but makes this
+#  intention more explicit (and supports a debug message).
+prog p-halt-with-msg [0 'halt put]
 macro halt-with-msg [p-halt-with-msg]
+prog halt ['halt apply]
+prog halt-tbd ['tbd halt-with-msg]
+prog halt-type-error ['type-error halt-with-msg]
+prog halt-unreachable ['unreachable halt-with-msg]
 
-# halt with certain errors
-prog tbd ['tbd halt-with-msg]
-prog type-error ['type-error halt-with-msg]
-prog unreachable ['unreachable halt-with-msg]
-
-# PAIRS - trees with both the '0' and '1' edges.
-# Pairs are mostly used for construction of lists.
+# PAIRS 
+# 
+#   (A,B) =>   /\
+#             A  B
+#
+# Glas systems favor labeled records for extensibility and
+# self-documentation. However, pairs are a useful low-level
+# type. Lists are formed from pairs. 
 
 prog pair [0 0b1 put 0b0 put]
 prog pair-fst [0b0 get]
@@ -56,14 +97,22 @@ assert [1 2 3 pair pair pair-snd unpair 3 eq 2 eq]
 # DATA AND SEQ MACRO SUPPORT
 #
 # No need for 'data' or 'seq' as macros, but p-* forms
-# are very convenient for construction of new macros.
+# are convenient for construction of new macros.
 
 # p-data    Value -- [Value]
 prog p-data [0 'data put]
 
 # p-seq     ([A] [B] -- [A B])
-#  compose two programs sequentially.
-prog p-seq  [['seq get] [pair] [0 pair pair] try-then-else 0 'seq put]
+#  minor optimization when [B] is already a sequence.
+prog p-seq  [['seq get] [0 pair] try-else pair 0 'seq put]
+
+# p-prefix  ([A] [B] -- [B A])
+#   same as 'swap p-seq'. Comes up a lot.
+prog p-prefix [swap p-seq]
+
+# p-suffix  ([A] [B] -- [A B])
+#   p-seq but renamed to match p-prefix.
+prog p-suffix [p-seq]
 
 # p-curry   (Value [Fn] -- [Value Fn])
 #  bind first parameter into a program value.
@@ -75,17 +124,24 @@ data p-nop ['seq]
 
 assert [1 [2 pair] p-curry apply unpair 2 eq 1 eq]
 
-# CONDITIONAL VARIATIONS
+# LOOP VARIATIONS
+# loop          ([Op] loop)
+#  run sub-program repeatedly until it fails.
+prog p-loop [0 'while put 0 'loop put]
+macro loop [p-loop]
 
-# try       ([P]try == [P][][]try-then-else)
-# try-then  ([P][L]try-then == [P][L][]try-then-else)
-# try-else  ([P][R]try-else == [P][][R]try-then-else)
-prog p-try [0 'try put 0 'cond put]
-prog p-try-then [0 'then put 'try put 0 'cond put]
-prog p-try-else [0 'else put 'try put 0 'cond put]
-macro try [p-try]
-macro try-then [p-try-then]
-macro try-else [p-try-else]
+# do-while      ([Body][Cond]do-while)
+#  run Body once before checking condition. Equivalent: 
+#    Body [Cond] [Body] while-do
+prog p-do-while [[copy] dip swap p-while-do p-seq]
+macro do-while [p-do-while]
+
+# do-until      ([Body][Cond]do-until)
+#  run Body once before checking condition. Equivalent:
+#    Body [Cond] [Body] until-do
+prog p-do-until [[copy] dip swap p-until-do p-seq]
+macro do-until [p-do-until]
+
 
 # NON-MODIFYING OBSERVATIONS
 #
@@ -100,35 +156,14 @@ macro verify [p-verify]
 assert [0 [0 eq] verify 0 eq]
 assert [0 [[1 eq] verify][1][2] try-then-else 2 eq 0 eq]
 
-# verify-not ([Predicate] -- | FAIL)
+# reject ([Predicate] -- | FAIL)
 #  evaluates predicate, then undoes effects.
 #  passes if predicate would fail, succeeds otherwise.
-prog p-verify-not [[fail] p-try-then [fail] p-try-else]
-macro verify-not [p-verify-not]
-assert [0 [1 eq] verify-not 0 eq]
-assert [0 [[0 eq] verify-not][1][2] try-then-else 2 eq 0 eq]
-
-# reject - same as 'verify-not'
-macro reject [p-verify-not]
-
-# LOOP VARIATIONS
-
-# loop          ([Op]loop)
-#  run sub-program repeatedly until it fails.
-prog p-loop [0 'while put 0 'loop put]
-macro loop [p-loop]
-
-# do-while      ([Body][Cond]do-while)
-#  run Body before checking condition. Equivalent: 
-#    Body [Cond] [Body] while-do
-prog p-do-while [[copy] dip swap p-while-do p-seq]
-macro do-while [p-do-while]
-
-# do-until      ([Body][Cond]do-until)
-#  run Body before checking condition. Equivalent:
-#    Body [Cond] [Body] until-do
-prog p-do-until [[copy] dip swap p-until-do p-seq]
-macro do-until [p-do-until]
+prog p-reject [[fail] p-try-then [fail] p-try-else]
+macro reject [p-reject]
+assert [0 [1 eq] reject 0 eq]
+assert [0 [[0 eq] reject][1][2] try-then-else 2 eq 0 eq]
+assert [[[] reject] reject]
 
 # DATA PLUMBING SUPPORT
 # 
@@ -204,7 +239,7 @@ assert [
     6 7 0 'x put 'y put copy 
     42 swap 'x 42 putd 
     ['y get 6 eq] verify
-    ['x get] verify-not
+    ['x get] reject
     drop
     42 swap 'x 0 putd
     ['y get 6 eq] verify

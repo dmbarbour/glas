@@ -173,11 +173,12 @@ let tests =
                 Expect.equal s s' "equal strings"
 
         // testing the pretty printer...
-        testCase "escaploosion - printing strings" <| fun () ->
+        testCase "printing ugly multi-line string" <| fun () ->
             let s0 = "\n\"Hello, world!\"\a\t\v\r\x1b\x7f"
             let v = ofString s0 
             let spp = prettyPrint v
-            Expect.equal "\"\\n\\\"Hello, world!\\\"\\a\\t\\v\\r\\x1B\\x7F\"" spp "pretty printing ugly strings"
+            let se = "\"\"\"\n \n \"Hello, world!\"\a\t\v\r\x1b\x7f\n\"\"\""
+            Expect.equal spp se "pretty printing multi-line string"
 
         testCase "printing numbers" <| fun () ->
             Expect.equal "23" (prettyPrint (ofNat 23UL)) "print numbers"

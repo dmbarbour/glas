@@ -50,7 +50,7 @@ Glas values may scale to represent entire databases. Subtrees of larger-than-mem
 
 ## Programs
 
-Programs are simply values with a standard interpretation. The interpretation described here is the one used by the command line for use in language modules and runnable applications. It is designed for simplicity, compositionality, and convenient integration with the application model at cost to flexibility. Performance depends on embedded annotations and some specialized optimizations.
+Programs are values with a standard interpretation. The interpretation described here is used for language modules and to represent basic applications for the glas command line. It is designed for simplicity and compositionality at significant costs to flexibility and convenience of direct use by humans. Performance can be augmented by acceleration and other specialized optimizations.
 
 Programmers usually express these programs indirectly, e.g. write ".g0" files that compile into dictionaries of reusable programs. Metaprogramming features can mitigate flexibility.
 
@@ -88,15 +88,15 @@ The stack in glas is really an intermediate data plumbing model. User syntax cou
 Glas programs must have static stack arity, i.e. the 'try-then' arity must match the 'else' arity, or a loop 'while-then' must have the same input and output arity. This is designed to be easy to verify.
 
 * **seq:\[List, Of, Operators\]** - sequential composition of operators. 
- * *nop* - identity function, can be represented by empty seq (or by 'prog')  
+ * *nop* - identity function, can be represented by empty seq  
 * **cond:(try:P, then:Q, else:R)** - run P; if P does not fail, run Q; if P fails, undo P then run R. Variants:
  * 'then' and 'else' clauses are optional, default to nop.
 * **loop:(while:P, do:Q)** - run P. If successful, run Q then repeat loop. Otherwise, exit loop. Variants:
  * *loop:(until:P, do:Q)* - run P. If that fails, run Q then repeat loop. Otherwise, exit loop.
  * 'do' field is optional, defaults to nop.
 * **eq** - Remove two items from data stack. If identical, continue, otherwise fail.
-* **fail** - always fail, allows backtracking
-* **halt:Message** - logically diverges, like an infinite loop. Message should indicate cause: undefined behavior, type-error, todo, etc.. 
+* **fail** - always fail; causes backtracking in context of cond/loop
+* **halt:Message** - logically diverges, like an infinite loop but more explicit in its intention. Prevents backtracking. Message should indicate cause to a human programmer: undefined behavior, type-error, todo, etc.. 
 
         seq:[]              ∀S . S → S
         seq:(Op :: Ops)     (as SEQ)
@@ -123,6 +123,8 @@ Glas programs must have static stack arity, i.e. the 'try-then' arity must match
         eq : ∀S,A,B . ((S * A) * B) → S | FAIL
         fail : ∀S . S → FAIL
         halt:_ : ∀S,S' . S → S'
+
+A consequence of this 'loop' model is that we essentially need to represent loops as state machines.
 
 In context of transaction machines, 'halt' will effectively abort the entire transaction.
 
@@ -245,17 +247,15 @@ The 'proc' model described in [glas applications](GlasApps.md), when adequately 
 
 ### Useful Languages
 
-The glas system will need many language modules. 
+The g0 language is used for bootstrap. It is a Forth-inspired language with expressive metaprogramming features. But it's intended as a stable starting point, not a final language, nor as something to directly improve. The glas system will need language modules for other use cases.
 
-The g0 language is used for bootstrap. It is a Forth-inspired language with expressive metaprogramming features. But it's intended as a stable starting point, not a final language or something to significantly improve over time.
+Data languages will often be more convenient than embedding data in a programming language. In part because this simplifies working with external tools. We could support ".txt" files (e.g. convert UTF-16 to UTF-8, remove byte-order mark, check spelling, etc.). We can also support structured data files - JSON, XML, CSV, MsgPack, SQLite, Cap'n Proto, or even [Glas Object](GlasObject.md).
 
-There is room for more programming languages. The g0 language falls short on many features: recursive definitions, visibility of pattern matching and data plumbing, type annotations and implicit type checking, process/procedure layer composition (involving multiple transactional steps), type-guided overrides and program search, etc..
+Programming languages can support mutually recursive definitions, multi-step procedures, process networks, variables, type annotations, type-guided overrides and program search, and many more features. The g0 language is quite awkward for some use-cases.
 
-Data languages will often be more convenient than embedding data within a programming language. In part because this simplifies working with external tools. We could support ".txt" files (e.g. convert UTF-16 to UTF-8, remove byte-order mark, check spelling, etc.). We can also support structured data files - JSON, XML, CSV, MsgPack, SQLite, Cap'n Proto, or even [Glas Object](GlasObject.md).
+Text preprocessor languages could import, define, and support character-level macros. Users might apply the preprocessor anywhere it might be useful via composing file extensions, e.g. ".g0.m4" vs. ".json.m4", while keeping it separate from the underlying language.
 
-A generic text preprocessor language that can import, define, and invoke character-level macros can be widely useful. Users could apply the preprocessor anywhere it might be useful via composing file extensions, e.g. ".g0.m" vs. ".json.m", while keeping it separate from the underlying language.
-
-It is feasible to explore graphical and structured editors for certain modules. This would generally require that all files are of types recognized by the editor, but also have consistent interpretations by glas language modules.
+It is feasible to develop graphical programming in glas, using structured files (perhaps even database files) to represent modules within a program in a manner easily viewed and manipulated by tools other than text editors. This is a general direction I'd like to pursue relatively early in glas systems, though I don't have many precise ideas yet.
 
 ### Abstract and Linear Data
 

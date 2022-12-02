@@ -25,7 +25,7 @@ prog list-impl [[[unpair [drop] dip] loop 0 eq] verify]
 prog list [[list-impl] 'list p-anno-accel apply]
 
 assert [ 2 1 0 pair pair copy list eq ]
-assert [ 3 2 1 pair pair [list] verify-not drop ]
+assert [ 3 2 1 pair pair [list] reject drop ]
 
 # pushl (V L -- V:L)
 #  same as pair except fails if L is a non-list value.

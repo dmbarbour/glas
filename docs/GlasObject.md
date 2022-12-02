@@ -40,7 +40,7 @@ The proposed encoding for Basic Nodes consumes 96 header types, and supports fle
 
         ttt1 fnnn . (bytes) - medium stem
             f - full or partial first byte (0 - partial)  
-            nnn - 1-8 bytes
+            nnn - 1-8 bytes, msb to lsb
 
         partial first byte - encodes 1 to 7 bits
             abcdefg1 - 7 bits
@@ -75,7 +75,7 @@ In Glas systems, lists are used for almost any sequential data structure - array
 Specialized List Nodes:
 
 * *array* - header (0x0A) . (length) . (offset to array of offsets); represents a list of values of given length. To support indexing of the array, encoding of offsets within array is denormalized such that all have same length. 
-* *binary* - header (0x0B) . (length) . (offset to bytes); represents a list of bytes. Each byte is essentially same as '0x38 (byte)' - i.e. a stem-leaf node, msb to lsb order.
+* *binary* - header (0x0B) . (length) . (offset to bytes); represents a list of bytes. Each byte represents an 8-bit stem-leaf bitstring, msb to lsb.
 * *inline array* - header (0xA0 - 0xAF) . (array of 1 to 16 offsets); same as array of size 1 to 16, zero offset. 
 * *inline binary* - header (0xB0 - 0xBF) . (1 to 16 bytes); same as binary of size 1 to 16, zero offset. 
 * *concat* - header (0x0C) . (offset to right value) . (left list); represents logical concatenation of left list to right value (usually another list).

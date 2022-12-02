@@ -15,7 +15,7 @@ Most operations used in practice should be user-defined. This ensures logic is v
 
 ## Value References
 
-The '--run' and '--extract' commands are parameterized by a reference to a value in the glas module system.
+The primary operations are parameterized by a reference to a value in the glas module system. This reference specifies a module (local to working directory or global) and may index into a dictionary via dotted path.
 
         ValueRef = (ModuleRef)(ComponentPath)
         ModuleRef = LocalModule | GlobalModule
@@ -25,15 +25,13 @@ The '--run' and '--extract' commands are parameterized by a reference to a value
         Word = WFrag('-'WFrag)*
         WFrag = [a-z][a-z0-9]*
 
-A local module is found the current working directory. A global module is found based on prior configuration (see below). 
-
-These references are simplistic, e.g. no support for emoji characters or indexing a list. If flexible value references are desired, try an application macro.
+This syntax restricts references in several cases, e.g. a component path cannot include emoji characters, and we cannot slice or index a list. This can be mitigated by avoidance or resolved by a little indirection, e.g. application macros can support more flexible value references.
 
 ## Configuration
 
 The glas executable will centralize configuration files, cached computations, content-addressed storage, and the shared key-value database into a single folder. This folder may be specified by the GLAS_HOME environment variable or will be implicitly assigned a value based on OS convention such as `~/.config/glas` in Linux or `%AppData%/glas` in Windows.
 
-The primary configuration file is "sources.txt". Each entry in this file represents a location to search for global modules in priority order (value of first match 'wins'). Line comments are permitted starting with '#'. Currently, this is limited to 'dir' entries for local filesystem directories. Future extensions could support network resources or logical renaming of modules.
+The primary configuration file is "sources.txt". Each entry in this file represents a location to search for global modules in priority order (value of first match 'wins'). Line comments are permitted starting with '#'. Currently, this is limited to 'dir' entries for local filesystem directories. Future extensions can support network resources or logical renaming of modules.
 
         # example sources.txt
         dir ./src
@@ -43,7 +41,7 @@ The primary configuration file is "sources.txt". Each entry in this file represe
 
 Secondary configuration will be expressed via local glas module named "conf". This module would compile to a record value that includes elements for logging, caching, sandboxing, and other configurable features recognized by the glas executable.
 
-Finally, application-specific configuration should be expressed using annotations. Annotations can be compiled into apps or adjusted by application macros. Effects API versioning, profiling, tuning memory allocation and GC, etc. are best supported via annotations.
+Finally, application-specific configuration should be expressed using annotations. Annotations can be compiled into apps or adjusted by application macros. Profiling, tuning memory allocation and GC, even effects API versioning can be supported via annotations.
 
 ## Extracting Binaries
 
@@ -51,7 +49,7 @@ The glas command line can directly extract binary data to standard out.
 
         glas --extract ValueRef
 
-The reference must evaluate to a binary value (a list of bytes). The binary is written to stdout, then the command halts. The primary motive for this feature is to support bootstrap without implementing a complete effects API.
+The reference must evaluate to a binary value (a list of bytes). This binary is written to stdout, then the command halts. The motive for this feature is to support bootstrap without implementing or maintaining a runtime effects API.
 
 ## Running Applications
 
@@ -59,7 +57,9 @@ The glas command line knows how to interpret some values as runnable application
 
         glas --run ValueRef -- Args To App
 
-The application model is extensible: interpretation is based on value header such as 'prog', 'proc', or 'macro' (see below). For performance, the glas command line may implicitly compile and cache application behavior, but that won't be directly exposed to the user. Args following '--' are passed to the application. (The '--' separator may be omitted if would be final argument.)
+Interpretation depends on the value header, currently recognizing 'prog', 'proc', or 'macro' (see below). This may be extended over time. To improve performance, the glas command line may privately compile and cache a representation of application behavior. Args following '--' are passed to the application. The '--' separator may be omitted if would be final argument.
+
+*Note:* Additional arguments prior to '--' would interfere with aesthetics and abstraction. Annotations are favored instead. Annotations can be adjusted by application macros.
 
 ### Basic Applications
 
@@ -67,17 +67,15 @@ A basic application process uses the 'prog' header.
 
         prog:(do:Program, ... Annotations ...) 
 
-This program represents an application process as a transactional step function.
+This program must have 1--1 arity and be typed as a transactional process step function:
 
         type Step = init:Params | step:State -> [Effects] (halt:Result | step:State) | Fail
 
-In context of the console application, this process starts with `init:["List", "Of", "Args"]` and finishes with `halt:ExitCode`. The ExitCode should be a short bitstring representing a 32-bit integer. Between init and halt, the process may commit any number of intermediate steps, forwarding the State value.
+In context, this process starts with `init:["List", "Of", "Args"]` and finishes with `halt:ExitCode`. The ExitCode should be a bitstring representing a small integer. The process may commit one or more intermediate 'steps' before halting, carrying application private state to the next step. Input and output is expressed effectfully and applied transactionally between steps.
 
-*Note:* Supported effects will gradually evolve. Compatibility concerns can be mitigated by annotating the expected API version.
+### Process Networks
 
-### Scalable Applications
-
-For robust concurrency and incremental computing, favor the 'proc' header.
+Applications expressed via 'prog' header are difficult to statically optimize for incremental computing, concurrency, and distribution. So I'm currently developing another program model with the 'proc' header that is easier to optimize.
 
         proc:(do:Process, ... Annotations ...)
 
@@ -93,7 +91,7 @@ To simplify caching, arguments are implicitly staged via '--':
 
         glas --run MacroRef -- Static Args -- Dynamic Args
 
-The macro program must be 1--1 arity and here would receive `["Static", "Args"]` on the data stack. The returned value must represent another application (potentially an application macro), which then is run receiving `["Dynamic", "Args"]`. (The '--' separator may be omitted if would be final argument.)
+The macro program must be a 1--1 arity function and here would receive list of strings `["Static", "Args"]` on the data stack. The returned value must represent another application (potentially another application macro), which then is run receiving `["Dynamic", "Args"]`. The '--' separator may be omitted if would be final argument.
 
 The macro program has access to the same effects API as language modules, i.e. 'log' and 'load'. Application macros are usefully viewed as user-defined languages for the command line interface.  and combine nicely with the syntactic sugar for user-defined operations.
 
@@ -128,9 +126,9 @@ In practice, we need different binaries for different operating systems and mach
 Keeping it simple. 
 
          0  okay
-         1  fail
+        -1  fail
 
-The glas command line interface will favor log messages to report warnings or errors. Runnable applications may halt with an arbitrary integer exit code (up to 31 bits) but even for those I'd suggest generally sticking to error logs and only signaling failure with the exit code.
+The glas command line interface will favor log messages to report warnings or errors. Runnable applications may halt with a small integer exit code. But even for apps I would favor log messages over informative exit codes.
 
 ## Secondary Operations
 
@@ -142,7 +140,7 @@ I'd prefer to avoid built-ins with sophisticated logic. But a few lightweight ut
 * `--version` - print executable version information
 * `--help` - print information about options
 
-However, as a built-in, a feature such as '--print' won't support options about formatting, e.g. printing to SVG or HTML, or the use of progressive disclosure. Ideally, we should move ASAP from built-ins to user-defined operations such as 'glas-cli-print'. 
+Ideally, we should move ASAP from built-ins to user-defined operations such as 'glas-cli-print'. 
 
 ## Thoughts
 

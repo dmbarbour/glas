@@ -1,0 +1,237 @@
+# Bitstring Manipulation
+# 
+# Note: There is some awkward entanglement with arithmetic operators
+# because integers are represented as bitstrings and some bitstring 
+# ops (such as length, split) require integer support. I've decided
+# to resolve this by defining shared functions in this module.
+
+open prims
+
+# the empty bitstring
+data empty [0b]
+
+# pop       Bits -- Bool Bits
+#  return head bit and remainder of bits 
+prog pop [[0b0 get 0b0] [0b1 get 0b1] try-else swap]
+prog head [pop drop]
+prog tail [pop swap drop]
+
+assert [ 0b100 head 0b1 eq ]
+assert [ 0b011 head 0b0 eq ]
+assert [ 0b101100 tail 0b01100 eq ]
+
+# check         Value -- Bits | FAILURE
+#   fails if input is not a bitstring.
+prog check [
+  [[empty eq]                   # until empty
+   [[unpair] reject tail]       # verify head is not a pair, take tail.
+   until-do] verify             # also, don't modify the input
+]
+
+assert [[0b1011 check] verify]
+assert [[1 2 pair check] reject]
+
+# prefix/suffix - append forms
+#    ABC DEF suffix => ABCDEF
+#    DEF ABC prefix => ABCDEF
+prog prefix [0 swap put]
+prog suffix [swap prefix]
+
+# append        ABC DEF -- ABCDEF
+#   Append two bitstrings. 
+prog append [suffix]
+assert [0b110100 0b011110 append 0b110100011110 eq]
+
+
+prog p-each [p-dip [pop] swap p-while-do [empty eq] p-suffix]
+prog p-each-while [p-dip [pop] p-prefix p-loop]
+
+# each      Bits [Bit -- ] -- 
+#  process each bit sequentially with a given function.
+#  entire operation fails if given function fails.
+macro each [p-each]
+
+# each-while  Bits [Bit -- | FAIL] -- Bits
+#  same as 'each' but will short-circuit the loop if the
+#  operation fails. Returns the unprocessed bits.
+macro each-while [p-each-while]
+
+prog reverse-append [[prefix] each]
+
+# reverse       ABCDEF -- FEDCBA
+#   Reverse a bitstring.
+prog reverse [empty swap reverse-append]
+assert [0b00101101001 reverse 0b10010110100 eq]
+
+# map       Bits [Bit -- Bit] -- Bits
+#  apply a function to each bit in a bitstring, 
+#  produces a new bitstring.
+prog p-map [ 
+    p-dip [swap] p-prefix [append] p-suffix 
+    p-each
+    [empty swap] p-prefix [reverse] p-suffix
+]
+macro map [p-map]
+
+# bit-negate    Bit -- Bit
+#  operates on a single bit. (not exported.)
+prog bit-negate [[0b0 eq 0b1][drop 0b0]try-else]
+
+assert [0b0 bit-negate 0b1 eq]
+assert [0b1 bit-negate 0b0 eq]
+
+# negate        Bits -- Bits
+#   Negate every bit in the bitstring.
+#   Also equivalent to negating a number.
+prog negate [[bit-negate] map]
+assert [0b00101101001 negate 0b11010010110 eq]
+
+# map2      Bits Bits [Bit Bit -- Bit] -- Bits
+#  apply a function to every pair of bits from two bitstrings.
+#  fails if bitstrings are of different lengths.
+prog p-map2 [
+    p-dip [[pop] dip swap] p-prefix [swap] p-suffix 
+    p-map 
+    [empty eq] p-dip p-suffix
+]
+macro map2 [p-map2]
+
+# bit-max   Bit Bit -- Bit
+#   return maximum of two bits (bit 'or')
+prog bit-max [[0b0 eq] [drop2 0b1] try-else]
+assert [0b0 0b0 bit-max 0b0 eq]
+assert [0b1 0b0 bit-max 0b1 eq]
+assert [0b0 0b1 bit-max 0b1 eq]
+assert [0b1 0b1 bit-max 0b1 eq]
+
+# and       Bits Bits -- Bits
+#   bitwise maximum (or bitwise 'or') of two bitstrings
+#   requires bitstrings of equal length
+prog and [ [bit-max] map2 ]
+assert [0b0011 0b0110 and 0b0111 eq]
+
+# bit-min   Bit Bit -- Bit
+#   return minimum of two bits (bit 'and')
+prog bit-min [[0b1 eq] [drop2 0b0] try-else]
+assert [0b0 0b0 bit-min 0b0 eq]
+assert [0b1 0b0 bit-min 0b0 eq]
+assert [0b0 0b1 bit-min 0b0 eq]
+assert [0b1 0b1 bit-min 0b1 eq]
+
+# or       Bits Bits -- Bits
+#   bitwise minimum (or bitwise 'and') of two bitstrings
+#   requires bitstrings of equal length.
+prog or [ [bit-min] map2 ]
+assert [0b0011 0b0110 or 0b0010 eq]
+
+# bit-neq  Bit Bit -- Bit
+#   value is 0b1 if bits are the same, 0b1 otherwise
+prog bit-neq [[eq 0b0] [drop2 0b1] try-else]
+assert [0b0 0b0 bit-neq 0b0 eq]
+assert [0b1 0b0 bit-neq 0b1 eq]
+assert [0b0 0b1 bit-neq 0b1 eq]
+assert [0b1 0b1 bit-neq 0b0 eq]
+
+# xor       Bits Bits -- Bits
+#   bitwise not-equal (or bitwise 'xor') of two bitstrings
+#   requires bitstrings of equal length
+prog xor [ [bit-neq] map2 ]
+assert [0b0011 0b0110 xor 0b0101 eq]
+
+prog erase-leading-zeroes [ [0b0 get] loop ]
+prog erase-leading-ones   [ [0b1 get] loop ]
+
+assert [0b00101 erase-leading-zeroes 0b101   eq]
+assert [0b11010 erase-leading-zeroes 0b11010 eq]
+assert [0b00101 erase-leading-ones   0b00101 eq]
+assert [0b11010 erase-leading-ones   0b010   eq]
+
+# increment     Int -- Int
+#  implements increment via bitstring manipulation
+prog increment [
+    empty swap reverse 
+    [0b1 get][[0b0 prefix] dip] while-do
+    # now we have either: 0b, 0b0, 0b0xx
+    [0b eq 0b1] # 0 => 1
+    [0b0 get
+      [0b eq 0b]  # -1 => 0
+      [0b1 prefix] # no carry
+      try-else
+    ] 
+    try-else
+    reverse-append
+]
+assert [4 increment 5 eq]
+assert [3 increment 4 eq]
+assert [2 increment 3 eq]
+assert [1 increment 2 eq]
+assert [0 increment 1 eq]
+assert [-1 increment 0 eq]
+assert [-2 increment -1 eq]
+assert [-3 increment -2 eq]
+assert [-4 increment -3 eq]
+
+# decrement     Int -- Int
+#  implements decrement via bitstring manipulation
+prog decrement [
+    empty swap reverse
+    [0b0 get] [[0b1 prefix] dip] while-do
+    [0b eq 0b0] # 0 => -1
+    [0b1 get
+        [0b eq 0b] # 1 => 0
+        [0b0 prefix] # no carry
+        try-else
+    ]
+    try-else
+    reverse-append
+]
+assert [4 decrement 3 eq]
+assert [3 decrement 2 eq]
+assert [2 decrement 1 eq]
+assert [1 decrement 0 eq]
+assert [0 decrement -1 eq]
+assert [-1 decrement -2 eq]
+assert [-2 decrement -3 eq]
+assert [-3 decrement -4 eq]
+assert [-4 decrement -5 eq]
+
+# N [Op] repeat
+#  will repeat [Op] N times.
+#  N is dynamic here.
+macro repeat [p-dip [decrement] p-prefix [0 eq] swap p-until-do]
+assert [3 6 [increment] repeat 9 eq]
+
+# length    Bits -- Nat
+prog length [0 swap [tail [increment] dip] loop 0 eq]
+assert [empty length 0 eq]
+assert [0b001101001 length 9 eq]
+assert ['length length 56 eq]
+
+# split  Bits N -- Bits Bits
+#   split Bits into two 
+prog split [
+    [empty] dip2
+    [pop [prefix] dip] repeat
+    [reverse] dip
+]
+assert [ 0b0101100010 4 split 0b100010 eq 0b0101 eq ]
+
+# take  Bits N -- Bits
+prog take [ split drop ]
+assert [ 0b1101001 4 take 0b1101 eq ]
+
+# skip  Bits N -- Bits
+#   drop first N bits from bitstring 
+prog skip [ [tail] repeat ]
+assert [ 0b0101100010 4 skip 0b100010 eq ]
+
+export 
+    check, empty, head, tail, pop,
+    each, each-while, map, map2,
+    append, reverse, negate,
+    xor, or, and, 
+    length, split, take, skip,
+
+    # plus a few ops for numbers 
+    increment, decrement, repeat
+

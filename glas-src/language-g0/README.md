@@ -234,10 +234,4 @@ Interaction of variables and macros introduces a lot of complexity that I'd pref
 
 ### Negative Assertions. Rejected.
 
-I could design an assertions model that accepts only *failed* programs.
-
-        assert [ [test code] reject ]
-         # with suitable 'reject' macro, becomes
-        reject [ test code ]
-
-However, the interaction with compile-time effects seems relatively awkward to explain. Sticking to assert is consistent and comprehensible even if slightly less convenient.
+I could design an assertions model that accepts only *failed* programs. Perhaps `reject [Test Code]`. But the interaction with compile-time effects seems awkward to explain. For now, sticking with positive `assert`. We can always write `assert [[Test Code] reject]`.
