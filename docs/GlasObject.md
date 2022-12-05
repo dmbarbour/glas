@@ -1,10 +1,8 @@
 # Glas Object
 
-Glas Object, or 'glob', is a compact, indexed binary representation for tree-structured data. Primary use cases for Glas Object are data storage, communication, and caching. The focus is representation of dictionaries (radix trees) and lists (arrays, binaries, finger tree ropes), and structure sharing. 
+Glas Object, or 'glob', is a compact, indexed binary representation for tree-structured data. Primary use cases are data storage, communication, and caching. The focus is representation of dictionaries (radix trees) and lists (arrays, binaries, finger tree ropes), and structure sharing. 
 
-Structure sharing is supported within a glob via offsets and between globs via content-addressed references and accessors. We can reference globs by their secure hash (SHA3-512), and follow a path to a component item.
-
-Although Glas Object is designed for Glas, it should be a very good representation for acyclic structured data in general. 
+Glas Object is intended to work well with content-addressed storage. A glob can reference other globs by secure hash (SHA3-512), and can work together with proxy caching via content delivery networks. However, it is also feasible to use globs within the glas module system, with access to other modules and procedural generation. This is supported by abstracting the *external reference* type.
 
 ## Desiderata
 
@@ -89,24 +87,23 @@ See *Encoding Finger Tree Ropes* for a pattern to leverage concat effectively. O
 
 Glas Object supports internal references within a glob file, and external references between glob files.
 
-* *external ref* - header (0x02) followed by 64-byte secure hash (SHA3-512) of another glob.
-* *external bin* - header (0x03) followed by 64-byte secure hash (SHA3-512) of binary value.
+* *external ref* - header (0x02) followed by a value that contextually references another value. Reference type depends on context:
+ * For content-addressed storage:
+  * *sha3:SecureHash* - contains an SHA3-512 as 64-byte binary. Parses referenced binary as a glob.
+  * *bin:sha3:SecureHash* - reference to raw binary by secure hash
+ * For glas module system:
+   * *local:ModuleName* - load a local module
+   * *global:ModuleName* - load a global module
+   * *eval:prog:(do:Program, ...)* - evaluate a 0--1 arity glas program with access to 'log' and 'load' effects
 * *internal ref* - header (0x88) followed by offset to later value within current glob.
-
-Internal ref nodes are useful for structure sharing within a glob; header is implicit in *path* accessor nodes (see below). External ref nodes can access an external glob binary, or raw binary (treated as a list of bytes). Fine-grained sharing of referenced data is feasible via *Accessor* nodes to slice a list or follow a path into a record.
 
 ### Accessors
 
-Accessors support fine-grained structure sharing between globs. For example, we may define a common dictionary then use accessors to reference individual definitions.
+Accessors support fine-grained structure sharing that preserves indexability and works in context of content-addressed storage. Essentially, we support slicing lists and indexing into records. 
 
-* *path* - headers (0x80-0x9F) . (offset to target); uses stem-bit header (ttt=100) to encode a bitstring path. Equivalent to following that path into the target value.
+* *path* - headers (0x80-0x9F) . (offset to target); uses stem-bit header (ttt=100) to encode a bitstring path. Equivalent to following that path into the target value. 
 * *drop*  - header (0x08) . (length) . (offset); equivalent to path of length '1' bits. 
-* *take* - header (0x09) . (length) . (list value); equivalent to sublist of first length items from list. 
-
-        take 0 _ = ()
-        take n (x,xs) = (x, take (n-1) xs)
-
-Essentially, we support slicing lists and indexing into records. 
+* *take* - header (0x09) . (length) . (list value); equivalent to sublist of first length items from list. In addition to slicing lists, this is useful to cache list length for ropes.
 
 ### Annotations
 
@@ -131,21 +128,11 @@ A length value is encoded as a varnat+1, for example 01111111 encodes varnat 127
 
 *Note:* Most implementations won't want to use bigints for varnats. In practice, 63 data bits is the maximum. This won't affect most use-cases, but does constrain size of 'sparse' arrays represented as ropes with shared zeroes.
 
-## Bytes
-
-Byte values are readily encoded in Glas Object.
-
-        0x38 (byte)     - single byte value
-        0xA0 (byte)     - list of single byte
-
-In general, bytes represent 8-bit stem-leaf nodes, msb to lsb.
-
 ## Summary of Node Headers
 
-        0x00        Void (never valid data)
+        0x00        Void (never used)
         0x01        Annotation
         0x02        External Ref
-        0x03        External Bin
 
         0x08        Drop
         0x09        Take
@@ -161,7 +148,7 @@ In general, bytes represent 8-bit stem-leaf nodes, msb to lsb.
         0xB0-0xBF   Short Binaries (length 1 to 16)
 
         UNUSED:
-        0x04-0x07
+        0x03-0x07
         0x0D-0x0F
         0xC0-0xFF
 
@@ -196,7 +183,9 @@ This structure represents a 2-3 finger-tree rope. The finger-tree rope is a conv
 
 ### Glob Headers
 
-If a glob binary starts with an internal reference node, the skipped data cannot be part of the glob value. I propose to use this space to instead store a glob header.
+Headers can be directly encoded as part of a glob value then bypassed via 'accessor'. Alternatively, it could be encoded as an annotation. However, these options make it difficult to reason locally about whether the header is referenced externally and must be preserved by tools.
+
+An alternative is to start the glob binary with an internal reference node. The skipped data cannot be observed as part of the glob data. I propose to use this space to instead store a glob header.
 
         0x88 (offset to data) (header) (data)
 
@@ -221,3 +210,4 @@ Support for applying a list of labels to a vector or matrix of data. This could 
 It is feasible to extend Glas Object with a lightweight language supporting 'views' of data. This language should be designed such that it guarantees termination and still supports indexed access to data (i.e. partial evaluation aligns with indexing). It might be feasible to integrate matrices, structs, and tables into this language in some manner. 
 
 This would require a lot of design work. It could make Glas Object a lot more flexible. But I'm uncertain that it would be worth the extra complexity. Something to consider later.
+
