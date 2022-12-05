@@ -89,8 +89,8 @@ Glas Object supports internal references within a glob file, and external refere
 
 * *external ref* - header (0x02) followed by a value that contextually references another value. Reference type depends on context:
  * For content-addressed storage:
-  * *sha3:SecureHash* - contains an SHA3-512 as 64-byte binary. Parses referenced binary as a glob.
-  * *bin:sha3:SecureHash* - reference to raw binary by secure hash
+  * *glob:sha3:SecureHash* - contains an SHA3-512 as 64-byte binary. Parses referenced binary as a glob.
+  * *binary:sha3:SecureHash* - reference to raw binary by secure hash
  * For glas module system:
    * *local:ModuleName* - load a local module
    * *global:ModuleName* - load a global module
