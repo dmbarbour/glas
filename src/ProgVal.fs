@@ -161,6 +161,11 @@ module ProgVal =
             ValueSome (vAnno, pDo)
         | _ -> ValueNone
 
+    let wrapProg p =
+        match p with 
+        | Prog(vAnno, pDo)-> Prog(vAnno, pDo)
+        | _ -> Prog(Value.unit, p)
+
     let Halt vMsg = lv lHalt vMsg
 
     [<return: Struct>]

@@ -33,7 +33,7 @@ To efficiently represent non-branching path fragments, glas values use a represe
         type Bits = compact Bool list
         type T = (Bits * (1 + (T * T)))
 
-Glas systems will encode small, simple values directly into bitstrings. A bitstring is a tree with a single, non-branching path. For example, a byte is an 8-bit bitstring, msb to lsb, such that `00010110` is byte 22. A variable-width natural number 22 is almost the same but loses the zeroes prefix `10110`. Negative integers can be represented by inverting all the bits, so -22 is `01001`. 
+Glas systems will encode small, simple values directly into bitstrings. A bitstring is a tree with a single, non-branching path. For example, a byte is an 8-bit bitstring, msb to lsb, such that `00010110` is byte 22. A variable-width natural number 22 is almost the same but loses the zeroes prefix `10110`. Negative integers can be conveniently represented by negating all the bits, so -22 is `01001`.
 
 Glas systems encode most sequential structures as lists. Logically, a list is tree representing a right-associative sequence of pairs, terminating in unit, i.e. `type List = (Elem * List) | ()`. 
 
@@ -132,17 +132,17 @@ User syntax can extend the effective set of control operators, e.g. compiling a 
 
 ### Data Operators
 
-Glas programs support a few operators to support ad-hoc analysis and synthesis of data. These operators are directly applicable to record manipulation, but can be leveraged for ad-hoc analysis and synthesis of data. 
+Glas programs support a few operators to support ad-hoc manipulation of data (binary trees). These operators are most directly applicable to radix tree (aka record) manipulation but can be leveraged together with control operators to manipulate arbitrary data.
 
 Operators:
 
 * **get** ((label:V|R) label -- V) - given label and record, extract value from record. Fails if label is not in record.
 * **put** (V (label?_|R) label -- (label:V|R)) - given a label, record, and value on the data stack, create new record with the given label associated with the given value. Will replace existing label in record.
-* **del** ((label?_|R) label -- R) - remove label from record, including any suffix of the label that is not shared by other labels in the same record. If label is not in record, is equivalent to adding label first then removing it.
+* **del** ((label?_|R) label -- R) - returns new record minus label and any vestigial prefix thereof (i.e. any prefix that isn't shared by another label in the record). Effectively will 'put' label with unit value then erase back towards branch.
 
 Labels are bitstrings that often share prefixes but are distinguished by suffix. It is possible to operate on multiple fields within a record by operating on the shared prefix directly. *Note:* If the label input is not a bitstring, behavior is divergence instead of backtracking failure.
 
-Although optimized for records, these operators are used to build all data manipulation in glas programs. Performance will often depend on *Acceleration*.
+Performance of data manipulations will depend on *Acceleration* in many cases.
 
 ### Effects and Environments
 
@@ -182,16 +182,16 @@ Alternatively, we can extract an executable binary from the glas module system. 
 
 ## Language Modules
 
-Language modules are global modules with a simple naming convention: `language-xyz` is used as the compiler function for files with extension `.xyz`. The language module must compile to a value of form `(compile:prog:(do:Program, ...), ...)`.  
+Language modules are global modules with a simple naming convention: `language-xyz` is used as the compiler function for files with extension `.xyz`. The language module shall compile to a value of form `(compile:prog:(do:Program, ...), ...)`. The 'prog' header provides a path for potential extension. Fields other than 'compile' can support other tooling, such as IDE or REPL integration.
 
-The compiler program must be a glas program with 1--1 arity. Program input is usually a file binary (modulo multiple file extensions). Output must be the compiled module value, or failure if the input cannot be compiled. Compile-time effects are extremely limited to simplify reasoning about caching, sharing, and reproducibility:
+The compiler function currently must be a glas program with 1--1 arity. Input is usually the file binary (multiple file extensions is a special case). Output is the compiled module value, or failure if the input cannot be compiled. Compile-time effects are constrained to simplify caching, sharing, and reproducibility:
 
 * **load:ModuleRef** - Response is compiled value for the indicated module. The request may fail, e.g. if the module cannot be found or compiled, with cause implicitly logged. Currently propose a few forms of ModuleRef: 
  * *global:String* - search for global module based on configuration of CLI
  * *local:String* - search for module in same folder as file being compiled
 * **log:Message** - Message should be a record, e.g. `(text:"Uh oh, you messed up!", lv:warn)`, so that it can be flexibly extended with metadata. Response is unit. Behavior depends on development environment, e.g. might print the message to stderr with color based on level.
 
-*Note:* The glas command line will have a built-in implementation of the ".g0" compiler. This is be used to bootstrap [language-g0](../glas-src/language-g0/README.md) module, if possible. If bootstrap fails, the command line will log a warning but continue with the built-in.
+The glas command line executable shall include a built-in implementation of the ".g0" compiler, and an interpreter for glas programs. This is used to bootstrap the [language-g0](GlasZero.md) module, if possible. If bootstrap fails, a warning or error will be reported.
 
 ## Automated Testing
 
@@ -207,11 +207,23 @@ Glas systems will at least check for stack arity ahead of time. A more precise s
 
 ## Performance
 
+### Acceleration
+
+        prog:(do:Behavior, accel:Model, ...)
+
+Acceleration is an optimization pattern where a compiler or interpreter substitutes subprograms with built-in implementations. To guard against silent performance degradation in glas systems, this is explicitly specified by 'accel:Model' annotations. The Model is often a symbol such as 'list-append' indicating a built-in function. 
+
+Accelerators are often associated with specialized runtime representations of data. For example, lists might be represented by finger-tree ropes to support accelerated list-append. However, the data retains its view as a tree. Essentially, accelerators introduce new 'performance primitives' without any impact on formal semantics.
+
+Although it is feasible to accelerate many individual operations (such as list append or floating point arithmetic), one of the more fruitful and robust options is to accelerate evaluation of a virtual machine. For example, glas systems could broadly support compression and cryptography by accelerating a virtual CPU. Or support machine learning and ray tracing by accelerating a virtual GPGPU. The accelerated machine becomes a new compilation target for metaprogramming.
+
+*Note:* In some cases, we might want optional accelerators where it would be nice but is not necessary. For this case, I propose 'accel:opt:Model' to explicitly indicate optional acceleration.
+
 ### Stowage
 
-Glas systems will support storage and communication of large data by serializing subtrees to the [Glas Object](GlasObject.md) (aka 'glob') encoding then referencing the glob binary by SHA3-512 secure hash. I call this pattern 'stowage'. 
+I use the word 'stowage' to describe the use of content-addressed storage to serialize larger-than-memory data to disk or the network, then loading it back into local memory as needed. Stowage serves as an alternative to virtual memory paging. Stowage indirectly supports compression, memoization, and content distribution.
 
-Stowage can be guided by program annotations or performed heuristically by a garbage collector. Stowage essentially replaces use of virtual-memory paging. Consistent use of secure hashes simplifies the interaction of stowage with memoization and content distribution.
+The [Glas Object](GlasObject.md) representation is designed for use with stowage. However, my vision is that stowage should mostly be implicit within glas systems. Program annotations can guide stowage without observing it. An application effects API can provide access to a persistent database and data channels that abstract over serialization, integrating stowage. 
 
 ### Memoization
 
@@ -229,19 +241,17 @@ The encrypted binary may include a non-encrypted header that indicates encryptio
 
 A list of dependencies (lookup keys) will also be uploaded such that the CDN can request any missing dependencies or track dependencies for purpose of accounting, scoping sessions, or automatic garbage collection.
 
-### Acceleration
+### Compression Pass
 
-Acceleration is an optimization pattern. The idea to annotate specific subprograms for accelerated evaluation, then a compiler or interpreter should recognize the annotation then silently substitute a specialized implementation. Accelerated functions are often coupled with specialized data representations. For example, a glas runtime may represent lists using finger trees.
-
-Acceleration of virtual machines is especially fruitful. For example, if we accelerate a simulation of a processor that is specialized for bit-banging operations, we could extend glas systems to support domains that rely heavily on bit-banging, such as compression and cryptography, instead of accelerating individual algorithms. For highly parallel computations, we might accelerate evaluation of a process network.
-
-Essentially, accelerators extend performance primitives without affecting formal semantics. Explicit annotations help to stabilize performance, e.g. allowing a compiler to report when acceleration would fail.
+When compiling glas programs, a useful optimization pass is to identify common subprograms and translate those to reusable function calls. This pass may be guided by annotations and is not necessarily aligned with user defined functions. Usefully, compression may occur after partial evaluation and other specialization passes. 
 
 ### Application Layer
 
-We can develop specialized program models for running applications via the glas command line interface or compilation then extraction of executable binaries. This is sometimes more convenient than developing an accelerator, though it might hinder high-performance build-time simulation/testing of the program. 
+I'm tentatively developing a 'proc' program model (in [Glas Applications](GlasApps.md)) for expressing transaction machines, with some design considerations to simplify several optimizations related to incremental computing, parallelism, concurrency, distributed evaluation, and transaction fusion. 
 
-The 'proc' model described in [glas applications](GlasApps.md), when adequately developed, will be an example of this.
+Once developed, this program model might be evaluated via 'glas --run', compiled to executable binary then extracted, or deterministically simulated within a glas program for compile-time computations.
+
+In any case, glas system is not stuck forever with the 'prog' program model and its foibles. Performance is one reason we might develop alternative program models.
 
 ## Thoughts
 

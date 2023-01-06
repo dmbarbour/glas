@@ -83,25 +83,39 @@ Specialized List Nodes:
 
 See *Encoding Finger Tree Ropes* for a pattern to leverage concat effectively. Of course, the system is free to convert ropes into larger arrays or binaries if it doesn't need fine-grained structure sharing of list fragments within or between globs.
 
-### References
+### External References
 
 Glas Object supports internal references within a glob file, and external references between glob files.
 
-* *external ref* - header (0x02) followed by a value that contextually references another value. Reference type depends on context:
- * For content-addressed storage:
-  * *glob:sha3:SecureHash* - contains an SHA3-512 as 64-byte binary. Parses referenced binary as a glob.
-  * *binary:sha3:SecureHash* - reference to raw binary by secure hash
- * For glas module system:
-   * *local:ModuleName* - load a local module
-   * *global:ModuleName* - load a global module
-   * *eval:prog:(do:Program, ...)* - evaluate a 0--1 arity glas program with access to 'log' and 'load' effects
-* *internal ref* - header (0x88) followed by offset to later value within current glob.
+* *external ref* - header (0x02) followed by a value. This value must be recognized as referencing another value in context, and is logically substituted by the referenced value.
+
+There are currently two main contexts for external references: the glas module system (i.e. ".glob" files as modules) and content-addressed storage (i.e. for stowage or content-delivery networks). 
+
+Proposed reference model: 
+
+* In context of glas module system:
+ * *local:ModuleName* - value of local module
+ * *global:ModuleName* - value of global module
+ * *eval:prog:(do:Program, ...)* - Program must have arity 0--1 and may use 'log' and 'load' effects. This supports procedural generation, embedded checks, and handling of 'load' failure.
+* In context of content-addressed storage:
+ * *glob:SecureHash* - reference to content-addressed glob. SecureHash is usually a 64-byte binary representing the SHA3-512 of an external binary. 
+ * *bin:SecureHash* - reference to content-addressed binary data. Same SecureHash as for globs.
+
+*Note:* Content-addressed storage does not have access to full eval due to denial-of-service risks, but can still use *Accessors* for fine-grained sharing of referenced data.
+
+### Internal References 
+
+We can forward reference within a glob file. 
+
+* *internal ref* - header (0x88) followed by offset to value within current glob.
+
+Internal references are mostly useful to improve structure sharing or compression of data. Internal references are encoded as path *Accessors* with the empty path. Also used in the *Glob Headers* pattern.
 
 ### Accessors
 
 Accessors support fine-grained structure sharing that preserves indexability and works in context of content-addressed storage. Essentially, we support slicing lists and indexing into records. 
 
-* *path* - headers (0x80-0x9F) . (offset to target); uses stem-bit header (ttt=100) to encode a bitstring path. Equivalent to following that path into the target value. 
+* *path* - headers (0x80-0x9F) . (offset); uses stem-bit header (ttt=100) to encode a bitstring path. Equivalent to following that path into the target value. 
 * *drop*  - header (0x08) . (length) . (offset); equivalent to path of length '1' bits. 
 * *take* - header (0x09) . (length) . (list value); equivalent to sublist of first length items from list. In addition to slicing lists, this is useful to cache list length for ropes.
 
@@ -115,7 +129,7 @@ The main role of annotations is to support external tooling at the data layer. F
 
 ## Varnats, Lengths, and Offsets
 
-A varnat is encoded with a prefix '1*0' encoding length in bytes, followed by 7 data bits per prefix bit, msb to lsb order. For example:
+A varnat is encoded with a prefix '1*0' encoding a length in bytes, followed by 7 data bits per prefix bit, msb to lsb order. For example:
 
         0nnnnnnn
         10nnnnnn nnnnnnnn
@@ -179,7 +193,7 @@ It is feasible to combine list-take (Size) and concatenation nodes in a way that
         Single              Array | Binary | Node(k-1)
         Many                Size . (LDigits(k) ++ (Rope(k+1) ++ RDigits(k)))
 
-This structure represents a 2-3 finger-tree rope. The finger-tree rope is a convenient default for most use cases for large lists. And it won't hurt too much if other rope structures are blindly manipulated as finger-tree ropes.
+This structure represents a 2-3 finger-tree rope. The finger-tree rope is a convenient default for most use cases for large lists. It won't hurt too much if other balanced rope structures are blindly manipulated as finger-tree ropes.
 
 ### Glob Headers
 
@@ -189,7 +203,7 @@ An alternative is to start the glob binary with an internal reference node. The 
 
         0x88 (offset to data) (header) (data)
 
-The header value should be a record of form `(field1:Value1, field2:Value2, ...)` with ad-hoc symbolic labels. Unlike annotations, this header does not remain associated with the data. Instead, it should represent attributes specific to the glob binary, such as metadata useful for the glob encoder, or a reverse lookup index to improve structure sharing.
+The header value will usually be a record of form `(field1:Value1, field2:Value2, ...)` with ad-hoc symbolic labels as header fields. Unlike annotations, this header does not remain associated with the data. Instead, it should represent attributes specific to the glob binary, such as metadata useful for the glob encoder, or a reverse lookup index to improve structure sharing.
 
 ### Shared Dictionary
 
@@ -199,15 +213,10 @@ Build a dictionary of useful values then share and reference as needed (via exte
 
 ### Matrices
 
-Matrices are useful across many problem domains, and it might be useful to optimize them in Glas Object. However, I'm not convinced the Glas data layer is the right place to do so due to all the ad-hoc boxing/unboxing and safety constraints. It might be more convenient to represent common unboxed floating point matrices as binaries in Glas systems (perhaps with structured headers), then develop accelerated operations on them. 
+Matrices are useful across many problem domains. However, I'm uncertain about trying to specialize Glas Object to include matrix support. For example, it might prove more effective to represent matrices mostly as binary data (perhaps adding a small header), with accelerators that can manipulate it as a matrix of floats or other 'unboxed' data. Deferred for now.
 
-### Structs and Tables
+If I do pursue matrices within Glas Object, I think we'd need some sort of chunking function. I.e. given a list of M*N size, a chunkify op could produce a list of length M of lists of length N. A logical transpose operation might also be useful. (I doubt we can support Z-order easily.)
 
-Support for applying a list of labels to a vector or matrix of data. This could reduce repetition within a glob by a great deal, and is a good option for structure sharing of the header bits. But like matrices, taking a wait and see approach.
+### Tables
 
-### Lenses, Codecs, Patches
-
-It is feasible to extend Glas Object with a lightweight language supporting 'views' of data. This language should be designed such that it guarantees termination and still supports indexed access to data (i.e. partial evaluation aligns with indexing). It might be feasible to integrate matrices, structs, and tables into this language in some manner. 
-
-This would require a lot of design work. It could make Glas Object a lot more flexible. But I'm uncertain that it would be worth the extra complexity. Something to consider later.
-
+Support for applying a list of labels to a vector or matrix of data. This could reduce repetition within a glob by a great deal, and is a good option for structure sharing of the header bits. But like matrices, I'm taking a wait and see approach.

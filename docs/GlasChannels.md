@@ -21,11 +21,18 @@ What we can do with channels:
 How we obtain our channels:
 
 * *create* - create a new, associated pair of channels. (This was called 'pipe' with mode:bind in source API.) These channels are local to the runtime, thus implementation is a lot more ad-hoc. 
-* *tcp binding* - create a channel by wrapping a TCP listener or TCP connection.
+
+* *tcp binding* - create a channel by wrapping a TCP listener or TCP connection. This wrapper will implicitly handle subchannels, data serialization, content-addressed storage, and integration with content distribution networks. 
  * *listener* - a channel bound to a TCP listener will only receive subchannels corresponding to TCP connections. Close the listener via 'drop'. 
  * *connection* - a channel bound to a TCP connection will handle serialization and marshalling of data and protocol issues for remote communication. The connection will implicitly break if the associated TCP connection breaks.
 
+* *global databus* - (idea). I could support a notion of a global databus for glas systems. Binding to the bus would return a channel that receives a copy of future messages sent to the bus. Discovery could use distributed hashtables to find other participants in the bus. Use something like Tahoe-LAFS style bearer tokens for bus names, representing different levels of authority.
+
 Channel API shouldn't be too difficult within a single runtime. So, this document is primarily about how to implement the TCP bindings for channels. If channels become popular, it should also be feasible to extract these bindings and required runtime components as a library for use within non-glas apps. 
+
+A global databus API could feasibly be implemented indirectly above TCP bindings. But it might be a more convenient and extensible means to glue apps together using publish-subscribe databuses instead of point-to-point connections.
+
+A runtime may need to keep an extra TCP channel open to handle pipeline optimization.
 
 ## Desired Features
 

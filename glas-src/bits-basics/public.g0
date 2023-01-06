@@ -1,0 +1,123 @@
+# Separated to avoid a cyclic dependency.
+# Re-exported from 'bits' or 'int' modules,
+# albeit with localized names.
+
+open prims
+
+# type annotation that top argument on stack is a bitstring.
+#   currently is placeholder awaiting development of type system
+prog type-bits [] # todo 
+prog type-int [type-bits]
+prog type-nat [type-int] # todo: also express int is positive
+
+prog bits-prefix [[type-bits] dip 0 swap put]
+prog bits-suffix [swap bits-prefix]
+prog bits-pop [type-bits [0b0 get 0b0][0b1 get 0b1]try-else swap]
+data bits-empty [0b]
+prog p-bits-each [[bits-pop] swap p-dip p-while-do [bits-empty eq] p-suffix]
+macro bits-each [p-bits-each]
+prog bits-reverse-append [[bits-prefix] bits-each]
+
+prog bits-reverse-impl [bits-empty swap bits-reverse-append]
+assert [0b0101001101 bits-reverse-impl 0b1011001010 eq]
+prog bits-reverse [[bits-reverse-impl] 'bits-reverse p-accel-opt apply]
+assert [0b1100101 bits-reverse 0b1010011 eq]
+
+prog bits-negate-impl [
+    bits-empty swap
+    [bits-empty eq]
+    [ [0b0 get 0b1] [0b1 get 0b0] try-else
+      swap [bits-prefix] dip
+    ] until-do
+    bits-reverse
+]
+assert [0b0011010 bits-negate-impl 0b1100101 eq]
+prog bits-negate [[bits-negate-impl] 'bits-negate p-accel-opt apply]
+assert [0b011000 bits-negate 0b100111 eq]
+
+
+# increment a bitstring reversed integer
+prog revint-increment [
+    type-int
+    bits-empty swap
+    [0b1 get][[0b0 bits-prefix] dip] while-do
+    # now we have either: 0b, 0b0, 0b0xx
+    [0b eq 0b1]     # 0 => 1
+    [0b0 get
+      [0b eq 0b]    # -1 => 0
+      [0b1 bits-prefix]  # add without carry
+      try-else
+    ] 
+    try-else
+    bits-suffix
+]
+
+prog int-increment-impl [bits-reverse revint-increment bits-reverse]
+assert [4 int-increment-impl 5 eq]
+assert [3 int-increment-impl 4 eq]
+assert [2 int-increment-impl 3 eq]
+assert [1 int-increment-impl 2 eq]
+assert [0 int-increment-impl 1 eq]
+assert [-1 int-increment-impl 0 eq]
+assert [-2 int-increment-impl -1 eq]
+assert [-3 int-increment-impl -2 eq]
+assert [-4 int-increment-impl -3 eq]
+
+# int-increment     Int -- Int
+#  implements increment via bitstring manipulation
+prog int-increment [[int-increment-impl] 'int-increment p-accel-opt apply]
+assert [4 int-increment 5 eq]
+assert [3 int-increment 4 eq]
+assert [2 int-increment 3 eq]
+assert [1 int-increment 2 eq]
+assert [0 int-increment 1 eq]
+assert [-1 int-increment 0 eq]
+assert [-2 int-increment -1 eq]
+assert [-3 int-increment -2 eq]
+assert [-4 int-increment -3 eq]
+
+prog revint-decrement [
+    type-int
+    bits-empty swap
+    [0b0 get] [[0b1 bits-prefix] dip] while-do
+    [0b eq 0b0]             # 0 => -1
+    [0b1 get
+        [0b eq 0b]          # 1 => 0
+        [0b0 bits-prefix]   # decrement no carry
+        try-else
+    ]
+    try-else
+    bits-suffix
+]
+
+prog int-decrement-impl [bits-reverse revint-decrement bits-reverse]
+assert [4 int-decrement-impl 3 eq]
+assert [3 int-decrement-impl 2 eq]
+assert [2 int-decrement-impl 1 eq]
+assert [1 int-decrement-impl 0 eq]
+assert [0 int-decrement-impl -1 eq]
+assert [-1 int-decrement-impl -2 eq]
+assert [-2 int-decrement-impl -3 eq]
+assert [-3 int-decrement-impl -4 eq]
+assert [-4 int-decrement-impl -5 eq]
+
+# int-decrement     Int -- Int
+#  implements decrement via bitstring manipulation
+prog int-decrement [[int-decrement-impl] 'int-decrement p-accel-opt apply]
+assert [4 int-decrement 3 eq]
+assert [3 int-decrement 2 eq]
+assert [2 int-decrement 1 eq]
+assert [1 int-decrement 0 eq]
+assert [0 int-decrement -1 eq]
+assert [-1 int-decrement -2 eq]
+assert [-2 int-decrement -3 eq]
+assert [-3 int-decrement -4 eq]
+assert [-4 int-decrement -5 eq]
+
+# N [Op] repeat
+#  will repeat [Op] N times.
+#  N may be dynamic and is required to be a natural number.
+prog p-repeat [p-dip [int-decrement] p-prefix [0 eq] swap p-until-do [type-nat] p-prefix]
+macro repeat [p-repeat]
+assert [-5 12 [int-increment] repeat 7 eq]
+

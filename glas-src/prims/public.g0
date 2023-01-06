@@ -165,6 +165,12 @@ assert [0 [1 eq] reject 0 eq]
 assert [0 [[0 eq] reject][1][2] try-then-else 2 eq 0 eq]
 assert [[[] reject] reject]
 
+# eq1       Val Val -- Val
+#  keep a copy of the value on the equality test
+prog eq1 [copy [eq] dip]
+assert [0b0 0b0 eq1 0b0 eq]
+assert [[0b0 0b1 eq1] reject]
+
 # DATA PLUMBING SUPPORT
 # 
 # rot3      (X Y Z -- Y Z X)        rotate 3rd item to top
@@ -257,6 +263,7 @@ assert [
 # d3            V1 V2 V3 L1 L2 L3 -- (L1:V1, L2:V2, L3:V3)
 # d4..d7        similarly
 
+
 data d0 [0]
 prog d1 [d0 swap put]
 prog d2 [[rot2 [d1] dip swap] dip put]
@@ -294,6 +301,27 @@ assert [
     'point get 'x get 11 eq
 ]
 
+
+
+# Constructing lists/tuples from stack items.
+#
+#   l0              empty list
+#   X l1            list of one item
+#   X Y l2          list of two items (X at head)
+#   l3..l7
+#
+# Note that 'li' will be defined in list module 
+# (requires acceleration to addend efficiently)
+#
+data l0 [0]
+prog l1 [l0 pair]
+prog l2 [l1 pair]
+prog l3 [l2 pair]
+prog l4 [l3 pair]
+prog l5 [l4 pair]
+prog l6 [l5 pair]
+prog l7 [l6 pair]
+
 # Variants aka Tagged Unions
 #
 # We'll represent variants as a singleton record `label:Value`.
@@ -301,90 +329,146 @@ assert [
 #
 
 # ANNOTATIONS SUPPORT
+# 
+# Glas programs support annotations under 'prog' header:
+#
+#     prog:(do:Program, Annotations)
+#
+# Unfortunately, the g0 does not provide a convenient syntax to
+# annotate programs (e.g. with type information). The closest we
+# have is something like this:
+#
+#     prog example [[Program] Annotations p-anno-set apply]
+# 
+# This is certainly awkward. Perhaps 
+# 
+# This section supports some access to those annotations.
+
+
 
 # p-prog-body       Program -- Program
-#  returns main behavior of a program, i.e. stripping the
-#  `prog:do:` annotations header, if any (recursively)
+#  for 'prog:(do:P)' returns result of `P p-prog-body`
+#  for anything else, returns initial value
 prog p-prog-body [['prog get 'do p-nop getd] loop]
 
 # p-prog-anno       Program -- Annotations
-#  returns header annotations for programs that have some.
-#  returns empty record if no header annotations. 
-prog p-prog-anno [['prog get 'do del] [drop 0] try-else]
+#  for 'prog:(do:P, Annotations)' returns Annotations
+#  for anything else, returns empty record
+prog p-prog-anno [['prog get 'do del] [drop d0] try-else]
 
-# p-prog-anno-set   Program Annotations -- Program
-#  set header annotations for a program. Or clear annotations
-#  if an empty record of annotations is set.
-prog p-prog-anno-set [
-    [p-prog-body] dip
-    ['do del 0 eq]['do put 0 'prog put] try-else
+assert [
+    d0 
+    'x 'a di 
+    'y 'b di
+    copy
+    'do [p-prog-body] di
+    'prog d1
+    p-prog-anno
+    eq
 ]
 
-# p-prog-anno-put       ([Program] Value Label -- [Program](Label:Value))
+
+# annotate   Program Annotations -- Program
+#  set header annotations for a program. Or clear annotations
+#  if an empty record of annotations is set.
+prog annotate [
+    [p-prog-body] dip
+    ['do del 0 eq]['do put 'prog d1] try-else
+]
+
+prog p-anno-update [
+    [p-prog-anno] p-prefix  
+    p-dip [copy] p-prefix 
+    [swap annotate] p-suffix
+]
+
+# anno-update     [Annotations -- Annotations]  =>  [Program] -- [Program]
+macro anno-update [p-anno-update]
+
+assert [
+    'x 'y
+    p-nop
+    [unrot3 di] anno-update
+    p-prog-anno
+    'x get 'y eq
+]
+
+# p-anno-put       ([Program] Value Label -- [Program](Label:Value))
 #  add a specific annotation to a program.
-prog p-prog-anno-put [[[copy p-prog-anno] dip swap] dip put p-prog-anno-set]
+prog p-anno-put [rot3 [swap put] anno-update]
 
-# p-prog-anno-get       ([Program](Label:Value) Label -- Value)
-prog p-prog-anno-get [[p-prog-anno] dip get]
+assert [
+    p-nop 'y 'x p-anno-put
+    p-prog-anno 'x get 'y eq
+]    
 
-# p-prog-anno-getd      ([Program](Label?_) Label Value -- Value)
+# p-anno-get       ([Program](Label:Value) Label -- Value)
+prog p-anno-get [[p-prog-anno] dip get]
+
+# p-anno-getd      ([Program](Label?_) Label Value -- Value)
 #  get annotated value with a default.
-prog p-prog-anno-getd [[p-prog-anno] dip2 getd]
+prog p-anno-getd [[p-prog-anno] dip2 getd]
 
-# p-anno-accel      ([Program] Model -- [Program](accel:Model))
+# p-accel      ([Program] Model -- [Program](accel:Model))
 #
 #  Example usage: 
-#       prog list-append [[list-append-impl] 'list-append p-anno-accel]
+#       prog list-append [[list-append-impl] 'list-append p-accel apply]
 #
 #  Acceleration is an essential performance annotation for Glas systems.
 #  It informs a compiler to substitute a subprogram with a highly optimized
 #  implementation that can take advantage of underlying representations and
 #  other hidden details. This supports extension with performance features.
 #
-prog p-anno-accel ['accel p-prog-anno-put]
-prog p-anno-accel-get ['accel p-prog-anno-get]
+prog p-accel ['accel p-anno-put]
+prog p-accel-get ['accel p-anno-get]
 
-# p-anno-arity      ([Program] In Out -- [Program](arity:(i:In, o:Out)))
+# p-accel-opt
+#
+# Same as p-accel, but also marks acceleration optional. A compiler 
+# or interpreter may ignore optional acceleration if unrecognized 
+# or unsupported.
+#
+prog p-accel-opt ['opt d1 p-accel]
+
+# p-arity      (Program In Out -- AnnotatedProgram)
 #
 #  Arity annotations will often be checked for consistency, but might not
 #  be exact due to using less data than the arity would suggest.
 #
-prog p-anno-arity ['i 'o d2 'arity p-prog-anno-put]
-prog p-anno-arity-get ['arity p-prog-anno-get copy 'i get swap 'o get]
+prog p-arity ['i 'o d2 'arity p-anno-put]
+prog p-arity-get ['arity p-anno-get copy 'i get swap 'o get]
 
 assert [
     42 p-nop p-curry 
-    14 15 p-anno-arity 
-    'xyzzy p-anno-accel
+    14 15 p-arity 
+    'xyzzy p-accel
     copy 
-    p-anno-arity-get pair 14 15 pair eq
-    p-anno-accel-get 'xyzzy eq
+    p-arity-get pair 14 15 pair eq
+    p-accel-get 'xyzzy eq
 ]
 
-# Future annotations/prims should support:
-#  memoization, stowage
-#  type safety analysis
-#  preconditions and postconditions
+# Further TODO:
+#
+# Type Annotations (likely another module)
+# Memoization
+# Stowage
+# 
 
 # BASIC LOGGING
 #
 # Logging is convenient for debugging or tracking progress of an application.
-# Most effects APIs will include a 'log:Message' or equivalent. This includes
-# compile-time evaluation.
+# This can be expressed using 'log:Message' effects, where messages are simple
+# records such as `(lv:warn, text:"there is an issue")` to enable extensions.
 #
-# The message should be a record such as (lv:warn, text:"there is an issue").
-# This allows for some extra context to be added to the message, and extension
-# with structured message types. However, messages are ultimately intended for
-# humans.
-#
-# An effects handler may disable log messages for a subprogram. Failure will
-# be silently ignored. 
+# A runtime can potentially inject some extra context into or around the log
+# message before it reaches the user, such as a copy of the data stack or the 
+# name of the file being compiled.
 #
 
 # log-send      Message --
 #  Sends provided Message as a logging effect, dropping unit result. 
 #  Failure is silently ignored.
-prog log-send [[0 'log put eff 0 eq][drop] try-else]
+prog log-send [['log d1 eff 0 eq][drop] try-else]
 
 # log message builders
 #   logmsg-text-lv         "Hello" 'warn -- (lv:warn, text:"Hello")

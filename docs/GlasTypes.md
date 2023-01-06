@@ -1,12 +1,44 @@
-# Static Analysis and Type System for Glas
+# Type Annotations for Glas Programs
 
-Most static analysis in Glas is user-defined. The exception is static stack arity checking in context of language modules and automated tests. Other than these required checks, anything else is performed by other modules as part of transforming structures.
+Glas doesn't have a built-in type system, but supports ad-hoc annotations. So, what sort of annotations would be most useful for static analysis or typechecking? This document explores this a bit and sketches out some preliminary designs.
 
 ## Stack Arity
 
-The minimum static analysis for a Glas program is the static stack arity check. This check ensures that loops are stack-invariant, that conditionals have the same stack effect on both branches, and that most applications or language modules have a simple `arg -- result` stack effect. Checking stack annotations isn't required but might be included with the stack arity check.
+Perhaps the simplest type. Just count the number of stack inputs and stack outputs. Sometimes written as `2 -- 3` to mean 2 stack inputs, 3 stack outputs. As a program annotation:
 
-The Glas program model is designed to support stack arity check in linear time with program size. Redundant efforts for repeating subprograms can be mitigated by memoization.
+* *arity:(i:Nat, o:Nat)* - indicate how many values from the data stack are input and output (with outputs counted as if inputs were first removed).
+
+## Value Type Descriptions
+
+To do much more than describe numbers of things, we'll need the ability to describe data and program behavior program types effectively. I'd prefer to have something more declarative and decidable than running an arbitrary program. However, the ability to include some sizes and computations in types is still useful.
+
+
+
+
+## Pre and Post Conditions
+
+This model is very expressive but also very difficult to verify statically. 
+
+Viable annotations:
+
+* *preconds:[List of prog:(do:Program, ...)]* - set of pass/fail programs that should be able to pass before we evaluate the annotated program.
+* *postconds:[List of prog:(do:Program, ...)]* - set of pass/fail programs that should be able to pass after we evaluate the annotated program.
+
+Eventually, we might extend precond and postcond to accept descriptions other than 'prog'. The conditions would ideally be verified statically, but in practice it's more likely we'll only check them in debug modes, and further might only spot-check them.
+
+The weakness of conditions like this is that the postconditions cannot depend on the preconditions. Use of *Behavioral Equivalence* is even more expressive.
+
+## Behavioral Equivalence 
+
+We could annotate one program as being behaviorally equivalent to another, or perhaps to a list of other programs. For example, we could specify that a program is equivalent to the same program integrated with a bunch of runtime checks. 
+
+ extra precondition and postcondition checks, in which case the wrapper might carry some state. Or we could say that the program is equivalent to a low-performance reference implementation of the same program.
+
+
+
+
+
+# OLD STUFF
 
 ## Type System
 

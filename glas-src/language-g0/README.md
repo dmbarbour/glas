@@ -9,8 +9,9 @@ The g0 syntax isn't suitable for all programs or programmers. It's especially aw
 The top-level of a g0 file consists of imports, definitions, assertions, and export declarations. Simple line comments are also supported but skipped by the parser.
 
         # comments start with # and run to end of line.
+        # there are no multi-line comments.
 
-        # import definitions from other modules
+        # we can import definitions from other modules
         open foo
         from bar import qux, baz as bar-baz
         import math as m
@@ -20,16 +21,19 @@ The top-level of a g0 file consists of imports, definitions, assertions, and exp
         data w2 [ Program ]
         macro w3 [ Program ]
 
-        # procedural definitions
+        # procedural definitions. Data must be a dictionary.
         from [ Program ] import j, l as xyzzy
 
         # static assertions for lightweight verification
         assert [ Program ]
 
-        # control final compiled value of module
-        export [ Program ] # or an import list
+        # optionally control compiled value of module
+        export [ Program ] 
 
-Most declarations may appear in any order and quantity. The exceptions are 'open' and 'export' which, if present, must respectively be first and last declarations. 
+        # alternatively an export list
+        #   export w1, w2 as wd, w3
+
+Most declarations may appear in any order and quantity, albeit with a restriction that words are defined only once and are defined before use. The 'open' and 'export' declarations are special cases; if present, they must respectively be the first and last declarations. 
 
 ## Dictionary
 
@@ -55,7 +59,7 @@ Imports provide convenient access to the module system.
 
 * **open ModuleRef** - start with dictionary defined in another module, but immediately delete all words defined later within the current file (for purpose of 'load:dict' effects). If present, must be first declaration in file.
 * **from ModuleRef import ImportList** - add selected words from another module into the local namespace. Assumes compiled value of referenced module is a dictionary. Fails if any words from import list are undefined.
-* **import ModuleRef as Word** - import the compiled value of the referenced module as data. This is primarily intended for use with hierarchical definitions, e.g. 'import math as m' then later call 'm/sqrt'. However, this can also be convenient for import of arbitrary data.
+* **import ModuleRef as Word** - import the compiled value of the referenced module as data. This is primarily intended for use with hierarchical definitions.
 
 If a module fails to load in the above import statements, compilation of the g0 module will fail. If more flexible handling of load failure is required, use compile-time 'load' effects.
 
@@ -66,7 +70,7 @@ A ModuleRef may be one of:
         Word            # loads  global:"Word"
         './'Word        # loads  local:"Word"
 
-The g0 language can conveniently access modules whose names are also valid g0 words. Other modules can be accessed indirectly via 'load' effects, but I would prefer to encourage use of simple module names.
+It is possible that not all glas modules can be referenced this way, where module names are not valid g0 words. Those modules can still be accessed, albeit less conveniently, via compile-time 'load' effect (see *Procedural Definitions*).
 
 ### ImportList 
 
@@ -104,7 +108,7 @@ The g0 language currently does not provide syntax optimized for constructing arb
 
 A 'prog' definition defines a normal runtime behavior. Any call to a prog word will apply the word's behavior at runtime, albeit subject to partial evaluation if there is sufficient input on the data stack and no effects are required. 
 
-Compiles to 'w1:prog:(do:GlasProgram, ...)' entry in the dictionary. (Does not reduce to a 'data' definition even if the optimized program is just 'data:Value'.)
+Compiles to 'w1:prog:(do:GlasProgram, ...)' entry in the dictionary. 
 
 ### Data Definitions
 
@@ -120,7 +124,9 @@ Compiles to a 'w2:data:Value' entry in the dictionary.
 
 Macro definitions support staged metaprogramming. The program must have static stack arity. A macro call will be evaluated at compile-time, taking inputs from the data stack. This relies on partial evaluation. The top data stack result must represent a valid Glas program, which is then applied.
 
-Compiles to 'w3:macro:GlasProgram' entry in the dictionary. (Does not reduce to a 'prog' definition even if the macro is equivalent to a program.)
+Compiles to 'w3:macro:prog:(do:GlasProgram, ...)' entry in the dictionary. 
+
+*Aside:* The 'prog' header is required under 'macro' within g0. This is intended to simplify extension of macro types in context of other glas languages.
 
 ### Procedural Definitions
 
@@ -130,16 +136,16 @@ This supports procedural construction of a module value for imports, instead of 
 
 ### Hierarchical Definitions
 
-If word 'm' is data representing a dictionary, then 'm/sqrt' is the equivalent to applying a definition from that dictionary.
+If word 'm' is defined as data that represents a dictionary, then 'm/sqrt' is the equivalent to applying a definition from that dictionary. This is intended mostly as a lightweight namespace model for use with qualified imports.
 
         import math as m
         prog dist [ [m/square] dip m/square m/add m/sqrt ]
 
-The primary use case is to enable imports to act as lightweight namespaces. However, this also works with computed dictionaries, e.g. via 'data' definitions.
+However, this also works with dictionaries computed via 'data' definitions, for example.
 
 ### Primitive Definitions
 
-The g0 language does not have built-in definitions. Instead, macros and embedded data are the foundation for constructing arbitrary Glas programs, as follows:
+The g0 language does not have any built-in definitions. Instead, macros and embedded data are the foundation for constructing arbitrary Glas programs. This is achieved as follows:
 
         macro apply []
         prog swap ['swap apply]
@@ -149,7 +155,7 @@ The g0 language does not have built-in definitions. Instead, macros and embedded
         macro while-do [0 'do put 'while put 0 'loop put]
         ...
 
-Currently these are defined in the [prims module](../prims/public.g0).
+The [prims module](../prims/public.g0) will define many useful low-level functions.
 
 ## Static Assertions
 
@@ -161,12 +167,12 @@ Static assertions serve a role in lightweight unit and integration tests. They c
 
 ## Export
 
-If present, export must be final declaration in a g0 file. Export may take two forms - list or function. If elided, the final dictionary is exported.
+If present, export must be final declaration in a g0 file. Export may take two forms - list or function. If elided, the final dictionary is exported with all defined words.
 
         export ImportList
         export [ Program ]
 
-In case of an import list, the output is a dictionary that includes only words in the list. Use of 'as' clauses is permitted to rename words. In case of an export function, the program is evaluated as a data definition, then that data becomes the compiled module value. If the final dictionary value is needed, the export function must use the 'load:dict' effect.
+In case of an import list, the output is a dictionary that includes only words in the list. Use of 'as' clauses is permitted to rename words upon export. In case of an export function, the program is evaluated as a data definition, then that data becomes the compiled module value. The 'load:dict' effect can access the final dictionary as data.
 
 ## Static Evaluation
 
@@ -226,7 +232,7 @@ Idle thoughts that insist on idling. Mostly reminders for why I rejected them.
 
 ### Multi-Stage Macros. Rejected.
 
-I could permit macro calls to return `macro:Program`, to be evaluated as another macro call. This would enable macros to have variable static arity based on data. For example, a macro could search for a sentinel value on the data stack. However, I'm not convinced this is a good idea. It hinders local reasoning and refactoring, and introduces an inconsistency between compile-time and runtime static stack behavior.
+I could permit macro calls to return `macro:(...)`, to be evaluated as another macro call. This would enable macros to have variable static arity based on data. For example, a macro could search for a sentinel value on the data stack. However, I'm not convinced this is a good idea. It hinders local reasoning and refactoring, and introduces an inconsistency between compile-time and runtime stack behavior.
 
 ### Local Variables. Rejected.
 
@@ -235,3 +241,16 @@ Interaction of variables and macros introduces a lot of complexity that I'd pref
 ### Negative Assertions. Rejected.
 
 I could design an assertions model that accepts only *failed* programs. Perhaps `reject [Test Code]`. But the interaction with compile-time effects seems awkward to explain. For now, sticking with positive `assert`. We can always write `assert [[Test Code] reject]`.
+
+### Aesthetic Annotations and Adjectives
+
+Currently, annotations are quite awkward to express in g0 language. Like this:
+
+        prog example-impl [...]
+        data example-anno [...]
+        prog example [[example-impl] example-anno p-anno-set apply]
+
+I'd prefer to have something closer to conventional annotations. Unfortunately, I don't have a great idea what this would look like in context of g0. 
+
+
+

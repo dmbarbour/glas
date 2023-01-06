@@ -1,5 +1,4 @@
 # Primitives
 
-The primary purpose of this module is to define the basic primitive operations for use in g0 language, and provide a starting point for building a more complete 'standard' dictionary suitable for many g0 modules in practice.
+This module provides some basic functions for implementing other modules. However, it's much smaller than a proper standard library would be. No support for looping over lists or bitstrings or record fields, for example.
 
-This module excludes most

@@ -346,7 +346,7 @@ module Zero =
                 | [] -> LinkData d'
             | ValueSome ((Value.Variant "prog" _) as p) when (List.isEmpty ws) -> 
                 LinkProg p
-            | ValueSome (Value.Variant "macro" m) when (List.isEmpty ws) -> 
+            | ValueSome (Value.Variant "macro" ((Value.Variant "prog" _) as m)) when (List.isEmpty ws) -> 
                 LinkMacro m
             | ValueSome v when (List.isEmpty ws) -> 
                 LinkFail (ErrorFlags.UnknownDefType)
@@ -540,16 +540,12 @@ module Zero =
         let applyProgDef cte0 w b =
             let dbg = sprintf "def %s" w
             let struct(cte', p) = compileBlock dbg cte0 b
-            let pDef = // avoid doubling "prog" header if present.
-                match p with
-                | Prog _ -> p
-                | _ -> Prog(Value.unit, p)
-            addDef w pDef cte'
+            addDef w (wrapProg p) cte'
 
         let applyMacroDef cte0 w b = 
             let dbg = sprintf "def %s" w
             let struct(cte', p) = compileBlock dbg cte0 b 
-            addDef w (Value.variant "macro" p) cte'
+            addDef w (Value.variant "macro" (wrapProg p)) cte'
 
         let applyDataDef cte0 w b =
             let ll = cte0.LL
