@@ -263,7 +263,6 @@ assert [
 # d3            V1 V2 V3 L1 L2 L3 -- (L1:V1, L2:V2, L3:V3)
 # d4..d7        similarly
 
-
 data d0 [0]
 prog d1 [d0 swap put]
 prog d2 [[rot2 [d1] dip swap] dip put]
@@ -301,8 +300,6 @@ assert [
     'point get 'x get 11 eq
 ]
 
-
-
 # Constructing lists/tuples from stack items.
 #
 #   l0              empty list
@@ -325,7 +322,8 @@ prog l7 [l6 pair]
 # Variants aka Tagged Unions
 #
 # We'll represent variants as a singleton record `label:Value`.
-# Access to the value is 
+# For now just using 'd1' for this. But I could add some dedicated
+# names for clarity.
 #
 
 # ANNOTATIONS SUPPORT
@@ -338,13 +336,10 @@ prog l7 [l6 pair]
 # annotate programs (e.g. with type information). The closest we
 # have is something like this:
 #
-#     prog example [[Program] Annotations p-anno-set apply]
+#     prog example [[Program] Annotations annotate apply]
 # 
-# This is certainly awkward. Perhaps 
-# 
-# This section supports some access to those annotations.
-
-
+# This is certainly awkward. But improving syntax for annotations
+# can wait for development of a future language module.
 
 # p-prog-body       Program -- Program
 #  for 'prog:(do:P)' returns result of `P p-prog-body`
@@ -449,9 +444,9 @@ assert [
 
 # Further TODO:
 #
-# Type Annotations (likely another module)
 # Memoization
 # Stowage
+# Type Annotations (likely another module)
 # 
 
 # BASIC LOGGING

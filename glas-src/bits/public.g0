@@ -25,7 +25,7 @@ prog is-bits [
   ] verify             # also, don't modify the input
 ]
 
-assert [[0b1011 is-bits] verify]
+assert [0b1011 is-bits 0b1011 eq]
 assert [[1 2 pair is-bits] reject]
 
 # TODO: type support

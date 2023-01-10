@@ -38,25 +38,38 @@ prog add-impl [
 ]
 
 # add two integers
-prog add [add-impl]
+prog add [[add-impl] 'int-add p-accel-opt apply]
 
-assert [-9 19 add 10 eq]
-assert [-9 -19 add -28 eq]
-assert [9 -19 add -10 eq]
+prog test-add [
+    copy3 [add-impl] dip eq
+    copy3 [swap add-impl] dip eq
+    copy3 [add] dip eq
+          [swap add] dip eq
+]
+
+assert [-9 19 10 test-add]
+assert [-9 -19 -28 test-add]
+assert [9 19 28 test-add]
+assert [9 -19 -10 test-add]
 
 prog sub-impl [negate add]
 
 # subtract two integers
-prog sub [sub-impl]
+prog sub [[sub-impl] 'int-sub p-accel-opt apply]
 
-assert [19 9 sub 10 eq]
-assert [9 19 sub -10 eq]
-assert [19 -9 sub 28 eq]
-assert [-9 19 sub -28 eq]
-assert [-19 9 sub -28 eq]
-assert [-9 -19 sub 10 eq]
+prog test-sub [
+    copy3 [sub-impl] dip eq
+    copy3 [sub] dip eq
+    copy3 [swap sub-impl] dip negate eq
+          [swap sub] dip negate eq 
+]
 
-prog mul [
+assert [19 9 10 test-sub]
+assert [19 -9 28 test-sub]
+assert [-19 9 -28 test-sub]
+assert [-19 -9 -10 test-sub]
+
+prog mul-impl [
     [[is-neg negate] dip]
     [   
         [is-neg negate]
@@ -72,24 +85,22 @@ prog mul [
     ]
     try-then-else
 ]
-assert [-3 4 mul -12 eq]
-assert [-7 -4 mul 28 eq]
-assert [9 -7 mul -63 eq]
-assert [7 6 mul 42 eq]
 
-# Dividend Divisor -- Quotient Remainder
-#   Quotient * Divisor + Remainder = Dividend
-#   Remainder between 0 (incl) and Divisor (excl).
-#   (That is, non-zero Remainder has sign of Divisor.)
-#
-#   For example:
-#
-#      -17 -5 =>  3 -2
-#      -17  5 => -4  3
-#       17 -5 => -4 -3
-#       17  5 =>  3  2
-#
-prog divmod [
+# multiply two integers
+prog mul [[mul-impl] 'int-mul p-accel-opt apply]
+
+prog test-mul [
+    copy3 [mul-impl] dip eq
+    copy3 [swap mul-impl] dip eq
+    copy3 [mul] dip eq
+          [swap mul] dip eq
+]
+assert [-3 4 -12 test-mul]
+assert [-7 -4 28 test-mul]
+assert [9 -7 -63 test-mul]
+assert [7 6 42 test-mul]
+
+prog divmod-impl [
     #  I currently don't have a good idea how to simplify this.
     #  Simply handling each sign case.
     [[is-neg negate] dip]
@@ -108,9 +119,28 @@ prog divmod [
     try-then-else
 ]
 
+# Dividend Divisor -- Quotient Remainder
+#   Quotient * Divisor + Remainder = Dividend
+#   Remainder between 0 (incl) and Divisor (excl).
+#   (That is, non-zero Remainder has sign of Divisor.)
+#
+#   For example:
+#
+#      -17 -5 =>  3 -2
+#      -17  5 => -4  3
+#       17 -5 => -4 -3
+#       17  5 =>  3  2
+#
+prog divmod [[divmod-impl] 'int-divmod p-accel-opt apply]
+
 # need a bit more confidence in divmod...
 
-prog test-divmod [pair [divmod pair] dip eq]
+prog test-divmod [
+    pair
+    copy3 [divmod-impl pair] dip eq
+          [divmod pair] dip eq
+]
+
 assert [ 17  5  3  2 test-divmod]
 assert [ 17 -5 -4 -3 test-divmod]
 assert [-17  5 -4  3 test-divmod]
@@ -146,5 +176,5 @@ export
     divmod, div, mod,
     increment, decrement, negate,
     repeat, p-repeat, 
-    type-int, type-nat,
+    type-int as type,
     is-pos, is-neg, is-nat, is-zero

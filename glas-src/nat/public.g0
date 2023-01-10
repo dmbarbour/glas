@@ -1,0 +1,244 @@
+# The glas program model doesn't have any built-in ops for numbers.
+# However, most of these operations will be optionally accelerated.
+
+open prims
+import bits-basics as bb
+from [bb] import type-nat
+
+prog increment [type-nat bb/int-increment]
+prog decrement [type-nat [0b1 get] verify bb/int-decrement]
+
+prog revnat-increment [bb/revint-increment]
+
+# pop lsb from revnat, or pop 0b0 if input is 0.
+prog revnat-lsb-pop [[bb/bits-pop][0b0 swap]try-else]
+
+prog add-rev-acc [
+    # stack: Acc A B
+    # reversed A,B so lsb is first bit.
+
+    # repeat until either number is zero
+    [[0 eq] [swap 0 eq] try-else] 
+    [ 
+        [0b0 get]
+        [ # xaaa + 0bbb => x(aaa + bbb)
+          [
+            bb/bits-pop             
+            [bb/bits-prefix] dip
+          ] dip
+        ]
+        [0b1 get
+          [
+            [0b0 get]
+            [ # 0aaa + 1bbb => 1(aaa + bbb)
+              [0b1 bb/bits-prefix] dip
+            ] 
+            [ # 1aaa + 1bbb => (1aaa + 1) + (1bbb - 1)) 
+              #             => (0(aaa+1)) + (0bbb) 
+              #             => 0((aaa+1) + bbb)
+              0b1 get revnat-increment 
+              [0b0 bb/bits-prefix] dip 
+            ]
+            try-then-else
+          ] dip
+        ]
+        try-then-else
+    ]
+    until-do
+
+    # add acc bits to unmodified high bits.
+    # (preserves reversed bit order.)
+    swap
+    bb/bits-reverse-append
+]
+
+prog add-rev [
+    [0] dip2 # introduce accumulator
+    add-rev-acc  # add
+]
+
+# test add, commutative of add
+prog test-add-rev [
+    copy3
+    [add-rev] dip eq
+    [swap add-rev] dip eq
+]
+
+assert [0b101 0b0011 0b10001 test-add-rev]
+
+prog add-impl [
+    # type declarations
+    [type-nat] dip type-nat
+
+    # setup - reverse both ints
+    [bb/bits-reverse] dip    
+    bb/bits-reverse         
+
+    # add reversed
+    add-rev
+
+    # reverse result to a normal int
+    bb/bits-reverse
+]
+
+assert [12345 87654 add-impl 99999 eq]
+assert [1000 9000 add-impl 10000 eq]
+
+# add two natural numbers (possibly accelerated)
+prog add [[add-impl] 'nat-add p-accel-opt apply]
+
+assert [1234 5678 add 6912 eq]
+assert [314 710 add 1024 eq]
+
+prog sub-rev-acc [
+    [0 eq] 
+    [
+        [0b0 get]
+        [ # xaaa - 0bbb => x(aaa - bbb)
+          [ bb/bits-pop
+            [bb/bits-prefix] dip
+          ] dip
+        ]
+        [0b1 get
+         [[0b0 get] dip]
+         [ # 0aaa - 1bbb => (1+0aaa) - (1+1bbb)
+           #             => 1aaa - 0(1+bbb) 
+           #             => 1(aaa - (1+bbb))
+           revnat-increment
+           [0b1 bb/bits-prefix] dip2
+         ]
+         [ # 1aaa - 1bbb => 0(aaa - bbb)
+            [0b1 get
+             [0b0 bb/bits-prefix] dip
+            ] dip
+         ]
+         try-then-else
+        ]
+        try-then-else
+    ]
+    until-do
+
+    # special case: may need to shrink result
+    # if high bit was reached.
+    [0 eq][[0b0 get] loop 0] try-then
+
+    # reverse the accumulator
+    swap
+    bb/bits-reverse-append 
+]
+
+prog sub-rev [
+    [0] dip2
+    sub-rev-acc
+]
+
+assert [0b001 0b1 sub-rev 0b11 eq]
+assert [0b001 0b001 sub-rev 0 eq]
+assert [[0b1 0b01 sub-rev] reject]
+
+prog sub-impl [
+    [type-nat] dip type-nat
+    [bb/bits-reverse] dip bb/bits-reverse
+    sub-rev
+    bb/bits-reverse
+]
+
+# subtract natural numbers.
+#  This fails if difference would be negative.
+prog sub [[sub-impl] 'nat-sub p-accel-opt apply]
+
+prog test-sub [
+    copy3 [sub-impl] dip eq
+    copy3 [sub] dip eq
+
+    # A - B = C implies A - C = B; swap B, C then test
+    copy3 swap [sub-impl] dip eq
+    copy3 swap [sub] dip eq
+
+    [0 eq eq] # if expect zero, check that args are equal
+    [ # otherwise reject swapped subtractions
+      drop swap 
+      [sub-impl] reject
+      [sub] reject
+      drop2
+    ] try-else
+]
+
+assert [8 5 3 test-sub]
+assert [1024 314 710 test-sub]
+assert [99999 12345 87654 test-sub]
+assert [10000 1001 8999 test-sub]
+assert [1234 1234 0 test-sub]
+
+prog mul-nz-rev [
+    [0 0] dip2 # introduce Shift and Sum accumulators
+    # stack: Shift Sum X Y(rem)
+    
+    [0 eq] # stop when Y(rem) is zero.
+    [ 
+        # add X to Sum if low bit of Y(rem) is 1
+        # then remove low bit of Y(rem)
+        [0b0 get]
+        [0b1 get [copy [add-rev] dip] dip]
+        try-else
+
+        # move lsb from Sum to Shift (logically multiply X by 2)
+        [revnat-lsb-pop [bb/bits-prefix] dip] dip2
+    ]
+    until-do
+
+    # final step is to move Shift bits back onto tail of Sum.
+    drop swap bb/bits-reverse-append
+]
+
+assert [0b011 0b101 mul-nz-rev 0b01111 eq]
+
+prog mul-impl [
+    [type-nat] dip type-nat
+    [[0 eq][swap 0 eq]try-else]
+    [drop 0]
+    [
+        [bb/bits-reverse] dip bb/bits-reverse
+        mul-nz-rev
+        bb/bits-reverse
+    ]
+    try-then-else
+]
+
+prog mul [[mul-impl] 'nat-mul p-accel-opt apply]
+
+prog test-mul [
+    copy3 [mul-impl] dip eq
+    copy3 [swap mul-impl] dip eq
+    copy3 [mul] dip eq
+          [swap mul] dip eq
+]
+
+assert [42 0 0 test-mul]
+assert [67 83 5561 test-mul]
+assert [7757 3373 26164361 test-mul]
+
+prog divmod-impl [
+    [type-nat] dip type-nat
+    [0 eq] reject # fail on divide-by-zero
+
+]
+
+prog divmod [[divmod-impl] 'nat-divmod p-accel-opt apply]
+
+prog test-divmod [
+    pair
+    copy3 [divmod-impl pair] dip eq
+          [divmod pair] dip eq
+]
+
+prog div-impl [divmod drop]
+prog mod-impl [divmod swap drop]
+
+prog div [[div-impl] 'nat-div p-accel-opt apply]
+prog mod [[mod-impl] 'nat-mod p-accel-opt apply]
+
+export 
+    type-nat as type, 
+    increment, decrement, 
+    add, sub, mul, divmod, div, mod 
