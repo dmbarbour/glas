@@ -1,8 +1,8 @@
 # Glas Design
 
-Glas was named in reference to transparency of glass, liquid and solid states to represent staged metaprogramming, and human mastery over glass as a material. As a backronym, 'General LAnguage System'. 
+As a backronym, 'General LAnguage System'. Glas was named in reference to transparency of glass, liquid and solid states to represent staged metaprogramming, and human mastery over glass as a material. 
 
-Design goals for glas include purpose-specific syntax, compositionality, extensibility, metaprogramming, live coding. Compared to conventional languages, there is a lot more focus on the compile-time. 
+Design goals for glas include purpose-specific syntax, compositionality, extensibility, metaprogramming, and live coding. Compared to conventional languages, there is more focus on the compile-time. However, there is a related exploration of non-conventional application models.
 
 ## Command Line
 
@@ -22,18 +22,18 @@ The compiler function has a very limited effects API. Other than producing a val
 
 ## Values
 
-Glas values are immutable binary trees, i.e. where each node in the tree has an optional left and right children, respectively labeled '0' and '1'. The most naive representation is:
+Glas represents data using immutable binary trees, i.e. such that each node in a tree has optional left and right children respectively labeled '0' and '1'. The most naive representation is:
 
         type T = ((1+T) * (1+T))
 
-A binary tree can directly represent unit `()`, pair `(a,b)`, and sum types `L a | R b`. However, glas systems generally favor labeled data because it is extensible and meaningful. Text labels are encoded into a null-terminated UTF-8 path through the tree. For example, label 'data' is encoded by path `01100100 01100001 01110100 01100001 00000000`, where '0' represents a left branch and '1' a right branch. Multiple labels can be encoded, sharing prefixes, essentially forming a [radix tree](https://en.wikipedia.org/wiki/Radix_tree) as the basis for record and dictionary data.
+A binary tree can directly represent unit `()`, pair `(a,b)`, and sum types `L a | R b`. However, glas systems generally favor labeled data because it is extensible and meaningful. Text labels are encoded into a null-terminated UTF-8 path through the tree. For example, label 'data' is encoded by path `01100100 01100001 01110100 01100001 00000000`, where '0' represents a left branch and '1' a right branch. Multiple labels can be encoded into a binary tree with shared prefixes, forming a [radix tree](https://en.wikipedia.org/wiki/Radix_tree) as the basis for record and dictionary data.
 
-To efficiently represent non-branching path fragments, glas values use a representation under the hood closer to:
+To efficiently represent non-branching path fragments, the under the hood representation is closer to:
 
         type Bits = compact Bool list
         type T = (Bits * (1 + (T * T)))
 
-Glas systems will encode small, simple values directly into bitstrings. A bitstring is a tree with a single, non-branching path. For example, a byte is an 8-bit bitstring, msb to lsb, such that `00010110` is byte 22. A variable-width natural number 22 is almost the same but loses the zeroes prefix `10110`. Negative integers can be conveniently represented by negating all the bits, so -22 is `01001`.
+Simple data such as integers and symbols can be encoded into bitstrings - trees with a single, non-branching path terminating in a leaf node. For example, a byte is an 8-bit bitstring, msb to lsb, such that `00010110` is byte 22. A variable-width natural number 22 is almost the same but loses the zeroes prefix `10110`. Negative integers can be conveniently represented by negating all the bits, so -22 is `01001`.
 
 Glas systems encode most sequential structures as lists. Logically, a list is tree representing a right-associative sequence of pairs, terminating in unit, i.e. `type List = (Elem * List) | ()`. 
 
@@ -50,7 +50,9 @@ Glas values may scale to represent entire databases. Subtrees of larger-than-mem
 
 ## Programs
 
-Programs are values with a standard interpretation. The interpretation described here is used for language modules and to represent basic applications for the glas command line. It is designed for simplicity and compositionality at significant costs to flexibility and convenience of direct use by humans. Performance can be augmented by acceleration and other specialized optimizations.
+Programs are values with a stable interpretation. 
+
+The interpretation described here is used for language modules and to represent basic applications for the glas command line. It is designed for simplicity and compositionality at significant costs to flexibility and convenience of direct use by humans. Performance can be augmented by acceleration and other specialized optimizations.
 
 Programmers usually express these programs indirectly, e.g. write ".g0" files that compile into dictionaries of reusable programs. Metaprogramming features can mitigate flexibility.
 
@@ -294,3 +296,7 @@ Memoization can mitigate rework insofar as we have [consistent heuristics](https
 Manually tracing data to its sources is challenging and error-prone. Glas further hinders manual tracking because language module compiler functions cannot refer to file or module names. This ensures code can be moved or shared without changing its meaning. Only content-addressed provenance is possible, e.g. based on secure hash of binary, or notation within the code.
 
 I hope to support provenance tracking in a more systematic manner, such that all data is traced to its sources without any explicit effort by the programmers. This might involve something similar to [SHErrLoc project's](https://research.cs.cornell.edu/SHErrLoc/) heuristics, e.g. assuming that widely used/tested dependencies (such as language parser code) contributes 'less' as a source.
+
+### Computation Model 
+
+I'm very tempted to replace the initial program model for glas systems to something more friendly for parallel/concurrent computation, preferably without relying on accelerators. I'm contemplating a few [alternative models](AltModels.md) but I'm not very satisfied with any particular idea.

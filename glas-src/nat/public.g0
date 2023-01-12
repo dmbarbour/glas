@@ -8,10 +8,12 @@ from [bb] import type-nat
 prog increment [type-nat bb/int-increment]
 prog decrement [type-nat [0b1 get] verify bb/int-decrement]
 
-prog revnat-increment [bb/revint-increment]
 
-# pop lsb from revnat, or pop 0b0 if input is 0.
+# clarity functions
+prog revnat-increment [bb/revint-increment]
 prog revnat-lsb-pop [[bb/bits-pop][0b0 swap]try-else]
+prog revnat-mul2-add1 [0b1 bb/bits-prefix]
+prog revnat-mul2 [[0 eq1][0b0 bb/bits-prefix]try-else]
 
 prog add-rev-acc [
     # stack: Acc A B
@@ -218,12 +220,41 @@ assert [42 0 0 test-mul]
 assert [67 83 5561 test-mul]
 assert [7757 3373 26164361 test-mul]
 
+
+
+# binary long division algorithm
 prog divmod-impl [
     [type-nat] dip type-nat
-    [0 eq] reject # fail on divide-by-zero
+    [0 eq] reject  # fail on divide-by-zero
+    bb/bits-reverse swap
+    [0 0] dip2  # stack: Q(rev) R(rev) D(rev) N(normal)
+    # N is not reversed; we'll be taking bits from msb.
 
+    [0 eq]
+    [
+        # move msb of N to lsb of R
+        [0b0 get]
+        [[revnat-mul2] dip2]
+        [0b1 get [revnat-mul2-add1] dip2]
+        try-then-else
+
+        [   # if R is greater or equal to D:
+            #  subtract D from R
+            #  shift '1' bit into lsb of Q
+            # otherwise:
+            #  multiply Q by 2 (shift '0' bit into lsb if Q not zero)
+            [copy [sub-rev] dip]
+            [[revnat-mul2-add1] dip2]
+            [[revnat-mul2] dip2]
+            try-then-else
+        ] dip   # hide N
+    ] 
+    until-do
+    drop [bb/bits-reverse] dip bb/bits-reverse
 ]
 
+# divide two natural numbers  N D -- Q R
+#   such that (Q*D)+R = N
 prog divmod [[divmod-impl] 'nat-divmod p-accel-opt apply]
 
 prog test-divmod [
@@ -231,6 +262,16 @@ prog test-divmod [
     copy3 [divmod-impl pair] dip eq
           [divmod pair] dip eq
 ]
+
+assert [17 5 3 2 test-divmod]
+assert [63 6 10 3 test-divmod]
+assert [63 7 9 0 test-divmod]
+assert [63 8 7 7 test-divmod]
+assert [10003087 3373 2965 2142 test-divmod]
+assert [10003087 10003087 1 0 test-divmod]
+assert [10003087 1 10003087 0 test-divmod]
+assert [9 10 0 9 test-divmod]
+assert [0 3 0 0 test-divmod]
 
 prog div-impl [divmod drop]
 prog mod-impl [divmod swap drop]

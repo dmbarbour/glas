@@ -101,18 +101,35 @@ assert [9 -7 -63 test-mul]
 assert [7 6 42 test-mul]
 
 prog divmod-impl [
-    #  I currently don't have a good idea how to simplify this.
-    #  Simply handling each sign case.
+    # I currently don't have a good idea how to simplify this.
     [[is-neg negate] dip]
     [
         [is-neg negate]
         [n/divmod negate] # -17 -5 =>  3 -2
-        [copy [n/divmod [negate decrement] dip] dip swap n/sub]  # -17  5 => -4  3
+        [ # -17 5 => -4 3
+          copy 
+          [n/divmod [negate] dip] dip
+
+          swap
+          [0 eq]
+          [drop 0]
+          [n/sub [decrement] dip]
+          try-then-else
+        ] 
         try-then-else
     ]
     [
         [is-neg negate]
-        [copy [n/divmod [negate decrement] dip] dip swap n/sub negate] # 17 -5 => -4 -3
+        [ # 17 -5 => -4 -3
+          copy 
+          [n/divmod [negate] dip] dip
+
+          swap
+          [0 eq]
+          [drop 0]
+          [n/sub negate [decrement] dip]
+          try-then-else
+        ]
         [n/divmod]
         try-then-else
     ]
