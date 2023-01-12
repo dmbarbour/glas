@@ -102,6 +102,7 @@ assert [7 6 42 test-mul]
 
 prog divmod-impl [
     # I currently don't have a good idea how to simplify this.
+    # for now, just handling each signs case separately.
     [[is-neg negate] dip]
     [
         [is-neg negate]
@@ -138,8 +139,8 @@ prog divmod-impl [
 
 # Dividend Divisor -- Quotient Remainder
 #   Quotient * Divisor + Remainder = Dividend
-#   Remainder between 0 (incl) and Divisor (excl).
-#   (That is, non-zero Remainder has sign of Divisor.)
+#   Remainder in [0,Divisor) or (Divisor,0].
+#   A non-zero Remainder has sign of Divisor.
 #
 #   For example:
 #
@@ -183,10 +184,14 @@ assert [ 2 -3 -1 -1 test-divmod]
 assert [ 3 -3 -1  0 test-divmod]
 assert [ 4 -3 -2 -2 test-divmod]
 
-
+assert [-100 -1 100 0 test-divmod]
+assert [100 -1 -100 0 test-divmod]
+assert [-100 1 -100 0 test-divmod]
 
 prog div [ divmod drop ]
 prog mod [ divmod swap drop ]
+
+# TODO: number comparisons
 
 export 
     add, sub, mul, 

@@ -15,7 +15,8 @@ prog revnat-lsb-pop [[bb/bits-pop][0b0 swap]try-else]
 prog revnat-mul2-add1 [0b1 bb/bits-prefix]
 prog revnat-mul2 [[0 eq1][0b0 bb/bits-prefix]try-else]
 
-prog add-rev-acc [
+prog add-rev [
+    [0] dip2 # introduce accumulator
     # stack: Acc A B
     # reversed A,B so lsb is first bit.
 
@@ -54,11 +55,6 @@ prog add-rev-acc [
     bb/bits-reverse-append
 ]
 
-prog add-rev [
-    [0] dip2 # introduce accumulator
-    add-rev-acc  # add
-]
-
 # test add, commutative of add
 prog test-add-rev [
     copy3
@@ -92,7 +88,8 @@ prog add [[add-impl] 'nat-add p-accel-opt apply]
 assert [1234 5678 add 6912 eq]
 assert [314 710 add 1024 eq]
 
-prog sub-rev-acc [
+prog sub-rev [
+    [0] dip2
     [0 eq] 
     [
         [0b0 get]
@@ -127,11 +124,6 @@ prog sub-rev-acc [
     # reverse the accumulator
     swap
     bb/bits-reverse-append 
-]
-
-prog sub-rev [
-    [0] dip2
-    sub-rev-acc
 ]
 
 assert [0b001 0b1 sub-rev 0b11 eq]

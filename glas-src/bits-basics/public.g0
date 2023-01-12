@@ -117,7 +117,12 @@ assert [-4 int-decrement -5 eq]
 # N [Op] repeat
 #  will repeat [Op] N times.
 #  N may be dynamic and is required to be a natural number.
-prog p-repeat [p-dip [int-decrement] p-prefix [0 eq] swap p-until-do [type-nat] p-prefix]
-macro repeat [p-repeat]
-assert [-5 12 [int-increment] repeat 7 eq]
+prog p-repeat [
+    # prepare a loop
+    p-dip [revint-decrement] p-prefix [0 eq] swap p-until-do 
 
+    # verify N is non-negative, reverse it.
+    [type-nat [0b0 get] reject bits-reverse] p-prefix
+]
+macro repeat [p-repeat]
+assert [-9 20 [int-increment] repeat 11 eq]
