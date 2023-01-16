@@ -292,7 +292,7 @@ module Value =
             | _ ->
                 match b with
                 | Leaf | Stem64 _ -> false
-                | Concat(Leaf, b') | Concat(Leaf, b') -> 
+                | Concat(Leaf, b') | Concat(b', Leaf) -> 
                     Term.Eq1(cc, a, b')
                 | _ ->
                     let struct(al,ar) = a.AsPair()
