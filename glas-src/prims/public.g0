@@ -148,22 +148,22 @@ macro do-until [p-do-until]
 # Many uses of these operations might be better expressed as typechecks,
 # or otherwise as annotations. However, they do have some use-cases.
 
-# verify    ([Predicate] -- | FAIL)
-#  evaluates predicate, then undoes effects.
-#  passes if the predicate would pass, fails otherwise.
-prog p-verify [[fail] p-try-then [fail] p-try-then]
-macro verify [p-verify]
-assert [0 [0 eq] verify 0 eq]
-assert [0 [[1 eq] verify][1][2] try-then-else 2 eq 0 eq]
-
 # reject ([Predicate] -- | FAIL)
-#  evaluates predicate, then undoes effects.
-#  passes if predicate would fail, succeeds otherwise.
-prog p-reject [[fail] p-try-then [fail] p-try-else]
+#  will evaluate predicate then fail iff predicate passes.
+prog p-reject [[fail] p-try-then]
 macro reject [p-reject]
 assert [0 [1 eq] reject 0 eq]
 assert [0 [[0 eq] reject][1][2] try-then-else 2 eq 0 eq]
 assert [[[] reject] reject]
+
+# verify    ([Predicate] -- | FAIL)
+#  will test predicate via evaluate then abort
+#  passes if evaluation of predicate does not fail
+prog p-verify [p-reject p-reject]
+macro verify [p-verify]
+assert [0 [0 eq] verify 0 eq]
+assert [0 [[1 eq] verify][1][2] try-then-else 2 eq 0 eq]
+
 
 # eq1       Val Val -- Val
 #  keep a copy of the value on the equality test

@@ -16,14 +16,29 @@ prog bits-pop [type-bits [0b0 get 0b0][0b1 get 0b1]try-else swap]
 data bits-empty [0b]
 prog p-bits-each [[bits-pop] swap p-dip p-while-do [bits-empty eq] p-suffix]
 macro bits-each [p-bits-each]
-prog bits-reverse-append [[bits-prefix] bits-each]
 
-prog bits-reverse-impl [bits-empty swap bits-reverse-append]
-assert [0b0101001101 bits-reverse-impl 0b1011001010 eq]
-prog bits-reverse [[bits-reverse-impl] 'bits-reverse p-accel-opt apply]
-assert [0b1100101 bits-reverse 0b1010011 eq]
+prog bits-reverse-append-impl [[bits-prefix] bits-each]
+prog bits-reverse-append [[bits-reverse-append-impl] 'bits-reverse-append p-accel-opt apply]
+prog bits-reverse [[bits-empty] dip bits-reverse-append]
+
+prog test-bits-reverse-append [
+    copy3 [bits-reverse-append-impl] dip eq
+          [bits-reverse-append] dip eq
+]
+assert [0b1100 0b0101 0b10101100 test-bits-reverse-append]
+assert [0b1101 0b0101001101 0b10110010101101 test-bits-reverse-append]
+
+assert [
+    # 0=>0, 1=>8, 2=>4, 3=>C, 4=>2, 5=>A, 6=>6, 7=>E, 
+    # 8=>1, 9=>9, A=>5, B=>D, C=>3, D=>B, E=>7, F=>F
+
+    0xCDE 0x0123456789ABCDEF0123456789ABCDEF01234 
+          0x2C480F7B3D591E6A2C480F7B3D591E6A2C480CDE
+          test-bits-reverse-append
+]
 
 prog bits-negate-impl [
+    type-bits
     bits-empty swap
     [bits-empty eq]
     [ [0b0 get 0b1] [0b1 get 0b0] try-else
@@ -31,9 +46,21 @@ prog bits-negate-impl [
     ] until-do
     bits-reverse
 ]
-assert [0b0011010 bits-negate-impl 0b1100101 eq]
 prog bits-negate [[bits-negate-impl] 'bits-negate p-accel-opt apply]
-assert [0b011000 bits-negate 0b100111 eq]
+
+prog test-bits-negate [
+    copy2 [bits-negate-impl] dip eq
+          [bits-negate] dip eq
+]
+assert [0b0011010 0b1100101 test-bits-negate]
+assert [0b011000 0b100111 test-bits-negate]
+
+assert [
+    # 0<=>F, 1<=>E, 2<=>D, 3<=>C, 4<=>B, 5<=>A, 6<=>9, 7<=>8
+    0x0123456789ABCDEF0123456789ABCDEF01234
+    0xFEDCBA9876543210FEDCBA9876543210FEDCB
+    test-bits-negate
+]
 
 
 # increment a bitstring reversed integer
@@ -53,28 +80,36 @@ prog revint-increment [
 ]
 
 prog int-increment-impl [bits-reverse revint-increment bits-reverse]
-assert [4 int-increment-impl 5 eq]
-assert [3 int-increment-impl 4 eq]
-assert [2 int-increment-impl 3 eq]
-assert [1 int-increment-impl 2 eq]
-assert [0 int-increment-impl 1 eq]
-assert [-1 int-increment-impl 0 eq]
-assert [-2 int-increment-impl -1 eq]
-assert [-3 int-increment-impl -2 eq]
-assert [-4 int-increment-impl -3 eq]
 
 # int-increment     Int -- Int
 #  implements increment via bitstring manipulation
 prog int-increment [[int-increment-impl] 'int-increment p-accel-opt apply]
-assert [4 int-increment 5 eq]
-assert [3 int-increment 4 eq]
-assert [2 int-increment 3 eq]
-assert [1 int-increment 2 eq]
-assert [0 int-increment 1 eq]
-assert [-1 int-increment 0 eq]
-assert [-2 int-increment -1 eq]
-assert [-3 int-increment -2 eq]
-assert [-4 int-increment -3 eq]
+
+prog test-int-increment [
+    copy2 [int-increment] dip eq
+          [int-increment-impl] dip eq
+]
+assert [ 4  5 test-int-increment]
+assert [ 3  4 test-int-increment]
+assert [ 2  3 test-int-increment]
+assert [ 1  2 test-int-increment]
+assert [ 0  1 test-int-increment]
+assert [-1  0 test-int-increment]
+assert [-2 -1 test-int-increment]
+assert [-3 -2 test-int-increment]
+assert [-4 -3 test-int-increment]
+assert [0x0123456789ABCDEF0123456789ABCDEF
+        0x0123456789ABCDEF0123456789ABCDF0
+        test-int-increment]
+assert [ 0xEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+         0xF000000000000000000000000000000000 
+         test-int-increment]
+assert [ 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+         0x0000000000000000000000000000000000 0b1 bits-prefix
+         test-int-increment]
+assert [ 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF 0b0 bits-prefix
+         0x0000000000000000000000000000000000
+         test-int-increment]
 
 prog revint-decrement [
     type-int
@@ -91,38 +126,50 @@ prog revint-decrement [
 ]
 
 prog int-decrement-impl [bits-reverse revint-decrement bits-reverse]
-assert [4 int-decrement-impl 3 eq]
-assert [3 int-decrement-impl 2 eq]
-assert [2 int-decrement-impl 1 eq]
-assert [1 int-decrement-impl 0 eq]
-assert [0 int-decrement-impl -1 eq]
-assert [-1 int-decrement-impl -2 eq]
-assert [-2 int-decrement-impl -3 eq]
-assert [-3 int-decrement-impl -4 eq]
-assert [-4 int-decrement-impl -5 eq]
 
 # int-decrement     Int -- Int
 #  implements decrement via bitstring manipulation
 prog int-decrement [[int-decrement-impl] 'int-decrement p-accel-opt apply]
-assert [4 int-decrement 3 eq]
-assert [3 int-decrement 2 eq]
-assert [2 int-decrement 1 eq]
-assert [1 int-decrement 0 eq]
-assert [0 int-decrement -1 eq]
-assert [-1 int-decrement -2 eq]
-assert [-2 int-decrement -3 eq]
-assert [-3 int-decrement -4 eq]
-assert [-4 int-decrement -5 eq]
+
+prog test-int-decrement [
+    copy2 [int-decrement-impl] dip eq
+          [int-decrement] dip eq
+]
+assert [ 4  3 test-int-decrement]
+assert [ 3  2 test-int-decrement]
+assert [ 2  1 test-int-decrement]
+assert [ 1  0 test-int-decrement]
+assert [ 0 -1 test-int-decrement]
+assert [-1 -2 test-int-decrement]
+assert [-2 -3 test-int-decrement]
+assert [-3 -4 test-int-decrement]
+assert [-4 -5 test-int-decrement]
+
+assert [0x0123456789ABCDEF0123456789ABCDF0
+        0x0123456789ABCDEF0123456789ABCDEF
+        test-int-decrement]
+assert [ 0xF000000000000000000000000000000000 
+         0xEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+         test-int-decrement]
+assert [ 0x0000000000000000000000000000000000 0b1 bits-prefix
+         0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+         test-int-decrement]
+assert [ 0x0000000000000000000000000000000000
+         0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF 0b0 bits-prefix
+         test-int-decrement]
 
 # N [Op] repeat
 #  will repeat [Op] N times.
 #  N may be dynamic and is required to be a natural number.
 prog p-repeat [
     # prepare a loop
-    p-dip [revint-decrement] p-prefix [0 eq] swap p-until-do 
+    p-dip [int-decrement] p-prefix [0 eq] swap p-until-do 
 
-    # verify N is non-negative, reverse it.
-    [type-nat [0b0 get] reject bits-reverse] p-prefix
+    # verify N is non-negative
+    [type-nat [0b0 get] reject] p-prefix
+
+    # Thoughts: if 'int-decrement' isn't accelerated, this will be
+    # less efficient than reversing N's bits then revint-decrement.
 ]
 macro repeat [p-repeat]
 assert [-9 20 [int-increment] repeat 11 eq]

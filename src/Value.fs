@@ -134,7 +134,6 @@ module Value =
         let inline ofByte (b : uint8) = 
             consByte b hibit
 
-
         // true if exactly len bits.
         let inline match_len len bits =
             let lb = lenbit len

@@ -265,7 +265,7 @@ Data languages will often be more convenient than embedding data in a programmin
 
 Programming languages can support mutually recursive definitions, multi-step procedures, process networks, variables, type annotations, type-guided overrides and program search, and many more features. The g0 language is quite awkward for some use-cases.
 
-Text preprocessor languages could import, define, and support character-level macros. Users might apply the preprocessor anywhere it might be useful via composing file extensions, e.g. ".g0.m4" vs. ".json.m4", while keeping it separate from the underlying language.
+Text preprocessor languages can support language-agnostic text-layer macros. We can leverage composition of file extensions, e.g. such that ".json.m4" will process a file first via text preprocessor 'language-m4' then via 'language-json'. Reusable text macros could be exported from related ".m4h" modules.
 
 It is feasible to develop graphical programming in glas, using structured files (perhaps even database files) to represent modules within a program in a manner easily viewed and manipulated by tools other than text editors. This is a general direction I'd like to pursue relatively early in glas systems, though I don't have many precise ideas yet.
 

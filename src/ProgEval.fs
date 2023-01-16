@@ -51,6 +51,9 @@ module ProgEval =
         let underflow rte = 
             raise <| RTError(rte, Value.symbol "underflow")
 
+        let type_error rte vType =
+            raise <| RTError(rte, Value.variant "type-error" vType)
+
         /// simplest continuation.
         type CC = RTE -> obj 
 
@@ -70,7 +73,6 @@ module ProgEval =
             match rte.DataStack with
             | (a::_) as ds -> cc { rte with DataStack = (a::ds) }
             | _ -> underflow rte
-
 
         let drop cte cc rte =
             match rte.DataStack with
@@ -242,6 +244,229 @@ module ProgEval =
             let fn op cc = op cte cc
             Array.foldBack fn ops cc0
 
+        // stow (first item on data stack)
+        let stow vOpts cte cc =  
+            // not yet implemented
+            // value type currently does not include stowage
+            cc
+
+        let memoize prog vOpts (compiledProg : Op) : Op =
+            compiledProg
+
+
+        module Accel =
+
+            let rec bits_negate_term t =
+                match t with
+                | Leaf -> Leaf
+                | Stem64(bits, t') ->
+                    Stem64(~~~bits, bits_negate_term t')
+                | _ -> failwith "input is not bits"
+            
+            let bits_negate_stem n =
+                let lb = StemBits.lenbit (StemBits.len n)
+                let ndb = (lb ||| (lb - 1UL))
+                ((~~~n) &&& (~~~ndb)) ||| (n &&& ndb)
+
+            let bits_negate bits =
+                { Stem = bits_negate_stem bits.Stem 
+                ; Term = bits_negate_term bits.Term
+                }
+
+            let accel_bits_negate cte cc rte =
+                match rte.DataStack with
+                | ((Bits b)::ds') ->
+                    let b' = bits_negate b
+                    cc { rte with DataStack = ((ofBits b')::ds') }
+                | (_::_) -> type_error rte (Value.symbol "bits")
+                | _ -> underflow rte
+
+            let rec bits_reverse_append acc bits =
+                if not (isStem bits) then acc else
+                let acc' = consStemBit (stemHead bits) acc
+                let bits' = stemTail bits
+                bits_reverse_append acc' bits'
+
+            let accel_bits_reverse_append cte cc rte =
+                match rte.DataStack with
+                | ((Bits bits)::(Bits acc)::ds') -> 
+                    let result = bits_reverse_append acc bits
+                    cc { rte with DataStack = ((ofBits result)::ds') }
+                | (_::_::_) -> type_error rte (Value.symbol "bits")
+                | _ -> underflow rte
+            
+            let accel_bits_verify cte cc rte =
+                match rte.DataStack with
+                | (v::ds') -> if isBits v then cc rte else cte.FK rte
+                | _ -> underflow rte
+
+            let accel_nat_add (lzOp : Lazy<Op>) cte cc rte =
+                match rte.DataStack with
+                |  ((Nat64 n)::(Nat64 m)::ds') when ((System.UInt64.MaxValue - n) >= m) ->
+                    cc { rte with DataStack = ((Value.ofNat (m + n))::ds') }
+                | _ -> lzOp.Force() cte cc rte
+
+            let accel_nat_sub (lzOp : Lazy<Op>) cte cc rte =
+                match rte.DataStack with
+                | ((Nat64 n)::(Nat64 m)::ds') ->
+                    if (n > m) then cte.FK rte else
+                    cc { rte with DataStack = ((Value.ofNat (m - n))::ds') }
+                | _ -> lzOp.Force() cte cc rte
+
+            let accel_nat_mul (lzOp : Lazy<Op>) cte cc rte =
+                match rte.DataStack with
+                | ((Nat64 n)::(Nat64 m)::ds') ->
+                    try 
+                        let prod = Microsoft.FSharp.Core.Operators.Checked.(*) n m
+                        //printfn "accel_nat_mul %d*%d=%d" m n prod
+                        cc { rte with DataStack = ((Value.ofNat prod)::ds') }
+                    with
+                    | :? System.OverflowException ->
+                        lzOp.Force() cte cc rte
+                | _ -> lzOp.Force() cte cc rte
+
+            let accel_nat_divmod (lzOp : Lazy<Op>) cte cc rte =
+                match rte.DataStack with
+                | ((Nat64 divisor)::(Nat64 dividend)::ds') ->
+                    if (0UL = divisor) then cte.FK rte else
+                    let struct(quot,rem) = System.Math.DivRem(dividend,divisor)
+                    // printfn "accel_nat_divmod %d %d => %d %d" dividend divisor quot rem
+                    let dsResult = (Value.ofNat rem)::(Value.ofNat quot)::ds'
+                    cc { rte with DataStack = dsResult }
+                | _ -> lzOp.Force() cte cc rte
+
+            let accel_nat_gt (lzOp : Lazy<Op>) cte cc rte =
+                match rte.DataStack with
+                | ((Nat64 n)::(Nat64 m)::ds') ->
+                    if (m > n) then cc rte else cte.FK rte
+                | _ -> lzOp.Force() cte cc rte
+
+            let accel_nat_gte (lzOp : Lazy<Op>) cte cc rte =
+                match rte.DataStack with
+                | ((Nat64 n)::(Nat64 m)::ds') ->
+                    if (m >= n) then cc rte else cte.FK rte
+                | _ -> lzOp.Force() cte cc rte 
+
+            let accel_int_increment (lzOp : Lazy<Op>) cte cc rte =
+                match rte.DataStack with
+                | ((Int64 n)::ds') when (n <> System.Int64.MaxValue) ->
+                    cc { rte with DataStack = ((Value.ofInt (n + 1L))::ds') }
+                | _ -> lzOp.Force() cte cc rte
+
+            let accel_int_decrement (lzOp : Lazy<Op>) cte cc rte =
+                match rte.DataStack with
+                | ((Int64 n)::ds') when (n <> System.Int64.MinValue) ->
+                    cc { rte with DataStack = ((Value.ofInt (n - 1L))::ds') }
+                | _ -> lzOp.Force() cte cc rte
+            
+            let accel_int_add (lzOp : Lazy<Op>) cte cc rte =
+                match rte.DataStack with
+                | ((Int64 n)::(Int64 m)::ds') ->
+                    try 
+                        let sum = Microsoft.FSharp.Core.Operators.Checked.(+) m n
+                        cc { rte with DataStack = ((Value.ofInt sum)::ds') }
+                    with
+                    | :? System.OverflowException ->
+                        lzOp.Force() cte cc rte
+                | _ ->
+                    lzOp.Force() cte cc rte
+
+            let accel_int_mul (lzOp : Lazy<Op>) cte cc rte =
+                match rte.DataStack with
+                | ((Int64 n)::(Int64 m)::ds') ->
+                    try
+                        let prod = Microsoft.FSharp.Core.Operators.Checked.(*) m n
+                        cc { rte with DataStack = ((Value.ofInt prod)::ds') }
+                    with 
+                    | :? System.OverflowException ->
+                        lzOp.Force() cte cc rte
+                | _ -> 
+                    lzOp.Force() cte cc rte
+
+            let accel_int_gt (lzOp : Lazy<Op>) cte cc rte =
+                match rte.DataStack with
+                | ((Int64 n)::(Int64 m)::ds') ->
+                    if (m > n) then cc rte else cte.FK rte
+                | _ -> lzOp.Force() cte cc rte
+
+            let accel_int_gte (lzOp : Lazy<Op>) cte cc rte =
+                match rte.DataStack with
+                | ((Int64 n)::(Int64 m)::ds') ->
+                    if (m >= n) then cc rte else cte.FK rte
+                | _ -> lzOp.Force() cte cc rte 
+
+
+            let tryAccel (prog : Program) (vModel : Value) (lzOp : Lazy<Op>) : Op option  =
+                match vModel with
+                | Variant "bits-verify" U ->
+                    Some accel_bits_verify
+                | Variant "bits-negate" U -> 
+                    Some accel_bits_negate
+                | Variant "bits-reverse-append" U -> 
+                    Some accel_bits_reverse_append
+                | Variant "bits-length" U ->
+                    None 
+                | Variant "bits-take" U ->
+                    None 
+                | Variant "bits-skip" U ->
+                    None
+                // could also add bits-and, bits-xor, etc.
+                | Variant "nat-add" U -> 
+                    Some (accel_nat_add lzOp)
+                | Variant "nat-sub" U -> 
+                    Some (accel_nat_sub lzOp)
+                | Variant "nat-mul" U -> 
+                    Some (accel_nat_mul lzOp)
+                | Variant "nat-divmod" U -> 
+                    Some (accel_nat_divmod lzOp)
+                | Variant "nat-gte" U ->
+                    Some (accel_nat_gte lzOp)
+                | Variant "nat-gt" U ->
+                    Some (accel_nat_gt lzOp)
+                | Variant "int-increment" U -> 
+                    Some (accel_int_increment lzOp)
+                | Variant "int-decrement" U -> 
+                    Some (accel_int_decrement lzOp)
+                | Variant "int-add" U -> 
+                    Some (accel_int_add lzOp)
+                | Variant "int-sub" U -> 
+                    None 
+                | Variant "int-mul" U -> 
+                    Some (accel_int_mul lzOp)
+                | Variant "int-divmod" U -> 
+                    None 
+                | Variant "int-gte" U ->
+                    Some (accel_int_gte lzOp)
+                | Variant "int-gt" U ->
+                    Some (accel_int_gt lzOp)
+                | Variant "list-verify" U ->
+                    None
+                | Variant "list-length" U ->
+                    None 
+                | Variant "list-append" U ->
+                    None
+                | Variant "list-take" U ->
+                    None
+                | Variant "list-skip" U ->
+                    None
+                | Variant "list-item" U ->
+                    None
+                | _ -> 
+                    None
+
+        let accelerate (p : Program) (vModel : Value) (lazyOp : Lazy<Op>) : Op =
+            match vModel with
+            | Variant "opt" vModel' ->
+                // optional acceleration
+                match Accel.tryAccel p vModel' lazyOp with
+                | Some op -> op
+                | None -> lazyOp.Force()
+            | _ ->
+                // require acceleration
+                match Accel.tryAccel p vModel lazyOp with
+                | Some op -> op
+                | _ -> halt (Value.variant "accel" vModel)
+
         let rec compile (p:Program) : Op =
             match p with
             | Stem lCopy U -> copy
@@ -265,10 +490,34 @@ module ProgEval =
                 loopUntil (compile pUntil) (lazy (compile pDo))
             | Env (pWith, pDo) ->
                 env (compile pWith) (compile pDo) 
-            | Prog (_, p') -> 
-                // memoization, stowage, or acceleration could be annotated here.
-                // TODO: acceleration of several useful functions!
-                compile p' 
+            | Prog (anno, p') -> 
+                // annotations may specify acceleration, memoization, stowage, or
+                // other performance features. 
+                //
+                // Thoughts: It might also be useful to cache compilation at 'prog'
+                // boundaries. However, I'll need another intermediate stage to make
+                // that work well.
+                let lazyCompile = 
+                    let p0 = lazy (compile p')
+                    let pAccel = 
+                        match anno with
+                        | (Record ["accel"] ([ValueSome vModel], _)) ->
+                            lazy (accelerate p' vModel p0) 
+                        | _ -> p0
+                    let pMemo = 
+                        match anno with
+                        | (Record ["memo"] ([ValueSome vOpts], _)) ->
+                            lazy (memoize p' vOpts (pAccel.Force()))
+                        | _ -> pAccel
+                    let pStow =
+                        match anno with
+                        | (Record ["stow"] ([ValueSome vOpts], _)) ->
+                            // assumption: stow usually annotates a nop program.
+                            // for now, just sequence stowage after the program.
+                            lazy (pseq [| pMemo.Force(); stow vOpts |])
+                        | _ -> pMemo
+                    pStow
+                lazyCompile.Force()
             | Stem lHalt msg -> halt msg
             | _ -> 
                 // not a valid program. This could be detected by analysis. But

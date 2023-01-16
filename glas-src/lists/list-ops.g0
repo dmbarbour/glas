@@ -1,20 +1,3 @@
-# LIST OPERATIONS
-#
-# Lists in Glas are logically constructed of pairs, terminating in unit. This
-# is essentially a Lisp-like construction of lists, using cons cells and null
-# terminator. 
-#
-#       type List a = (a * List a) | ()
-# 
-# However, Glas systems are assumed to accelerate lists. Under-the-hood, lists 
-# will be represented by a rope-like finger-tree structure by default. This can
-# support double-ended queue access, log-time split and join, compact binaries,
-# and structure sharing of fragments within a list.
-#
-# A finger-tree rope is a good one-size-fits-most representation of lists. It is
-# feasible for a compiler or runtime to specialize list representations for other
-# use cases, e.g. use a mutable array in a context where it isn't copied.
-#
 
 open prims
 

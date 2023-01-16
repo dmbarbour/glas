@@ -191,7 +191,13 @@ assert [-100 1 -100 0 test-divmod]
 prog div [ divmod drop ]
 prog mod [ divmod swap drop ]
 
-# TODO: number comparisons
+prog gt-impl  [[sub 0b1 get] verify]
+prog gte-impl [[sub is-nat] verify]
+
+prog gte [[gte-impl] 'int-gte p-accel-opt apply]
+prog gt [[gt-impl] 'int-gt p-accel-opt apply]
+prog lte [swap gte]
+prog lt [swap gt]
 
 export 
     add, sub, mul, 

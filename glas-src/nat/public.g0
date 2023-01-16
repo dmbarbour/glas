@@ -8,7 +8,6 @@ from [bb] import type-nat
 prog increment [type-nat bb/int-increment]
 prog decrement [type-nat [0b1 get] verify bb/int-decrement]
 
-
 # clarity functions
 prog revnat-increment [bb/revint-increment]
 prog revnat-lsb-pop [[bb/bits-pop][0b0 swap]try-else]
@@ -39,7 +38,7 @@ prog add-rev [
             [ # 1aaa + 1bbb => (1aaa + 1) + (1bbb - 1)) 
               #             => (0(aaa+1)) + (0bbb) 
               #             => 0((aaa+1) + bbb)
-              0b1 get revnat-increment 
+              0b1 get revnat-increment  # 1aaa => (aaa+1)
               [0b0 bb/bits-prefix] dip 
             ]
             try-then-else
@@ -79,14 +78,27 @@ prog add-impl [
     bb/bits-reverse
 ]
 
-assert [12345 87654 add-impl 99999 eq]
-assert [1000 9000 add-impl 10000 eq]
-
 # add two natural numbers (possibly accelerated)
 prog add [[add-impl] 'nat-add p-accel-opt apply]
 
-assert [1234 5678 add 6912 eq]
-assert [314 710 add 1024 eq]
+prog test-add [
+    copy3 [add-impl] dip eq
+    copy3 [swap add-impl] dip eq
+    copy3 [add] dip eq
+          [swap add] dip eq
+]
+
+assert [12345 87654 99999 test-add]
+assert [1000 9000 10000 test-add]
+assert [1234 5678 6912 test-add]
+assert [314 710 1024 test-add]
+assert [
+    0x876543210FEDCBA876543210FEDCBA876543210FEDCBA
+     0x89ABCDEF012345789ABCDEF012345789ABCDEF012345 0b111 bb/bits-prefix
+    0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+    test-add
+]
+
 
 prog sub-rev [
     [0] dip2
@@ -164,6 +176,14 @@ assert [99999 12345 87654 test-sub]
 assert [10000 1001 8999 test-sub]
 assert [1234 1234 0 test-sub]
 
+assert [
+    0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+    0x876543210FEDCBA876543210FEDCBA876543210FEDCBA
+     0x89ABCDEF012345789ABCDEF012345789ABCDEF012345 0b111 bb/bits-prefix
+    test-sub
+]
+
+
 prog mul-nz-rev [
     [0 0] dip2 # introduce Shift and Sum accumulators
     # stack: Shift Sum X Y(rem)
@@ -211,8 +231,6 @@ prog test-mul [
 assert [42 0 0 test-mul]
 assert [67 83 5561 test-mul]
 assert [7757 3373 26164361 test-mul]
-
-
 
 # binary long division algorithm
 prog divmod-impl [
@@ -271,7 +289,57 @@ prog mod-impl [divmod swap drop]
 prog div [[div-impl] 'nat-div p-accel-opt apply]
 prog mod [[mod-impl] 'nat-mod p-accel-opt apply]
 
+prog gt-impl [[sub 0b1 get] verify]
+prog gte-impl [[sub] verify]
+
+# number comparisons
+#
+#  gte - greater than or equal to
+#  gt - greater than
+#  lte - less than or equal to
+#  lt - less than
+#
+# These operations fail if the comparison is not true, otherwise
+# return their inputs unmodified.
+#
+prog gte [[gte-impl] 'nat-gte p-accel-opt apply]
+prog gt [[gt-impl] 'nat-gt p-accel-opt apply]
+prog lte [swap gte]
+prog lt [swap gt]
+
+prog test-gte [
+    [gte] verify
+    [gte-impl] verify
+    [lt] reject
+
+    [[eq] reject]
+    [
+        [gt] verify
+        [gt-impl] verify
+        [lte] reject
+    ]
+    [
+        [gt] reject
+        [gt-impl] reject
+        [lte] verify
+    ]
+    try-then-else
+    drop2
+]
+assert [9 8 test-gte]
+assert [8 8 test-gte]
+assert [12345 0 test-gte]
+assert [0x8000000000000000000000000000000000
+        0x8000000000000000000000000000000000
+        test-gte
+]
+assert [0x8000000000000000000010000000000000
+        0x8000000000000000000000000000000000
+        test-gte
+]
+
 export 
     type-nat as type, 
     increment, decrement, 
-    add, sub, mul, divmod, div, mod 
+    add, sub, mul, divmod, div, mod,
+    gt, gte, lt, lte
