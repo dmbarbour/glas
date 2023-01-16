@@ -271,14 +271,16 @@ module Value =
             | _ -> failwith "not a pair"
 
         static member Eq(a,b) = Term.Eq1([],a,b)
+        static member Eq0(cc) =
+            match cc with
+            | struct(a,b)::cc' -> Term.Eq1(cc',a,b)
+            | [] -> true
         static member private Eq1(cc,a,b) =
+            if (Microsoft.FSharp.Core.LanguagePrimitives.PhysicalEquality a b) then Term.Eq0(cc) else
             match a with
             | Leaf -> 
                 match b with
-                | Leaf -> 
-                    match cc with
-                    | struct(a,b)::cc' -> Term.Eq1(cc',a,b)
-                    | [] -> true
+                | Leaf -> Term.Eq0(cc)
                 | _ -> false
             | Stem64(aBits, a') ->
                 match b with
