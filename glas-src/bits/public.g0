@@ -99,11 +99,20 @@ assert [0b1 0b0 bit-max 0b1 eq]
 assert [0b0 0b1 bit-max 0b1 eq]
 assert [0b1 0b1 bit-max 0b1 eq]
 
+prog or-impl [ [bit-max] map2 ]
+
 # or       Bits Bits -- Bits
 #   bitwise maximum (or bitwise 'or') of two bitstrings
 #   requires bitstrings of equal length
-prog or [ [bit-max] map2 ]
-assert [0b0011 0b0110 or 0b0111 eq]
+prog or [[or-impl] 'bits-or p-accel-opt apply]
+
+prog test-or [
+    copy3 [or-impl] dip eq
+    copy3 [or] dip eq
+    copy3 [swap or-impl] dip eq
+          [swap or] dip eq
+]
+assert [0b0011 0b0110 0b0111 test-or]
 
 # bit-min   Bit Bit -- Bit
 #   return minimum of two bits (bit 'and')
@@ -113,11 +122,20 @@ assert [0b1 0b0 bit-min 0b0 eq]
 assert [0b0 0b1 bit-min 0b0 eq]
 assert [0b1 0b1 bit-min 0b1 eq]
 
+prog and-impl [ [bit-min] map2 ]
+
 # and       Bits Bits -- Bits
 #   bitwise minimum (or bitwise 'and') of two bitstrings
 #   requires bitstrings of equal length.
-prog and [ [bit-min] map2 ]
-assert [0b0011 0b0110 and 0b0010 eq]
+prog and [[and-impl] 'bits-and p-accel-opt apply]
+
+prog test-and [
+    copy3 [and-impl] dip eq
+    copy3 [and] dip eq
+    copy3 [swap and-impl] dip eq
+          [swap and] dip eq
+]
+assert [0b0011 0b0110 0b0010 test-and]
 
 # bit-neq  Bit Bit -- Bit
 #   value is 0b1 if bits are the same, 0b1 otherwise
@@ -127,11 +145,20 @@ assert [0b1 0b0 bit-neq 0b1 eq]
 assert [0b0 0b1 bit-neq 0b1 eq]
 assert [0b1 0b1 bit-neq 0b0 eq]
 
+prog xor-impl [ [bit-neq] map2 ]
+
 # xor       Bits Bits -- Bits
 #   bitwise not-equal (or bitwise 'xor') of two bitstrings
 #   requires bitstrings of equal length
-prog xor [ [bit-neq] map2 ]
-assert [0b0011 0b0110 xor 0b0101 eq]
+prog xor [[xor-impl] 'bits-xor p-accel-opt apply]
+
+prog test-xor [
+    copy3 [xor-impl] dip eq
+    copy3 [xor] dip eq
+    copy3 [swap xor-impl] dip eq
+          [swap xor] dip eq
+]
+assert [0b0011 0b0110 0b0101 test-xor]
 
 prog erase-leading-zeroes [ [0b0 get] loop ]
 prog erase-leading-ones   [ [0b1 get] loop ]
@@ -155,27 +182,35 @@ assert [empty 0 test-length]
 assert [0b001101001 9 test-length]
 assert ['length 56 test-length]
 
-# split  Bits N -- Bits Bits
-#   split Bits into two 
-prog split [
+
+prog take-impl [ 
     [empty] dip2
     [pop [prefix] dip] bb/repeat
-    [reverse] dip
+    drop reverse
 ]
-assert [ 0b0101100010 4 split 0b100010 eq 0b0101 eq ]
+prog skip-impl [ [tail] bb/repeat ]
 
 # take  Bits N -- Bits
-prog take [ split drop ]
-assert [ 0b1101001 4 take 0b1101 eq ]
+prog take [[take-impl] 'bits-take p-accel-opt apply]
+
+prog test-take [
+    copy3 [take-impl] dip eq
+          [take] dip eq
+]
+assert [ 0b1101001 4 0b1101 test-take ]
 
 # skip  Bits N -- Bits
 #   drop first N bits from bitstring 
-prog skip [ [tail] bb/repeat ]
-assert [ 0b0101100010 4 skip 0b100010 eq ]
+prog skip [[skip-impl] 'bits-skip p-accel-opt apply]
+
+prog test-skip [
+    copy3 [skip-impl] dip eq
+          [skip] dip eq
+]
+assert [ 0b0101100010 4 0b100010 test-skip ]
 
 export  is-bits, empty, head, tail, pop
      ,  each, each-while, map, map2
      ,  append, prefix, suffix
      ,  reverse, negate, xor, or, and
-     ,  length, split, take, skip
-     # Note: number-related ops moved into 'bits-basics'
+     ,  length, take, skip

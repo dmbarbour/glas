@@ -395,6 +395,69 @@ module ProgEval =
                     if (m >= n) then cc rte else cte.FK rte
                 | _ -> lzOp.Force() cte cc rte 
 
+            let accel_list_verify cte cc rte =
+                match rte.DataStack with
+                | (v::_) -> if Value.isList v then cc rte else cte.FK rte
+                | _ -> underflow rte
+            
+            let accel_list_length (lzOp : Lazy<Op>) cte cc rte =
+                match rte.DataStack with
+                | ((List l)::ds') ->
+                    let nLen = Value.Rope.len l
+                    cc { rte with DataStack = (Value.ofNat nLen)::ds' }
+                | _ ->
+                    lzOp.Force() cte cc rte
+
+            let accel_list_append (lzOp : Lazy<Op>) cte cc rte =
+                match rte.DataStack with
+                | ((List r)::(List l)::ds') ->
+                    let result = Rope.append l r
+                    cc { rte with DataStack = (Value.ofTerm result)::ds' }
+                | _ ->
+                    lzOp.Force() cte cc rte
+
+            let accel_list_take (lzOp : Lazy<Op>) cte cc rte =
+                match rte.DataStack with
+                | ((Nat64 n)::(List l)::ds') ->
+                    if (n > (Rope.len l)) then cte.FK rte else
+                    let result = Rope.take n l
+                    cc { rte with DataStack = (Value.ofTerm result)::ds' }
+                | _ ->
+                    lzOp.Force() cte cc rte
+
+            let accel_list_skip (lzOp : Lazy<Op>) cte cc rte =
+                match rte.DataStack with
+                | ((Nat64 n)::(List l)::ds') ->
+                    if (n > (Rope.len l)) then cte.FK rte else
+                    let result = Rope.drop n l
+                    cc { rte with DataStack = (Value.ofTerm result)::ds' }
+                | _ ->
+                    lzOp.Force() cte cc rte
+
+            let accel_list_item (lzOp : Lazy<Op>) cte cc rte =
+                match rte.DataStack with
+                | ((Nat64 n)::(List l)::ds') ->
+                    if (n >= (Rope.len l)) then cte.FK rte else
+                    let result = Rope.item n l
+                    cc { rte with DataStack = (result::ds') }
+                | _ ->
+                    lzOp.Force() cte cc rte
+
+            let accel_list_cons (lzOp : Lazy<Op>) cte cc rte =
+                match rte.DataStack with
+                | ((List l)::v::ds') ->
+                    let result = Rope.cons v l
+                    cc { rte with DataStack = ((Value.ofTerm result)::ds') }
+                | _ ->
+                    lzOp.Force() cte cc rte
+            
+            let accel_list_snoc (lzOp : Lazy<Op>) cte cc rte =
+                match rte.DataStack with
+                | (v::(List l)::ds') ->
+                    let result = Rope.snoc l v 
+                    cc { rte with DataStack = ((Value.ofTerm result)::ds') }
+                | _ ->
+                    lzOp.Force() cte cc rte
 
             let tryAccel (prog : Program) (vModel : Value) (lzOp : Lazy<Op>) : Op option  =
                 match vModel with
@@ -440,17 +503,21 @@ module ProgEval =
                 | Variant "int-gt" U ->
                     Some (accel_int_gt lzOp)
                 | Variant "list-verify" U ->
-                    None
+                    Some (accel_list_verify)
                 | Variant "list-length" U ->
-                    None 
+                    Some (accel_list_length lzOp)
                 | Variant "list-append" U ->
-                    None
+                    Some (accel_list_append lzOp)
                 | Variant "list-take" U ->
-                    None
+                    Some (accel_list_take lzOp)
                 | Variant "list-skip" U ->
-                    None
+                    Some (accel_list_skip lzOp)
                 | Variant "list-item" U ->
-                    None
+                    Some (accel_list_item lzOp)
+                | Variant "list-cons" U ->
+                    Some (accel_list_cons lzOp)
+                | Variant "list-snoc" U ->
+                    Some (accel_list_snoc lzOp)
                 | _ -> 
                     None
 

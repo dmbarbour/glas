@@ -778,17 +778,6 @@ module Value =
                     mkRope l s r'
             | _ -> mkRope (sized t) Leaf (sized d)
 
-        let rec append tl tr =
-            match tl with
-            | Rope(ll, ls, lr) ->
-                match tr with
-                | Rope(rl, rs, rr) ->
-                    let chunks = Concat(lr,rl) |> CCL.toList |> chunkify
-                    let ls' = List.fold snocD ls chunks 
-                    mkRope ll (append ls' rs) rr
-                | _ -> snocD tl tr
-            | _ -> consD tl tr
-
         // given Digits(k), return a Rope(k). 
         let ofDigits digits =
             match digits with
@@ -848,6 +837,17 @@ module Value =
                 snocD t' (Array (a.Snoc(v)))
             | _ ->
                 snocD (snocD t' d0) (singleton v)
+
+        let rec append tl tr =
+            match tl with
+            | Rope(ll, ls, lr) ->
+                match tr with
+                | Rope(rl, rs, rr) ->
+                    let chunks = Concat(lr,rl) |> CCL.toList |> chunkify
+                    let ls' = List.fold snocD ls chunks 
+                    mkRope ll (append ls' rs) rr
+                | _ -> snocD tl tr
+            | _ -> consD tl tr
 
         let rec _ofBasicList acc v =
             if StemBits.isEmpty v.Stem then
