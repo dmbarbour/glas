@@ -498,25 +498,24 @@ module ProgEval =
                 // boundaries. However, I'll need another intermediate stage to make
                 // that work well.
                 let lazyCompile = 
-                    let p0 = lazy (compile p')
-                    let pAccel = 
+                    let addAccel (lzOp : Lazy<Op>) = 
                         match anno with
                         | (Record ["accel"] ([ValueSome vModel], _)) ->
-                            lazy (accelerate p' vModel p0) 
-                        | _ -> p0
-                    let pMemo = 
+                            lazy (accelerate p' vModel lzOp) 
+                        | _ -> lzOp 
+                    let addMemo (lzOp : Lazy<Op>) = 
                         match anno with
                         | (Record ["memo"] ([ValueSome vOpts], _)) ->
-                            lazy (memoize p' vOpts (pAccel.Force()))
-                        | _ -> pAccel
-                    let pStow =
+                            lazy (memoize p' vOpts (lzOp.Force()))
+                        | _ -> lzOp
+                    let addStow (lzOp : Lazy<Op>) =
                         match anno with
                         | (Record ["stow"] ([ValueSome vOpts], _)) ->
                             // assumption: stow usually annotates a nop program.
                             // for now, just sequence stowage after the program.
-                            lazy (pseq [| pMemo.Force(); stow vOpts |])
-                        | _ -> pMemo
-                    pStow
+                            lazy (pseq [| lzOp.Force(); stow vOpts |])
+                        | _ -> lzOp
+                    lazy (compile p') |> addAccel |> addMemo |> addStow
                 lazyCompile.Force()
             | Stem lHalt msg -> halt msg
             | _ -> 
