@@ -90,7 +90,7 @@ The stack in glas is really an intermediate data plumbing model. User syntax cou
 Glas programs must have static stack arity, i.e. the 'try-then' arity must match the 'else' arity, or a loop 'while-then' must have the same input and output arity. This is designed to be easy to verify.
 
 * **seq:\[List, Of, Operators\]** - sequential composition of operators. 
- * *nop* - identity function, can be represented by empty seq  
+ * *nop* - identity function can be represented by empty seq  
 * **cond:(try:P, then:Q, else:R)** - run P; if P does not fail, run Q; if P fails, undo P then run R. Variants:
  * 'then' and 'else' clauses are optional, default to nop.
 * **loop:(while:P, do:Q)** - run P. If successful, run Q then repeat loop. Otherwise, exit loop. Variants:
@@ -165,12 +165,15 @@ Annotations in glas programs support tooling without affecting formal program be
 
 Annotations can affect performance (acceleration, stowage, memoization, optimization), static analysis (types, preconditions, postconditions), debugging (tracing, profiling, assertions, breakpoints), decompilation (variable names, comments, etc.), and essentially anything other than program meaning or behavior. 
 
-Some annotations in use:
+Some proposed annotations:
 
-* *accel:Model* - accelerate the program. The Model is usually a symbol indicating a built-in function that should replace the direct implementation. 
+* *accel:Model* - accelerate the program. The Model is often a symbol such as 'list-append' indicating a specific built-in function to fully replace the provided implementation. 
+* *stow:Options* - stow data heuristically, usually top item on data stack after running program. 
+* *memo:Options* - memoize the program. Might only memoize cases where no effects escape.
+* *prof:(chan:Value, ...)* - code profiling support.
 * *arity:(i:Nat, o:Nat)* - describe stack arity of a program. This can be checked by a compiler, or help stabilize partial evaluation.
 
-Still need to develop good annotations for stowage and memoization.
+A lot more needs to be developed here, such as an effective type system and a better understanding of which options are useful for memoization and stowage.
 
 ## Applications
 
@@ -178,9 +181,13 @@ The glas command line knows how to run applications with access to filesystem an
 
         type Step = init:Params | step:State -> [Effects] (halt:Result | step:State) | Fail
 
-This application model has many nice properties related to live coding, extenbsibility, debuggability, reactivity, concurrency, distribution, and orthogonal persistence. It is an excellent fit for my vision of glas systems. However, achieving these benefits requires optimizations that are difficult to guarantee for a step function. To mitigate this, the glas command line will also support a program model specialized for applications.
+A successful step is committed, then halts or continues to the next step based on the return value. A failed step is aborted then retried, implicitly awaiting changes in effects. For example, it could wait for input to be available on a channel, or try an alternative in case of non-deterministic choice effects (simulating multi-threaded concurrency). 
 
-Alternatively, we can extract an executable binary from the glas module system. This would use glas modules as a build system.
+In context of certain optimizations - incremental computing and replication on stable non-deterministic choice - it is feasible to model reactive multi-threaded applications using the transactional step function. However, these optimizations are difficult to apply. The glas command line may later support specialized representations for applications to simplify optimization.
+
+Aside from evaluating a transaction machine, we could directly extract executable binaries from the glas module system. This would essentially use glas as a build system.
+
+See [glas applications](GlasApps.md) for more.
 
 ## Language Modules
 

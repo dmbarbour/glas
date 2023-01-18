@@ -2,6 +2,7 @@
 
 open prims
 import bits-basics as bb
+from [bb] import type-bits
 
 # the empty bitstring
 data empty [bb/bits-empty]
@@ -184,11 +185,12 @@ assert ['length 56 test-length]
 
 
 prog take-impl [ 
+    type-bits
     [empty] dip2
     [pop [prefix] dip] bb/repeat
     drop reverse
 ]
-prog skip-impl [ [tail] bb/repeat ]
+prog skip-impl [bb/type-bits [tail] bb/repeat ]
 
 # take  Bits N -- Bits
 prog take [[take-impl] 'bits-take p-accel-opt apply]
@@ -209,8 +211,9 @@ prog test-skip [
 ]
 assert [ 0b0101100010 4 0b100010 test-skip ]
 
-export  is-bits, empty, head, tail, pop
-     ,  each, each-while, map, map2
-     ,  append, prefix, suffix
-     ,  reverse, negate, xor, or, and
-     ,  length, take, skip
+export type-bits as type, is-bits
+     , empty, head, tail, pop
+     , each, each-while, map, map2
+     , append, prefix, suffix
+     , reverse, negate, xor, or, and
+     , length, take, skip

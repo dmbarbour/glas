@@ -56,9 +56,10 @@ module ProgEval =
 
         /// simplest continuation.
         type CC = RTE -> obj 
-
         // Note: I removed generics from this to keep the code simpler. Doesn't make
         // a big difference in any case, only need to box/unbox the final result.
+
+        
 
         /// CTE - compile-time environment (excluding primary continuation)
         [<Struct>]
@@ -66,6 +67,7 @@ module ProgEval =
             { FK : CC               // on failure
             ; EH : Op               // effects handler
             ; TX : ITransactional   // top-level transaction interface.
+            // profiling support?
             }
         and Op = CTE -> CC -> CC 
 
@@ -251,10 +253,20 @@ module ProgEval =
             cc
 
         let memoize prog vOpts (compiledProg : Op) : Op =
+            // bootstrap might benefit from memoization. But we'll need
+            // stowage, first. Without stowage, we cannot efficiently
+            // memoize on large values such as subprogram fragments.
             compiledProg
 
 
+        let profile prog vOpts (lzOp : Lazy<Op>) : Op =
+            // todo: add some profiling support
+            lzOp.Force()
+
         module Accel =
+
+            // List accelerators are the most important for bootstrap.
+            // However, a few arithmetic accelerators are also useful.
 
             let rec bits_negate_term t =
                 match t with
@@ -459,6 +471,7 @@ module ProgEval =
                 | _ ->
                     lzOp.Force() cte cc rte
 
+
             let tryAccel (prog : Program) (vModel : Value) (lzOp : Lazy<Op>) : Op option  =
                 match vModel with
                 | Variant "bits-verify" U ->
@@ -582,7 +595,12 @@ module ProgEval =
                             // for now, just sequence stowage after the program.
                             lazy (pseq [| lzOp.Force(); stow vOpts |])
                         | _ -> lzOp
-                    lazy (compile p') |> addAccel |> addMemo |> addStow
+                    let addProf (lzOp : Lazy<Op>) =
+                        match anno with
+                        | (Record ["prof"] ([ValueSome vOpts], _)) ->
+                            lazy (profile p' vOpts lzOp)
+                        | _ -> lzOp
+                    lazy (compile p') |> addAccel |> addMemo |> addStow |> addProf
                 lazyCompile.Force()
             | Stem lHalt msg -> halt msg
             | _ -> 

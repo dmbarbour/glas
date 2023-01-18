@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <Compile Include="Value.fs" />
+    <Compile Include="ProfStats.fs" />
     <Compile Include="Effects.fs" />
     <Compile Include="ProgVal.fs" />
     <Compile Include="ProgEval.fs" />
