@@ -5,13 +5,13 @@ The glas command line supports two primary operations:
         glas --extract ValueRef
         glas --run ValueRef -- Args
 
-User-defined operations are supported via lightweight syntactic sugar:
+There are also a few secondary operations built-in, such as '--help' or '--version'. All built-in operations start with '--'. User-defined operations are supported via lightweight syntactic sugar:
 
         glas opname a b c 
             # implicitly rewrites to
         glas --run glas-cli-opname.main -- a b c
 
-Most operations used in practice should be user-defined. This ensures logic is visible and accessible in the module system. New versions of the glas command line executable may improve performance or update the effects API, but should not significantly affect behavior of applications that rely on stable APIs.
+In my vision for glas systems, most operations are user-defined, and all built-in operations can feasibly be implemented via '--run'. Behavior is primarily represented in the module system.
 
 ## Value References
 
@@ -25,23 +25,25 @@ The primary operations are parameterized by a reference to a value in the glas m
         Word = WFrag('-'WFrag)*
         WFrag = [a-z][a-z0-9]*
 
-This syntax restricts references in several cases, e.g. a component path cannot include emoji characters, and we cannot slice or index a list. This can be mitigated by avoidance or resolved by a little indirection, e.g. application macros can support more flexible value references.
+This syntax limits which modules can be referenced. For example, if a module name contained an emoji character or unusual punctuation, it cannot be directly referenced from glas command line '--run'. Such modules can still be referenced indirectly, e.g. via application macro. But I encourage glas system modules to keep module names simple.
 
 ## Configuration
 
-The glas executable will centralize configuration files, cached computations, content-addressed storage, and the shared key-value database into a single folder. This folder may be specified by the GLAS_HOME environment variable or will be implicitly assigned a value based on OS convention such as `~/.config/glas` in Linux or `%AppData%/glas` in Windows.
+The glas executable will centralize configuration files, cached computations, content-addressed storage, and a key-value database into a single folder. This folder may be specified by the GLAS_HOME environment variable or will be implicitly assigned a value based on OS convention such as `~/.config/glas` in Linux or `%AppData%/glas` in Windows.
 
-The primary configuration file is "sources.txt". Each entry in this file represents a location to search for global modules in priority order (value of first match 'wins'). Line comments are permitted starting with '#'. Currently, this is limited to 'dir' entries for local filesystem directories. Future extensions can support network resources or logical renaming of modules.
+The primary configuration file is "sources.tt". This uses the [text-tree](../glas-src/language-tt/README.md) format. Each entry in this file represents a location to search for global modules in priority order. Comments are supported with label '\rem'. Currently, this is limited to 'dir' entries for local filesystem directories.
 
-        # example sources.txt
+        \rem example sources.tt
         dir ./src
         dir /home/username/glas
-        dir C:/Users/username/glas
+        dir C:\Users\username\glas
         dir ../../glas
 
-Secondary configuration will be expressed via local glas module named "conf". This module would compile to a record value that includes elements for logging, caching, sandboxing, and other configurable features recognized by the glas executable.
+There may be some secondary runtime configuration expressed via local glas modules, e.g. a module named "conf" within the GLAS_HOME directory. This might support some options for logging, caching, sandboxing, and so on. These modules could use any language defined in the module system.
 
-Finally, application-specific configuration should be expressed using annotations. Annotations can be compiled into apps or adjusted by application macros. Profiling, tuning memory allocation and GC, even effects API versioning can be supported via annotations.
+Finally, any application-specific runtime configuration must be expressed using annotations. Annotations can be compiled into apps or abstractly manipulated by application macros. Profiling, tuning memory allocation and GC, even effects API versioning may be supported via annotations. 
+
+Importantly, there are no built-in command line arguments for runtime configuration. This ensures configuration is always accessible for abstraction.
 
 ## Extracting Binaries
 
@@ -63,37 +65,35 @@ Interpretation depends on the value header, currently recognizing 'prog', 'proc'
 
 ### Basic Applications
 
-A basic application process uses the 'prog' header.
+A basic application process is represented by a glas program with the 'prog' header.
 
         prog:(do:Program, ... Annotations ...) 
 
-This program must have 1--1 arity and be typed as a transactional process step function:
+The program must have 1--1 arity and express a transactional step function:
 
         type Step = init:Params | step:State -> [Effects] (halt:Result | step:State) | Fail
 
-In context, this process starts with `init:["List", "Of", "Args"]` and finishes with `halt:ExitCode`. The ExitCode should be a bitstring representing a small integer. The process may commit one or more intermediate 'steps' before halting, carrying application private state to the next step. Input and output is expressed effectfully and applied transactionally between steps.
+In context of the command line, this process starts with `init:["List", "Of", "Args"]` and terminates by returning `halt:ExitCode`. The ExitCode should be a bitstring representing a small integer. If the step function returns `step:State` that value becomes the next step's input. After any successful step, effects are committed. On a failed step, effects are aborted and the step is retried.
+
+*Note:* If annotations or inference indicate the program has another type, it might still be runnable via '--run' (depending on the glas command line executable) but it is not what I call a 'basic' application.
 
 ### Process Networks
 
-Applications expressed via 'prog' header are difficult to statically optimize for incremental computing, concurrency, and distribution. So I'm currently developing another program model with the 'proc' header that is easier to optimize.
-
-        proc:(do:Process, ... Annotations ...)
-
-Design of 'proc' is ongoing within the [glas applications](GlasApps.md) document. The core idea is to expose and manage control flow and communication to support robust optimizations. Every proc is equivalent to a 'prog' app step function, so use of 'proc' should primarily impact performance and scalability.
+I am developing another program model with the 'proc' header that should be easier to optimize for incremental computing, concurrency, distribution, and transaction fusion. Design of 'proc' is ongoing within the [glas applications](GlasApps.md) document. It is still based around the transaction machine concept. Once it is stable, we might add support for running 'proc' apps to 'glas --run'. 
 
 ### Application Macros
 
 Application macros are distinguished by the 'macro' header.
 
-        macro:Program
+        macro:prog:(do:Program, ...)
 
-To simplify caching, arguments are implicitly staged via '--':
+To simplify caching, arguments are explicitly staged via '--':
 
         glas --run MacroRef -- Static Args -- Dynamic Args
 
-The macro program must be a 1--1 arity function and here would receive list of strings `["Static", "Args"]` on the data stack. The returned value must represent another application (potentially another application macro), which then is run receiving `["Dynamic", "Args"]`. The '--' separator may be omitted if would be final argument.
+At the moment only 'prog' type macros are supported. The macro program must be a 1--1 arity function and here would receive list of strings `["Static", "Args"]` on the data stack. The returned value must represent another application (potentially another application macro), which then is run receiving `["Dynamic", "Args"]`. The '--' separator may be omitted if there are no dynamic args.
 
-The macro program has access to the same effects API as language modules, i.e. 'log' and 'load'. Application macros are usefully viewed as user-defined languages for the command line interface.  and combine nicely with the syntactic sugar for user-defined operations.
+The macro program has access to the same effects as language modules, i.e. 'log' and 'load'. All other effects will fail. Application macros are usefully understood as user-defined languages for the command line interface. User-defined ops as macros can support a very flexible user interface.
 
 ## Extended Effects API
 
@@ -128,25 +128,29 @@ Keeping it simple.
          0  okay
         -1  fail
 
-The glas command line interface will favor log messages to report warnings or errors. Runnable applications may halt with a small integer exit code. But even for apps I would favor log messages over informative exit codes.
+The glas command line interface will favor log messages to report warnings or errors. Runnable applications may halt with a small integer exit code. But even for apps I recommend log messages instead of relying on informative exit codes.
 
 ## Secondary Operations
 
 I'd prefer to avoid built-ins with sophisticated logic. But a few lightweight utilities to support early development or OS integration are acceptable.
 
+Operations for early development:
+
 * `--check ValueRef` - compile module and test that value is defined.
 * `--print ValueRef` - build then pretty-print a value for debugging.
- * uses same printer as for log messages (same configuration, too)
+
+Operations for OS integration:
+
 * `--version` - print executable version information
 * `--help` - print information about options
 
-Ideally, we should move ASAP from built-ins to user-defined operations such as 'glas-cli-print'. 
+Ideally, we should move ASAP from built-ins to user-defined operations such as 'glas-cli-print'.
 
 ## Thoughts
 
 ### Debug Mode
 
-It is feasible for the glas executable to support debugging of an app, e.g. via annotation to build a debug view. However, it is also feasible to build this debug view manually via metaprogramming, e.g. add a web service just for debugging. I favor the latter option, and will explore it first.
+It is feasible for the glas executable to support debugging of an app. This could be expressed via annotations to build a special debug view. However, it is also feasible to build this debug view manually via metaprogramming, like a macro that explicitly rewrites the program. The latter option would move debugging logic from the glas command line executable into the module system, and is more to my preference.
 
 ### Profiling
 
@@ -157,3 +161,9 @@ Profiling will need some more consideration than I've given it so far. Some runt
 I could extend application macros with access to environment variables. However, I'm uncertain that I want to encourage use of the environment for interpreting the command line 'language'. Additionally, most use of the OS layer env is hindered without also having access to read files and other features. 
 
 For now, decided to treat application macros a lightweight extension to language modules for command line arguments. This ensures that anything we express via command line can also be easily abstracted within a new module and shared with other users, which is a convenient property.
+
+### Applications Objects
+
+I've been contemplating a more object-based application model. The basic application program can roughly be viewed as a class where 'init' is the constructor and 'step' is the only method after construction. But we might envision an alternative model where there are multiple methods - methods to render GUI views, publish services, subscribe to resources, receive user events, advance through time, etc.. 
+
+The benefit of having many methods is that we can more precisely control the effects API for each method. For example, we could guarantee that rendering views does not modify application state, or that active views are visible only in an idempotent manner. I'm not in a hurry to directly support this at the glas command line executable. It would be wiser to first explore it using an adapter, compiling to the simpler 'prog' or 'proc' application models.

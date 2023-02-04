@@ -59,7 +59,8 @@ module ProgEval =
         // Note: I removed generics from this to keep the code simpler. Doesn't make
         // a big difference in any case, only need to box/unbox the final result.
 
-        
+        /// simplistic profiling support (mutable state)
+        type ProfChans = System.Collections.Generic.Dictionary<Value, Ref<Stats.S>>
 
         /// CTE - compile-time environment (excluding primary continuation)
         [<Struct>]
@@ -67,7 +68,7 @@ module ProgEval =
             { FK : CC               // on failure
             ; EH : Op               // effects handler
             ; TX : ITransactional   // top-level transaction interface.
-            // profiling support?
+            ; Prof : ProfChans      // shared profiling channels
             }
         and Op = CTE -> CC -> CC 
 
@@ -258,10 +259,32 @@ module ProgEval =
             // memoize on large values such as subprogram fragments.
             compiledProg
 
-
-        let profile prog vOpts (lzOp : Lazy<Op>) : Op =
-            // todo: add some profiling support
-            lzOp.Force()
+        let profile prog vOpts (lzOp : Lazy<Op>) cte cc0 =
+            // get/create a mutable reference to channel events.
+            let vChan = 
+                match vOpts with
+                | Record ["chan"] ([ValueSome vChan],_) -> vChan
+                | _ -> Value.symbol "anon"
+            let chan =
+                match cte.Prof.TryGetValue(vChan) with
+                | true, refStats -> refStats
+                | _ -> 
+                    let refStats = ref Stats.s0
+                    cte.Prof.Add(vChan, refStats)
+                    refStats
+            let inline addEvent f =
+                chan.Value <- Stats.add (chan.Value) f
+            let sw = new System.Diagnostics.Stopwatch() 
+            let ccExit cc rte =
+                sw.Stop()
+                addEvent (sw.Elapsed.TotalSeconds)
+                cc rte
+            let ccProfiledOp =
+                lzOp.Force() { cte with FK = (ccExit cte.FK) } (ccExit cc0)
+            let ccEnter rte =
+                sw.Restart()
+                ccProfiledOp rte
+            ccEnter
 
         module Accel =
 
@@ -409,7 +432,12 @@ module ProgEval =
 
             let accel_list_verify cte cc rte =
                 match rte.DataStack with
-                | (v::_) -> if Value.isList v then cc rte else cte.FK rte
+                | (v::ds') -> 
+                    // also update a verified list to the optimized representation 
+                    // (this can help avoid converting a list many times)
+                    match v with 
+                    | (List t) -> cc { rte with DataStack = (Value.ofTerm t)::ds' }
+                    | _ -> cte.FK rte
                 | _ -> underflow rte
             
             let accel_list_length (lzOp : Lazy<Op>) cte cc rte =
@@ -527,10 +555,14 @@ module ProgEval =
                     Some (accel_list_skip lzOp)
                 | Variant "list-item" U ->
                     Some (accel_list_item lzOp)
-                | Variant "list-cons" U ->
+                | Variant "list-pushl" U ->
                     Some (accel_list_cons lzOp)
-                | Variant "list-snoc" U ->
+                | Variant "list-pushr" U ->
                     Some (accel_list_snoc lzOp)
+                | Variant "list-popl" U ->
+                    None
+                | Variant "list-popr" U ->
+                    None
                 | _ -> 
                     None
 
@@ -634,17 +666,53 @@ module ProgEval =
                 unwindTX io rte'
 
         let rec rteVal rte =
-            let dataStack = rte.DataStack |> Value.ofList
-            let dipStack = rte.DataStack |> Value.ofList
-            let effStack = rte.EffStateStack |> Value.ofList
-            let failStack = 
+            let inline add s v r =
+                if (Value.isUnit v) then r else
+                Value.record_insert (Value.symbol s) v r
+            let failStack =
                 match rte.FailureStack with
                 | Some rte' -> rteVal rte'
-                | None -> Value.symbol "none"
-            Value.asRecord ["data";"dip";"eff";"back"] [dataStack;dipStack;effStack;failStack]
+                | None -> Value.unit
+            Value.unit
+                |> add "data" (Value.ofList (rte.DataStack))
+                |> add "dip" (Value.ofList (rte.DipStack))
+                |> add "eff" (Value.ofList (rte.EffStateStack))
+                |> add "fail" (failStack)
 
         let rec rtErrMsg rte msg =
             Value.variant "rte" <| Value.asRecord ["state";"event"] [rteVal rte; msg]
+
+        let statsMsg (s : Stats.S) : Value =
+            if(0UL = s.Cnt) then Value.unit else
+            let nCount = Value.ofNat (s.Cnt)
+            let vUnits = Value.symbol "nsec" // indicate NT time ticks.
+            let inline toUnit f = // convert to nanoseconds
+                Value.ofInt (int64(ceil(1000000000.0 * f)))
+            let nMax = toUnit (s.Max)
+            if(1UL = s.Cnt) then
+                Value.asRecord 
+                    ["count"; "val"; "units"] 
+                    [nCount ; nMax ; vUnits ]
+            else 
+                let nSDev = toUnit (Stats.sdev s)
+                let nMin = toUnit (s.Min)
+                let nAvg = toUnit (Stats.average s)
+                Value.asRecord 
+                    ["count"; "avg"; "min"; "max"; "sdev"; "units"]
+                    [nCount ; nAvg ; nMin ; nMax ; nSDev ; vUnits ]
+
+        let logProfile (io:IEffHandler) (prof:ProfChans) =
+            let vProf = Value.symbol "prof"
+            for k in prof.Keys do
+                let s = prof[k].Value
+                if (s.Cnt > 0UL) then
+                    let vStats = statsMsg s
+                    //printfn "chan: %s, stats: %s (from %A)" (Value.prettyPrint k) (Value.prettyPrint vStats) (s)
+                    let vMsg =
+                        Value.asRecord
+                            ["lv" ; "chan"; "stats"]
+                            [vProf;    k  ; vStats ]
+                    log io vMsg
 
         // Note that 'eval' does not check the program for validity up front.
         let eval (p:Program) (io:IEffHandler) =
@@ -654,15 +722,19 @@ module ProgEval =
                     && (Option.isNone rte.FailureStack)) 
                 box (Some (rte.DataStack))
             let ccEvalFail rte = box None
-            let cte = { FK = ccEvalFail; EH = ioEff io; TX = io }
+            let cte = { FK = ccEvalFail; EH = ioEff io; TX = io; Prof = new ProfChans() }
             let runLazy = lazy ((compile p) cte ccEvalOK)
             fun ds ->
-                try ds |> dataStack |> (runLazy.Force()) |> unbox<Value list option>
+                try 
+                    let result = ds |> dataStack |> (runLazy.Force()) |> unbox<Value list option>
+                    logProfile (io) (cte.Prof) 
+                    result
                 with
                 | RTError(rte,msg) ->
                     let v = rtErrMsg rte msg
                     unwindTX io rte
                     logErrorV io "runtime error" (rtErrMsg rte msg)
+                    logProfile io (cte.Prof)
                     None
 
         // For 'pure' functions, we'll also halt on first *attempt* to use effects.

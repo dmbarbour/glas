@@ -8,7 +8,11 @@ open prims
 #   currently is placeholder awaiting development of type system
 prog type-bits [] # todo 
 prog type-int [type-bits]
-prog type-nat [type-int] # todo: also express int is positive
+prog type-nat [
+    type-int
+    # todo: also express int is positive
+    [0b0 get][halt-type-error]try-then  
+] 
 
 prog bits-prefix [[type-bits] dip 0 swap put]
 prog bits-suffix [swap bits-prefix]

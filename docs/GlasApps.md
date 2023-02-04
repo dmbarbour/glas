@@ -30,11 +30,11 @@ Concurrent transactions can evaluate in parallel insofar as they avoid read-writ
 
 ### Distribution 
 
-Application state can be partitioned and mirrored across physically separated machines. A random distribution will be inefficient, requiring a distributed transaction for every step. With careful application design and annotation-guided distribution, we can arrange for most transactions to be machine-local, and further optimize most communication between machines.
+Distributed evaluation of transaction machines is possible using distributed transactions. However, arbitrary distributed transactions are expensive and vulnerable to denial-of-service and disruption. We can mitigate this by identifying a subset of distributed transactions that can be implemented robustly and efficiently, then designing our distributed applications around them.
 
-For example, transaction machines can model a basic channel using a write buffer, a read buffer, and a data plumbing task that repeatedly moves data from (local) write buffer to (potentially remote) read buffer. Data previously in the read buffer is not observed and ideally shouldn't be serialized by this transaction. Ideally, the system would recognize this transaction and optimize it into a simple update message with acknowledgement.
+One good option is to build around a channels API with abstract intermediate communication. A 'writer' will write to a local buffer that is later moved to the remote buffer by separate transaction. This move transaction requires a lightweight, idempotent message-ack interaction with a single remote node.
 
-Transaction machines are inherently resilient to network disruption. Operations within each network partition may continue unabated. Operations that communicate between network partitions fail temporarily, then implicitly continue when connectivity is re-established. This behavior is convenient for short-term disruption. Long-term disruption should be handled by weak synchronization patterns within the application, such as pushback buffers and heartbeats.
+There are other patterns that can also be optimized. But channels alone are adequate primitives for developing distributed applications. And I propose to start there.
 
 ### Transaction Fusion
 
@@ -62,17 +62,6 @@ This design essentially makes references second-class, in the sense that they ca
 
 ## Effects API
 
-### Time
-
-Transactions are logically instantaneous. The concept of 'timeout' or 'sleep' is incompatible with transactions. However, we can constrain a transaction to commit before or after a given time. We can also estimate time of commit then abort if the estimate is too far off. Proposed effects API:
-
-* **time:now** - Response is an estimated, logical time of commit, as a TimeStamp value. This method will always return the same value within a transaction. 
-* **time:check:TimeStamp** - If 'now' is equal or greater to TimeStamp, respond with unit. Otherwise fail. 
-
-These APIs interact differently with incremental computing. Use of 'time:now' is inherently unstable so will force the transaction to repeatedly backtrack and retry. Use of 'time:check' will only update once for a future TimeStamp, and is useful for precise waits and timeouts. A runtime can arrange for the transaction to evaluate again slightly ahead of the specified time, then commit at that time.
-
-TimeStamp values will use NT time - a natural number of 100ns intervals since midnight, Jan 1, 1601 UTC. The 100ns interval is more than accurate enough for casual use. 
-
 ### Concurrency
 
 Repetition and replication are equivalent for isolated transactions. If a repeating transaction externalizes a choice, it could be replicated to evaluate each choice and find an successful outcome. If this choice is part of the stable prefix for incremental computing, then these replicas also become stable, each repeating from some later observation. This provides a simple basis for task-based concurrency within transaction machines as an optimization of choice.
@@ -81,15 +70,20 @@ Repetition and replication are equivalent for isolated transactions. If a repeat
 
 I propose modeling fork as a deterministic operation on a non-deterministic environment. This is subtly different from fork as a non-deterministic effect for backtracking and optimizations. For example, we can optimize `cond:(try:A, then:B, else:seq:[A, C])` to `seq:[A, B]` only if we assume `A` is a deterministic operation. Either way, we can effectively support concurrency.
 
-### Distribution
+### Time
 
-Application state is represented in a massive `step:State` tree value. An optimizer can potentially use abstract interpretation to partition the tree into variables that can be distributed or replicated across physical machines. 
+Transactions are logically instantaneous. The concept of 'timeout' or 'sleep' is incompatible. However, we can constrain a transaction to commit before or after a specified time. A proposed effects API:
 
-If necessary, the effects API could also include some location metadata, e.g. use of `at:(loc:MachineRef, do:LocalEffect)` where a local effect might involve the local filesystem, network, or clock. This might not be necessary if we separate distribution issues from regular 'prog' nodes.
+* **time:now** - Response is an estimated logical time of commit, as a TimeStamp value. 
+* **time:check:TimeStamp** - If 'time:now' is equal or greater to TimeStamp, responds with unit. Otherwise fails. 
 
-Distributed transactions support the general case, but are very expensive. High performance distribution depends on careful application design, with a goal that most transactions are evaluated on a single machine, and most distributed transactions are two-party blind-writes such as appending a list. It is possible to optimize common two-party blind-write transactions into simple message passing. It also is possible to abstract common two-party blind-write transactions into the effects API (see *Channels*, later).
+The 'time:check' API should be favored over 'time:now' for implementing waits. The imprecise, monotonic observation of time makes 'time:check' easier to optimize and stabilize for incremental computing. But 'time:now' can provide greater than precision. 
 
-In case of network partitioning, it is safe for each partition to continue evaluating in isolation, delaying only the distributed transactions that communicate across partitions. This design is resilient to short-lived network disruption. However, programs may need to explicitly detect and handle long-lived disruption. This is possible by using timeouts or pushback buffers.
+Observing time may cause a transaction to be delayed a little such that it commits at the estimated time, or may cause a transaction to be aborted if computation runs much longer than estimated.
+
+TimeStamp values in this API use the Windows NT format: an integer representing 100ns intervals since midnight, Jan 1, 1601 UTC.
+
+*Note:* This time API is simplistic and insufficient for contexts involving distributed transactions, relativistic speeds, or science-fiction time travel. Applications intended for such contexts may require a more sophisticated time API.
 
 ### Logging
 
@@ -245,7 +239,7 @@ A channel communicates using reliable, ordered, buffered message passing. Unlike
 
 Channels over TCP is a viable foundation for networked glas systems. See [Glas Channels](GlasChannels.md) for more discussion on this.
 
-* **c:tcp:bind:(wrap:TcpRef, as:ChannelRef)** - removes TcpRef from scope, binds ChannelRef. This implements the channel (and subchannels) over TCP, using [Glas Object](GlasObject.md) to represent values. The TCP connection will also handle protocol-layer interactions to support features such as querying for globs, providing access to a content-distribution network, or routing pipes efficiently.
+* **c:tcp:bind:(wrap:TcpRef, as:ChannelRef)** - removes TcpRef from scope, binds ChannelRef. This implements the channel (and subchannels) over TCP, using [Glas Object](GlasObject.md) to represent values. The TCP connection will also handle protocol-layer interactions to support features such as querying for globs, providing access to a content-distribution network, routing pipes, and automatic code distribution.
 * **c:tcp:l:bind:(wrap:ListenerRef, as:ChannelRef)** - removes ListenerRef from Scope, binds ChannelRef. This ChannelRef can only 'accept' new subchannels, one for each received TCP connection.
 
 General reference manipulation:
@@ -257,7 +251,8 @@ General reference manipulation:
 
 A runtime can provide a few effects for manipulating itself. May be implementation-dependent and not very portable. A few ideas:
 
-* **rt:version** - return record of ad-hoc version information about the runtime.
+* **rt:version** - return the string that would be printed by `glas --version`.
+* **rt:help** - return the string that would be printed by `glas --help`.
 * **rt:time:now** - same as 'time:now' except not frozen per transaction. This logically involves reflection over instructions computed by the runtime. Mostly intended for manual profiling.
 * **rt:gc:tune:(...)** - tune GC parameters
 * **rt:gc:force** - ask runtime to perform a GC immediately(-ish)
@@ -266,6 +261,14 @@ A runtime can provide a few effects for manipulating itself. May be implementati
 ### OS Extensions
 
 I could support OS operations under an 'os:' prefix, and perhaps OS-specialized actions under a header such as 'os:posix:...'. Not really sure what I need, or how much of the OS should be exposed. Might develop incrementally as needed.
+
+## Automatic Code Distribution
+
+My vision for glas systems is that applications represent live-coded, distributed [overlay networks](https://en.wikipedia.org/wiki/Overlay_network). In context of glas systems, the best place to support this is the binding of channels over TCP.
+
+In addition to communicating data, those TCP connections could communicate code and private state for remote evaluation. Computation quotas per TCP connection can be configurable. Code distribution would enable a flexible tradeoff between communication costs (latency and bandwidth) and computation costs (processor and memory).
+
+The remote code would have very limited access to effects: read and write channels that would otherwise communicate over a TCP connection, and update private state. Everything that can be done by remote code could instead be done locally. The impact on semantics and security would be minimal except insofar as performance is an important part of correctness.
 
 ## Procedures and Processes
 
@@ -332,6 +335,4 @@ Supporting synchronous remote procedure calls, i.e. within a transaction, is tec
 ### FFI
 
 Direct support for FFI is a bad idea. But it might be useful to eventually include DLLs and headers as modules, and somehow use them when compiling an application. 
-
-
 

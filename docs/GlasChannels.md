@@ -58,11 +58,15 @@ However, a proxy cache isn't free. As part of this negotiation, we will need to 
 
 So, there is a lot of fine detail to deal with CDNs that should be designed carefully and integrated with Glas Channels. It should also be extensible with new CDN features.
 
-### Limited Transaction Alignment
+### Remote Evaluation
 
-The glas channel API doesn't guarantee transaction alignment (i.e. that messages written to a specific channel within one transaction can be read within one transaction), but it's a convenient property to support and will be more consistent with local in-memory channels. In context of a TCP implementation, it is sufficient to support 'frames' containing multiple messages to be applied atomically. This includes messages for multiple subchannels.
+Instead of only communicating data over a channel, we could implicitly migrate some code and private state to evaluate nearer to the data source. This would be subject to negotiation and live coding (i.e. updating the remote code between transactions). The remote system might deny service depending on resource constraints, returning to a more conventional data channel. Some communications would report updates to the private state.
 
-I won't even try to touch distributed consistency, such as maintaining causal order on messages via vector clocks. If programs need that level of consistency, they'll need to handle it explicitly.
+Support for code distribution, and resource constraints (such as quotas), could be expressed as an extra option when binding a channel over a TCP connection or TCP listener. This would directly support my vision of glas applications as distributed, live-coded overlay networks. 
+
+### Transaction Alignment
+
+As a convenient feature, messages written to a channel within a single transaction should also be readable within a single transaction. This might require tracking transaction frames within the TCP communications.
 
 ## Subchannels
 
@@ -71,6 +75,8 @@ Every TCP connection will host multiple subchannels. The names for those subchan
 New ones can be created via 'attach'. Subchannels can be re-routed to another TCP connection (or to a local in-memory channel) via 'pipe'. Every message we send must include some metadata abou
 
 Whenever we send a message, it must be obvious which subchannel is receiving that message. Thus, we need some channel metadata as part of the send. 
+
+
 
 
 

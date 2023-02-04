@@ -1,8 +1,8 @@
 # Language g0
 
-The g0 language is essentially a Forth-inspired macro-assembly for the Glas program model. The Glas program model is oriented around immutable data and algebraic effects. To this, the g0 layer adds limited support for modularity and staged metaprogramming. 
+The g0 language is essentially a Forth-inspired macro-assembly for the glas program model, with relatively direct compilation. The glas program model is oriented around immutable data and algebraic effects; g0 adds modularity and metaprogramming. 
 
-The g0 syntax isn't suitable for all programs or programmers. It's especially awkward for embedding data. The main use case for g0 is very early development and bootstrap of the Glas language system. Thus, a primary design goal is simplicity of implementation. The g0 language can later be used to implement other Glas language modules.
+The g0 notation has many known weaknesses: embedding data is awkward, data plumbing requires mental gymnastics, lack of recursive loops is inconvenient, annotations are ugly, and there is no typeful or contextual overloading of meaning. These issues cannot be resolved without complicating compilation, which would interfere with g0's primary role as a bootstrap language. To mitigate this, glas programmers are not limited to using g0. The g0 language can be used to implement itself and other language modules.
 
 ## Top Level
 
@@ -183,25 +183,33 @@ Static evaluation is performed in context of macro calls, data definitions, proc
  * *dict* - return a dictionary value that includes words defined earlier in file. Excludes any words that are defined later within the file (i.e. words implicitly imported via 'open' are deleted if defined later).
  * *dict:Path* - equivalent to 'load:dict' effect followed by 'get' on bitstring Path (usually a word). This can theoretically simplify incremental computing and precise dependency tracking compared to 'load:dict'.
 
-These effects may be extended by the compiler, e.g. introduce [compiler directives](https://en.wikipedia.org/wiki/Directive_%28programming%29) to manage warnings, guide optimizations, tune static analysis, or manage quotas.
-
 ## Partial Evaluation
 
 The g0 language performs limited partial evaluation for static data during macro expansion. For consistency and comprehensibility, this partial evaluation is handled at granularity of words. For example, in context of `prog foo [1 swap 2]` the program `[foo swap]` cannot be further evaluated because each word, taken individually, lacks sufficient static data arguments. But `[3 foo swap]` should partially evaluate to `[1 2 3]`.
 
-After macro expansion, a g0 compiler may apply a more general optimizer to Glas programs, including partial evaluation with a much finer granularity. However, some optimizations can affect static arity, such as eliminating `swap swap` changes `2--2` to `0--0`. To stabilize partial evaluation during macro expansion, arity annotations should be inserted in cases where optimization affects arity.
+After macro expansion, a g0 compiler may apply a more general optimizer to Glas programs, including partial evaluation with a much finer granularity. See *Optimization* later.
 
 ## Annotations
 
-There is no special syntax for program annotations. Annotations can be introduced indirectly by wrapping program data before applying it, e.g. `prog list-len [[list-len-body] 'list-len anno-accel apply]` might tell a compiler or interpreter to use the accelerated implementation for list length computations, while also providing the manual implementation.
+The g0 language has no dedicated syntax for program annotations. 
+
+A useful subset of annotations can be expressed on the identity behavior using plain prog or macro definitions. For example, we could annotate the current type of the data stack or effects API. We can use annotations to trigger garbage collection, or stow a large value from the data stack into content-addressed storage.
+
+Where needed, such as for acceleration or memoization, annotations can be added to a program value prior to embedding, e.g. `[[Program] Annotate apply]`. This pattern isn't pretty, but it's adequate for infrequent use, and it could be integrated into macros in many cases.
 
 ## Static Analysis
 
-One design goal for Glas systems is gradual typing. Compared to use of static assertions, it is more convenient if this depends mostly on annotations and inference. Thus, a g0 compiler may evolve to recognize more annotations, perform more analyses, and reject more programs. 
+To simplify bootstrap, g0 language does not specify any required static analysis. Despite this, g0 implementations are encouraged perform ad-hoc analyses and raise warnings or errors to improve or resist degradation of glas systems. Annotations and compiler directives can tune strictness. De-facto standards will likely develop over time. 
 
-If a new analysis would suddenly reject many existing programs (even for legitimate reasons), that requires a softer touch to avoid breaking the Glas ecosystem. This might be achieved by starting with the analysis in a 'future-error' mode, introduce compiler directives or to opt-in early or opt-out, and give developers time to clean up or deprecate projects. Later, with consensus, we could switch the analysis to reject problematic programs.
+## Optimization
 
-*Note:* A 'future-error' should be distinguished from a 'warning' in certain contexts, such as understanding ecosystem health, or when using compiler directives to convert errors to warnings. Use of a to-be-deprecated API would similarly warrant a 'future-error' message.
+The g0 compiler is free to perform optimization when compiling g0 programs to glas 'prog' values. Observable behavior of valid programs should not directly be affected. Indirectly, optimization may be observed if analyzing compiled program values.
+
+*Note:* To stabilize partial evaluation, program arity must be treated as an aspect of a program's observable behavior. The g0 compiler can use arity annotations to preserve arity.
+
+## Compiler Directives
+
+The compiler function can receive [directives](https://en.wikipedia.org/wiki/Directive_%28programming%29) from a program to tune static analysis, optimizations, quotas, and other implementation-specific features (where compiler variation is permitted). These are flexibly expressed as formatted comments, e.g. `#warn ...`. 
 
 ## Compilation Strategy for Blocks
 
@@ -240,17 +248,4 @@ Interaction of variables and macros introduces a lot of complexity that I'd pref
 
 ### Negative Assertions. Rejected.
 
-I could design an assertions model that accepts only *failed* programs. Perhaps `reject [Test Code]`. But the interaction with compile-time effects seems awkward to explain. For now, sticking with positive `assert`. We can always write `assert [[Test Code] reject]`.
-
-### Aesthetic Annotations and Adjectives
-
-Currently, annotations are quite awkward to express in g0 language. Like this:
-
-        prog example-impl [...]
-        data example-anno [...]
-        prog example [[example-impl] example-anno p-anno-set apply]
-
-I'd prefer to have something closer to conventional annotations. Unfortunately, I don't have a great idea what this would look like in context of g0. 
-
-
-
+The `assert [[Test Code] reject]` pattern isn't uncommon. I could specialize this, e.g. introducing `reject [Test Code]` directly. But I decided against this because there is an asymmetry for compile-time effects.

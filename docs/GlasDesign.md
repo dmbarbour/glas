@@ -98,7 +98,7 @@ Glas programs must have static stack arity, i.e. the 'try-then' arity must match
  * 'do' field is optional, defaults to nop.
 * **eq** - Remove two items from data stack. If identical, continue, otherwise fail.
 * **fail** - always fail; causes backtracking in context of cond/loop
-* **halt:Message** - logically diverges, like an infinite loop but more explicit in its intention. Prevents backtracking. Message should indicate cause to a human programmer: undefined behavior, type-error, todo, etc.. 
+* **halt:Message** - logically diverges, like an infinite loop but more explicit in its intention. Prevents backtracking. Message should indicate cause to a human programmer: undefined behavior, type-error, invalid accelerator, todo, etc.. 
 
         seq:[]              ∀S . S → S
         seq:(Op :: Ops)     (as SEQ)
@@ -126,11 +126,7 @@ Glas programs must have static stack arity, i.e. the 'try-then' arity must match
         fail : ∀S . S → FAIL
         halt:_ : ∀S,S' . S → S'
 
-A consequence of this 'loop' model is that we essentially need to represent loops as state machines.
-
-In context of transaction machines, 'halt' will effectively abort the entire transaction.
-
-User syntax can extend the effective set of control operators, e.g. compiling a mutually recursive function group into a central loop. Glas does not provide an 'eval' operator, but an 'eval' function may potentially be accelerated.
+User syntax can extend the effective set of control operators. For example, it is feasible to compile a local set of mutually recursive definitions into a state machine loop. Also, there is no built-in 'eval' but it is feasible to implement one.
 
 ### Data Operators
 
@@ -170,37 +166,36 @@ Some proposed annotations:
 * *accel:Model* - accelerate the program. The Model is often a symbol such as 'list-append' indicating a specific built-in function to fully replace the provided implementation. 
 * *stow:Options* - stow data heuristically, usually top item on data stack after running program. 
 * *memo:Options* - memoize the program. Might only memoize cases where no effects escape.
-* *prof:(chan:Value, ...)* - code profiling support.
+* *prof:Options* - code profiling support. Ad-hoc options might include:
+ * *chan:Value* - global label for aggregating profiling data
 * *arity:(i:Nat, o:Nat)* - describe stack arity of a program. This can be checked by a compiler, or help stabilize partial evaluation.
 
 A lot more needs to be developed here, such as an effective type system and a better understanding of which options are useful for memoization and stowage.
 
 ## Applications
 
-The glas command line knows how to run applications with access to filesystem and network effects. A basic application is represented by a program that implements a transactional step function:
+The glas command line can run some applications with access to filesystem and network. I'm developing an application model around the idea of a repeating transactional step function:
 
         type Step = init:Params | step:State -> [Effects] (halt:Result | step:State) | Fail
 
-A successful step is committed, then halts or continues to the next step based on the return value. A failed step is aborted then retried, implicitly awaiting changes in effects. For example, it could wait for input to be available on a channel, or try an alternative in case of non-deterministic choice effects (simulating multi-threaded concurrency). 
+A successful step is committed, then the application halts or continues based on return value. A failed step is aborted then retried. There are several useful optimizations that can be applied to this model. For example, we don't need to fully recompute failed transactions if we track dataflow dependencies. For non-deterministic choice, it is possible to evaluate both choices in parallel and even commit both if they don't have any read-write conflicts. 
 
-In context of certain optimizations - incremental computing and replication on stable non-deterministic choice - it is feasible to model reactive multi-threaded applications using the transactional step function. However, these optimizations are difficult to apply. The glas command line may later support specialized representations for applications to simplify optimization.
+I discuss these ideas further under [glas applications](GlasApps.md) and [glas command line interface](GlasCLI.md).
 
-Aside from evaluating a transaction machine, we could directly extract executable binaries from the glas module system. This would essentially use glas as a build system.
-
-See [glas applications](GlasApps.md) for more.
+*Note:* Although the ability to 'glas --run' an application is convenient, an alternative is to construct an executable binary value within the glas module system then use 'glas --extract' to access it. This trades convenience for flexibility.
 
 ## Language Modules
 
-Language modules are global modules with a simple naming convention: `language-xyz` is used as the compiler function for files with extension `.xyz`. The language module shall compile to a value of form `(compile:prog:(do:Program, ...), ...)`. The 'prog' header provides a path for potential extension. Fields other than 'compile' can support other tooling, such as IDE or REPL integration.
+Language modules are global modules with a simple naming convention: `language-xyz` provides the compiler function for files with extension `".xyz"`. The language module must compiles to a value of form `(compile:prog:(do:Program, ...), ...)` expressing a 1--1 arity program. The 'prog' header is required to provide space for future extension. Fields other than 'compile' can support ad-hoc tooling, such as IDE or REPL integration.
 
-The compiler function currently must be a glas program with 1--1 arity. Input is usually the file binary (multiple file extensions is a special case). Output is the compiled module value, or failure if the input cannot be compiled. Compile-time effects are constrained to simplify caching, sharing, and reproducibility:
+Input to the compiler function is usually the file binary. Final output is the compiled module value. Compilation may fail, preferably after logging some messages, in case of input errors. Compile-time effects are constrained to simplify caching, sharing, and reproducibility. Effects API:
 
 * **load:ModuleRef** - Response is compiled value for the indicated module. The request may fail, e.g. if the module cannot be found or compiled, with cause implicitly logged. Currently propose a few forms of ModuleRef: 
  * *global:String* - search for global module based on configuration of CLI
  * *local:String* - search for module in same folder as file being compiled
 * **log:Message** - Message should be a record, e.g. `(text:"Uh oh, you messed up!", lv:warn)`, so that it can be flexibly extended with metadata. Response is unit. Behavior depends on development environment, e.g. might print the message to stderr with color based on level.
 
-The glas command line executable shall include a built-in implementation of the ".g0" compiler, and an interpreter for glas programs. This is used to bootstrap the [language-g0](GlasZero.md) module, if possible. If bootstrap fails, a warning or error will be reported.
+The glas command line will include a built-in implementation of the ".g0" compiler function, a Forth-like language with staged metaprogramming. This is used to bootstrap the [language-g0](GlasZero.md) module if possible. If bootstrap fails, a warning is reported and the built-in g0 compiler is used directly.
 
 ## Automated Testing
 
@@ -212,7 +207,7 @@ A test might be represented as a 0--0 arity program that is pass/fail. In additi
 
 ## Type Checking
 
-Glas systems will at least check for stack arity ahead of time. A more precise static type analysis is optional, but can be supported via annotations. Memoization is required to mitigate rework. In some cases, types might be checked at runtime, as we do with label inputs to get/put/del - in that case, `halt:type-error` is an effective way to handle a runtime type error. 
+Glas systems will at least check for stack arity ahead of time. A more precise static type analysis is optional, but can be supported via annotations. Memoization is useful to mitigate rework. In some cases, types might be checked at runtime, as we do with label inputs to get/put/del. Use of `halt:type-error` is an effective way to indicate a runtime type error without treating it as conditional.
 
 ## Performance
 
@@ -220,13 +215,19 @@ Glas systems will at least check for stack arity ahead of time. A more precise s
 
         prog:(do:Behavior, accel:Model, ...)
 
-Acceleration is an optimization pattern where a compiler or interpreter substitutes subprograms with built-in implementations. To guard against silent performance degradation in glas systems, this is explicitly specified by 'accel:Model' annotations. The Model is often a symbol such as 'list-append' indicating a built-in function. 
+Acceleration is an optimization pattern where a compiler or interpreter substitutes subprograms with built-in implementations. The Model is very often a symbol such as 'list-append' indicating a specific built-in function. 
 
-Accelerators are often associated with specialized runtime representations of data. For example, lists might be represented by finger-tree ropes to support accelerated list-append. However, the data retains its view as a tree. Essentially, accelerators introduce new 'performance primitives' without any impact on formal semantics.
+Acceleration is always explicit, via the 'accel' annotation. Keeping this explicit simplifies verification (e.g. a module can compare the accelerated and non-accelerated implementations) and resists silent performance degradation (a compiler or interpreter can report when acceleration fails, and replace with 'halt:accel:DebugMsg'). Optional acceleration can be expressed explicitly via 'accel:opt:Model'.
 
-Although it is feasible to accelerate many individual operations (such as list append or floating point arithmetic), one of the more fruitful and robust options is to accelerate evaluation of a virtual machine. For example, glas systems could broadly support compression and cryptography by accelerating a virtual CPU. Or support machine learning and ray tracing by accelerating a virtual GPGPU. The accelerated machine becomes a new compilation target for metaprogramming.
+Acceleration often involves specialized runtime representations. For example, accelerated operations on lists depend on lists being represented as finger-tree ropes. It is feasible for accelerators to essentially extend glas with conventional data types.
 
-*Note:* In some cases, we might want optional accelerators where it would be nice but is not necessary. For this case, I propose 'accel:opt:Model' to explicitly indicate optional acceleration.
+### Accelerated VMs
+
+This is a useful pattern for acceleration.
+
+Instead of independently accelerating a large number of fixed-width and floating point arithmetic operations, we could model a virtual CPU or GPGPU that includes all these operations then accelerate evaluation of the model as a whole. The accelerator could then compile the program argument to run on an actual CPU or GPGPU. When the program is a static argument, this could easily be compiled ahead-of-time.
+
+An accelerated VM can make a number of problem domains much more accessible, such as compression, cryptography, ray tracing, physics simulations, and machine learning. The pattern also scales to accelerating a virtual 'network' of processors to achieve higher levels of parallelism than would be easily achieved with accelerating individual operations.
 
 ### Stowage
 
@@ -242,7 +243,7 @@ Glas systems assume memoization as a solution to many performance issues that wo
 
 ### Content Distribution
 
-Networked glas systems will support [content distribution networks (CDNs)](https://en.wikipedia.org/wiki/Content_delivery_network) to improve performance when repeatedly serving large values. This feature is tightly aligned with *Stowage*.
+Networked glas systems can potentially support [content distribution networks (CDNs)](https://en.wikipedia.org/wiki/Content_delivery_network) to improve performance when repeatedly serving large, stowed data values (see *Stowage*). The large values can also be cached and don't need to be repeatedly transmitted.
 
 The CDN service is not fully trusted, so data distributed through the CDN should be encrypted. A lookup key and encryption key are derived from the content secure hash (e.g. take 256 bits each). The client will query the CDN using the lookup key, download the encrypted binary, decrypt then decompress locally, and finally verify against the original secure hash. 
 
@@ -256,11 +257,7 @@ When compiling glas programs, a useful optimization pass is to identify common s
 
 ### Application Layer
 
-I'm tentatively developing a 'proc' program model (in [Glas Applications](GlasApps.md)) for expressing transaction machines, with some design considerations to simplify several optimizations related to incremental computing, parallelism, concurrency, distributed evaluation, and transaction fusion. 
-
-Once developed, this program model might be evaluated via 'glas --run', compiled to executable binary then extracted, or deterministically simulated within a glas program for compile-time computations.
-
-In any case, glas system is not stuck forever with the 'prog' program model and its foibles. Performance is one reason we might develop alternative program models.
+The glas system is not forever stuck with the 'prog' program model and its foibles. It is feasible to extend the glas command line to support other program models for 'glas --run'. As a concrete example, I'm developing a 'proc' model for transaction machine applications to better optimize incremental computing and concurrency. However, this is a solution to pursue mostly where accelerators are awkward (e.g. due to relationship with effects). 
 
 ## Thoughts
 
@@ -272,17 +269,15 @@ Data languages will often be more convenient than embedding data in a programmin
 
 Programming languages can support mutually recursive definitions, multi-step procedures, process networks, variables, type annotations, type-guided overrides and program search, and many more features. The g0 language is quite awkward for some use-cases.
 
-Text preprocessor languages can support language-agnostic text-layer macros. We can leverage composition of file extensions, e.g. such that ".json.m4" will process a file first via text preprocessor 'language-m4' then via 'language-json'. Reusable text macros could be exported from related ".m4h" modules.
+Text preprocessor languages can support language-agnostic text-layer macros. We can leverage composition of file extensions, e.g. such that ".json.m4" will process a file first via text preprocessor 'language-m4' then via 'language-json'.
 
-It is feasible to develop graphical programming in glas, using structured files (perhaps even database files) to represent modules within a program in a manner easily viewed and manipulated by tools other than text editors. This is a general direction I'd like to pursue relatively early in glas systems, though I don't have many precise ideas yet.
+It is feasible to develop graphical programming in glas, using structured files to represent modules within a program in a manner easily viewed and manipulated by tools other than text editors. This is a general direction I'd like to pursue relatively early in glas systems, though I don't have many precise ideas yet.
 
 ### Abstract and Linear Data
 
-Abstraction is a property of a subprogram, not of data. Data is abstract *in context of* a subprogram that constructs and observes data only indirectly via externally provided functions. Linear types extend these contextual restrictions to copy and drop operations. A static analysis of a program could track whether each parameter is abstract or linear.
+Abstraction is a property of a subprogram, not of data. Data is abstract *in context of* a subprogram that constructs and observes data only indirectly via externally provided functions. 
 
-Linear types can potentially support in-place updates, reducing garbage collection. 
-
-But I think this is better to explore after the glas system is more mature. Binary trees provide a simple foundation, while acceleration and, later, full data abstraction for applications provides an effective means to escape the limits of this foundation.
+Linear types extend these contextual restrictions to copy and drop operations. Linear types can potentially support in-place updates, reducing garbage collection. However, this optimization remains difficult to achieve in context of backtracking conditionals or debugger views. The more general motive for linear types is to typefully enforce protocols, such as closing a channel when done.
 
 ### Databases as Modules
 
@@ -306,4 +301,6 @@ I hope to support provenance tracking in a more systematic manner, such that all
 
 ### Computation Model 
 
-I'm very tempted to replace the initial program model for glas systems to something more friendly for parallel/concurrent computation, preferably without relying on accelerators. I'm contemplating a few [alternative models](AltModels.md) but I'm not very satisfied with any particular idea.
+I'm tempted to replace the initial program model with something more friendly for laziness, parallelism, and concurrency, such as Lafont interaction nets or Kahn process networks. However, I hesitate to start with [alternative program models](AltModels.md) due to added complexity.
+
+Fortunately, there is room for future development. KPNs or interaction nets could feasibly be accelerated (perhaps indirectly, via compilation to an accelerated virtual machine). If necessary, models could be supported directly by the glas command line, so long as it doesn't affect bootstrap.

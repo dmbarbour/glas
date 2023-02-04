@@ -29,6 +29,7 @@ assert [[1 2 pair is-bits-impl] reject]
 # is-bits         Value -- Bits | FAILURE
 #   fails if input is not a bitstring.
 prog is-bits [[is-bits-impl] 'bits-verify p-accel-opt apply]
+
 assert [0b1011 is-bits 0b1011 eq]
 assert [[1 2 pair 'test d1 is-bits] reject]
 
@@ -211,9 +212,18 @@ prog test-skip [
 ]
 assert [ 0b0101100010 4 0b100010 test-skip ]
 
+# Note: I could add some boolean stuff here, such as
+# defining true (0b1), false (0b0), and if-then-else.
+#
+# I'm uncertain this is the best place to do so, but
+# it does make sense.
+#
+
 export type-bits as type, is-bits
      , empty, head, tail, pop
+     , p-each, p-each-while, p-map, p-map2
      , each, each-while, map, map2
      , append, prefix, suffix
      , reverse, negate, xor, or, and
      , length, take, skip
+     , true, false, if-then-else, p-if-then-else

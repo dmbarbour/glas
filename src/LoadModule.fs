@@ -26,18 +26,20 @@ module LoadModule =
     // which would be downloaded then cached locally. But that can
     // wait for after bootstrap.
     let globalSearchPath (ll : IEffHandler) : FolderPath list =
+        let sources_name = "sources.tt"
         try
             let home = Path.GetFullPath(Environment.GetEnvironmentVariable("GLAS_HOME"))
-            let src = File.ReadAllText(Path.Combine(home, "sources.txt"))
+            let sourcesFile = Path.Combine(home, sources_name)
+            let sourcesText = File.ReadAllText(sourcesFile)
             let parseDirEnts (ent : TextTree.TTEnt) =
                 let isBasicDirEnt = (ent.Label = "dir") && (List.isEmpty ent.Attrib)
                 if isBasicDirEnt then [Path.Combine(home, ent.Data)] else
-                logWarn ll (sprintf "unhandled entry in sources.txt: %A" ent)
+                logWarn ll (sprintf "unhandled entry in %s: %A" sources_name ent)
                 []
-            src |> TextTree.parseEnts |> List.collect parseDirEnts
+            sourcesText |> TextTree.parseEnts |> List.collect parseDirEnts
         with 
         | e -> 
-            logError ll (sprintf "failed to load sources.txt: %A" e)
+            logError ll (sprintf "failed to load %s: %A" sources_name e)
             []
 
     let private findModuleAsFile (m:ModuleName) (dir:FolderPath) : FilePath list =
@@ -74,7 +76,7 @@ module LoadModule =
     // factored out some error handling
     let private _expectCompiler (ll:IEffHandler) (src:string) (vOpt:Value voption) =
         match vOpt with
-        | ValueSome (Value.FullRec ["compile"] ([pCompile], _)) ->
+        | ValueSome (Value.FullRec ["compile"] ([(Value.Variant "prog" _) as pCompile], _)) ->
             match stackArity pCompile with
             | Arity (a,b) when ((a = b) && (1 >= a)) -> 
                 ValueSome pCompile
@@ -151,21 +153,25 @@ module LoadModule =
             | Some r -> // use cached value 
                 logInfo ll (sprintf "using cached result for file %s" fp)
                 r
-            | None when List.contains fp (ll.Loading) -> 
-                // report cyclic dependency, leave to programmers to solve.
-                let cycle = List.rev <| fp :: List.takeWhile ((<>) fp) ll.Loading
-                logError ll (sprintf "dependency cycle detected! %s" (String.concat ", " cycle))
-                ValueNone
-            | None -> 
-                logInfo ll (sprintf "loading file %s" fp)
-                let ld0 = ll.Loading
-                ll.Loading <- fp :: ld0
-                try 
-                    let r = ll.LoadFileBasic fp
-                    ll.Cache <- Map.add fp r ll.Cache
-                    r
-                finally
-                    ll.Loading <- ld0
+            | None ->
+                if List.contains fp (ll.Loading) then
+                    // report cyclic dependency, leave to programmers to solve.
+                    let cycle = List.rev <| fp :: List.takeWhile ((<>) fp) ll.Loading
+                    logError ll (sprintf "dependency cycle detected! %s" (String.concat ", " cycle))
+                    ValueNone
+                elif File.Exists(fp) then
+                    logInfo ll (sprintf "loading file %s" fp)
+                    let ld0 = ll.Loading
+                    ll.Loading <- fp :: ld0
+                    try 
+                        let r = ll.LoadFileBasic fp
+                        ll.Cache <- Map.add fp r ll.Cache
+                        r
+                    finally
+                        ll.Loading <- ld0
+                else 
+                    logError ll (sprintf "file does not exist: %s" fp)
+                    ValueNone
 
         member ll.LoadLocalModule (m : ModuleName) : Value voption =
             let localDir = 

@@ -3,7 +3,14 @@
 
 open prims
 import bits-basics as bb
-from [bb] import type-nat
+import bits as b
+from [bb] import type-nat, repeat
+
+prog is-nat [b/is-bits [0b0 get] reject]
+
+prog is-pos  [type-nat [0b1 get] verify]
+prog is-zero [type-nat 0 eq1]
+
 
 prog increment [type-nat bb/int-increment]
 prog decrement [type-nat [0b1 get] verify bb/int-decrement]
@@ -338,8 +345,15 @@ assert [0x8000000000000000000010000000000000
         test-gte
 ]
 
-export 
-    type-nat as type, 
-    increment, decrement, 
-    add, sub, mul, divmod, div, mod,
-    gt, gte, lt, lte
+
+# convert a fixed-width 'word' to a nat by removing
+# the leading zeroes prefix. This works for words of
+# any length, such as bytes or 32-bit words.
+prog of-word [bb/type-bits [0b0 get] loop type-nat]
+
+export type-nat as type
+     , repeat
+     , increment, decrement 
+     , add, sub, mul, divmod, div, mod
+     , gt, gte, lt, lte
+     , of-word

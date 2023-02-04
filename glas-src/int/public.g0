@@ -9,10 +9,12 @@ from [bb] import
     type-int, type-nat
 import nat as n
 
+prog is-int [b/is-bits]
+
 prog is-pos [type-int [0b1 get] verify]
 prog is-neg [type-int [0b0 get] verify]
 prog is-nat [type-int [0b0 get] reject]
-prog is-zero [0 eq1]
+prog is-zero [type-int 0 eq1]
 
 
 # subtract nat from nat, resulting in integer

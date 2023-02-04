@@ -30,24 +30,27 @@ let helpMsg = String.concat "\n" [
     "Built-in Commands:"
     ""
     "    glas --extract ValueRef"
-    "        print referenced binary value to standard output"
-    "        currently limited to produce binaries under 2GB"
+    "        Print referenced binary value to standard output."
+    "        Currently limited to produce binaries below 2GB."
     ""
     "    glas --run ValueRef -- Args"
-    "        evaluate an application process, represented as a"
-    "        transactional step function. Incomplete effects."
+    "        Evaluate an application process, which represents"
+    "        a transactional step function. Incomplete effects!"
+    "        Currently limited to 'log' and 'load' effects."
     ""
     "    glas --version"
-    "        print a version string"
+    "        Print a version string."
     ""
     "    glas --help"
-    "        print this message"
+    "        Print this message."
     ""
     "    glas --print ValueRef"
-    "        write value to standard output (ad-hoc, for debugging)"
+    "        Write arbitrary value to standard output using an"
+    "        ad-hoc pretty printer. Intended for debugging."
     ""
     "    glas --check ValueRef"
-    "        test that module compiles and value is defined"
+    "        Check that module compiles and value is defined."
+    "        Combines nicely with assertions for debugging."
     ""
     "User-Defined Commands (no '-' prefix):"
     ""
@@ -55,7 +58,7 @@ let helpMsg = String.concat "\n" [
     "        rewrites to"
     "    glas --run glas-cli-opname.main -- Args"
     ""
-    "    We can define glas-cli-* modules "
+    "    Users may freely define glas-cli-* modules "
     ""
     "A ValueRef is essentially a dotted path starting with a module ref. A"
     "module ref can be a module-name (global) or ./module-name (local)."
@@ -103,7 +106,13 @@ module ValueRef =
         ]
 
     let parse : P<(ModuleRef * Word list)> = 
-        parseModuleRef .>>. many (pchar '.' >>. parseWord) 
+        (parseModuleRef .>>. many (pchar '.' >>. parseWord)) .>> eof
+
+let mRefStr m =
+    match m with
+    | ValueRef.Local p -> "./" + p
+    | ValueRef.Global p -> p
+
 
 let getValue (ll:Loader) (vref : string): Value voption =
     match FParsec.CharParsers.run (ValueRef.parse) vref with
@@ -119,7 +128,7 @@ let getValue (ll:Loader) (vref : string): Value voption =
             | ValueSome v -> Value.record_lookup (Value.label s) v 
         let result = List.fold fn mv idx
         if ValueOption.isNone result then
-            logError ll (sprintf "value of module %A does not have path .%s" m (String.concat "." idx))
+            logError ll (sprintf "value of module %s does not have path .%s" (mRefStr m) (String.concat "." idx))
         result
     | FParsec.CharParsers.Failure (msg, _, _) ->
         logError ll (sprintf "reference %s fails to parse: %s" vref msg)
@@ -137,7 +146,7 @@ let getAppValue (ll:Loader) (vref : string) (args0 : string list) : (Value * str
         // might need to expand application macros to interpret some args
         let rec macroLoop v args =
             match v with
-            | (Value.Variant "macro" p) ->
+            | (Value.Variant "macro" ((Value.Variant "prog" _) as p)) ->
                 let (staticArgs,dynamicArgs) = sepListOn "--" args
                 let sa = staticArgs |> List.map Value.ofString |> Value.ofList
                 match eval p ll [sa] with

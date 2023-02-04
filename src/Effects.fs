@@ -197,16 +197,16 @@ module Effects =
             | Value.Variant "info" _ -> System.ConsoleColor.Green
             | Value.Variant "warn" _ -> System.ConsoleColor.Yellow
             | Value.Variant "error" _ -> System.ConsoleColor.Red
+            | Value.Variant "prof" _ -> System.ConsoleColor.Magenta
             | _ -> 
                 // randomly associate color with non-standard level
-                match (hash (lv.Stem)) % 8 with
-                | 0 -> System.ConsoleColor.Magenta
-                | 1 -> System.ConsoleColor.Cyan
-                | 2 -> System.ConsoleColor.DarkGreen
-                | 3 -> System.ConsoleColor.DarkBlue
-                | 4 -> System.ConsoleColor.Blue
-                | 5 -> System.ConsoleColor.DarkCyan
-                | 6 -> System.ConsoleColor.DarkYellow
+                match (hash (lv.Stem)) % 6 with
+                | 0 -> System.ConsoleColor.Cyan
+                | 1 -> System.ConsoleColor.DarkGreen
+                | 2 -> System.ConsoleColor.DarkBlue
+                | 3 -> System.ConsoleColor.Blue
+                | 4 -> System.ConsoleColor.DarkCyan
+                | 5 -> System.ConsoleColor.DarkYellow
                 | _ -> System.ConsoleColor.DarkRed
         | _ -> System.ConsoleColor.Blue
 
@@ -224,5 +224,8 @@ module Effects =
         TXLogSupport(consoleErrLogOut) :> IEffHandler
 
     // given log+load effects, return full runtime effects
+    //
+    // For now, I've decided to mostly elide this to after bootstrap rather than
+    // implement it twice (once in F# and once within the glas module system). 
     let runtimeEffects (ll : IEffHandler) : IEffHandler =
         ll // TODO!

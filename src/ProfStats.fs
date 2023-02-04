@@ -13,12 +13,28 @@ module Stats =
 
     let inline private sq x = (x * x)
 
+    let s0 = 
+        { Cnt = 0UL
+        ; Sum = 0.0
+        ; SSQ = 0.0
+        ; Min = System.Double.PositiveInfinity
+        ; Max = System.Double.NegativeInfinity
+        }
+
     let s1 f = 
         { Cnt = 1UL
         ; Sum = f
         ; SSQ = sq f 
         ; Min = f
         ; Max = f
+        }
+
+    let add s f =
+        { Cnt = 1UL + s.Cnt
+        ; Sum = s.Sum + f
+        ; SSQ = s.SSQ + sq f
+        ; Min = min (s.Min) f
+        ; Max = max (s.Max) f
         }
 
     let join a b = 
@@ -37,20 +53,39 @@ module Stats =
         // (SSQ - N*(AVG^2)) / (N - 1)
         // N*(Avg^2) = N*((Sum/N)^2) = N*Sum^2 / N^2 = Sum^2 / N 
         // (SSQ - (Sum^2/N)) / (N - 1)
-        // changing denominator to N (not exact variability)
-        assert(s.Cnt > 0UL)
-        let recipN = 1.0 / float(s.Cnt)
-        (s.SSQ - ((sq s.Sum) * recipN)) * recipN
+        assert(s.Cnt > 1UL)
+        (s.SSQ - ((sq s.Sum) / float(s.Cnt))) / float(s.Cnt - 1UL)
 
     let sdev s = 
         sqrt (variability s)
 
-    let private heuristicJoinCost s1 s2 =
-        // a weighted distance between boxes and their joined average.
-        // This also weighs merging more points more heavily than fewer.
-        let joinAvg = (s1.Sum + s2.Sum) / float(s1.Cnt + s2.Cnt)
-        float(s1.Cnt) * sq(joinAvg - (average s1)) +
-        float(s2.Cnt) * sq(joinAvg - (average s2))
+    // I'm thinking about keeping some extra detail on stats
+    // via MultiStats. In this case, we'll aggregate a set of
+    // stat 'buckets' then occasionally reduce the set to keep
+    // memory use under control. This would make it easier to
+    // produce bar graphs of some form.
+    //
+    // However, it also adds a lot of overhead when profiling.
+    // 
+
+    [<Struct>]
+    type MultiStat = 
+        { BCT : int
+        ; BS  : S list 
+        }
+
+    let private heuristicJoinCost a b =
+        // weighted cost of moving each box to joined value.
+        let joinAvg = (a.Sum + b.Sum) / float(a.Cnt + b.Cnt)
+        let joinMax = max (a.Max) (b.Max)
+        let joinMin = min (a.Min) (b.Min)
+        let inline dist s =
+            abs(joinAvg - (average s)) +
+            (joinMax - s.Max) +
+            (s.Min - joinMin)
+        let inline moveCost s = 
+            float(s.Cnt) * (dist s)
+        moveCost a + moveCost b 
 
     // will reduce every sequence of 5 items to 4 items.
     let rec private reduceFifths acc rs =
@@ -87,12 +122,6 @@ module Stats =
           then reduceTo n (reduce l)
           else l
 
-    [<Struct>]
-    type MultiStat = 
-        { BCT : int
-        ; BS  : S list 
-        }
-
     let autoReduce ms =
         if (100 > ms.BCT) then ms else
         let bs' = reduce ms.BS
@@ -101,6 +130,4 @@ module Stats =
         }
 
     let addVal ms v =
-        autoReduce { BCT = 1 + (ms.BCT); BS = (s1 v)::(ms.BS)}
-
-
+        autoReduce { BCT = 1 + (ms.BCT); BS = (s1 v)::(ms.BS) }

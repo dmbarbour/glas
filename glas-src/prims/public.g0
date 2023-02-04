@@ -142,11 +142,12 @@ macro do-while [p-do-while]
 prog p-do-until [[copy] dip swap p-until-do p-seq]
 macro do-until [p-do-until]
 
-
 # NON-MODIFYING OBSERVATIONS
 #
-# Many uses of these operations might be better expressed as typechecks,
-# or otherwise as annotations. However, they do have some use-cases.
+# The 'reject' and 'verify' operations both compute a predicate
+# then abort, returning to the state prior to the computation.
+# The only observable output is success or failure.
+#
 
 # reject ([Predicate] -- | FAIL)
 #  will evaluate predicate then fail iff predicate passes.
@@ -163,7 +164,6 @@ prog p-verify [p-reject p-reject]
 macro verify [p-verify]
 assert [0 [0 eq] verify 0 eq]
 assert [0 [[1 eq] verify][1][2] try-then-else 2 eq 0 eq]
-
 
 # eq1       Val Val -- Val
 #  keep a copy of the value on the equality test
@@ -319,12 +319,47 @@ prog l5 [l4 pair]
 prog l6 [l5 pair]
 prog l7 [l6 pair]
 
+assert [0x6f 0x6d 0x6e 0x2d 0x6e 0x6f 0x6d l7 "omn-nom" eq]
+
+prog unl0 [l0 eq]
+prog unl1 [unpair unl0]
+prog unl2 [unpair unl1]
+prog unl3 [unpair unl2]
+prog unl4 [unpair unl3]
+prog unl5 [unpair unl4]
+prog unl6 [unpair unl5]
+prog unl7 [unpair unl6]
+
+assert ["omn-nom" copy [unl7 l7] dip eq]
+
 # Variants aka Tagged Unions
 #
 # We'll represent variants as a singleton record `label:Value`.
 # For now just using 'd1' for this. But I could add some dedicated
 # names for clarity.
 #
+
+# Boolean values.
+#   true    0b1      1
+#   false   0b0     -1
+data true [0b1]
+data false [0b0]
+
+# Boolean Conditional Behavior 
+# 
+# The glas program model favors backtracking conditional behaviors
+# over booleans, but in some cases booleans are more convenient.
+# 
+# if-then-else      [Cond] [OnTrue] [OnFalse] -- OnTrue | OnFalse
+# ifb-then-else      Bool  [OnTrue] [OnFalse] -- OnTrue | OnFalse
+#
+prog p-ifb-then-else [[true eq] unrot3 [false eq] p-prefix p-try-then-else]
+prog p-if-then-else [p-ifb-then-else p-suffix]
+macro ifb-then-else [p-ifb-then-else]
+macro if-then-else [p-if-then-else]
+
+# todo: basic boolean operators?
+#       variant conditionals?
 
 # ANNOTATIONS SUPPORT
 # 
@@ -425,10 +460,11 @@ prog p-accel-get ['accel p-anno-get]
 #
 prog p-accel-opt ['opt d1 p-accel]
 
-# p-arity      (Program In Out -- AnnotatedProgram)
+# p-arity      ([Program] N N -- [Annotated Program])
 #
-#  Arity annotations will often be checked for consistency, but might not
-#  be exact due to using less data than the arity would suggest.
+# Arity annotations are a super lightweight type annotation that only
+# examines the number if input and output elements on the data stack.
+# All glas programs should have static arity.
 #
 prog p-arity ['i 'o d2 'arity p-anno-put]
 prog p-arity-get ['arity p-anno-get copy 'i get swap 'o get]
@@ -449,6 +485,48 @@ assert [
 # Type Annotations (likely another module)
 # 
 
+# Lightweight Profiling Annotations
+#  prof(chan:ChanId)
+prog p-prof-chan ['chan d1 'prof p-anno-put]
+
+
+# RUNTIME ASSERTIONS
+#
+# The 'always' and 'never' ops are similar to 'verify' and 'reject'
+# except that the outcome cannot be observed. On failure, evaluation
+# halts instead with a given debug message.
+#
+# Ideally, these assertions should be avoided in regular code, perhaps
+# replaced by type annotations and static analysis. But temporary use
+# for debugging purposes can be useful.
+#
+prog p-never-msg [
+    [p-reject] dip
+    0 'assertion put p-halt-with-msg
+    p-try-else
+]
+prog p-always-msg [
+    [p-reject] dip
+    0 'assertion put p-halt-with-msg
+    p-try-then
+]
+
+macro always-msg [p-always-msg]
+macro always [0 p-always-msg]
+macro never-msg [p-never-msg]
+macro never [0 p-never-msg]
+
+assert [0 [0 eq] always drop]
+assert [0 [1 eq] never  drop]
+
+
+# Effectful NOP
+#
+# Effectfully does nothing. This may be useful to control 
+# partial evaluation in context of profiling. 
+prog eff-nop [['nop eff] p-reject p-try apply]
+assert [eff-nop]
+
 # BASIC LOGGING
 #
 # Logging is convenient for debugging or tracking progress of an application.
@@ -463,7 +541,7 @@ assert [
 # log-send      Message --
 #  Sends provided Message as a logging effect, dropping unit result. 
 #  Failure is silently ignored.
-prog log-send [['log d1 eff 0 eq][drop] try-else]
+prog log-send ['log d1 [eff 0 eq][drop] try-else]
 
 # log message builders
 #   logmsg-text-lv         "Hello" 'warn -- (lv:warn, text:"Hello")

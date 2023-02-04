@@ -1264,7 +1264,6 @@ module Value =
         // could be optimized; adds label p to value v
         record_insert p v p
 
-
     let asRecord ks vs = 
         let addElem r k v = record_insert (label k) v r
         List.fold2 addElem unit ks vs

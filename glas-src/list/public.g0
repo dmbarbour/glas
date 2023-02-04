@@ -1,7 +1,20 @@
-from list-ops import
+from ./list-ops import
     li, l0, l1, l2, l3, l4, l5, l6, l7,
     unl0, unl1, unl2, unl3, unl4, unl5, unl6, unl7,
     pushl, popl, pushr, popr,
-    rev, append, rev-app,
-    each, p-each,
-    list
+    reverse, 
+    append, prefix, suffix,
+    length, skip, take, cut, 
+    item,
+
+
+    each, each-rev, each-sc, each-rev-sc,
+    p-each, p-each-rev, p-each-sc, p-each-rev-sc,
+
+    map, map-rev, map-sc, map-rev-sc,
+    p-map, p-map-rev, p-map-sc, p-map-rev-sc,
+
+    mapf, mapf-rev, mapf-sc, mapf-rev-sc,
+    p-mapf, p-mapf-rev, p-mapf-sc, p-mapf-rev-sc,
+    
+    list-type as type
