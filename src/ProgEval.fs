@@ -1,20 +1,65 @@
 namespace Glas
 
+// TODO Performance Improvements:
+//
+//  A. Recognize pure subprograms; minimize try/commit/abort on effects.
+//  B. Recognize and reuse common subprograms, e.g. at 'prog' boundaries.
+//  C. Eliminate data plumbing on stack. Compile to a register machine.
+//  D. Introduce support for stowage and memoization.
+//  E. Partition stable tuples and records from stack into registers.
+//  F. Partial Evaluation of Effects. Reduce the blind spot of effects.
+//  G. Reduce redundant try/commit/abort for deep structures, i.e. identify
+//     locations where 'abort' or 'commit' can be deferred. 
+//
+// Recognition of pure subprograms can be relatively naive. Just recognize
+// where subprograms don't contain 'eff' operator, or where all effects are
+// captured by a local with-env and the 'env' is pure. Avoiding unnecessary
+// try/commit/abort calls to IEffHandler should greatly improve performance.
+// 
+// To reuse subprograms, I need to separate client context from compiler 
+// and runtime context. This way, the program can be partially compiled
+// based on global parameters, then further compiled for each context of
+// use, depending on arguments.
+//
+// Register allocation is non-trivial. Might be best to rewrite the program
+// value into a new program model, rather than solve this in a single pass.
+// The rewritten program might also directly represent subprogram reuse and
+// the various accelerated operations.
+//
+// Reuse of subprograms in context of register allocation is simplified by 
+// static linking. We only need to track a 'stack' of input and output 
+// registers and a set of registers that are reserved for internal use. And
+// whether a subprogram is 'pure'.
+//
+// Partitioning of stable records and tuples is feasible, though I might need
+// tuple access to be represented with static labels (via macros). The idea
+// would be to instead represent stack items as having some static structure
+// with multiple registers for their variable elements. 
+//
+// Fine-grained partial evaluation of effects is the evolution of recognizing
+// pure subprograms, and is feasible if we usually have some static structure
+// in our 'eff' argument and/or result. This ultimately entangles quite a few
+// layers, e.g. we'll need a concept of partial abstract values and registers.
+// Entanglement can be reduced via a translation layer evaluated at compile 
+// time. Basically, each effect input is a value with holes - a lambda - and
+// the returned output may be the same. 
+//
+// Overall, I expect performance can improve by a significant margin, at least
+// for programs that run long enough to take full advantage. 
+
+
 module ProgEval =
     open Value
     open ProgVal
 
     module FTI =
         open Effects
-
+        
         // A simple finally tagless interpreter.
         //
         // The benefit of FTI over direct style is that we avoid runtime parsing within loops,
-        // and the resulting eval function is stable and accessible to .NET JIT compiler. 
+        // and the resulting eval function is stable and accessible to .NET JIT compiler.
         //
-        // This implementation uses lazy compilation for conditional behavior. This ensures that
-        // time-complexity of FTI compilation is not worse than direct style interpretation when
-        // runtime evaluation covers a small portion of a large program.
         //
         // However, the current implementation is checking for arity errors and manipulating 
         // a stack representation at runtime instead of preallocating memory. We currently 
@@ -31,11 +76,10 @@ module ProgEval =
         // the non-accelerated implementation.
         //
 
-        /// runtime environment
-        ///
-        /// Most operations focus on the data stack.
-        /// The 'Dip' and 'EffState' stacks temporarily hide data.
-        /// The FailureStack records snapshots of the RTE for recovery.
+        // runtime environment
+        //
+        // This currently represents the data stack directly. Eventually, it might be
+        // eliminated due to moving data into allocated registers. 
         [<Struct>]
         type RTE =
             { DataStack : Value list
@@ -54,10 +98,8 @@ module ProgEval =
         let type_error rte vType =
             raise <| RTError(rte, Value.variant "type-error" vType)
 
-        /// simplest continuation.
+        /// current continuation.
         type CC = RTE -> obj 
-        // Note: I removed generics from this to keep the code simpler. Doesn't make
-        // a big difference in any case, only need to box/unbox the final result.
 
         /// simplistic profiling support (mutable state)
         type ProfChans = System.Collections.Generic.Dictionary<Value, Ref<Stats.S>>
@@ -65,10 +107,10 @@ module ProgEval =
         /// CTE - compile-time environment (excluding primary continuation)
         [<Struct>]
         type CTE = 
-            { FK : CC               // on failure
-            ; EH : Op               // effects handler
-            ; TX : ITransactional   // top-level transaction interface.
+            { TX : ITransactional   // top-level transaction interface.
             ; Prof : ProfChans      // shared profiling channels
+            ; FK : CC
+            ; EH : Op
             }
         and Op = CTE -> CC -> CC 
 
@@ -763,3 +805,21 @@ module ProgEval =
     /// Evaluate except with any effect halting the application. 
     let pureEval : Program -> Value list -> Value list option =
         FTI.pureEval
+
+
+// Considering reimplementation based on performance goals.
+//
+// A program becomes multi-stage, closer to:
+//
+//   CTE -> (CTEFB, CCX -> (CCXFB, RTE -> RTE))
+//   CTE - compile-time environment. Might not do much, but useful for
+//      caching, profiling, certain debug aspects.
+//   CTEFB - compile-time environment static feedback
+//   CCX - caller or client context 
+//      continuations, effects handlers, partial values, static failure, etc.
+//   CCXFB - caller or client context feedback
+//   RTE - final runtime environment 
+//
+// Ideally, we shift most runtime environment manipulations into operating
+// on an array of registers. So we might want an explicit stage for register
+// allocation and so on.

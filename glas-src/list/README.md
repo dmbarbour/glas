@@ -20,13 +20,10 @@ The list type `type List a = (a * List a) | ()` describes lists as having elemen
 
         type Tuple [a,b,c] = (a * (b * (c * ())))
 
-A tuple is described by a list of potentially heterogeneous types. A value of the tuple type consists of a static length list of values of heterogeneous types.
-
-To simplify type inference, we might avoid dynamic loops. For example, to access the Nth element we might first use a macro to produce a unary label of form `0b(1*)0`. Appending two tuples would depend on knowing the lengths of one tuple. Alternatively, it is feasible to operate on tuples using list operations wrapped with dependent type annotations.
+A tuple is described by a list of potentially heterogeneous types, and a tuple value looks like a fixed-length list of hetereogeneous values. Building tuples on lists simplifies composition, processing, and rendering. However, tuple types are awkward to extend. In glas systems, records should usually be favored over tuples, even short ones, especially at API boundaries.
 
 ### Vectors
 
         type Vector n a = List a of length n
 
-A vector is essentially a list of statically known length. All operations on vectors should have a static effect on the length. Though, we can have operations to convert vectors to list types and the inverse after verifying length. In some ways, it might be easier to model vectors as a refinement on tuples.
-
+A vector is a homogeneous list of statically known length. Operations on vectors should have a static effect on the length. Though, we can have operations to convert vectors to list types and the inverse after verifying length. 

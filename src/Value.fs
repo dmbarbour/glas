@@ -338,6 +338,7 @@ module Value =
         // 
     and [<Struct>] Value = 
         { Stem: uint64; Term : Term } // partial stem
+        static member OfStemTerm(s,t) = { Stem = s; Term = t }
         static member OfStem(s) = { Stem = s; Term = Leaf }
         static member OfTerm(t) = { Stem = StemBits.empty; Term = t }
         static member Unit = Value.OfStem (StemBits.empty)
@@ -1551,3 +1552,43 @@ module Value =
 
 type Value = Value.Value
 type Rope = Value.Term
+
+
+module PartialValue =
+    // A partial value is a value extended with named holes,
+    // aka variables. This is potentially useful for abstract
+    // interpretation and partial evaluation.  
+
+    // Variables will be represented by basic integers.
+    // These contextually refer to separate or future values.
+    type VarId = int
+
+    // The PValue type must have at least one hole. This is
+    // tracked more precisely in the branching structure.
+    [<Struct>]
+    type PValue = { Stem : uint64; PTerm : PTerm } 
+    and PTerm =
+        | Var of VarId
+        | PStem64 of uint64 * PTerm
+        | PBranchL of PValue * Value
+        | PBranchR of Value * PValue
+        | PBranchLR of PValue * PValue
+
+    // The AbsVal type represents an arbitrary abstract value,
+    // which may involve zero or more holes.
+    type Val =
+        | Const of Value
+        | Partial of PValue
+
+    let rec ptVars acc pt = 
+        match pt with
+        | Var v -> (v::acc)
+        | PStem64 (_, pt') -> ptVars acc pt'
+        | PBranchL (pv, _) -> ptVars acc (pv.PTerm)
+        | PBranchR (_, pv) -> ptVars acc (pv.PTerm)
+        | PBranchLR (pvL, pvR) -> ptVars (ptVars acc pvR.PTerm) pvL.PTerm
+
+    let listVars (v : Val) : VarId list =
+        match v with
+        | Const _ -> []
+        | Partial pv -> ptVars [] pv.PTerm 

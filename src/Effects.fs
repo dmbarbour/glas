@@ -1,18 +1,12 @@
 namespace Glas
 
+// NOTE: I originally intended to support all effects needed to `--run` a
+// simple application, such as network and filesystem access. But I'd rather
+// not implement effects twice, so I'm deferring this until after bootstrap.
+// We can bootstrap using `glas --extract` with no effects other than module
+// system and basic logging.
+
 module Effects = 
-    // NOTE: I originally intended to support all effects needed to `--run` an
-    // implementation of Glas command line from within this program. That would
-    // mostly require filesystem effects and environment variables.
-    //
-    // Later, I decided to defer support for `glas --run` until after bootstrap.
-    // I will use a specialized `glas --extract` operation to perform bootstrap.
-    // Mostly, I don't want to implement this twice, nor work around the design
-    // decisions of the .NET API that are awkward for transaction machines, such
-    // as blocking reads.
-    //
-    // A consequence is that effects required in this implementation are just
-    // log and load, which are used by language modules.
 
     /// Support for hierarchical transactions.
     type ITransactional = 
@@ -33,6 +27,7 @@ module Effects =
             abstract member Commit : unit -> unit
             abstract member Abort : unit -> unit
         end
+
 
     /// RAII support for transactions, to ensure they're closed in case of exception.
     ///   USAGE:  use tx = withTX effHandler; ...; tx.Commit(); (or Abort)
@@ -229,3 +224,110 @@ module Effects =
     // implement it twice (once in F# and once within the glas module system). 
     let runtimeEffects (ll : IEffHandler) : IEffHandler =
         ll // TODO!
+
+
+module Effects2 =
+    // I'm thinking about an alternative effects API to support partial-evaluation
+    // of effects. This could reduce runtime overheads related to dataflow, such as
+    // dispatch or allocation and garbage collection. 
+    //
+    // Additionally, I would like to isolate transaction management to a much finer
+    // granularity compared to global ITransactional or IEffHandler. This may require
+    // identifying a precise subset of operations to call to open, commit, or abort
+    // any given set of transactions. Further, would benefit from identifying where
+    // transactions are redundant.
+    //
+    // If effects can be very precisely handled in this manner, a lot of runtime
+    // overhead can be eliminated by a compile-time pass.
+    //
+
+    // Effects will need some internal state of arbitrary data types (buffers, etc.).
+    // To simplify partial evaluation, we'll handle this at a fine granularity, work
+    // with a set of transactional variables or components instead of a single global
+    // handler.
+    type ITransactional = 
+        interface
+
+            /// The 'Try' operation is called to start a hierarchical transaction. This
+            /// will implicitly be child of previously started, unconcluded transaction.
+            abstract member Try : unit -> unit
+
+            // To support a two-phase commit, we call Precommit before Commit. If the
+            // Precommit returns false, we should Abort instead. This is necessary for
+            // interacting with concurrent transaction systems. Low priority.
+            // abstract member Precommit : unit -> bool
+
+            /// The most recently started, unconcluded transaction is concluded by calling
+            /// one of Commit or Abort. If Try has been called many times, each Try must be
+            /// concluded independently and Commit simply adds the child transaction's actions
+            /// to its parent. 
+            abstract member Commit : unit -> unit
+            abstract member Abort : unit -> unit
+        end
+
+
+    type TXVars = ITransactional list
+
+    // this only exists due to limitation on IL that prevents direct
+    // use of for..in loops within a constructor.
+    let private onOpenTX (vars : TXVars) =
+        for v in vars do
+            v.Try()
+
+    // RAII support for transactions, operating on a TXVars collection.
+    // Note: it's best to apply `List.distinct` on TXVars ahead of time.
+    type OpenTX =
+        val private TXVars : TXVars
+        val mutable private Closed : bool
+        new(vars : TXVars) = 
+            onOpenTX vars
+            { TXVars = vars; Closed = false } 
+        member private tx.Close() =
+            if tx.Closed then invalidArg (nameof tx) "already committed or aborted" else
+            tx.Closed <- true
+        member tx.Commit () = 
+            tx.Close()
+            for v in tx.TXVars do
+                v.Commit()
+        member tx.Abort () = 
+            tx.Close()
+            for v in tx.TXVars do
+                v.Abort()
+        interface System.IDisposable with
+            member tx.Dispose() = 
+                if not tx.Closed then 
+                    tx.Abort()
+
+
+    // Partial values moved to another module.
+    type PVal = PartialValue.Val
+    type VarId = PartialValue.VarId
+
+    // VarAccess - abstract memory.
+    // reads and writes may go to different locations.
+    type VarAccess =
+        interface
+            abstract member Get : VarId -> Value
+            abstract member Put : VarId -> Value -> unit
+        end
+
+    // When we partially evaluate the effect, we'll produce a partial value
+    // as output, a specialized effect handler, and a set of variables to 
+    // be protected transactionally, representing external variables that might
+    // be updated. (VarAccess is protected elsewhere.)
+    // 
+    // Note: Read-only variables for an effect don't need to be protected
+    // because we currently aren't supporting concurrent transactions.
+    type FutureEffect =
+        { Output        : PVal                  // favor a contiguous var range 0..K
+        ; Protect       : TXVars                // transaction variables to protect
+        ; Handle        : VarAccess -> bool     // bool returns success/fail.
+        }
+
+    // If an effect will *always* fail, we return ValueNone instead of the
+    // future effect. This simplifies a few optimizations.
+    type CompileEffect = PVal -> FutureEffect voption
+
+
+
+
