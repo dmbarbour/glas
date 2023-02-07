@@ -192,18 +192,18 @@ module Effects =
             | Value.Variant "info" _ -> System.ConsoleColor.Green
             | Value.Variant "warn" _ -> System.ConsoleColor.Yellow
             | Value.Variant "error" _ -> System.ConsoleColor.Red
-            | Value.Variant "prof" _ -> System.ConsoleColor.Magenta
+            | Value.Variant "prof" _ -> System.ConsoleColor.Blue
             | _ -> 
                 // randomly associate color with non-standard level
                 match (hash (lv.Stem)) % 6 with
-                | 0 -> System.ConsoleColor.Cyan
+                | 0 -> System.ConsoleColor.Magenta
                 | 1 -> System.ConsoleColor.DarkGreen
                 | 2 -> System.ConsoleColor.DarkBlue
                 | 3 -> System.ConsoleColor.Blue
                 | 4 -> System.ConsoleColor.DarkCyan
                 | 5 -> System.ConsoleColor.DarkYellow
                 | _ -> System.ConsoleColor.DarkRed
-        | _ -> System.ConsoleColor.Blue
+        | _ -> System.ConsoleColor.Cyan
 
     /// Log Output to Console StdErr (with color!)
     let consoleErrLogOut (vMsg:Value) : unit =
@@ -228,18 +228,13 @@ module Effects =
 
 module Effects2 =
     // I'm thinking about an alternative effects API to support partial-evaluation
-    // of effects. This could reduce runtime overheads related to dataflow, such as
-    // dispatch or allocation and garbage collection. 
-    //
-    // Additionally, I would like to isolate transaction management to a much finer
-    // granularity compared to global ITransactional or IEffHandler. This may require
-    // identifying a precise subset of operations to call to open, commit, or abort
-    // any given set of transactions. Further, would benefit from identifying where
-    // transactions are redundant.
-    //
-    // If effects can be very precisely handled in this manner, a lot of runtime
-    // overhead can be eliminated by a compile-time pass.
-    //
+    // of effects. This can reduce runtime overheads related to routing of effects.
+    // The cost is a significant increase in complexity.
+    // 
+    // Relatedly, transactions can be isolated insofar as we can precisely identify
+    // which effects are in use. Worst case the effect is wholly opaque, in which 
+    // case we'll add everything to the transaction same as a top-level composite of
+    // IEffHandler objects.
 
     // Effects will need some internal state of arbitrary data types (buffers, etc.).
     // To simplify partial evaluation, we'll handle this at a fine granularity, work
@@ -252,20 +247,34 @@ module Effects2 =
             /// will implicitly be child of previously started, unconcluded transaction.
             abstract member Try : unit -> unit
 
-            // To support a two-phase commit, we call Precommit before Commit. If the
-            // Precommit returns false, we should Abort instead. This is necessary for
-            // interacting with concurrent transaction systems. Low priority.
-            // abstract member Precommit : unit -> bool
-
             /// The most recently started, unconcluded transaction is concluded by calling
             /// one of Commit or Abort. If Try has been called many times, each Try must be
-            /// concluded independently and Commit simply adds the child transaction's actions
-            /// to its parent. 
+            /// concluded independently and Commit adds to the parent transaction.
             abstract member Commit : unit -> unit
             abstract member Abort : unit -> unit
         end
 
+    // The simplest transactional variable. No concurrency!
+    // This can be useful to help build effects handlers.
+    // Similar to a Ref<'a> except with ITransactional interface.
+    type TXVar<'a> =
+        val mutable Value  : 'a
+        val mutable private TXHist : 'a list
+        new(ini) = { Value = ini; TXHist = [] }
+        interface ITransactional with
+            member v.Try() =
+                v.TXHist <- v.Value :: v.TXHist
+            member v.Commit() =
+                // keep Value.
+                v.TXHist <- List.tail v.TXHist
+            member v.Abort() =
+                v.Value <- List.head v.TXHist
+                v.TXHist <- List.tail v.TXHist
 
+    let txvar a = 
+        TXVar<_>(a)
+
+    // A set of TXVars or other components with ITransactional interface.
     type TXVars = ITransactional list
 
     // this only exists due to limitation on IL that prevents direct
@@ -298,36 +307,127 @@ module Effects2 =
                 if not tx.Closed then 
                     tx.Abort()
 
-
     // Partial values moved to another module.
-    type PVal = PartialValue.Val
+    type PVal = PartialValue.AbsVal
     type VarId = PartialValue.VarId
 
-    // VarAccess - abstract memory.
-    // reads and writes may go to different locations.
-    type VarAccess =
-        interface
-            abstract member Get : VarId -> Value
-            abstract member Put : VarId -> Value -> unit
+    // Generic variable access. The input and output variables will be
+    // in separate namespaces (i.e. writing does not affect reads).
+    type IVarAccess = 
+        interface 
+            abstract member Read : VarId -> Value
+            abstract member Write : VarId -> Value -> unit
         end
 
     // When we partially evaluate the effect, we'll produce a partial value
-    // as output, a specialized effect handler, and a set of variables to 
-    // be protected transactionally, representing external variables that might
-    // be updated. (VarAccess is protected elsewhere.)
-    // 
+    // as output, a specialized effect handler, and a set of external vars 
+    // to be protected transactionally such as TXVars.
+    //
+    // The handler only has access to virtualized internal memory, so we can
+    // easily protect that via the abstract interface.
+    //
+    // The partial value may specify arbitrary output variables. These will
+    // be mapped to memory with a level of indirection via hashtable. Any
+    // writes to variables not in the PVal will fail. Missing writes have
+    // undefined behavior.
+    //
     // Note: Read-only variables for an effect don't need to be protected
     // because we currently aren't supporting concurrent transactions.
     type FutureEffect =
-        { Output        : PVal                  // favor a contiguous var range 0..K
+        { Output        : PVal                  // partial output (or maybe constant)
         ; Protect       : TXVars                // transaction variables to protect
-        ; Handle        : VarAccess -> bool     // bool returns success/fail.
+        ; Handle        : IVarAccess -> bool     // bool returns success/fail.
         }
 
     // If an effect will *always* fail, we return ValueNone instead of the
-    // future effect. This simplifies a few optimizations.
+    // future effect. This simplifies a few optimizations. Compiling the
+    // effect should be idempotent and cacheable, but may allocate some
+    // extra resources as needed to run the effect in the future. 
     type CompileEffect = PVal -> FutureEffect voption
 
 
 
+    // Local memory access with separate reads and writes.
+    //
+    // Prior to handling effect, fill inputs via SetParam. 
+    // After handling effect, access outputs via GetResult.
+    //
+    // Based on dictionaries to minimize allocations.
+    type LocalMemAccess = 
+        val private RTable : System.Collections.Generic.Dictionary<VarId, Value>
+        val private WTable : System.Collections.Generic.Dictionary<VarId, Value>
+        new() = 
+            { RTable = new System.Collections.Generic.Dictionary<VarId, Value>()
+            ; WTable = new System.Collections.Generic.Dictionary<VarId, Value>()
+            }
+        member m.SetParam ix v =
+            m.RTable[ix] <- v
+        member m.GetResult ix =
+            m.WTable[ix]
+        member m.Reset() =
+            m.RTable.Clear()
+            m.WTable.Clear()
+        interface IVarAccess with
+            member m.Read ix =
+                m.RTable[ix]
+            member m.Write ix v =
+                m.WTable[ix] <- v
 
+    // Prepare to run an effect as a one-off transaction. This version can
+    // support a partial input, with the actual values provided in a later
+    // argument. 
+    let runPartialEffect (eh : CompileEffect) (pv : PVal) : (VarId -> Value) -> Value voption =
+        match eh pv with
+        | ValueNone -> 
+            fun _ -> ValueNone
+        | ValueSome fe ->
+            let rdVars = pv |> PartialValue.listVars |> List.distinct |> List.sort
+            let txVars = List.distinct (fe.Protect)
+            fun fnReadVar ->
+                let va = new LocalMemAccess()
+                for ix in rdVars do
+                    va.SetParam ix (fnReadVar ix)
+                use tx = new OpenTX(txVars)
+                let ok = fe.Handle va
+                if not ok then ValueNone else
+                let vResult = PartialValue.fill (va.GetResult) (fe.Output) 
+                tx.Commit() // commit AFTER fill in case of exception.
+                ValueSome vResult
+
+    // Run effects filtered on a known label such as 'log'. The provided
+    // value is whatever would follow the 'log' label.
+    let runLabeledEffect (eh : CompileEffect) (label : Value) : Value -> Value voption =
+        match eh (PartialValue.labelVar label 0) with
+        | ValueNone -> 
+            fun _ -> ValueNone
+        | ValueSome fe ->
+            let txVars = List.distinct (fe.Protect)
+            fun arg ->
+                let va = new LocalMemAccess()
+                va.SetParam 0 arg
+                use tx = new OpenTX(txVars)
+                let ok = fe.Handle va
+                if not ok then ValueNone else
+                let vResult = PartialValue.fill (va.GetResult) (fe.Output)
+                tx.Commit()
+                ValueSome vResult
+
+    // This compiles the effects with a fully abstract value. 
+    let runEffect eh = 
+        runLabeledEffect eh (Value.unit)
+
+    // This compiles the effects with a constant argument. 
+    let runConstantEffect (eh : CompileEffect) (arg : Value) : unit -> Value voption =
+        match eh (PartialValue.Const arg) with
+        | ValueNone ->
+            fun () -> ValueNone
+        | ValueSome fe ->
+            let txVars = List.distinct (fe.Protect)
+            fun () ->
+                let va = new LocalMemAccess()
+                use tx = new OpenTX(txVars)
+                let ok = fe.Handle va
+                if not ok then ValueNone else
+                let vResult = PartialValue.fill (va.GetResult) (fe.Output)
+                tx.Commit()
+                ValueSome vResult

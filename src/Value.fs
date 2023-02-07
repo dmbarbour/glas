@@ -390,6 +390,23 @@ module Value =
         v0 |> cb 0 |> cb 1 |> cb 2 |> cb 3
            |> cb 4 |> cb 5 |> cb 6 |> cb 7
 
+    let rec private consStemLoop (n : uint64) (nLen : int) (v : Value) : Value = 
+        if(nLen = 0) then v else
+        let b = (n &&& (1UL <<< (64 - nLen))) <> 0UL
+        let v' = consStemBit b v
+        let nLen' = nLen - 1
+        consStemLoop n nLen' v'
+
+    // Prepend 0 to 63 stem bits on a value, encoding length in the 64-bit
+    // integer based on the lowest '1' bit, e.g. `abc1000..0` is a 3 bit stem.
+    let consStemBits (stem : uint64) (v0 : Value) : Value =
+        assert(StemBits.isValid stem)
+        consStemLoop stem (StemBits.len stem) v0
+
+    // Prepend exactly 64 bits from a stem to a value.
+    let consStem64 (stem64 : uint64) (v0 : Value) : Value =
+        consStemLoop stem64 64 v0 
+
     let inline isStem v =
         (not (StemBits.isEmpty v.Stem)) || (VTerm.isStem64 v.Term)
 
@@ -1576,7 +1593,7 @@ module PartialValue =
 
     // The AbsVal type represents an arbitrary abstract value,
     // which may involve zero or more holes.
-    type Val =
+    type AbsVal =
         | Const of Value
         | Partial of PValue
 
@@ -1588,7 +1605,51 @@ module PartialValue =
         | PBranchR (_, pv) -> ptVars acc (pv.PTerm)
         | PBranchLR (pvL, pvR) -> ptVars (ptVars acc pvR.PTerm) pvL.PTerm
 
-    let listVars (v : Val) : VarId list =
-        match v with
+    let listVars (av : AbsVal) : VarId list =
+        match av with
         | Const _ -> []
         | Partial pv -> ptVars [] pv.PTerm 
+
+    let rec private testContiguous ix l =
+        match l with
+        | (v::l') -> (ix = v) && (testContiguous (ix+1) l')
+        | [] -> true
+
+    let isContiguousVars ixStart (l : VarId list) : bool =
+        l |> List.distinct 
+          |> List.sort 
+          |> testContiguous ixStart
+
+    let rec private termLabel (p : Value.Term) (t : PTerm) =
+        match p with
+        | Value.Leaf -> t
+        | Value.Stem64 (stem, p') -> PStem64(stem, termLabel p' t)
+        | _ -> failwith "invalid label"
+
+    let labelVar (p : Value) (v : VarId) : AbsVal =
+        { Stem = p.Stem
+        ; PTerm = termLabel (p.Term) (Var v) 
+        } |> Partial
+
+    let rec fillPV (rd : VarId -> Value) (pv : PValue) : Value =
+        Value.consStemBits (pv.Stem) (fillPT rd pv.PTerm)
+    and fillPT (rd : VarId -> Value) (pt : PTerm) : Value =
+        match pt with
+        | Var v -> rd v
+        | PStem64 (stem64, pt') -> Value.consStem64 stem64 (fillPT rd pt') 
+        | PBranchL (pvL, vR) -> Value.pair (fillPV rd pvL) vR
+        | PBranchR (vL, pvR) -> Value.pair vL (fillPV rd pvR)
+        | PBranchLR (pvL, pvR) -> Value.pair (fillPV rd pvL) (fillPV rd pvR)
+
+    // Fill an abstract value from a given context. The 'rd' method
+    // reads from the context and may raise an exception if the VarId
+    // is not defined.
+    //
+    // Note: fill is not a trivial replacement of vars with values due to
+    // restoring alignment of stem bits. However, it is 
+    // alignment of stem bits. 
+    let fill (rd : VarId -> Value) (av : AbsVal) : Value =
+        match av with
+        | Const v -> v
+        | Partial pv -> fillPV rd pv
+
