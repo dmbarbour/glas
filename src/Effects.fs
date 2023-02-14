@@ -431,3 +431,12 @@ module Effects2 =
                 let vResult = PartialValue.fill (va.GetResult) (fe.Output)
                 tx.Commit()
                 ValueSome vResult
+
+
+    // To support CompileEffects, I'll need the ability to easily 'match'
+    // on partial values. This requires some careful attention, e.g. a 
+    // 'log:(Var 0)' partial value can be a possible match against a 
+    // '(Var 0)' input but not against a 'file:(...)' partial value input.
+    //
+    // I'll perhaps come back to this later.
+

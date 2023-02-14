@@ -1065,6 +1065,12 @@ module Value =
         let concat (ts : seq<Term>) : Term =
             Seq.fold append Leaf ts
 
+        let rec forall (pred : Value -> bool) (t : Term) : bool =
+            match t with
+            | ViewL(struct(v,t')) -> (pred v) && (forall pred t')  
+            | Leaf -> true
+            | _ -> failwith "invalid list"
+
     [<return: Struct>]
     let (|ListT|_|) t =
         match t with
@@ -1572,9 +1578,22 @@ type Rope = Value.Term
 
 
 module PartialValue =
-    // A partial value is a value extended with named holes,
-    // aka variables. This is potentially useful for abstract
-    // interpretation and partial evaluation.  
+    // A partial value is a value extended with variables to reference context.
+    // This is potentially useful for abstract interpretation and partial 
+    // evaluation. 
+    // 
+    // Known Weaknesses:
+    //
+    // This does not handle conditional behavior. It is feasible to represent 
+    // limited conditional behaviors as a pairing of a Var (to specify which
+    // option is in play) followed by a list of partial value options. Might 
+    // need to extend or wrap partial values for this.
+    // 
+    // This does not handle dynamic lists well. Currently, head of list can be
+    // static and partially known, but end of list cannot be. It might be useful
+    // to add a partial term for concatenation so we can view end of list with
+    // some variables in the middle.
+    //
 
     // Variables will be represented by basic integers.
     // These contextually refer to separate or future values.
@@ -1652,4 +1671,21 @@ module PartialValue =
         match av with
         | Const v -> v
         | Partial pv -> fillPV rd pv
+
+    // Extended types to consider:
+    // 
+    // Conditional partial values. A partial value is reached on some conditional
+    // path. We could track conditional paths together with the values.
+
+    // Some useful functions to consider:
+    //
+    // Matching on partial values. We can have one partial value try to
+    // match another, adding some translation between variables. This match
+    // could fail statically or in the future.
+    //
+    // Merging of partial values. Given two partial values (e.g. representing
+    // different data stacks) we could produce a combined partial value and a 
+    // minimal list of variable-to-variable assignments to perform the merge.
+    // This would represent merging the different conditional paths.
+    // 
 

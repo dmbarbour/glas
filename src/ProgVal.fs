@@ -346,3 +346,56 @@ module ProgVal =
         | Arity (a,b) -> Some struct(a,b) 
         | _ -> None
 
+
+    /// Check whether a program is obviously pure. 
+    ///
+    /// A program is obviously pure if it does not contain any 'eff' calls
+    /// or if contained 'eff' calls are captured by pure 'env' handlers.
+    let rec isPure p0 = 
+        match p0 with
+        | Stem lEff U -> false
+        | Dip p -> isPure p
+        | PSeq (List lP) -> Rope.forall isPure lP
+        | Cond (c, a, b) -> (isPure c) && (isPure a) && (isPure b) 
+        | While (c, a) | Until (c, a) -> (isPure c) && (isPure a)
+        | Env (w, p) -> (isPure w) || (isPure p) // unusual case!
+        | Prog (anno, p) -> isPure p
+        | _ -> true
+
+    let rec private stepQuotaLoop p0 sc0 =
+        if(sc0 < 1) then 0 else
+        let sc' = (sc0 - 1)
+        match p0 with
+        | Dip p -> 
+            sc' |> stepQuotaLoop p
+        | PSeq (List lP) -> 
+            sc' |> stepQuotaSeqLoop lP
+        | Cond (c, a, b) ->
+            sc' |> stepQuotaLoop c 
+                |> stepQuotaLoop a
+                |> stepQuotaLoop b
+        | While (c, a) | Until (c, a) ->
+            sc' |> stepQuotaLoop c 
+                |> stepQuotaLoop a
+        | Env (w, p) ->
+            sc' |> stepQuotaLoop w
+                |> stepQuotaLoop p
+        | Prog (anno, p) ->
+            sc' |> stepQuotaLoop p
+        | _ -> sc'
+    and private stepQuotaSeqLoop l sc =
+        if (sc < 1) then 0 else
+        match l with
+        | Rope.ViewL(struct(p,l')) -> 
+            sc |> stepQuotaLoop p 
+               |> stepQuotaSeqLoop l'
+        | _ -> sc
+
+    /// (Heuristic) Check whether a program is 'small', based on number of
+    /// steps and structures involved. This is a measure of program size, 
+    /// not of performance. Worst case performance is proportional to the
+    /// given maxStepCt.
+    let isSmallerThan maxStepCt p =
+        let stepRem = maxStepCt |> stepQuotaLoop p 
+        (stepRem > 0)
+

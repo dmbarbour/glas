@@ -2,240 +2,774 @@ namespace Glas
 
 // TODO Performance Improvements:
 //
-//  A. Recognize pure subprograms; minimize try/commit/abort on effects.
-//  B. Recognize and reuse common subprograms, e.g. at 'prog' boundaries.
-//  C. Eliminate data plumbing on stack. Compile to a register machine.
-//  D. Introduce support for stowage and memoization.
-//  E. Partition stable tuples and records from stack into registers.
-//  F. Partial Evaluation of Effects. Reduce the blind spot of effects.
-//  G. Reduce redundant try/commit/abort for deep structures, i.e. identify
-//     locations where 'abort' or 'commit' can be deferred. 
+// .NET DYNAMIC PROGRAMMING
 //
-// Recognition of pure subprograms can be relatively naive. Just recognize
-// where subprograms don't contain 'eff' operator, or where all effects are
-// captured by a local with-env and the 'env' is pure. Avoiding unnecessary
-// try/commit/abort calls to IEffHandler should greatly improve performance.
+// Instead of compiling a program to continuations or an array of steps, it would
+// be much more efficient to emit a Dynamic Method or Assembly that the CLR knows
+// how to further just-in-time compile for the host machine. 
+//
+// REUSE OF COMMON SUBPROGRAMS
+//
+// Glas programs benefit from a 'compression' pass to identify common subprograms
+// that can be reused. Benefits include reuse of compiler effort and space savings
+// for compiled programs. This might be guided by heuristics and annotations.
+//
+// REDUCE TRANSACTION OVERHEADS
+//
+// Conditional behaviors in cond or loop are often pure, observing only the data
+// stack. We can avoid calling try/commit/abort on the IEffHandler in these cases.
+// If we know ahead of time, we can further limit restore info to the data stack.
+//  
+// REGISTER MACHINE
+//
+// Modeling the data stack as a list simplifies conditional backtracking but has
+// significant overheads in the form of allocation, garbage collection, and data
+// plumbing. I'd like to instead record data into 'registers' or variables that
+// can be precisely saved and restored as needed for transactions. 
+//
+// Relatedly, we can use abstract interpretation or type inference to split static
+// data structures into multiple registers. This enables programs to efficiently 
+// model a more flexible evaluation context.
+//
+// However, optimal register allocation is not trivial. So it may be necessary to
+// handle this as a dedicated compiler pass, producing a new intermediate program
+// representation.
 // 
-// To reuse subprograms, I need to separate client context from compiler 
-// and runtime context. This way, the program can be partially compiled
-// based on global parameters, then further compiled for each context of
-// use, depending on arguments.
+// PARTIAL EVAL OF EFFECTS
 //
-// Register allocation is non-trivial. Might be best to rewrite the program
-// value into a new program model, rather than solve this in a single pass.
-// The rewritten program might also directly represent subprogram reuse and
-// the various accelerated operations.
+// Currently I centralize all effects to one IEffHandler.Eff() call. But this 
+// hinders partial evaluation and precise transactions. What I'd like to do is
+// model the runtime-level effects handler as a special program that uses fine
+// grained operators such as 'eff:file:read' instead of a global 'eff'. The 
+// handler manages routing of effects and results, in a manner more amenable
+// to partial evaluation.
 //
-// Reuse of subprograms in context of register allocation is simplified by 
-// static linking. We only need to track a 'stack' of input and output 
-// registers and a set of registers that are reserved for internal use. And
-// whether a subprogram is 'pure'.
+// STOWAGE AND MEMOIZATION
 //
-// Partitioning of stable records and tuples is feasible, though I might need
-// tuple access to be represented with static labels (via macros). The idea
-// would be to instead represent stack items as having some static structure
-// with multiple registers for their variable elements. 
+// Support for stowage and memoization could reduce rework. It should be feasible
+// to make stowage into a lazy operation, e.g. by extending data with mutable 
+// fields for caching or clearing the value.
 //
-// Fine-grained partial evaluation of effects is the evolution of recognizing
-// pure subprograms, and is feasible if we usually have some static structure
-// in our 'eff' argument and/or result. This ultimately entangles quite a few
-// layers, e.g. we'll need a concept of partial abstract values and registers.
-// Entanglement can be reduced via a translation layer evaluated at compile 
-// time. Basically, each effect input is a value with holes - a lambda - and
-// the returned output may be the same. 
-//
-// Overall, I expect performance can improve by a significant margin, at least
-// for programs that run long enough to take full advantage. 
 
 
 module ProgEval =
     open Value
     open ProgVal
 
-    module FTI =
-        open Effects
+    // If a runtime is forced to halt early for various reasons, it will
+    // raise an exception. Failure is not handled this way, only halt.
+    exception RTError of Value
+    let lUnderflow = Value.symbol "underflow"
+    let lTypeError = Value.symbol "type-error"
+
+    // lighweight continuations for mutable environment
+    type K = unit -> unit
+
+    // lightweight wrapper for lazy continuations.
+    let ofLazyK (lazyK : Lazy<K>) () = 
+        (lazyK.Force()) ()
+
+    module Accel =
+        // support functions for acceleration (independent of runtime)
+
+        let rec bits_negate_term t =
+            match t with
+            | Leaf -> Leaf
+            | Stem64(bits, t') ->
+                Stem64(~~~bits, bits_negate_term t')
+            | _ -> failwith "input is not bits"
         
-        // A simple finally tagless interpreter.
-        //
-        // The benefit of FTI over direct style is that we avoid runtime parsing within loops,
-        // and the resulting eval function is stable and accessible to .NET JIT compiler.
-        //
-        //
-        // However, the current implementation is checking for arity errors and manipulating 
-        // a stack representation at runtime instead of preallocating memory. We currently 
-        // do not optimize the program. Acceleration, memoization, and stowage are not yet 
-        // supported. There is much room for improvement.
-        //
-        // Additionally, I currently do not attempt to share structure within the compiled
-        // program, e.g. by recognizing common subprograms. So, we're doing a lot of rework
-        // here. Cached compilation could help with this.
-        //
-        // I intend to accelerate the list ops and maybe arithmetic ops for bootstrap. I'm still
-        // uncertain how and whether I should check validity of the accelerators. It isn't the
-        // case that the compiler must check this - it could be checked via explicit testing vs.
-        // the non-accelerated implementation.
-        //
+        let bits_negate_stem n =
+            let lb = StemBits.lenbit (StemBits.len n)
+            let ndb = (lb ||| (lb - 1UL))
+            ((~~~n) &&& (~~~ndb)) ||| (n &&& ndb)
 
-        // runtime environment
-        //
-        // This currently represents the data stack directly. Eventually, it might be
-        // eliminated due to moving data into allocated registers. 
-        [<Struct>]
-        type RTE =
-            { DataStack : Value list
-            ; DipStack : Value list
-            ; EffStateStack : Value list
-            ; FailureStack : RTE option     
-            } 
-
-        // For halting on runtime errors of any sort. The value should carry some
-        // extra information about cause.
-        exception RTError of RTE * Value
-
-        let underflow rte = 
-            raise <| RTError(rte, Value.symbol "underflow")
-
-        let type_error rte vType =
-            raise <| RTError(rte, Value.variant "type-error" vType)
-
-        /// current continuation.
-        type CC = RTE -> obj 
-
-        /// simplistic profiling support (mutable state)
-        type ProfChans = System.Collections.Generic.Dictionary<Value, Ref<Stats.S>>
-
-        /// CTE - compile-time environment (excluding primary continuation)
-        [<Struct>]
-        type CTE = 
-            { TX : ITransactional   // top-level transaction interface.
-            ; Prof : ProfChans      // shared profiling channels
-            ; FK : CC
-            ; EH : Op
+        let bits_negate bits =
+            { Stem = bits_negate_stem bits.Stem 
+            ; Term = bits_negate_term bits.Term
             }
-        and Op = CTE -> CC -> CC 
 
-        let copy cte cc rte =
-            match rte.DataStack with
-            | (a::_) as ds -> cc { rte with DataStack = (a::ds) }
-            | _ -> underflow rte
+        let rec bits_reverse_append acc bits =
+            if not (isStem bits) then acc else
+            let acc' = consStemBit (stemHead bits) acc
+            let bits' = stemTail bits
+            bits_reverse_append acc' bits'
 
-        let drop cte cc rte =
-            match rte.DataStack with
-            | (_::ds') -> cc { rte with DataStack = ds' }
-            | _ -> underflow rte
+        let rec bits_len_t acc t =
+            match t with
+            | Stem64 (_, t') -> bits_len_t (64+acc) t'
+            | Leaf -> acc
+            | _ -> failwith "input is not bits"
 
-        let swap cte cc rte =
-            match rte.DataStack with
-            | (a::b::ds') -> cc { rte with DataStack = (b::a::ds') }
-            | _ -> underflow rte
+        let bits_len v =
+            bits_len_t (StemBits.len (v.Stem)) (v.Term)
 
-        let eq cte cc rte =
-            match rte.DataStack with
-            | (a::b::ds') ->
-                if Value.eq a b 
-                    then cc { rte with DataStack = ds' }
-                    else (cte.FK) rte
-            | _ -> underflow rte
 
+        let lAccel = Value.label "accel"
+        let lOpt = Value.label "opt"
+
+        let prefix (s:string) =
+            let utf8_bytes = System.Text.Encoding.UTF8.GetBytes(s)
+            Array.foldBack Value.consStemByte utf8_bytes Value.unit
+
+        [<return: Struct>]
+        let inline (|Prefix|_|) s = 
+            Value.(|Stem|_|) (prefix s)
+
+    // Runtime serves as an active evaluation environment for a program.
+    // At the moment, runtime is separated from the compiled program, so
+    // we can 
+    //
+    // But it is feasible to combine things more tightly, e.g. 
+    // A motive here is to separate the 'logic' of running a program from
+    // the logic of compiling a program, at least partially. I'm interested
+    // 
+    type Runtime =
+        val         private EffHandler  : Effects.IEffHandler
+        val mutable private DeferTry    : int  // for lazy try/commit/abort
+        val mutable private DataStack   : Value list
+        val mutable private EnvStack    : Value list
+        val mutable private DipStack    : Value list
+        val mutable private TXStack     : (struct(Value list * Value list * Value list)) list
+        //val         private Profile     : System.Collections.Generic.Dictionary<Value, Ref<Stats.S>>
+
+        // possibility: we could add a 'pure' TX stack that only holds copies of DataStack.
+        // But the current lazy approach is simple and effective.
+
+        new (ds, io) =
+            { EffHandler = io
+            ; DeferTry = 0
+            ; DataStack = ds
+            ; EnvStack = []
+            ; DipStack = []
+            ; TXStack = []
+            //; Profile = System.Collections.Generic.Dictionary<Value, Ref<Stats.S>>()
+            }
+
+        // halt will also unwind effects.
+        member rt.Halt(msg : Value) : unit =
+            rt.UnwindTX()
+            raise (RTError(msg))
+
+        member private rt.UnwindTX() : unit  =
+            while(not (List.isEmpty rt.TXStack)) do
+                rt.TXAbort()
+
+        member private rt.ActivateTX() : unit =
+            while(rt.DeferTry > 0) do
+                rt.DeferTry <- rt.DeferTry - 1
+                rt.EffHandler.Try()
+
+        member rt.TopLevelEffect() : bool =
+            match rt.DataStack with
+            | (a::ds') ->
+                rt.ActivateTX() // cannot further defer 'Try()' 
+                match rt.EffHandler.Eff(a) with
+                | ValueSome a' ->
+                    rt.DataStack <- (a' :: ds')
+                    true
+                | ValueNone -> false
+            | _ -> rt.Underflow(); false
+
+        member private rt.Underflow() : unit  =
+            rt.Halt(lUnderflow)
         
-        let badLabel rte k =
-            raise <| RTError(rte, Value.variant "invalid-label" k)
+        member private rt.TypeError() : unit  =
+            rt.Halt(lTypeError)
 
-        let get cte cc rte =
-            match rte.DataStack with
-            | (kv::r::ds') ->
-                match kv with
-                | Bits k ->
-                    match record_lookup k r with
-                    | ValueSome v -> cc { rte with DataStack = (v::ds') }
-                    | ValueNone -> (cte.FK) rte
-                | _ -> badLabel rte kv
-            | _ -> underflow rte
+(* might separate profile from rutnime
+        // profiler support
+        // (records times in seconds)
+        member private rt.ProfileReg(chan:Value) : Ref<Stats.S> =
+            match rt.Profile.TryGetValue(chan) with
+            | true, reg -> reg
+            | false, _ ->
+                let reg = ref Stats.s0
+                rt.Profile.Add(chan, reg)
+                reg
 
-        let put cte cc rte =
-            match rte.DataStack with
-            | (kv::r::v::ds') -> 
-                match kv with
-                | Bits k -> cc { rte with DataStack = ((record_insert k v r)::ds') }
-                | _ -> badLabel rte kv
-            | _ -> underflow rte
+        member rt.ViewProfile() : (Value * Stats.S) list =
+            rt.Profile.Keys 
+                |> Seq.map (fun k -> (k, rt.Profile[k].Value))
+                |> List.ofSeq
+*)
 
-        let del cte cc rte =
-            match rte.DataStack with
-            | (kv::r::ds') ->
-                match kv with
-                | Bits k -> cc { rte with DataStack = ((record_delete k r)::ds') }
-                | _ -> badLabel rte kv
-            | _ -> underflow rte
+        // common operations
+        member rt.Copy() =
+            match rt.DataStack with
+            | (a::_) ->
+                rt.DataStack <- a :: (rt.DataStack)
+            | _ -> rt.Underflow()
 
-        let fail cte cc = // rte implicit
-            (cte.FK) 
+        member rt.Drop() =
+            match rt.DataStack with
+            | (_::ds') ->
+                rt.DataStack <- ds'
+            | _ -> rt.Underflow()
 
-        let eff cte cc = // rte implicit
-            (cte.EH) cte cc
+        member rt.Swap() =
+            match rt.DataStack with
+            | (a::b::ds') ->
+                rt.DataStack <- (b::a::ds')
+            | _ -> rt.Underflow()
 
-        let halt msg cte cc rte =
-            raise <| RTError(rte, ProgVal.Halt msg)
+        member rt.DipBegin() =
+            match rt.DataStack with
+            | (a::ds') ->
+                rt.DataStack <- ds'
+                rt.DipStack <- a :: (rt.DipStack)
+            | _ -> rt.Underflow()
+        
+        member rt.DipEnd() =
+            match rt.DipStack with
+            | (a::dipStack') ->
+                rt.DataStack <- a :: (rt.DataStack)
+                rt.DipStack <- dipStack'
+            | _ -> failwith "compiler error: imbalanced dip"
 
-        // We can logically flatten 'dip:P' into the sequence:
-        //   dipBegin P dipEnd
-        // We use the extra runtime dip stack to temporarily store the
-        // top item from the data stack.
-        let dipBegin cte cc rte =
-            match rte.DataStack with
-            | (a::ds') -> 
-                cc { rte with DataStack = ds'; DipStack = (a::(rte.DipStack)) }
-            | _ -> underflow rte
+        member rt.EnvPush() =
+            match rt.DataStack with
+            | (a::ds') ->
+                rt.DataStack <- ds'
+                rt.EnvStack <- a :: (rt.EnvStack)
+            | _ -> rt.Underflow()
+        
+        member rt.EnvPop() =
+            match rt.EnvStack with
+            | (a::es') ->
+                rt.EnvStack <- es'
+                rt.DataStack <- a :: (rt.DataStack)
+            | _ -> failwith "compiler error: imbalanced eff/env"
 
-        let dipEnd _ cc rte =
-            match rte.DipStack with
-            | (a::dip') ->
-                cc { rte with DataStack = (a::(rte.DataStack)); DipStack = dip' }
-            | _ -> 
-                // this should be unreachable
-                failwith "(internal compile error) imbalanced dip stack"
+        member rt.Data(v : Value) =
+            rt.DataStack <- v :: (rt.DataStack)
 
-        let dip (opDip : Op) cte cc0 =
-            dipBegin cte (opDip cte (dipEnd cte cc0))
+        member rt.ViewDataStack() : Value list =
+            rt.DataStack
 
-        let data (v:Value) cte cc rte =
-            cc { rte with DataStack = (v::(rte.DataStack)) }
+        member rt.TXBegin() =
+            // defer 'Try()' as much as feasible.
+            rt.DeferTry <- rt.DeferTry + 1
+            rt.TXStack <- struct(rt.DataStack, rt.EnvStack, rt.DipStack) :: rt.TXStack
+        
+        member rt.TXAbort() =
+            match rt.TXStack with
+            | struct(dataS,envS,dipS)::txS' -> 
+                rt.DataStack <- dataS
+                rt.EnvStack <- envS
+                rt.DipStack <- dipS
+                rt.TXStack <- txS'
+                if (rt.DeferTry > 0) 
+                    then rt.DeferTry <- rt.DeferTry - 1
+                    else rt.EffHandler.Abort()
+            | _ -> failwith "compiler error: imbalanced transaction (abort)"
+        
+        member rt.TXCommit() =
+            match rt.TXStack with
+            | (_::txS') ->
+                rt.TXStack <- txS'
+                if(rt.DeferTry > 0)
+                    then rt.DeferTry <- rt.DeferTry - 1
+                    else rt.EffHandler.Commit()
+            | _ -> failwith "compiler error: imbalanced transaction (commit)"
 
-        // for conditional behaviors, we modify the failure handler within
-        // the 'try' block. We also use the FailureStack to keep a snapshot
-        // of the runtime environment to support backtracking.
-        //
-        // Finally, we'll use Try/Commit/Abort on the toplevel transactions
-        // to support transactional effects. 
+        member rt.EqDrop() : bool =
+            match rt.DataStack with
+            | (a::b::ds') ->
+                if (a = b) then
+                    rt.DataStack <- ds'
+                    true
+                else false
+            | _ -> rt.Underflow(); false
 
-        let abortTX cte cc rte =
-            match rte.FailureStack with
-            | Some rte' ->
-                cte.TX.Abort()
-                cc rte'
-            | None -> 
-                // should be unreachable
-                failwith "(internal compile error) imbalanced transaction"
+        member rt.TryGet() : bool =
+            match rt.DataStack with
+            | ((Bits k)::r::ds') ->
+                match Value.record_lookup k r with
+                | ValueSome v -> 
+                    rt.DataStack <- (v :: ds')
+                    true
+                | ValueNone -> false
+            | (_::_::_) -> rt.TypeError(); false
+            | _ -> rt.Underflow(); false
+        
+        member rt.Put() =
+            match rt.DataStack with
+            | ((Bits k)::r::v::ds') -> 
+                rt.DataStack <- (Value.record_insert k v r)::ds'
+            | (_::_::_::_) -> rt.TypeError()
+            | _ -> rt.Underflow()
 
-        let commitTX cte cc rte =
-            match rte.FailureStack with
-            | Some priorTX ->
-                cte.TX.Commit()
-                cc { rte with FailureStack = priorTX.FailureStack }
-            | None ->
-                // should be unreachable 
-                failwith "(internal compile error) imbalanced transaction"
+        member rt.Del() =
+            match rt.DataStack with
+            | ((Bits k)::r::ds') ->
+                rt.DataStack <- (Value.record_delete k r)::ds'
+            | (_::_::_) -> rt.TypeError()
+            | _ -> rt.Underflow()
 
-        let beginTX cte cc rte =
-            cte.TX.Try()
-            cc { rte with FailureStack = Some rte }
-                
+        // 'fail', 'cond', 'loop', and 'prog' are compiler continuation magic.
+
+        // Accelerated operations!
+        member rt.AccelBitsNegate() =
+            match rt.DataStack with
+            | ((Bits b)::ds') ->
+                rt.DataStack <- (Accel.bits_negate b)::ds'
+            | (_::_) -> rt.TypeError()
+            | _ -> rt.Underflow() 
+
+        member rt.AccelBitsReverseAppend() =
+            match rt.DataStack with
+            | ((Bits b)::(Bits acc)::ds') ->
+                rt.DataStack <- (Accel.bits_reverse_append acc b)::ds'
+            | (_::_::_) -> rt.TypeError()
+            | _ -> rt.Underflow()
+
+        member rt.AccelBitsVerify() : bool =
+            match rt.DataStack with
+            | (v::ds') -> (Value.isBits v)
+            | _ -> rt.Underflow(); false
+        
+        // true - ok; false - inputs or result are not small nats
+        member rt.AccelSmallNatAdd() : bool =
+            match rt.DataStack with
+            | ((Nat64 n)::(Nat64 m)::ds') when ((System.UInt64.MaxValue - n) >= m) ->
+                rt.DataStack <- (Value.ofNat (m+n))::ds'
+                true
+            | (_::_::_) -> false
+            | _ -> rt.Underflow(); false
+
+        // three cases here:
+        //   ValueSome true - successful subtraction
+        //   ValueSome false - failed; result would be negative 
+        //   ValueNone - inputs are not small nats
+        member rt.AccelSmallNatSub() : bool voption =
+            match rt.DataStack with
+            | ((Nat64 n)::(Nat64 m)::ds') ->
+                if (m >= n) then
+                    rt.DataStack <- (Value.ofNat (m - n))::ds'
+                    ValueSome true
+                else
+                    ValueSome false
+            | (_::_::_) -> ValueNone
+            | _ -> rt.Underflow(); ValueNone
+
+        // true - success; false - inputs or result are not small nats
+        member rt.AccelSmallNatMul() : bool =
+            match rt.DataStack with
+            | ((Nat64 n)::(Nat64 m)::ds') ->
+                try
+                    let prod = Microsoft.FSharp.Core.Operators.Checked.(*) n m
+                    rt.DataStack <- (Value.ofNat prod)::ds'
+                    true
+                with 
+                | :? System.OverflowException -> false
+            | (_::_::_) -> false
+            | _ -> rt.Underflow(); false
+
+        //   vsome true - success
+        //   vsome false - div by zero
+        //   vnone - inputs are not small nats
+        member rt.AccelSmallNatDivMod() : bool voption =
+            match rt.DataStack with
+            | ((Nat64 divisor)::(Nat64 dividend)::ds') ->
+                if(0UL = divisor) then ValueSome false else
+                // (note) just leaving div-by-zero behavior to original source
+                let struct(quot,rem) = System.Math.DivRem(dividend,divisor)
+                rt.DataStack <- (Value.ofNat rem)::(Value.ofNat quot)::ds'
+                ValueSome true
+            | (_::_::_) -> ValueNone
+            | _ -> rt.Underflow(); ValueNone
+
+        // vnone - inputs are not small nats; vsome (result) otherwise 
+        member rt.AccelSmallNatGT() : bool voption =
+            match rt.DataStack with
+            | ((Nat64 n)::(Nat64 m)::ds') ->
+                ValueSome (m > n)
+            | (_::_::_) -> ValueNone
+            | _ -> rt.Underflow(); ValueNone
+
+        // vnone - inputs are not small nats; vsome (result) otherwise 
+        member rt.AccelSmallNatGTE() : bool voption =
+            match rt.DataStack with
+            | ((Nat64 n)::(Nat64 m)::ds') ->
+                ValueSome (m >= n)
+            | (_::_::_) -> ValueNone
+            | _ -> rt.Underflow(); ValueNone
+
+        member rt.AccelSmallIntIncrement() : bool =
+            match rt.DataStack with
+            | ((Int64 n)::ds') when (n < System.Int64.MaxValue) ->
+                rt.DataStack <- (Value.ofInt (n + 1L))::ds'
+                true
+            | (_::_) -> false
+            | _ -> rt.Underflow(); false
+        
+        member rt.AccelSmallIntDecrement() : bool =
+            match rt.DataStack with
+            | ((Int64 n)::ds') when (n > System.Int64.MinValue) ->
+                rt.DataStack <- (Value.ofInt (n - 1L))::ds'
+                true
+            | (_::_) -> false
+            | _ -> rt.Underflow(); false
+
+        // true - ok; false - argument or results aren't small ints
+        member rt.AccelSmallIntAdd() : bool =
+            match rt.DataStack with
+            | ((Int64 n)::(Int64 m)::ds') ->
+                try 
+                    let sum = Microsoft.FSharp.Core.Operators.Checked.(+) m n
+                    rt.DataStack <- (Value.ofInt sum)::ds'
+                    true
+                with
+                | :? System.OverflowException -> false
+            | (_::_::_) -> false
+            | _ -> rt.Underflow(); false
+
+        member rt.AccelSmallIntMul() : bool =
+            match rt.DataStack with
+            | ((Int64 n)::(Int64 m)::ds') ->
+                try
+                    let prod = Microsoft.FSharp.Core.Operators.Checked.(*) m n
+                    rt.DataStack <- (Value.ofInt prod)::ds'
+                    true
+                with 
+                | :? System.OverflowException -> false
+            | (_::_::_) -> false
+            | _ -> rt.Underflow(); false
+
+        member rt.AccelSmallIntGT() : bool voption =
+            match rt.DataStack with
+            | ((Int64 n)::(Int64 m)::ds') ->
+                if (m > n) 
+                    then ValueSome true 
+                    else ValueSome false
+            | (_::_::_) -> ValueNone
+            | _ -> rt.Underflow(); ValueNone
+
+        member rt.AccelSmallIntGTE() : bool voption =
+            match rt.DataStack with
+            | ((Int64 n)::(Int64 m)::ds') ->
+                if (m >= n) 
+                    then ValueSome true 
+                    else ValueSome false
+            | (_::_::_) -> ValueNone
+            | _ -> rt.Underflow(); ValueNone
+
+        member rt.AccelListVerify() : bool =
+            match rt.DataStack with
+            | ((List t)::ds') -> 
+                rt.DataStack <- (Value.ofTerm t)::ds'
+                true
+            | (_::_) -> false
+            | _ -> rt.Underflow(); false
+        
+        member rt.AccelListLength() =
+            match rt.DataStack with
+            | ((List t)::ds') ->
+                let nLen = Value.Rope.len t
+                rt.DataStack <- (Value.ofNat nLen)::ds'
+            | (_::_) -> rt.TypeError()
+            | _ -> rt.Underflow()
+
+        member rt.AccelListAppend() =
+            match rt.DataStack with
+            | ((List r)::(List l)::ds') ->
+                let result = Rope.append l r
+                rt.DataStack <- (Value.ofTerm result)::ds'
+            | (_::_::_) -> rt.TypeError()
+            | _ -> rt.Underflow()
+
+        // true - ok; false - index too large
+        member rt.AccelListTake() : bool =
+            match rt.DataStack with
+            | ((Nat64 n)::(List t)::ds') ->
+                if (n > (Rope.len t)) then false else
+                let result = Rope.take n t
+                rt.DataStack <- (Value.ofTerm result)::ds'
+                true
+            | (_::_::_) -> rt.TypeError(); false
+            | _ -> rt.Underflow(); false
+
+        // true - ok; false - index too large
+        // assumes we'll never have lists larger than 2**64 - 1 items
+        member rt.AccelListSkip() : bool =
+            match rt.DataStack with
+            | ((Nat64 n)::(List t)::ds') ->
+                if (n > (Rope.len t)) then false else
+                let result = Rope.drop n t
+                rt.DataStack <- (Value.ofTerm result)::ds'
+                true
+            | (_::_::_) -> rt.TypeError(); false
+            | _ -> rt.Underflow(); false
+
+        // true - ok; false - index too large
+        // assumes we'll never have lists larger than 2**64 - 1 items
+        member rt.AccelListItem() : bool =
+            match rt.DataStack with
+            | ((Nat64 ix)::(List t)::ds') ->
+                if (ix >= (Rope.len t)) then false else
+                let result = Rope.item ix t
+                rt.DataStack <- result :: ds'
+                true
+            | (_::_::_) -> rt.TypeError(); false
+            | _ -> rt.Underflow(); false
+
+        member rt.AccelListPushl() =
+            match rt.DataStack with
+            | ((List l)::v::ds') ->
+                let result = Rope.cons v l
+                rt.DataStack <- (Value.ofTerm result)::ds'
+            | (_::_::_) -> rt.TypeError()
+            | _ -> rt.Underflow()
+
+        member rt.AccelListPushr() =
+            match rt.DataStack with
+            | (v::(List l)::ds') ->
+                let result = Rope.snoc l v 
+                rt.DataStack <- (Value.ofTerm result)::ds'
+            | (_::_::_) -> rt.TypeError()
+            | _ -> rt.Underflow()
+        
+        member rt.AccelListPopl() : bool =
+            match rt.DataStack with
+            | ((List l)::ds') ->
+                match l with
+                | Rope.ViewL(struct(v, l')) ->
+                    rt.DataStack <- ((Value.ofTerm l') :: v :: ds')
+                    true
+                | Leaf -> false
+                | _ -> rt.TypeError(); false
+            | (_::_) -> rt.TypeError(); false
+            | _ -> rt.Underflow(); false
+        
+        member rt.AccelListPopr() : bool =
+            match rt.DataStack with
+            | ((List l)::ds') ->
+                match l with
+                | Rope.ViewR(struct(l', v)) ->
+                    rt.DataStack <- (v :: (Value.ofTerm l') :: ds')
+                    true
+                | Leaf -> false
+                | _ -> rt.TypeError(); false
+            | (_::_) -> rt.TypeError(); false
+            | _ -> rt.Underflow(); false
+
+    let rec rtErrMsg (rt : Runtime) (msg : Value) =
+        let ds = rt.ViewDataStack() |> Value.ofList
+        Value.variant "rte" <| Value.asRecord ["data";"event"] [ds; msg]
+
+
+    module Interpreter =
+
+        // A relatively simple evaluator to get started.
+        // - returns true/false for success/failure. 
+        // - provides stack of env handlers directly.
+        let rec interpret (rt : Runtime) (env : Program list) (p0 : Program) : bool =
+            // order matters in this case, due to interpreter trying each case.
+            match p0 with
+            | PSeq (List lP) -> 
+                interpretSeq rt env lP
+            | Data v -> rt.Data(v); true
+            | Cond (c, a, b) -> 
+                rt.TXBegin()
+                let bCond = interpret rt env c
+                if bCond then
+                    rt.TXCommit()
+                    interpret rt env a
+                else
+                    rt.TXAbort()
+                    interpret rt env b
+            | Dip p ->
+                rt.DipBegin()
+                let bOK = interpret rt env p
+                rt.DipEnd()
+                bOK 
+            | Stem lCopy U -> rt.Copy(); true
+            | Stem lSwap U -> rt.Swap(); true
+            | Stem lDrop U -> rt.Drop(); true
+            | Stem lEq U -> rt.EqDrop()
+            | Stem lGet U -> rt.TryGet()
+            | Stem lPut U -> rt.Put(); true
+            | Stem lDel U -> rt.Del(); true
+            | Prog (anno, p) ->
+                // Acceleration is supported, but not profiling.
+                match Value.record_lookup (Accel.lAccel) anno with
+                | ValueSome vAccel ->
+                    match vAccel with
+                    | Stem (Accel.lOpt) vAccel' ->
+                        interpretAccel rt env true vAccel' p
+                    | _ ->
+                        interpretAccel rt env false vAccel p
+                | ValueNone -> interpret rt env p
+            | While (c, a) -> 
+                let mutable bOK = true
+                rt.TXBegin()
+                while(bOK && (interpret rt env c)) do
+                    rt.TXCommit()
+                    bOK <- interpret rt env a
+                    rt.TXBegin()
+                rt.TXAbort()
+                bOK
+            | Until (c, a) ->
+                let mutable bOK = true
+                rt.TXBegin()
+                while(bOK && not (interpret rt env c)) do
+                    rt.TXAbort()
+                    bOK <- interpret rt env a
+                    rt.TXBegin()
+                rt.TXCommit()
+                bOK
+            | Stem lEff U -> 
+                match env with
+                | (h::env') ->
+                    rt.EnvPop()
+                    let bOK = interpret rt env' h
+                    rt.EnvPush()
+                    bOK
+                | [] ->
+                    rt.TopLevelEffect()
+            | Env (w, p) -> 
+                rt.EnvPush()
+                let bOK = interpret rt (w::env) p
+                rt.EnvPop()
+                bOK
+            | Stem lFail U ->
+                false 
+            | Stem lHalt eMsg -> 
+                rt.Halt(eMsg) 
+                false
+            | _ -> rt.Halt(lTypeError); false
+        and interpretSeq rt env l =
+            match l with
+            | Rope.ViewL(op, l') ->
+                let bOK = interpret rt env op
+                if not bOK then false else
+                interpretSeq rt env l'
+            | Leaf -> true
+            | _ -> rt.Halt(lTypeError); false
+        and interpretAccel rt env bOpt vModel p =
+            let inline accelFail () =
+                if bOpt then interpret rt env p else
+                rt.Halt(Value.variant "accel" vModel); false
+            match vModel with
+            | Accel.Prefix "list-" vSuffix ->
+                match vSuffix with
+                | Value.Variant "pushl" U -> 
+                    rt.AccelListPushl(); true
+                | Value.Variant "pushr" U ->
+                    rt.AccelListPushr(); true
+                | Value.Variant "popl" U ->
+                    rt.AccelListPopl()
+                | Value.Variant "popr" U -> 
+                    rt.AccelListPopr()
+                | Value.Variant "append" U -> 
+                    rt.AccelListAppend(); true
+                | Value.Variant "verify" U -> 
+                    rt.AccelListVerify()
+                | Value.Variant "length" U -> 
+                    rt.AccelListLength(); true
+                | Value.Variant "take" U -> 
+                    rt.AccelListTake()
+                | Value.Variant "skip" U -> 
+                    rt.AccelListSkip()
+                | Value.Variant "item" U -> 
+                    rt.AccelListItem()
+                | _ -> accelFail ()
+            | Accel.Prefix "bits-" vSuffix ->
+                match vSuffix with
+                | Value.Variant "verify" U -> 
+                    rt.AccelBitsVerify()
+                | Value.Variant "negate" U -> 
+                    rt.AccelBitsNegate(); true
+                | Value.Variant "reverse-append" U -> 
+                    rt.AccelBitsReverseAppend(); true
+                //| Value.Variant "length" U -> accelFail ()
+                | _ -> accelFail ()
+            | Accel.Prefix "int-" vSuffix ->
+                match vSuffix with
+                | Value.Variant "add" U ->
+                    // might fail for large integers or results
+                    match rt.AccelSmallIntAdd() with
+                    | true -> true
+                    | false -> interpret rt env p
+                | Value.Variant "mul" U ->
+                    match rt.AccelSmallIntMul() with
+                    | true -> true
+                    | false -> interpret rt env p
+                //| Value.Variant "sub" U -> accelFail ()
+                //| Value.Variant "divmod" U -> accelFail ()
+                | Value.Variant "increment" U -> 
+                    match rt.AccelSmallIntIncrement() with
+                    | true -> true
+                    | false -> interpret rt env p
+                | Value.Variant "decrement" U -> 
+                    match rt.AccelSmallIntDecrement() with
+                    | true -> true
+                    | false -> interpret rt env p
+                | Value.Variant "gt" U -> 
+                    match rt.AccelSmallIntGT() with
+                    | ValueSome b -> b
+                    | ValueNone -> interpret rt env p
+                | Value.Variant "gte" U -> 
+                    match rt.AccelSmallIntGTE() with
+                    | ValueSome b -> b
+                    | ValueNone -> interpret rt env p
+                | _ -> accelFail ()
+            | Accel.Prefix "nat-" vSuffix ->
+                match vSuffix with 
+                | Value.Variant "add" U -> 
+                    match rt.AccelSmallNatAdd() with
+                    | true -> true
+                    | false -> interpret rt env p
+                | Value.Variant "sub" U -> 
+                    match rt.AccelSmallNatSub() with
+                    | ValueSome b -> b
+                    | ValueNone -> interpret rt env p
+                | Value.Variant "mul" U -> 
+                    match rt.AccelSmallNatMul() with
+                    | true -> true
+                    | false -> interpret rt env p
+                | Value.Variant "divmod" U ->
+                    match rt.AccelSmallNatDivMod() with
+                    | ValueSome b -> b
+                    | ValueNone -> interpret rt env p 
+                | Value.Variant "gt" U -> 
+                    match rt.AccelSmallNatGT() with
+                    | ValueSome b -> b
+                    | ValueNone -> interpret rt env p 
+                | Value.Variant "gte" U -> 
+                    match rt.AccelSmallNatGTE() with
+                    | ValueSome b -> b
+                    | ValueNone -> interpret rt env p 
+                | _ -> accelFail ()
+            | _ -> accelFail ()
+
+        let eval p io args =
+            let rt = new Runtime(args, io)
+            try 
+                let bSuccess = interpret rt [] p 
+                if not bSuccess then None else 
+                Some (rt.ViewDataStack())
+            with
+            | RTError(eMsg) -> 
+                Effects.logErrorV io "runtime error" (rtErrMsg rt eMsg)
+                None
+
+    (*
+    module FTI =
+        
+
+
         let cond (opTry:Op) (opThenLazy:Lazy<Op>) (opElseLazy:Lazy<Op>) cte cc =
-            let ccCondThenLazy = lazy (commitTX cte ((opThenLazy.Force()) cte cc))
-            let ccCondElseLazy = lazy (abortTX  cte ((opElseLazy.Force()) cte cc))
-            let ccCondThen rte = (ccCondThenLazy.Force()) rte
-            let ccCondElse rte = (ccCondElseLazy.Force()) rte
-            beginTX cte (opTry { cte with FK = ccCondElse } ccCondThen)
+            // add some laziness so we don't compile branches not taken
+            let tx = cte.TX
+            let reg = ref rteEmpty
+            let onThenLazy = lazy (commitTX tx reg ((opThenLazy.Force()) cte cc))
+            let onElseLazy = lazy (abortTX tx reg ((opElseLazy.Force()) cte cc))
+            let onThen rte = (onThenLazy.Force()) rte
+            let onElse rte = (onElseLazy.Force()) rte
+            let ccTry = { cc with OnOK = onThen; OnFail = onElse }
+            beginTX tx reg (opTry cte ccTry)
 
         // Note for potential future headaches reduction:
         // 
@@ -245,40 +779,28 @@ module ProgEval =
         // working as expected. I eventually solved by adding <Tailcalls>True</Tailcalls>
         // to the property group in the fsproj.
         let loopWhile (opWhile:Op) (opDoLazy:Lazy<Op>) cte cc0 =
-            let cycleRef = ref cc0
-            let ccWhileRepeat rte = (cycleRef.Value) rte
-            let ccWhileDoLazy = lazy (commitTX cte ((opDoLazy.Force()) cte ccWhileRepeat))
-            let ccWhileDo rte = (ccWhileDoLazy.Force()) rte
-            let ccWhileHalt = abortTX cte cc0
-            let ccWhileLoop = beginTX cte (opWhile { cte with FK = ccWhileHalt } ccWhileDo)
-            cycleRef.Value <- ccWhileLoop // close the loop
-            ccWhileLoop
+            let tx = cte.TX
+            let reg = ref rteEmpty
+            let cycleRef = ref (cc0.OnOK) // temp value
+            let onRepeat rte = cycleRef.Value rte
+            let onDoLazy = lazy(commitTX tx reg ((opDoLazy.Force()) cte { cc0 with OnOK = onRepeat }))
+            let onDo rte = (onDoLazy.Force()) rte
+            let onHalt = abortTX tx reg (cc0.OnOK)
+            let onWhile = beginTX tx reg (opWhile cte { cc0 with OnOK = onDo; OnFail = onHalt })
+            cycleRef.Value <- onWhile
+            cycleRef.Value
 
         let loopUntil (opUntil:Op) (opDoLazy:Lazy<Op>) cte cc0 =
-            let cycleRef = ref cc0
-            let ccUntilRepeat rte = (cycleRef.Value) rte
-            let ccUntilDoLazy = lazy (abortTX cte ((opDoLazy.Force()) cte ccUntilRepeat))
-            let ccUntilDo rte = (ccUntilDoLazy.Force()) rte
-            let ccUntilHalt = commitTX cte cc0
-            let ccUntilLoop = beginTX cte (opUntil { cte with FK = ccUntilDo } ccUntilHalt)
-            cycleRef.Value <- ccUntilLoop // close the loop
-            ccUntilLoop
-
-        // special operator to retrieve data from the eff-state stack.
-        let effStatePop cte cc rte =
-            match rte.EffStateStack with
-            | (a::es') ->
-                cc { rte with DataStack = (a::(rte.DataStack)); EffStateStack = es' }
-            | _ -> 
-                // should be unreachable
-                failwith "(internal compile error) imbalanced effects handler stack"
-        
-        // special operator to push data to the eff-state stack.
-        let effStatePush cte cc rte =
-            match rte.DataStack with
-            | (a::ds') ->
-                cc { rte with DataStack = ds'; EffStateStack = (a::(rte.EffStateStack)) }
-            | _ -> underflow rte
+            let tx = cte.TX
+            let reg = ref rteEmpty
+            let cycleRef = ref (cc0.OnOK) // temp value
+            let onRepeat rte = cycleRef.Value rte
+            let onDoLazy = lazy(abortTX tx reg ((opDoLazy.Force()) cte { cc0 with OnOK = onRepeat }))
+            let onDo rte = (onDoLazy.Force()) rte
+            let onHalt = commitTX tx reg (cc0.OnOK)
+            let onUntil = beginTX tx reg (opWhile cte { cc0 with OnOK = onHalt; OnFail = onDo })
+            cycleRef.Value <- onUntil
+            cycleRef.Value
 
         let env (opWith:Op) (opDo:Op) cte0 cc0 =
             let eh0 = cte0.EH // restore parent effect in context of opWith
@@ -308,12 +830,6 @@ module ProgEval =
                 | Record ["chan"] ([ValueSome vChan],_) -> vChan
                 | _ -> Value.symbol "anon"
             let chan =
-                match cte.Prof.TryGetValue(vChan) with
-                | true, refStats -> refStats
-                | _ -> 
-                    let refStats = ref Stats.s0
-                    cte.Prof.Add(vChan, refStats)
-                    refStats
             let inline addEvent f =
                 chan.Value <- Stats.add (chan.Value) f
             let sw = new System.Diagnostics.Stopwatch() 
@@ -328,312 +844,19 @@ module ProgEval =
                 ccProfiledOp rte
             ccEnter
 
-        module Accel =
-
-            // List accelerators are the most important for bootstrap.
-            // However, a few arithmetic accelerators are also useful.
-
-            let rec bits_negate_term t =
-                match t with
-                | Leaf -> Leaf
-                | Stem64(bits, t') ->
-                    Stem64(~~~bits, bits_negate_term t')
-                | _ -> failwith "input is not bits"
-            
-            let bits_negate_stem n =
-                let lb = StemBits.lenbit (StemBits.len n)
-                let ndb = (lb ||| (lb - 1UL))
-                ((~~~n) &&& (~~~ndb)) ||| (n &&& ndb)
-
-            let bits_negate bits =
-                { Stem = bits_negate_stem bits.Stem 
-                ; Term = bits_negate_term bits.Term
-                }
-
-            let accel_bits_negate cte cc rte =
-                match rte.DataStack with
-                | ((Bits b)::ds') ->
-                    let b' = bits_negate b
-                    cc { rte with DataStack = ((ofBits b')::ds') }
-                | (_::_) -> type_error rte (Value.symbol "bits")
-                | _ -> underflow rte
-
-            let rec bits_reverse_append acc bits =
-                if not (isStem bits) then acc else
-                let acc' = consStemBit (stemHead bits) acc
-                let bits' = stemTail bits
-                bits_reverse_append acc' bits'
-
-            let accel_bits_reverse_append cte cc rte =
-                match rte.DataStack with
-                | ((Bits bits)::(Bits acc)::ds') -> 
-                    let result = bits_reverse_append acc bits
-                    cc { rte with DataStack = ((ofBits result)::ds') }
-                | (_::_::_) -> type_error rte (Value.symbol "bits")
-                | _ -> underflow rte
-            
-            let accel_bits_verify cte cc rte =
-                match rte.DataStack with
-                | (v::ds') -> if isBits v then cc rte else cte.FK rte
-                | _ -> underflow rte
-
-            let accel_nat_add (lzOp : Lazy<Op>) cte cc rte =
-                match rte.DataStack with
-                |  ((Nat64 n)::(Nat64 m)::ds') when ((System.UInt64.MaxValue - n) >= m) ->
-                    cc { rte with DataStack = ((Value.ofNat (m + n))::ds') }
-                | _ -> lzOp.Force() cte cc rte
-
-            let accel_nat_sub (lzOp : Lazy<Op>) cte cc rte =
-                match rte.DataStack with
-                | ((Nat64 n)::(Nat64 m)::ds') ->
-                    if (n > m) then cte.FK rte else
-                    cc { rte with DataStack = ((Value.ofNat (m - n))::ds') }
-                | _ -> lzOp.Force() cte cc rte
-
-            let accel_nat_mul (lzOp : Lazy<Op>) cte cc rte =
-                match rte.DataStack with
-                | ((Nat64 n)::(Nat64 m)::ds') ->
-                    try 
-                        let prod = Microsoft.FSharp.Core.Operators.Checked.(*) n m
-                        //printfn "accel_nat_mul %d*%d=%d" m n prod
-                        cc { rte with DataStack = ((Value.ofNat prod)::ds') }
-                    with
-                    | :? System.OverflowException ->
-                        lzOp.Force() cte cc rte
-                | _ -> lzOp.Force() cte cc rte
-
-            let accel_nat_divmod (lzOp : Lazy<Op>) cte cc rte =
-                match rte.DataStack with
-                | ((Nat64 divisor)::(Nat64 dividend)::ds') ->
-                    if (0UL = divisor) then cte.FK rte else
-                    let struct(quot,rem) = System.Math.DivRem(dividend,divisor)
-                    // printfn "accel_nat_divmod %d %d => %d %d" dividend divisor quot rem
-                    let dsResult = (Value.ofNat rem)::(Value.ofNat quot)::ds'
-                    cc { rte with DataStack = dsResult }
-                | _ -> lzOp.Force() cte cc rte
-
-            let accel_nat_gt (lzOp : Lazy<Op>) cte cc rte =
-                match rte.DataStack with
-                | ((Nat64 n)::(Nat64 m)::ds') ->
-                    if (m > n) then cc rte else cte.FK rte
-                | _ -> lzOp.Force() cte cc rte
-
-            let accel_nat_gte (lzOp : Lazy<Op>) cte cc rte =
-                match rte.DataStack with
-                | ((Nat64 n)::(Nat64 m)::ds') ->
-                    if (m >= n) then cc rte else cte.FK rte
-                | _ -> lzOp.Force() cte cc rte 
-
-            let accel_int_increment (lzOp : Lazy<Op>) cte cc rte =
-                match rte.DataStack with
-                | ((Int64 n)::ds') when (n <> System.Int64.MaxValue) ->
-                    cc { rte with DataStack = ((Value.ofInt (n + 1L))::ds') }
-                | _ -> lzOp.Force() cte cc rte
-
-            let accel_int_decrement (lzOp : Lazy<Op>) cte cc rte =
-                match rte.DataStack with
-                | ((Int64 n)::ds') when (n <> System.Int64.MinValue) ->
-                    cc { rte with DataStack = ((Value.ofInt (n - 1L))::ds') }
-                | _ -> lzOp.Force() cte cc rte
-            
-            let accel_int_add (lzOp : Lazy<Op>) cte cc rte =
-                match rte.DataStack with
-                | ((Int64 n)::(Int64 m)::ds') ->
-                    try 
-                        let sum = Microsoft.FSharp.Core.Operators.Checked.(+) m n
-                        cc { rte with DataStack = ((Value.ofInt sum)::ds') }
-                    with
-                    | :? System.OverflowException ->
-                        lzOp.Force() cte cc rte
-                | _ ->
-                    lzOp.Force() cte cc rte
-
-            let accel_int_mul (lzOp : Lazy<Op>) cte cc rte =
-                match rte.DataStack with
-                | ((Int64 n)::(Int64 m)::ds') ->
-                    try
-                        let prod = Microsoft.FSharp.Core.Operators.Checked.(*) m n
-                        cc { rte with DataStack = ((Value.ofInt prod)::ds') }
-                    with 
-                    | :? System.OverflowException ->
-                        lzOp.Force() cte cc rte
-                | _ -> 
-                    lzOp.Force() cte cc rte
-
-            let accel_int_gt (lzOp : Lazy<Op>) cte cc rte =
-                match rte.DataStack with
-                | ((Int64 n)::(Int64 m)::ds') ->
-                    if (m > n) then cc rte else cte.FK rte
-                | _ -> lzOp.Force() cte cc rte
-
-            let accel_int_gte (lzOp : Lazy<Op>) cte cc rte =
-                match rte.DataStack with
-                | ((Int64 n)::(Int64 m)::ds') ->
-                    if (m >= n) then cc rte else cte.FK rte
-                | _ -> lzOp.Force() cte cc rte 
-
-            let accel_list_verify cte cc rte =
-                match rte.DataStack with
-                | (v::ds') -> 
-                    // also update a verified list to the optimized representation 
-                    // (this can help avoid converting a list many times)
-                    match v with 
-                    | (List t) -> cc { rte with DataStack = (Value.ofTerm t)::ds' }
-                    | _ -> cte.FK rte
-                | _ -> underflow rte
-            
-            let accel_list_length (lzOp : Lazy<Op>) cte cc rte =
-                match rte.DataStack with
-                | ((List l)::ds') ->
-                    let nLen = Value.Rope.len l
-                    cc { rte with DataStack = (Value.ofNat nLen)::ds' }
-                | _ ->
-                    lzOp.Force() cte cc rte
-
-            let accel_list_append (lzOp : Lazy<Op>) cte cc rte =
-                match rte.DataStack with
-                | ((List r)::(List l)::ds') ->
-                    let result = Rope.append l r
-                    cc { rte with DataStack = (Value.ofTerm result)::ds' }
-                | _ ->
-                    lzOp.Force() cte cc rte
-
-            let accel_list_take (lzOp : Lazy<Op>) cte cc rte =
-                match rte.DataStack with
-                | ((Nat64 n)::(List l)::ds') ->
-                    if (n > (Rope.len l)) then cte.FK rte else
-                    let result = Rope.take n l
-                    cc { rte with DataStack = (Value.ofTerm result)::ds' }
-                | _ ->
-                    lzOp.Force() cte cc rte
-
-            let accel_list_skip (lzOp : Lazy<Op>) cte cc rte =
-                match rte.DataStack with
-                | ((Nat64 n)::(List l)::ds') ->
-                    if (n > (Rope.len l)) then cte.FK rte else
-                    let result = Rope.drop n l
-                    cc { rte with DataStack = (Value.ofTerm result)::ds' }
-                | _ ->
-                    lzOp.Force() cte cc rte
-
-            let accel_list_item (lzOp : Lazy<Op>) cte cc rte =
-                match rte.DataStack with
-                | ((Nat64 n)::(List l)::ds') ->
-                    if (n >= (Rope.len l)) then cte.FK rte else
-                    let result = Rope.item n l
-                    cc { rte with DataStack = (result::ds') }
-                | _ ->
-                    lzOp.Force() cte cc rte
-
-            let accel_list_cons (lzOp : Lazy<Op>) cte cc rte =
-                match rte.DataStack with
-                | ((List l)::v::ds') ->
-                    let result = Rope.cons v l
-                    cc { rte with DataStack = ((Value.ofTerm result)::ds') }
-                | _ ->
-                    lzOp.Force() cte cc rte
-            
-            let accel_list_snoc (lzOp : Lazy<Op>) cte cc rte =
-                match rte.DataStack with
-                | (v::(List l)::ds') ->
-                    let result = Rope.snoc l v 
-                    cc { rte with DataStack = ((Value.ofTerm result)::ds') }
-                | _ ->
-                    lzOp.Force() cte cc rte
-
-
-            let tryAccel (prog : Program) (vModel : Value) (lzOp : Lazy<Op>) : Op option  =
-                match vModel with
-                | Variant "bits-verify" U ->
-                    Some accel_bits_verify
-                | Variant "bits-negate" U -> 
-                    Some accel_bits_negate
-                | Variant "bits-reverse-append" U -> 
-                    Some accel_bits_reverse_append
-                | Variant "bits-length" U ->
-                    None 
-                | Variant "bits-take" U ->
-                    None 
-                | Variant "bits-skip" U ->
-                    None
-                // could also add bits-and, bits-xor, etc.
-                | Variant "nat-add" U -> 
-                    Some (accel_nat_add lzOp)
-                | Variant "nat-sub" U -> 
-                    Some (accel_nat_sub lzOp)
-                | Variant "nat-mul" U -> 
-                    Some (accel_nat_mul lzOp)
-                | Variant "nat-divmod" U -> 
-                    Some (accel_nat_divmod lzOp)
-                | Variant "nat-gte" U ->
-                    Some (accel_nat_gte lzOp)
-                | Variant "nat-gt" U ->
-                    Some (accel_nat_gt lzOp)
-                | Variant "int-increment" U -> 
-                    Some (accel_int_increment lzOp)
-                | Variant "int-decrement" U -> 
-                    Some (accel_int_decrement lzOp)
-                | Variant "int-add" U -> 
-                    Some (accel_int_add lzOp)
-                | Variant "int-sub" U -> 
-                    None 
-                | Variant "int-mul" U -> 
-                    Some (accel_int_mul lzOp)
-                | Variant "int-divmod" U -> 
-                    None 
-                | Variant "int-gte" U ->
-                    Some (accel_int_gte lzOp)
-                | Variant "int-gt" U ->
-                    Some (accel_int_gt lzOp)
-                | Variant "list-verify" U ->
-                    Some (accel_list_verify)
-                | Variant "list-length" U ->
-                    Some (accel_list_length lzOp)
-                | Variant "list-append" U ->
-                    Some (accel_list_append lzOp)
-                | Variant "list-take" U ->
-                    Some (accel_list_take lzOp)
-                | Variant "list-skip" U ->
-                    Some (accel_list_skip lzOp)
-                | Variant "list-item" U ->
-                    Some (accel_list_item lzOp)
-                | Variant "list-pushl" U ->
-                    Some (accel_list_cons lzOp)
-                | Variant "list-pushr" U ->
-                    Some (accel_list_snoc lzOp)
-                | Variant "list-popl" U ->
-                    None
-                | Variant "list-popr" U ->
-                    None
-                | _ -> 
-                    None
-
-        let accelerate (p : Program) (vModel : Value) (lazyOp : Lazy<Op>) : Op =
-            match vModel with
-            | Variant "opt" vModel' ->
-                // optional acceleration
-                match Accel.tryAccel p vModel' lazyOp with
-                | Some op -> op
-                | None -> lazyOp.Force()
-            | _ ->
-                // require acceleration
-                match Accel.tryAccel p vModel lazyOp with
-                | Some op -> op
-                | _ -> halt (Value.variant "accel" vModel)
-
         let rec compile (p:Program) : Op =
             match p with
-            | Stem lCopy U -> copy
-            | Stem lDrop U -> drop
-            | Stem lSwap U -> swap
-            | Stem lEq U -> eq
-            | Stem lFail U -> fail
-            | Stem lEff U -> eff
-            | Stem lGet U -> get
-            | Stem lPut U -> put
-            | Stem lDel U -> del
-            | Dip p' -> dip (compile p')
-            | Data v -> data v 
+            | Stem lCopy U -> copyOp
+            | Stem lDrop U -> dropOp
+            | Stem lSwap U -> swapOp
+            | Stem lEq U -> eqOp
+            | Stem lFail U -> failOp
+            | Stem lEff U -> effOp
+            | Stem lGet U -> getOp
+            | Stem lPut U -> putOp
+            | Stem lDel U -> delOp
+            | Dip p' -> dipOp (compile p')
+            | Data v -> dataOp v 
             | PSeq (ValueArray ops) -> 
                 pseq (Array.map compile ops) 
             | Cond (pTry, pThen, pElse) ->
@@ -684,42 +907,26 @@ module ProgEval =
                     raise <| RTError(rte, Value.variant "invalid-subprogram" p)
 
         let ioEff (io:IEffHandler) cte cc rte =
-            match rte.DataStack with
+            match rte.DS with
             | (request::ds') ->
                 match io.Eff request with
                 | ValueSome response ->
-                    cc { rte with DataStack = (response::ds') }
+                    cc { rte with DS = (response::ds') }
                 | ValueNone -> (cte.FK) rte
             | [] -> underflow rte
 
         let dataStack ds = 
-            { DataStack = ds
-            ; DipStack = []
-            ; EffStateStack = []
-            ; FailureStack = None
+            { DS = ds
             }
-
-        // cancel all active transactions, using RTE FailureStack as cue.
-        let rec unwindTX (io:ITransactional) (rte:RTE) =
-            match rte.FailureStack with
-            | None -> ()
-            | Some rte' ->
-                io.Abort()
-                unwindTX io rte'
 
         let rec rteVal rte =
             let inline add s v r =
                 if (Value.isUnit v) then r else
                 Value.record_insert (Value.symbol s) v r
-            let failStack =
-                match rte.FailureStack with
-                | Some rte' -> rteVal rte'
-                | None -> Value.unit
             Value.unit
-                |> add "data" (Value.ofList (rte.DataStack))
-                |> add "dip" (Value.ofList (rte.DipStack))
-                |> add "eff" (Value.ofList (rte.EffStateStack))
-                |> add "fail" (failStack)
+                |> add "ds" (Value.ofList (rte.DS))
+                |> add "es" (Value.ofList (rte.ES))
+                //|> add "dip" (Value.ofList (rte.DipStack))
 
         let rec rtErrMsg rte msg =
             Value.variant "rte" <| Value.asRecord ["state";"event"] [rteVal rte; msg]
@@ -756,56 +963,55 @@ module ProgEval =
                             [vProf;    k  ; vStats ]
                     log io vMsg
 
-        // Note that 'eval' does not check the program for validity up front.
-        let eval (p:Program) (io:IEffHandler) =
-            let ccEvalOK rte = 
-                assert((List.isEmpty rte.DipStack)
-                    && (List.isEmpty rte.EffStateStack)
-                    && (Option.isNone rte.FailureStack)) 
-                box (Some (rte.DataStack))
-            let ccEvalFail rte = box None
-            let cte = { FK = ccEvalFail; EH = ioEff io; TX = io; Prof = new ProfChans() }
-            let runLazy = lazy ((compile p) cte ccEvalOK)
-            fun ds ->
-                try 
-                    let result = ds |> dataStack |> (runLazy.Force()) |> unbox<Value list option>
-                    logProfile (io) (cte.Prof) 
-                    result
-                with
-                | RTError(rte,msg) ->
-                    let v = rtErrMsg rte msg
-                    unwindTX io rte
-                    logErrorV io "runtime error" (rtErrMsg rte msg)
-                    logProfile io (cte.Prof)
-                    None
+*)
 
+    /// The value list argument is top of stack at head of list.
+    /// Returns ValueNone if the program either halts or fails. 
+    let eval (p:Program) (io:Effects.IEffHandler) : (Value list) -> (Value list option) =
+        Interpreter.eval p io
+
+(*        
+        let io = UnwindEffWrapper(io0)
+        let ccEvalOK rte = 
+            assert((List.isEmpty rte.DipStack)
+                && (List.isEmpty rte.EffStateStack)
+                && (Option.isNone rte.FailureStack)) 
+            box (Some (rte.DS))
+        let ccEvalFail rte = box None
+        let cte = { FK = ccEvalFail; EH = ioEff wrappedIO; TX = io; Prof = new ProfChans() }
+        let runLazy = lazy ((compile p) cte ccEvalOK)
+        fun ds ->
+            try 
+                let result = ds |> dataStack |> (runLazy.Force()) |> unbox<Value list option>
+                logProfile (io) (cte.Prof) 
+                result
+            with
+            | RTError(rte,msg) ->
+                io.UnwindTXStack()
+                let v = rtErrMsg rte msg
+                logErrorV io "runtime error" (rtErrMsg rte msg)
+                logProfile io (cte.Prof)
+                None
+*)
+    module private Pure = 
         // For 'pure' functions, we'll also halt on first *attempt* to use effects.
         exception ForbiddenEffectException of Value
-        let forbidEffects = 
-            { new IEffHandler with
+        let forbidEffects = {   
+            new Effects.IEffHandler with
                 member __.Eff v = 
                     raise <| ForbiddenEffectException(v)
-              interface ITransactional with
+            interface Effects.ITransactional with
                 member __.Try () = ()
                 member __.Commit () = ()
                 member __.Abort () = ()
-            }
-        let pureEval (p : Program) =
-            let evalNoEff = eval p forbidEffects
-            fun ds -> 
-                try evalNoEff ds
-                with 
-                | ForbiddenEffectException _ -> None
+        }
 
-
-    /// The current favored implementation of eval.
-    let eval : Program -> Effects.IEffHandler -> Value list -> Value list option = 
-        FTI.eval
-
-    /// Evaluate except with any effect halting the application. 
-    let pureEval : Program -> Value list -> Value list option =
-        FTI.pureEval
-
+    let pureEval (p : Program) : (Value list) -> (Value list option) =
+        let evalNoEff = eval p Pure.forbidEffects
+        fun args -> 
+            try evalNoEff args
+            with 
+            | Pure.ForbiddenEffectException _ -> None
 
 // Considering reimplementation based on performance goals.
 //
