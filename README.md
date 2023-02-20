@@ -12,7 +12,9 @@ Glas supports **user-defined compilers**. When modules compute binary values, th
 
 Glas supports **large, incremental builds**. Large values support structure sharing across builds by content-addressed storage, i.e. using secure-hashes as value references. Work sharing across similar builds can be supported by explicit memoization. 
 
-Glas will use explicit [**hardware acceleration**](https://en.wikipedia.org/wiki/Hardware_acceleration) for high-performance computing. For example, we could simulate an abstract CPU, then replace by actual CPU to implement compression or cryptography algorithms. Acceleration of Kahn Process Networks could support distributed builds.
+Glas will use explicit [**acceleration**](https://en.wikipedia.org/wiki/Hardware_acceleration) for high-performance computing. For example, we could simulate an abstract CPU, then replace by actual CPU to implement compression or cryptography algorithms. Acceleration of Kahn Process Networks could support distributed builds.
+
+Glas favors a [**transaction machine application model**](docs/GlasApps.md) that is more amenable to live coding and distributed overlay programs than the conventional `int main(string[] args)` app model. This comes with some optimization challenges, but I'm optimistic that it can provide a better basis for applications.
 
 See the [design doc](docs/GlasDesign.md) for more detail.
 
