@@ -29,9 +29,9 @@ This syntax limits which modules can be referenced. For example, if a module nam
 
 ## Configuration
 
-The glas executable will centralize configuration files, cached computations, content-addressed storage, and a key-value database into a single folder. This folder may be specified by the GLAS_HOME environment variable or will be implicitly assigned a value based on OS convention such as `~/.config/glas` in Linux or `%AppData%/glas` in Windows.
+There is a folder identified as GLAS_HOME, with a default based on OS convention such as `~/.config/glas` in Linux or `%AppData%/glas` in Windows. This folder may contain ad-hoc configuration data information for the glas command line executable. 
 
-The primary configuration file is "sources.tt". This uses the [text-tree](../glas-src/language-tt/README.md) format. Each entry in this file represents a location to search for global modules in priority order. Comments are supported with label '\rem'. Currently, this is limited to 'dir' entries for local filesystem directories.
+The primary configuration file is "sources.tt" which describes where to search for global modules. This file uses the [text-tree](../glas-src/language-tt/README.md) format - a lightweight alternative to XML or JSON. This file may contain 'dir' entries indicating local filesystem directories and '\rem' entries for remarks.
 
         \rem example sources.tt
         dir ./src
@@ -39,11 +39,13 @@ The primary configuration file is "sources.tt". This uses the [text-tree](../gla
         dir C:\Users\username\glas
         dir ../../glas
 
-There may be some secondary runtime configuration expressed via local glas modules, e.g. a module named "conf" within the GLAS_HOME directory. This might support some options for logging, caching, sandboxing, and so on. These modules could use any language defined in the module system.
+Any relative paths are relative to the configuration file. I intend to eventually support network locations and to use the network as the source for most global modules.
 
-Finally, any application-specific runtime configuration must be expressed using annotations. Annotations can be compiled into apps or abstractly manipulated by application macros. Profiling, tuning memory allocation and GC, even effects API versioning may be supported via annotations. 
+The glas executable may use a few more files within GLAS_HOME for features such as where to save stowed data, cached computations, or the key-value database. By default, these would be stored within GLAS_HOME. However, configuration files are most suitable for system-wide configuration.
 
-Importantly, there are no built-in command line arguments for runtime configuration. This ensures configuration is always accessible for abstraction.
+For application-specific configuration - such as tuning memory allocation, garbage collection, resource quotas, logging, effects API versioning, or real-time scheduling - annotations are the best solution. Annotations can be built into the application then adjusted on the command line via application macros. 
+
+In special cases, e.g. to work with experimental evaluation options at build-time, we could use additional environment variables. However, I would prefer to minimize use of environment variables or direct use of command line arguments for configuration.
 
 ## Extracting Binaries
 

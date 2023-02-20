@@ -163,12 +163,13 @@ Annotations can affect performance (acceleration, stowage, memoization, optimiza
 
 Some proposed annotations:
 
-* *accel:Model* - accelerate the program. The Model is often a symbol such as 'list-append' indicating a specific built-in function to fully replace the provided implementation. 
+* *accel:Model* - accelerate a program, i.e. replace it with a built-in. The Model here is usually a symbol identifying a known built-in, such as list-append. However, there is room for extension.
 * *stow:Options* - stow data heuristically, usually top item on data stack after running program. 
 * *memo:Options* - memoize the program. Might only memoize cases where no effects escape.
-* *prof:Options* - code profiling support. Ad-hoc options might include:
- * *chan:Value* - global label for aggregating profiling data
+* *prof:(chan:Value, ... Options)* - code profiling support. The profiling channel may aggregate from many subprograms.
 * *arity:(i:Nat, o:Nat)* - describe stack arity of a program. This can be checked by a compiler, or help stabilize partial evaluation.
+* *name:Value* - identify a subprogram to support debugging and other features. 
+* *sub* - hint to reuse this subprogram. A compiler is free to identify and reuse common subprograms heuristically, but an explicit hint can be useful.
 
 A lot more needs to be developed here, such as an effective type system and a better understanding of which options are useful for memoization and stowage.
 

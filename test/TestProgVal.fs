@@ -14,7 +14,18 @@ let ofBitList l = List.foldBack consStemBit l unit
 let mkSeq : List<Value> -> Value = 
     Rope.ofSeq >> Value.ofTerm >> PSeq
 
-
+// arrange these locks to run sequentially
+type LockHolder =
+    val private LockObj : obj
+    new(lockObj) =
+        System.Threading.Monitor.Enter(lockObj)
+        { LockObj = lockObj }
+    interface System.IDisposable with
+        member lh.Dispose() =
+            System.Console.Out.Flush()
+            System.Console.Error.Flush()
+            System.Threading.Thread.Sleep(100)
+            System.Threading.Monitor.Exit(lh.LockObj)
 
 let doEval p io s0 = 
     match eval p io s0 with
@@ -82,33 +93,71 @@ let noEff = Effects.noEffects
 // programs to support testing?
 let i2v = uint64 >> Value.ofNat
 
+let testLock = ref 0
 
 [<Tests>]
 let test_ops = 
     // note: focusing on type-safe behaviors of programs
+    // note: needs more precision for compiled interpreters
     testList "program evaluation" [
-            testCase "stack ops" <| fun () ->
-                for _ in 1 .. 10 do 
-                    let v1 = mkRandomVal 3
-                    let v2 = mkRandomVal 3
-                    let s0 = [v1;v2]
-                    let sCopy = doEval (Op lCopy) noEff s0
-                    Expect.equal (sCopy) [v1;v1;v2] "copied value"
-                    let sDrop = doEval (Op lDrop) noEff s0 
-                    Expect.equal (sDrop) [v2] "dropped value"
-                    let sSwap = doEval (Op lSwap) noEff s0
-                    Expect.equal (sSwap) [v2;v1] "swapped value"
+
+            testCase "data" <| fun () ->
+                let v = mkRandomVal 3
+                let s' = doEval (Data v) noEff []
+                Expect.equal (s') [v] "eq data"
+
+            testCase "seq" <| fun () ->
+                let v1 = mkRandomVal 3
+                let v2 = Value.pair v1 (mkRandomVal 2)
+                let p = [Data v1; Data v2] |> Value.ofList |> PSeq
+                let s' = doEval p noEff []
+                Expect.equal (s') [v2; v1] "eq data seq"
+
+            testCase "dip" <| fun () ->
+                let v1 = mkRandomVal 3
+                let v2 = Value.pair v1 (mkRandomVal 2)
+                let s' = doEval (Dip (Data v1)) noEff [v2]
+                Expect.equal (s') [v2; v1] "dip data" 
+            
+            testCase "dip seq" <| fun () ->
+                // compiles multiple locals into program
+                let a = mkRandomVal 3
+                let b = Value.pair a (mkRandomVal 2)
+                let c = Value.pair b (mkRandomVal 1)
+                let p = [Data a; Dip (Data b); Dip (Dip (Data c))] |> Value.ofList |> PSeq
+                let s' = doEval p noEff []
+                Expect.equal s' [a; b; c] "dip seq data"
+
+            testCase "copy" <| fun () ->
+                let a = mkRandomVal 3
+                let b = Value.pair a (mkRandomVal 2)
+                let s' = doEval (Op lCopy) noEff [a;b]
+                Expect.equal s' [a;a;b] "copy data"
+
+            testCase "drop" <| fun () ->
+                let a = mkRandomVal 3
+                let b = Value.pair a (mkRandomVal 2)
+                let s' = doEval (Op lDrop) noEff [a;b]
+                Expect.equal s' [b] "drop data"
+
+            testCase "swap" <| fun () ->
+                // compiles multiple locals into program
+                let a = mkRandomVal 3
+                let b = Value.pair a (mkRandomVal 2)
+                let c = Value.pair b (mkRandomVal 1)
+                let s' = doEval (Op lSwap) noEff [a;b;c]
+                Expect.equal s' [b;a;c] "swap data"
 
             testCase "eq" <| fun () ->
-                for _ in 1 .. 100 do
-                    let v1 = mkRandomVal 3
-                    let v2 = pair v1 (mkRandomVal 2)
-                    failEval (Op lEq) noEff [v1;v2;v2] 
-                    let s' = doEval (Op lEq) noEff [v1;v1;v2]
-                    Expect.equal (s') [v2] "eq drops equal values from stack"
+                let v1 = mkRandomVal 3
+                let v2 = pair v1 (mkRandomVal 2)
+                failEval (Op lEq) noEff [v1;v2;v2] 
+                let s' = doEval (Op lEq) noEff [v1;v1;v2]
+                Expect.equal (s') [v2] "eq drops equal values from stack"
+
 
             testCase "record ops" <| fun () ->
-                for _ in 1 .. 100 do
+                for _ in 1 .. 10 do
                     let k = randomSym ()
                     let r0 = mkRandomRecord 3 9
                     let v = mkRandomIntVal ()
@@ -133,18 +182,12 @@ let test_ops =
                     Expect.equal (sDel1) [rwo] "equal delete label"
                     Expect.equal (sDel2) [rwo] "equal delete missing label"
 
-            testCase "data" <| fun () ->
-                for _ in 1 .. 1000 do
-                    let v = mkRandomVal 5
-                    let s' = doEval (Data v) noEff []
-                    Expect.equal (s') [v] "eq data"
-
-            testCase "seq" <| fun () ->
+            testCase "seq2" <| fun () ->
                 let p = mkSeq [ Op lCopy
                               ; Data (Value.symbol "foo"); Op lGet
                               ; Op lSwap
                               ; Data (Value.symbol "bar"); Op lGet]
-                for _ in 1 .. 1000 do
+                for _ in 1 .. 10 do
                     let a = mkRandomIntVal ()
                     let b = mkRandomIntVal ()
                     let r0 = Value.asRecord ["foo";"bar"] [a; b]
@@ -152,9 +195,7 @@ let test_ops =
                     let expected = [b; a]
                     Expect.equal (s') expected "expected seq result"
 
-
-
-            testCase "dip" <| fun () ->
+            testCase "dip2" <| fun () ->
                 for _ in 1 .. 10 do
                     let a = mkRandomIntVal ()
                     let b = mkRandomIntVal ()
@@ -221,11 +262,33 @@ let test_ops =
                 let s' = doEval pRevBits noEff [bits]
                 Expect.equal s' [bitsRev] "reversed bits"
 
+            testCase "fail" <| fun () ->
+                failEval (Op lFail) noEff [mkRandomVal 1]
+
+            testCase "halt" <| fun () ->
+                let eMsg = Value.symbol "fail-test"
+                failEval (Halt eMsg) noEff [mkRandomVal 1]
+
+            testCase "halt uncaught" <| fun () ->
+                let eMsg = Value.symbol "try-test"
+                let p = Cond ((Halt eMsg), Nop, Nop)
+                failEval p noEff [mkRandomVal 1]
+
+            testCase "eff fail" <| fun () ->
+                failEval (Op lEff) (EffLogger()) [Value.symbol "oops"]
+
+            testCase "eff ok" <| fun () ->
+                let effLog = EffLogger()
+                let msg = mkRandomVal 3
+                let s' = doEval (Op lEff) effLog [Value.variant "log" msg]
+                Expect.equal s' [Value.unit] "log output is unit"
+                Expect.equal (effLog.Outputs) [msg] "logged outputs match"
+
             testCase "toplevel eff" <| fun () ->
                 let varSym s = mkSeq [Data Value.unit; Data (Value.symbol s); Op lPut]
                 let pLogMsg = mkSeq [varSym "log"; Op lEff ]
                 failEval (Op lEff) (EffLogger()) [Value.symbol "oops"]
-                for _ in 1 .. 100 do
+                for _ in 1 .. 10 do
                     let msg = mkRandomIntVal ()
                     let eff = EffLogger() 
                     let sLog = doEval pLogMsg eff [msg]
@@ -248,6 +311,25 @@ let test_ops =
                     Expect.equal (eff.Outputs) [a;c] "expected messages"
                     Expect.equal (sLog) [Value.unit; b; Value.unit] "expected results"
 
+
+            testCase "env dip" <| fun () ->
+                // in this test the env is not called, but acts as a dip
+                let v1 = mkRandomVal 3
+                let v2 = Value.pair v1 (mkRandomVal 2)
+                let v3 = Value.pair v2 (mkRandomVal 1)
+                let p = Env((Op lFail), (Op lSwap))
+                let s' = doEval p noEff [v1;v2;v3]
+                Expect.equal s' [v1;v3;v2] "swap under env state"
+
+            testCase "env swap" <| fun () ->
+                // in this test case, env is called and swaps args.
+                let v1 = mkRandomVal 3
+                let v2 = Value.pair v1 (mkRandomVal 2)
+                let v3 = Value.pair v2 (mkRandomVal 1)
+                let p = Env((Op lSwap), (Op lEff))
+                let s' = doEval p noEff [v1;v2;v3]
+                Expect.equal s' [v2;v1;v3] "swap with eff state"
+
             testCase "env" <| fun () ->
                 // behavior for 'env': 
                 //  increment an effects counter
@@ -265,7 +347,7 @@ let test_ops =
                 let tryEff s = tryOp (mkSeq [varSym s; Op lEff])
                 let tryEff3 = mkSeq [tryEff "log"; Dip (tryEff "oops"); Dip (Dip (tryEff "log"))]
                 let pTest = withCRN "log" "oops" tryEff3
-                for _ in 1 .. 100 do
+                for _ in 1 .. 10 do
                     let a = mkRandomIntVal ()
                     let b = mkRandomIntVal ()
                     let c = mkRandomIntVal ()

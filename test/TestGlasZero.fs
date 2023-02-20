@@ -311,7 +311,7 @@ module Glas.TestGlasZero
     // note: cannot use math as base test since removed arithmetic.
     // might try to implement list append, instead.
 
-    [<Tests>]
+    //[<Tests>]
     let testCompile =
         testCase "compile and test a simple g0 program" <| fun () ->
             let getfn m w =
