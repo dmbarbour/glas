@@ -63,9 +63,9 @@ Glas programs manipulate an implicit data stack. All operations apply to data ne
 * **copy** - copy top item on data stack
 * **drop** - remove top item on data stack
 * **dip:P** - run P below top item on data stack
- * move top item from data stack to top of dip stack
- * run P
- * move top item from dip stack to top of data stack
+  * move top item from data stack to top of dip stack
+  * run P
+  * move top item from dip stack to top of data stack
 * **swap** - switch the top two items on stack
 * **data:V** - add copy of V to top of stack
 
