@@ -124,41 +124,41 @@ Console IO will be modeled as filesystem access with `std:in`, `std:out`, and `s
 Proposed API:
 
 * **file:FileOp** - namespace for file operations. An open file is essentially a cursor into a file resource, with access to buffered data. 
- * **open:(name:FileName, as:FileRef, for:Interaction)** - Response is unit, or failure if the FileRef is already in use. Binds a new filesystem interaction to the given FileRef. Usually does not wait on OS (see 'status').
-  * *read* - read file as stream. Status is set to 'done' when last byte is available, even if it hasn't been read yet.
-  * *write* - open file and write from beginning. Will delete content in existing file.
-  * *append* - open file and write start writing at end. Will create a new file if needed.
-  * *delete* - remove a file. Use status to observe potential error.
-  * *move:NewFileName* - rename a file. Use status to observe error.
- * **close:FileRef** - Release the file reference.
- * **read:(from:FileRef, count:Nat)** - Response is list of up to Count available bytes taken from input stream. Returns fewer than Count if input buffer is empty. 
- * **write:(to:FileRef, data:Binary)** - write a list of bytes to file. Fails if not opened for write or append. Use 'busy' status for heuristic pushback.
- * **status:FileRef** - Returns a record that may contain one or more flags and values describing the status of an open file.
-  * *init* - the 'open' request has not yet been seen by OS.
-  * *ready* - further interaction is possible, e.g. read buffer has data available, or you're free to write.
-  * *busy* - has an active background task.
-  * *done* - successful termination of interaction.
-  * *error:Message* - reports an error, with some extra description.
- * **ref:list** - return a list of open file references. 
- * **ref:move:(from:FileRef, to:FileRef)** - reorganize references. Fails if 'to' ref is in use. 
+  * **open:(name:FileName, as:FileRef, for:Interaction)** - Response is unit, or failure if the FileRef is already in use. Binds a new filesystem interaction to the given FileRef. Usually does not wait on OS (see 'status').
+    * *read* - read file as stream. Status is set to 'done' when last byte is available, even if it hasn't been read yet.
+    * *write* - open file and write from beginning. Will delete content in existing file.
+    * *append* - open file and write start writing at end. Will create a new file if needed.
+    * *delete* - remove a file. Use status to observe potential error.
+    * *move:NewFileName* - rename a file. Use status to observe error.
+  * **close:FileRef** - Release the file reference.
+  * **read:(from:FileRef, count:Nat)** - Response is list of up to Count available bytes taken from input stream. Returns fewer than Count if input buffer is empty. 
+  * **write:(to:FileRef, data:Binary)** - write a list of bytes to file. Fails if not opened for write or append. Use 'busy' status for heuristic pushback.
+  * **status:FileRef** - Returns a record that may contain one or more flags and values describing the status of an open file.
+    * *init* - the 'open' request has not yet been seen by OS.
+    * *ready* - further interaction is possible, e.g. read buffer has data available, or you're free to write.
+    * *busy* - has an active background task.
+    * *done* - successful termination of interaction.
+    * *error:Message* - reports an error, with some extra description.
+  * **ref:list** - return a list of open file references. 
+  * **ref:move:(from:FileRef, to:FileRef)** - reorganize references. Fails if 'to' ref is in use. 
 
 **dir:DirOp** - namespace for directory/folder operations. This includes browsing files, watching files. 
- * **open:(name:DirName, as:DirRef, for:Interaction)** - create new system objects to interact with the specified directory resource in a requested manner. Fails if DirRef is already in use, otherwise returns unit. Potential Interactions:
-  * *list* - read a list of entries from the directory. Reaches Done state after all items are read.
-  * *move:NewDirName* - rename or move a directory. Use status to observe error.
-  * *delete:(recursive?)* - remove an empty directory, or flag for recursive deletion.
- * **close:DirRef** - release the directory reference.
- * **read:DirRef** - read a file system entry, or fail if input buffer is empty. This is a record with ad-hoc fields including at least 'type' and 'name'. Some potential fields:
-  * *type:Symbol* (always) - usually a symbol 'file' or 'dir'
-  * *name:Path* (always) - a full filename or directory name, usually a string
-  * *mtime:TimeStamp* (optional) - modify time 
-  * *ctime:TimeStamp* (optional) - creation time 
-  * *size:Nat* (optional) - number of bytes
- * **status:DirRef** ~ same as file status
- * **ref:list** - return a list of open directory references.
- * **ref:move:(from:DirRef, to:DirRef)** - reorganize directory references. Fails if 'to' ref is in use.
- * **cwd** - return current working directory. Non-rooted file references are relative to this.
- * **sep** - return preferred directory separator substring for current OS, usually "/" or "\".
+  * **open:(name:DirName, as:DirRef, for:Interaction)** - create new system objects to interact with the specified directory resource in a requested manner. Fails if DirRef is already in use, otherwise returns unit. Potential Interactions:
+    * *list* - read a list of entries from the directory. Reaches Done state after all items are read.
+    * *move:NewDirName* - rename or move a directory. Use status to observe error.
+    * *delete:(recursive?)* - remove an empty directory, or flag for recursive deletion.
+  * **close:DirRef** - release the directory reference.
+  * **read:DirRef** - read a file system entry, or fail if input buffer is empty. This is a record with ad-hoc fields including at least 'type' and 'name'. Some potential fields:
+    * *type:Symbol* (always) - usually a symbol 'file' or 'dir'
+    * *name:Path* (always) - a full filename or directory name, usually a string
+    * *mtime:TimeStamp* (optional) - modify time 
+    * *ctime:TimeStamp* (optional) - creation time 
+    * *size:Nat* (optional) - number of bytes
+  * **status:DirRef** ~ same as file status
+  * **ref:list** - return a list of open directory references.
+  * **ref:move:(from:DirRef, to:DirRef)** - reorganize directory references. Fails if 'to' ref is in use.
+  * **cwd** - return current working directory. Non-rooted file references are relative to this.
+  * **sep** - return preferred directory separator substring for current OS, usually "/" or "\".
 
 It is feasible to extend directory operations with option to 'watch' a directory for updates.
 
@@ -176,37 +176,37 @@ Glas applications won't update environment variables. However, it is possible to
 Most network interactions with external services can be supported by TCP or UDP. Support for raw Ethernet might also be useful, but it's low priority for now.
 
 * **tcp:TcpOp** - namespace for TCP operations
- * **l:ListenerOp** - namespace for TCP listener operations.
-  * **create:(port?Port, addr?Addr, as:ListenerRef)** - Create a new ListenerRef. Return unit. Whether listener is successfully created is observable via 'state' a short while after the request is committed.
-   * *port* - indicates which local TCP port to bind. If omitted, OS chooses port.
-   * *addr* - indicates which local network cards or ethernet interfaces to bind. Can be a string or bitstring. If omitted, attempts to bind all interfaces.
-  * **accept:(from:ListenerRef, as:TcpRef)** - Receive an incoming connection, and bind the new connection to the specified TcpRef. This operation will fail if there is no pending connection. 
-  * **status:ListenerRef** ~ same as file status
-  * **info:ListenerRef** - For active listener, returns a list of local `(port:Port, addr:Addr)` pairs for that are being listened on. Fails in case of 'init' or 'error' status.
-  * **close:ListenerRef** - Release listener reference and associated resources.
-  * **ref:list** - returns list of open listener refs 
-  * **ref:move:(from:ListenerRef, to:ListenerRef)** - reorganize references. Cannot move to an open ref.
- * **connect:(dst:(port:Port, addr:Addr), src?(port?Port, addr?Addr), as:TcpRef)** - Create a new connection to a remote TCP port. Fails if TcpRef is already in use, otherwise returns unit. Whether the connection is successful is observable via 'state' a short while after the request is committed. Destination port and address must be specified, but source port and address are usually unspecified and determined dynamically by the OS.
- * **read:(from:TcpRef, count:N)** - read 1 to N bytes, limited by available data, returned as a list. Fails if no bytes are available - see 'status' to diagnose error vs. end of input. 
- * **write:(to:TcpRef, data:Binary)** - write binary data to the TCP connection. The binary is represented by a list of bytes. Use 'busy' status for heuristic pushback.
- * **limit:(of:Ref, cap:Count)** - fails if number of bytes pending in the write buffer is greater than Count or if connection is closed, otherwise succeeds returning unit. Not necessarily accurate or precise. This method is useful for pushback, to limit a writer that is faster than a remote reader.
- * **status:TcpRef** ~ same as file status
- * **info:TcpRef** - Returns a `(dst:(port, addr), src:(port, addr))` pair after TCP connection is active. May fail in some cases (e.g. 'init' or 'error' status).
- * **close:TcpRef**
- * **ref:list** - returns list of open TCP refs 
- * **ref:move:(from:TcpRef, to:TcpRef)** - reorganize TCP refs. Fails if 'to' ref is in use.
+  * **l:ListenerOp** - namespace for TCP listener operations.
+    * **create:(port?Port, addr?Addr, as:ListenerRef)** - Create a new ListenerRef. Return unit. Whether listener is successfully created is observable via 'state' a short while after the request is committed.
+      * *port* - indicates which local TCP port to bind. If omitted, OS chooses port.
+      * *addr* - indicates which local network cards or ethernet interfaces to bind. Can be a string or bitstring. If omitted, attempts to bind all interfaces.
+    * **accept:(from:ListenerRef, as:TcpRef)** - Receive an incoming connection, and bind the new connection to the specified TcpRef. This operation will fail if there is no pending connection. 
+    * **status:ListenerRef** ~ same as file status
+    * **info:ListenerRef** - For active listener, returns a list of local `(port:Port, addr:Addr)` pairs for that are being listened on. Fails in case of 'init' or 'error' status.
+    * **close:ListenerRef** - Release listener reference and associated resources.
+    * **ref:list** - returns list of open listener refs 
+    * **ref:move:(from:ListenerRef, to:ListenerRef)** - reorganize references. Cannot move to an open ref.
+  * **connect:(dst:(port:Port, addr:Addr), src?(port?Port, addr?Addr), as:TcpRef)** - Create a new connection to a remote TCP port. Fails if TcpRef is already in use, otherwise returns unit. Whether the connection is successful is observable via 'state' a short while after the request is committed. Destination port and address must be specified, but source port and address are usually unspecified and determined dynamically by the OS.
+  * **read:(from:TcpRef, count:N)** - read 1 to N bytes, limited by available data, returned as a list. Fails if no bytes are available - see 'status' to diagnose error vs. end of input. 
+  * **write:(to:TcpRef, data:Binary)** - write binary data to the TCP connection. The binary is represented by a list of bytes. Use 'busy' status for heuristic pushback.
+  * **limit:(of:Ref, cap:Count)** - fails if number of bytes pending in the write buffer is greater than Count or if connection is closed, otherwise succeeds returning unit. Not necessarily accurate or precise. This method is useful for pushback, to limit a writer that is faster than a remote reader.
+  * **status:TcpRef** ~ same as file status
+  * **info:TcpRef** - Returns a `(dst:(port, addr), src:(port, addr))` pair after TCP connection is active. May fail in some cases (e.g. 'init' or 'error' status).
+  * **close:TcpRef**
+  * **ref:list** - returns list of open TCP refs 
+  * **ref:move:(from:TcpRef, to:TcpRef)** - reorganize TCP refs. Fails if 'to' ref is in use.
 
 * **udp:UdpOp** - namespace for UDP operations. UDP messages use `(port, addr, data)` triples, with port and address refering to the remote endpoint.
- * **connect:(port?Port, addr?Addr, as:UdpRef)** - Bind a local UDP port, potentially across multiple ethernet interfaces. Fails if UdpRef is already in use, otherwise returns unit. Whether binding is successful is observable via 'state' after the request is committed. Options:
-  * *port* - normally included to determine which port to bind, but may be left to dynamic allocation. 
-  * *addr* - indicates which local ethernet interfaces to bind; if unspecified, attempts to binds all interfaces.
- * **read:(from:UdpRef)** - returns the next available UDP message value. 
- * **write(to:UdpRef, data:Message)** - output a UDP message. Message uses same `(port, addr, data)` record as messages read. Returns unit, and buffers message to send upon commit.
- * **status:UdpRef** ~ same as file status
- * **info:UdpRef** - Returns a list of `(port:Port, addr:Addr)` pairs for the local endpoint.
- * **close:UdpRef** - Return reference to unused state, releasing system resources.
- * **ref:list** - returns list of open UDP refs.
- * **ref:move:(from:UdpRef, to:UdpRef)** - reorganize UDP refs. Fails if 'to' ref is in use.
+  * **connect:(port?Port, addr?Addr, as:UdpRef)** - Bind a local UDP port, potentially across multiple ethernet interfaces. Fails if UdpRef is already in use, otherwise returns unit. Whether binding is successful is observable via 'state' after the request is committed. Options:
+    * *port* - normally included to determine which port to bind, but may be left to dynamic allocation. 
+    * *addr* - indicates which local ethernet interfaces to bind; if unspecified, attempts to binds all interfaces.
+  * **read:(from:UdpRef)** - returns the next available UDP message value. 
+  * **write(to:UdpRef, data:Message)** - output a UDP message. Message uses same `(port, addr, data)` record as messages read. Returns unit, and buffers message to send upon commit.
+  * **status:UdpRef** ~ same as file status
+  * **info:UdpRef** - Returns a list of `(port:Port, addr:Addr)` pairs for the local endpoint.
+  * **close:UdpRef** - Return reference to unused state, releasing system resources.
+  * **ref:list** - returns list of open UDP refs.
+  * **ref:move:(from:UdpRef, to:UdpRef)** - reorganize UDP refs. Fails if 'to' ref is in use.
 
 A port is a fixed-width 16-bit number. An addr is a fixed-width 32-bit or 128-bit bitstring (IPv4 or IPv6) or a text string such as "www.example.com" or "192.168.1.42" or "2001:db8::2:1". Later, I might add a dedicated API for DNS lookup, or perhaps for 'raw' Ethernet.
 
@@ -217,25 +217,25 @@ A port is a fixed-width 16-bit number. An addr is a fixed-width 32-bit or 128-bi
 A channel communicates using reliable, ordered, buffered message passing. Unlike TCP, channels will support structured data and fine-grained subchannels. This can support distributed object-oriented systems, for example. A viable API:
 
 * **c:send:(data:Value, over:ChannelRef, many?)** - send a value over a channel. Return value is unit. Extensions:
- * *multi* - optional flag. Value must be a list. Equivalent to separately sending each value in that list in order.
+  * *multi* - optional flag. Value must be a list. Equivalent to separately sending each value in that list in order.
 * **c:recv:(from:ChannelRef, many?Count, exact?)** - receive data from a channel. Return value is the data. Fails if no input available or if next input isn't data (try 'accept'). Extensions:
- * *many:Count* - optional. If specified, will return up to Count data items (at least one, otherwise read fails) as a list. If Count is zero, returns all available data items (still at least one).
- * *exact* - optional flag. Used with 'many:Count', adjusts behavior to return exactly Count items as a list, otherwise fail. Always fails if 'many' is unspecified or Count is zero.
+  * *many:Count* - optional. If specified, will return up to Count data items (at least one, otherwise read fails) as a list. If Count is zero, returns all available data items (still at least one).
+  * *exact* - optional flag. Used with 'many:Count', adjusts behavior to return exactly Count items as a list, otherwise fail. Always fails if 'many' is unspecified or Count is zero.
 * **c:attach:(over:ChannelRef, chan:ChannelRef, mode:(copy|move|bind))** - connect a channel over a channel. Behavior varies depending on mode:
- * *copy* - a copy of 'chan' is sent (see 'copy')
- * *move* - 'chan' is detached from calling process. (attach copy then drop original)
- * *bind* - a new channel is established, with one endpoint bound to 'chan'. Fails if 'chan' in use.
+  * *copy* - a copy of 'chan' is sent (see 'copy')
+  * *move* - 'chan' is detached from calling process. (attach copy then drop original)
+  * *bind* - a new channel is established, with one endpoint bound to 'chan'. Fails if 'chan' in use.
 * **c:accept:(from:ChannelRef, as:NewChannelRef)** - Receives a channel endpoint, binding to the 'as' channel. This will fail if the next input on the channel is not a channel (or not available), such that send/attach order is preserved at recv/accept.
 * **c:pipe:(with:ChannelRef, and:ChannelRef, mode:(copy|move|bind))** - connect two channels such that future messages received on one channel are automatically forwarded to the other, and vice versa. This includes pending message and attached channels. Behavior varies depending on mode:
- * *copy* - a copy of the channels is connected; original refs can tap communications.
- * *move* - piped channels are detached from caller (see 'close'), managed by host system.
- * *bind* - new channel is created between two references. Fails if either ChannelRef is already in use.
+  * *copy* - a copy of the channels is connected; original refs can tap communications.
+  * *move* - piped channels are detached from caller (see 'close'), managed by host system.
+  * *bind* - new channel is created between two references. Fails if either ChannelRef is already in use.
 * **c:copy:(of:ChannelRef, as:ChannelRef)** - duplicate a channel, its pending inputs, and future inputs including subchannels. Writes to the copy and original will be merged in some non-deterministic order.
 * **c:drop:ChannelRef** - detach channel from calling process, enabling host to recycle associated resources. Indirectly observable via 'test'.
 * **c:test:ChannelRef** - Fails if the channel is known by system to be defunct, supporting no possibility of further interaction. Succeeds otherwise, returning unit. Interaction includes reading messages or writing messages and having them read.
 * **c:tune:(chan:ChannelRef, with:Flags)** - Inform the system about your specific use-case for this channel, such that it can perform some extra optimizations. May restrict operations. Monotonic (no take-backs!). Multiple flags may be composed into a record. Flags:
- * *no-write* - disables future 'send' and 'attach' operations for this channel. Future attempted writes will fail. 
- * *no-read* - disables future 'recv' and 'accept' operations for this channel. Clears input buffer and arranges to silently drop future inputs. 
+  * *no-write* - disables future 'send' and 'attach' operations for this channel. Future attempted writes will fail. 
+  * *no-read* - disables future 'recv' and 'accept' operations for this channel. Clears input buffer and arranges to silently drop future inputs. 
 
 Channels over TCP is a viable foundation for networked glas systems. See [Glas Channels](GlasChannels.md) for more discussion on this.
 
@@ -279,10 +279,10 @@ In design. Some likely features:
 * *annotations* - similar to 'prog' we can have a 'proc' header for annotations and the common variant for processes.
 * *sequence* - similar to a prog sequence, but each operation may require multiple transactions. I may require that each operation is uniquely labeled for some extra stability during live coding. 
 * *forks* - explicit partitioning of applications into multiple subtasks. This should appear within a 'stable' effects context. 
- * *static forks* - all the forks can be labeled at compile-time and bound to distinct processes.
- * *dynamic forks* - the set of forks is computed at runtime. The process is the same for every fork, but each may have its own runtime state. Some mechanism to support introducing or terminating forks.
+  * *static forks* - all the forks can be labeled at compile-time and bound to distinct processes.
+  * *dynamic forks* - the set of forks is computed at runtime. The process is the same for every fork, but each may have its own runtime state. Some mechanism to support introducing or terminating forks.
 * *channels* - explicit asynchronous, non-shared-state communication between forks, preferably without assuming external effects. Static channels and subchannels might be especially convenient for optimization.
- * *rendezvous* - this could be modeled in terms of a single element channel, with special recognition it might simplify optimization of the scheduler.
+  * *rendezvous* - this could be modeled in terms of a single element channel, with special recognition it might simplify optimization of the scheduler.
 * *effects* - instead of a single abstract effects environment with a single state value, it could be useful to distinguish effects with shared state, effects with forkable state, write-only effects similar to channels where write order is flexible. 
 * *conditionals* - likely need a couple layers such as stable conditionals (e.g. depending on configuration data) and instantaneous conditionals (decided as a process step).
 * *overlay* - ability to compose applications in overlay style, wrapping components. We might treat the initial app as an overlay of the identity operation to improve compositionality.
@@ -317,8 +317,8 @@ An intriguing option is to communicate using only ephemeral connections, where l
 A viable API:
 
 * **d:read:(from:Port, mode:(list|fork))** - read a set of values currently available on a dataflow port. Behavior depends on mode:
- * *list* - returned set represented as a list with arbitrary but stable order.
- * *fork* - same behavior as reading the list then immediately forking on the list; easier to stabilize compared to performing these operations separately.
+  * *list* - returned set represented as a list with arbitrary but stable order.
+  * *fork* - same behavior as reading the list then immediately forking on the list; easier to stabilize compared to performing these operations separately.
 * **d:write:(to:Port, data:Value)** - add data to a dataflow port. Writes within a transaction or between concurrent transactions are monotonic, idempotent, and commutative. Concurrent data is read as a set. Data implicitly expires from the set if not continuously written. Unstable data might be missed by a reader.
 * **d:wire:(with:Port, and:Port)** - When two ports are wired, data that can be read from each port is temporarily written to the other. Applies transitively to hierarchical ports. Like writes, wires expire unless continuously maintained.
 

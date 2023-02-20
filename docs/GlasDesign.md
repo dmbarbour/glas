@@ -90,12 +90,12 @@ The stack in glas is really an intermediate data plumbing model. User syntax cou
 Glas programs must have static stack arity, i.e. the 'try-then' arity must match the 'else' arity, or a loop 'while-then' must have the same input and output arity. This is designed to be easy to verify.
 
 * **seq:\[List, Of, Operators\]** - sequential composition of operators. 
- * *nop* - identity function can be represented by empty seq  
+  * *nop* - identity function can be represented by empty seq  
 * **cond:(try:P, then:Q, else:R)** - run P; if P does not fail, run Q; if P fails, undo P then run R. Variants:
- * 'then' and 'else' clauses are optional, default to nop.
+  * 'then' and 'else' clauses are optional, default to nop.
 * **loop:(while:P, do:Q)** - run P. If successful, run Q then repeat loop. Otherwise, exit loop. Variants:
- * *loop:(until:P, do:Q)* - run P. If that fails, run Q then repeat loop. Otherwise, exit loop.
- * 'do' field is optional, defaults to nop.
+  * *loop:(until:P, do:Q)* - run P. If that fails, run Q then repeat loop. Otherwise, exit loop.
+  * 'do' field is optional, defaults to nop.
 * **eq** - Remove two items from data stack. If identical, continue, otherwise fail.
 * **fail** - always fail; causes backtracking in context of cond/loop
 * **halt:Message** - logically diverges, like an infinite loop but more explicit in its intention. Prevents backtracking. Message should indicate cause to a human programmer: undefined behavior, type-error, invalid accelerator, todo, etc.. 
@@ -192,8 +192,8 @@ Language modules are global modules with a simple naming convention: `language-x
 Input to the compiler function is usually the file binary. Final output is the compiled module value. Compilation may fail, preferably after logging some messages, in case of input errors. Compile-time effects are constrained to simplify caching, sharing, and reproducibility. Effects API:
 
 * **load:ModuleRef** - Response is compiled value for the indicated module. The request may fail, e.g. if the module cannot be found or compiled, with cause implicitly logged. Currently propose a few forms of ModuleRef: 
- * *global:String* - search for global module based on configuration of CLI
- * *local:String* - search for module in same folder as file being compiled
+  * *global:String* - search for global module based on configuration of CLI
+  * *local:String* - search for module in same folder as file being compiled
 * **log:Message** - Message should be a record, e.g. `(text:"Uh oh, you messed up!", lv:warn)`, so that it can be flexibly extended with metadata. Response is unit. Behavior depends on development environment, e.g. might print the message to stderr with color based on level.
 
 The glas command line will include a built-in implementation of the ".g0" compiler function, a Forth-like language with staged metaprogramming. This is used to bootstrap the [language-g0](GlasZero.md) module if possible. If bootstrap fails, a warning is reported and the built-in g0 compiler is used directly.
@@ -256,9 +256,11 @@ A list of dependencies (lookup keys) will also be uploaded such that the CDN can
 
 When compiling glas programs, a useful optimization pass is to identify common subprograms and translate those to reusable function calls. This pass may be guided by annotations and is not necessarily aligned with user defined functions. Usefully, compression may occur after partial evaluation and other specialization passes. 
 
-### Application Layer
+### Application Layer 
 
-The glas system is not forever stuck with the 'prog' program model and its foibles. It is feasible to extend the glas command line to support other program models for 'glas --run'. As a concrete example, I'm developing a 'proc' model for transaction machine applications to better optimize incremental computing and concurrency. However, this is a solution to pursue mostly where accelerators are awkward (e.g. due to relationship with effects). 
+The glas system is not forever stuck with the 'prog' program model and its foibles. It is feasible to extend the glas command line to support other program models for `glas --run`. As a concrete example, I intend to develop a 'proc' representation for transaction machine applications to better optimize incremental computing and concurrency (in [Glas Apps](GlasApps.md)).
+
+However, this is a solution to pursue mostly where accelerators are awkward (e.g. due to relationship with effects). 
 
 ## Thoughts
 
