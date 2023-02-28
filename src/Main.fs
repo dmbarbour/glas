@@ -214,13 +214,16 @@ let run (vref:string) (args : string list) : int =
         let eff = runtimeEffects ll 
         let pfn = eval p eff
         let rec loop st =
+            let tx = withTX eff
             match pfn [st] with
             | None ->
+                tx.Abort()
                 // ideally, we'd track effects to know when to retry.
                 // but this implementation is blind, so just wait and hope.
                 System.Threading.Thread.Sleep(20)
                 loop st
             | Some [st'] ->
+                tx.Commit()
                 match st' with
                 | Value.Variant "step" _ -> 
                     loop st'
@@ -230,6 +233,7 @@ let run (vref:string) (args : string list) : int =
                     logErrorV ll (sprintf "program %s reached unrecognized state" vref) st'
                     EXIT_FAIL
             | _ ->
+                tx.Abort()
                 logError ll (sprintf "program %s halted on arity error" vref)
                 EXIT_FAIL
         try

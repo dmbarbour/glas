@@ -101,6 +101,11 @@ let test_ops =
     // note: needs more precision for compiled interpreters
     testList "program evaluation" [
 
+            testCase "nop" <| fun () ->
+                let v = mkRandomVal 3 
+                let s' = doEval (Nop) noEff [v]
+                Expect.equal s' [v] "eq nop"
+
             testCase "data" <| fun () ->
                 let v = mkRandomVal 3
                 let s' = doEval (Data v) noEff []

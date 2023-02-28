@@ -225,7 +225,7 @@ module Effects =
     let runtimeEffects (ll : IEffHandler) : IEffHandler =
         ll // TODO!
 
-
+(*
 module Effects2 =
     // I'm thinking about an alternative effects API to support partial-evaluation
     // of effects. This can reduce runtime overheads related to routing of effects.
@@ -440,3 +440,4 @@ module Effects2 =
     //
     // I'll perhaps come back to this later.
 
+*)

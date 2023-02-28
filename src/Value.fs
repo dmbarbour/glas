@@ -401,11 +401,15 @@ module Value =
     // integer based on the lowest '1' bit, e.g. `abc1000..0` is a 3 bit stem.
     let consStemBits (stem : uint64) (v0 : Value) : Value =
         assert(StemBits.isValid stem)
-        consStemLoop stem (StemBits.len stem) v0
+        if StemBits.isEmpty v0.Stem
+            then { Stem = stem; Term = v0.Term }
+            else consStemLoop stem (StemBits.len stem) v0
 
     // Prepend exactly 64 bits from a stem to a value.
     let consStem64 (stem64 : uint64) (v0 : Value) : Value =
-        consStemLoop stem64 64 v0 
+        if StemBits.isEmpty v0.Stem 
+            then ofTerm (Stem64 (stem64, v0.Term))
+            else consStemLoop stem64 64 v0 
 
     let inline isStem v =
         (not (StemBits.isEmpty v.Stem)) || (VTerm.isStem64 v.Term)
@@ -431,6 +435,15 @@ module Value =
 
     let inline isBits v = 
         VTerm.isBits (v.Term)
+
+    // optimized concatenation of labels
+    let rec private withLabelT t v =
+        match t with
+        | Leaf -> v
+        | Stem64(stem, t') -> consStem64 stem (withLabelT t' v)
+        | _ -> failwith "invalid label"
+    let withLabel p v =
+        consStemBits (p.Stem) (withLabelT p.Term v)
 
     let variant (s : string) (v : Value) : Value =
         // encode a null-terminated utf-8 string into stem
@@ -1204,9 +1217,22 @@ module Value =
         | _ -> failwith "append: invalid list(s)"
 
     let rec private dropSharedPrefix a b =
-        let shareHead = (isStem a) && (isStem b) && ((stemHead a) = (stemHead b))
-        if not shareHead then struct(a,b) else
-        dropSharedPrefix (stemTail a) (stemTail b)
+        // a bit of extra logic to match full bytes where easy to do so
+        // can improve performance significantly due to common use of 
+        // multi-byte labels. 
+        let maskByte = 0xFFUL <<< 56
+        let maskRem = ~~~maskByte
+        let shareByte = ((maskByte &&& a.Stem) = (maskByte &&& b.Stem)) 
+                     && (0UL <> (maskRem &&& a.Stem))
+                     && (0UL <> (maskRem &&& b.Stem))
+        if shareByte then
+            let a' = { a with Stem = a.Stem <<< 8 }
+            let b' = { b with Stem = b.Stem <<< 8 }
+            dropSharedPrefix a' b'
+        else
+            let shareBit = (isStem a) && (isStem b) && ((stemHead a) = (stemHead b))
+            if not shareBit then struct(a,b) else
+            dropSharedPrefix (stemTail a) (stemTail b)
 
     let tryMatchStem p v = 
         let struct(p', v') = dropSharedPrefix p v
@@ -1284,9 +1310,6 @@ module Value =
                 let vb = withLabel (stemTail p') v 
                 if stemHead p' then pair rb vb else pair vb rb
         _bitsAppendRev psh rf
-    and withLabel p v =
-        // could be optimized; adds label p to value v
-        record_insert p v p
 
     let asRecord ks vs = 
         let addElem r k v = record_insert (label k) v r
@@ -1576,116 +1599,80 @@ module Value =
 type Value = Value.Value
 type Rope = Value.Term
 
-
 module PartialValue =
-    // A partial value is a value extended with variables to reference context.
-    // This is potentially useful for abstract interpretation and partial 
-    // evaluation. 
-    // 
-    // Known Weaknesses:
+    // Partial values, encoded as glas values.
     //
-    // This does not handle conditional behavior. It is feasible to represent 
-    // limited conditional behaviors as a pairing of a Var (to specify which
-    // option is in play) followed by a list of partial value options. Might 
-    // need to extend or wrap partial values for this.
-    // 
-    // This does not handle dynamic lists well. Currently, head of list can be
-    // static and partially known, but end of list cannot be. It might be useful
-    // to add a partial term for concatenation so we can view end of list with
-    // some variables in the middle.
+    // Logical encoding:
     //
-
-    // Variables will be represented by basic integers.
-    // These contextually refer to separate or future values.
-    type VarId = int
-
-    // The PValue type must have at least one hole. This is
-    // tracked more precisely in the branching structure.
-    [<Struct>]
-    type PValue = { Stem : uint64; PTerm : PTerm } 
-    and PTerm =
-        | Var of VarId
-        | PStem64 of uint64 * PTerm
-        | PBranchL of PValue * Value
-        | PBranchR of Value * PValue
-        | PBranchLR of PValue * PValue
-
-    // The AbsVal type represents an arbitrary abstract value,
-    // which may involve zero or more holes.
-    type AbsVal =
-        | Const of Value
-        | Partial of PValue
-
-    let rec ptVars acc pt = 
-        match pt with
-        | Var v -> (v::acc)
-        | PStem64 (_, pt') -> ptVars acc pt'
-        | PBranchL (pv, _) -> ptVars acc (pv.PTerm)
-        | PBranchR (_, pv) -> ptVars acc (pv.PTerm)
-        | PBranchLR (pvL, pvR) -> ptVars (ptVars acc pvR.PTerm) pvL.PTerm
-
-    let listVars (av : AbsVal) : VarId list =
-        match av with
-        | Const _ -> []
-        | Partial pv -> ptVars [] pv.PTerm 
-
-    let rec private testContiguous ix l =
-        match l with
-        | (v::l') -> (ix = v) && (testContiguous (ix+1) l')
-        | [] -> true
-
-    let isContiguousVars ixStart (l : VarId list) : bool =
-        l |> List.distinct 
-          |> List.sort 
-          |> testContiguous ixStart
-
-    let rec private termLabel (p : Value.Term) (t : PTerm) =
-        match p with
-        | Value.Leaf -> t
-        | Value.Stem64 (stem, p') -> PStem64(stem, termLabel p' t)
-        | _ -> failwith "invalid label"
-
-    let labelVar (p : Value) (v : VarId) : AbsVal =
-        { Stem = p.Stem
-        ; PTerm = termLabel (p.Term) (Var v) 
-        } |> Partial
-
-    let rec fillPV (rd : VarId -> Value) (pv : PValue) : Value =
-        Value.consStemBits (pv.Stem) (fillPT rd pv.PTerm)
-    and fillPT (rd : VarId -> Value) (pt : PTerm) : Value =
-        match pt with
-        | Var v -> rd v
-        | PStem64 (stem64, pt') -> Value.consStem64 stem64 (fillPT rd pt') 
-        | PBranchL (pvL, vR) -> Value.pair (fillPV rd pvL) vR
-        | PBranchR (vL, pvR) -> Value.pair vL (fillPV rd pvR)
-        | PBranchLR (pvL, pvR) -> Value.pair (fillPV rd pvL) (fillPV rd pvR)
-
-    // Fill an abstract value from a given context. The 'rd' method
-    // reads from the context and may raise an exception if the VarId
-    // is not defined.
+    // type PValue =
+    //   | PConst of Value                      prefix 00
+    //   | PRef of Value                        prefix 01
+    //   | PStem of Bits * PValue               prefix 10
+    //   | PBranch of PValue * PValue           prefix 11
     //
-    // Note: fill is not a trivial replacement of vars with values due to
-    // restoring alignment of stem bits. However, it is 
-    // alignment of stem bits. 
-    let fill (rd : VarId -> Value) (av : AbsVal) : Value =
-        match av with
-        | Const v -> v
-        | Partial pv -> fillPV rd pv
+    // This encoding doesn't directly support logical concatenation of 
+    // partial lists or bitstrings. Though, it is feasible to indirectly
+    // support such features via references, and we can directly extend
+    // PValue through the reference variant.
 
-    // Extended types to consider:
-    // 
-    // Conditional partial values. A partial value is reached on some conditional
-    // path. We could track conditional paths together with the values.
+    type PValue = Value
 
-    // Some useful functions to consider:
+    let private labelOfBits (bits : bool list) : Value =
+        List.foldBack (Value.StemBits.cons) bits (Value.StemBits.empty)
+            |> Value.ofStem
+
+    let lPConst = labelOfBits [false; false]
+    let lPRef = labelOfBits [false; true]
+    let lPStem = labelOfBits [true; false]
+    let lPBranch = labelOfBits [true; true]
+
+    [<return: Struct>]
+    let inline private (|VStem|_|) p = Value.(|Stem|_|) p
+
+    let (|PConst|PRef|PStem|PBranch|) (pv : PValue) =
+        match pv with
+        | VStem lPConst v -> 
+            PConst(v)
+        | VStem lPRef r -> 
+            PRef(r)
+        | VStem lPStem (Value.Pair (p, v)) -> 
+            PStem(p, pv)
+        | VStem lPBranch (Value.Pair (l, r)) -> 
+            PBranch(l, r)
+        | _ -> failwith "type error: not a partial value"
+
+    let inline PConst (v : Value) : PValue = 
+        Value.withLabel lPConst v
+
+    let inline PRef (r : Value) : PValue =
+        Value.withLabel lPRef r
+
+    let PStem (p : Value) (pv : PValue) : PValue =
+        if not (Value.isBits p) then failwith "type error: invalid bits" else
+        if Value.isUnit p then pv else
+        match pv with
+        | PConst(v) -> 
+            PConst (Value.withLabel p v)
+        | PStem(p2, pv') -> 
+            let p' = Value.withLabel p p2
+            Value.withLabel lPStem (Value.pair p' pv')
+        | _ -> 
+            Value.withLabel lPStem (Value.pair p pv)
+    
+    let PBranch (l:PValue) (r:PValue) : PValue =
+        match l, r with
+        | PConst(lv), PConst(rv) -> PConst(Value.pair lv rv)
+        | _ -> Value.withLabel lPBranch (Value.pair l r)
+
+    // get/put/del on partial records (known static paths)
+    // let record_delete 
+
+//module Lambda =
+    // Encoding of lambdas:
     //
-    // Matching on partial values. We can have one partial value try to
-    // match another, adding some translation between variables. This match
-    // could fail statically or in the future.
-    //
-    // Merging of partial values. Given two partial values (e.g. representing
-    // different data stacks) we could produce a combined partial value and a 
-    // minimal list of variable-to-variable assignments to perform the merge.
-    // This would represent merging the different conditional paths.
-    // 
+    // type Expr =
+    //   | Var of Value
+    //   | Lambda of Var * Expr
+    //   | App of Expr * Expr
+    //   | Data of PValue
 

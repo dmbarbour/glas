@@ -12,8 +12,8 @@ What we can do with channels:
 * *recv* - receive data from a channel
 * *attach* - send a new subchannel over a channel
 * *accept* - receive a subchannel from a channel (is ordered with receiving data)
-* *pipe* - ask system to permanently connect inputs from one channel as outputs to another and vice versa
-* *copy* - copy a channel such that inputs (recv/accept) is copied are copied and outputs (send/attach) are merged.
+* *pipe* - ask system to permanently bind inputs from one channel as outputs to another and vice versa. 
+* *copy* - copy a channel such that inputs (recv/accept) is copied are copied and outputs (send/attach) are merged in non-deterministic order.
 * *drop* - tell system you won't be reading or writing from a channel in future. 
 * *test* - ask system whether channel is active - test fails if remote endpoints are closed and there is no pending input in the buffer. (More than one remote endpoint is possible due to 'copy'.)
 * *tune* - tell system that a channel will be used in some refined manner (such as read-only or write-only) to help optimize system performance. 
@@ -75,9 +75,6 @@ Every TCP connection will host multiple subchannels. The names for those subchan
 New ones can be created via 'attach'. Subchannels can be re-routed to another TCP connection (or to a local in-memory channel) via 'pipe'. Every message we send must include some metadata abou
 
 Whenever we send a message, it must be obvious which subchannel is receiving that message. Thus, we need some channel metadata as part of the send. 
-
-
-
 
 
 ## TCP Messages

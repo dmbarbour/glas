@@ -183,7 +183,7 @@ module ProgEval =
 
         // Runtime serves as an active evaluation environment for a program.
         // At the moment, runtime is separated from the program interpreter.
-        type Runtime =
+        type OriginalRT =
             val         private EffHandler  : Effects.IEffHandler
             val mutable private DeferTry    : int  // for lazy try/commit/abort
             val mutable private DataStack   : Value list
@@ -604,8 +604,13 @@ module ProgEval =
                 | (_::_) -> rt.TypeError()
                 | _ -> rt.Underflow()
 
+        // I've experimented with a runtime variant that uses an array for the
+        // data stack and copies the data stack per transaction, but it's a bit
+        // slower.
 
-        let rec rtErrMsg (rt : Runtime) (msg : Value) =
+        type Runtime = OriginalRT
+
+        let inline rtErrMsg (rt:Runtime) (msg : Value) =
             let ds = rt.ViewDataStack() |> Value.ofList
             Value.variant "rte" <| Value.asRecord ["data";"event"] [ds; msg]
 
@@ -1155,11 +1160,8 @@ module ProgEval =
         // code using large methods.
         //
         // Outcome: This adds significant overhead for initializing the app,
-        // and doesn't offer obvious performance benefits compared to FTI.
-        // One test, running an app loop ~12M times: FTI: 57s, CI: 63s. 
-        // (For a 1 cycle loop, including headers: FTI 1.2s, CI: 6.4s)
-        //
-        // So, this didn't work out. :(
+        // and doesn't offer significant performance benefits over FTI. So, this
+        // is a failed experiment, other than it taught reflection and MSIL.
 
         open System.Reflection
         open System.Reflection.Emit
@@ -1694,22 +1696,141 @@ module ProgEval =
             evalProfiled (new Profile()) p io
 
 
+    module PartialEval = 
+        // This module is intended to support compile-time optimization of programs.
+        // The optimization I'm most interested in is eliminating data plumbing at
+        // runtime (swap, copy, drop, dip, etc.). But let's how much else can be 
+        // achieved, and what I gain from optimizing in practice.
+
+        type VarId = int
+
+        // partial values.
+        [<Struct>]
+        type PValue = { PStem : uint64; PTerm : PTerm }
+        and PTerm = 
+            | PConst of Value.Term
+            | PVar of VarId
+            | PStem64 of uint64 * PTerm
+            | PBranch of PValue * PValue
+
+        let inline ofPTerm pt = 
+            { PStem = StemBits.empty
+            ; PTerm = pt 
+            }
+
+        let mkPStem64 (stem : uint64) (pt : PTerm) : PTerm =
+            match pt with
+            | PConst t -> PConst (Value.Stem64 (stem, t))
+            | _ -> PStem64 (stem, pt)
+
+        let consPStemBit (b : bool) (pv : PValue) : PValue =
+            let bits' = StemBits.cons b pv.PStem
+            if StemBits.isFull pv.PStem 
+                then { PStem = StemBits.empty; PTerm = mkPStem64 bits' (pv.PTerm) }  
+                else { PStem = bits'; PTerm = pv.PTerm }
+
+        let rec private consPStemLoop (n : uint64) (nLen : int) (pv : PValue) : PValue = 
+            if(nLen = 0) then pv else
+            let b = (n &&& (1UL <<< (64 - nLen))) <> 0UL
+            let pv' = consPStemBit b pv
+            let nLen' = nLen - 1
+            consPStemLoop n nLen' pv'
+
+        // Prepend 0 to 63 stem bits on a value, encoding length in the 64-bit
+        // integer based on the lowest '1' bit, e.g. `abc1000..0` is a 3 bit stem.
+        let consPStemBits (stem : uint64) (pv0 : PValue) : PValue =
+            assert(StemBits.isValid stem)
+            if StemBits.isEmpty pv0.PStem
+                then { PStem = stem; PTerm = pv0.PTerm }
+                else consPStemLoop stem (StemBits.len stem) pv0
+
+        // Prepend exactly 64 bits from a stem to a value.
+        let consPStem64 (stem64 : uint64) (pv0 : PValue) : PValue =
+            if StemBits.isEmpty pv0.PStem 
+                then ofPTerm (mkPStem64 stem64 pv0.PTerm)
+                else consPStemLoop stem64 64 pv0 
+
+        [<return: Struct>]
+        let (|Const|_|) (pv : PValue) : Value voption =
+            match pv.PTerm with
+            | PConst t -> ValueSome { Stem = pv.PStem; Term = t }
+            | _ -> ValueNone
+
+        let rec fillPT (env : VarId -> PValue) (pt : PTerm) : PValue =
+            match pt with
+            | PConst _ -> ofPTerm pt
+            | PVar varId -> env varId 
+            | PStem64 (stem, ptNode) ->
+                consPStem64 stem (fillPT env ptNode)
+            | PBranch (l, r) ->
+                match fill env l, fill env r with 
+                | Const l', Const r' -> ofPTerm (PConst (Value.Branch (l', r')))
+                | l', r' -> ofPTerm (PBranch (l', r'))
+        and fill (env : VarId -> PValue) (pv : PValue) : PValue =
+            consPStemBits (pv.PStem) (fillPT env pv.PTerm)
+
+        let rec ptermVars acc pt = 
+            match pt with
+            | PConst _ -> acc
+            | PVar v -> (v::acc)
+            | PStem64 (_, pt') -> ptermVars acc pt'
+            | PBranch (pvL, pvR) -> ptermVars (ptermVars acc pvR.PTerm) pvL.PTerm
+
+        let listVars (pv : PValue) : VarId list =
+            ptermVars [] (pv.PTerm)
+
+
+        // forward partial evaluation will output a modified
+        // program (eliminating unnecessary ops)
+        type P1 =
+            // required data plumbing becomes 'Move'
+            | Move of Src:PValue * Dst:PValue // source * dest
+
+            // control
+            | Eq of PValue * PValue
+            | Fail
+            | Halt of Msg:Value
+            | Get of Label:PValue * Rec:PValue * Dst:PValue
+            | Put of Label:PValue * Rec:PValue * Val:PValue * Dst:PValue
+            // cond, while, until
+            // env
+            // prog
+            // accel
+
+        [<Struct>]
+        type CTE1 =
+            { DataStack : PValue
+            ; EffStack  : PValue
+            ; DipStack  : PValue
+            }
+
+        // Current idea:
+        //
+        // Run a few passes, both forward and backwards, to optimize destinations
+        // for data.
+
+
     module RMachine =
         // Compile program to run on a virtual register machine, and partially
-        // evaluate to eliminate unnecessary data movements.
+        // evaluate to eliminate unnecessary data movement and stack allocation.
+        //
+        // Saving data for effects handlers is a challenge in this case.
 
-        // We'll model registers or memory as an array of values.
+        // We can model registers or memory as an array of values.
         type Memory = Value array
 
+        // Not sure I want to pursue this yet. Let's discover if I actually need
+        // more performance to implement the bootstrap, first. Or if I can implement
+        // the logic only once, in a glas module, then reuse it here.
 
 
     // OTHER OPTIONS:
-    //  Compiler that emits code (System.Reflection.Emit) but uses Runtime
-    //  Compiler that emits lower level code, implementing its own runtime.
+    //  
+    // - Lightweight Program -> Program optimizing pass.
+    // - Incrementally move evaluation logic into glas modules:
+    //   - optimizing pass
+    //   - compiler to register machine
     //
-    // With low level code, it might be best to start with compiling to a
-    // register machine. Each register can become a variable, local or global.
-    //    
 
     let defaultEval = FinallyTaglessInterpreter.eval
     let private selectEval () =

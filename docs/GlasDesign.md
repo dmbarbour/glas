@@ -244,13 +244,9 @@ Glas systems assume memoization as a solution to many performance issues that wo
 
 ### Content Distribution
 
-Networked glas systems can potentially support [content distribution networks (CDNs)](https://en.wikipedia.org/wiki/Content_delivery_network) to improve performance when repeatedly serving large, stowed data values (see *Stowage*). The large values can also be cached and don't need to be repeatedly transmitted.
+Networked glas systems can potentially support [content distribution networks (CDNs)](https://en.wikipedia.org/wiki/Content_delivery_network) to improve performance when repeatedly communicating large stowed data values (see *Stowage*). A CDN service is not fully trusted, but it is feasible to derive a decryption and lookup key from the original secure hash of content. 
 
-The CDN service is not fully trusted, so data distributed through the CDN should be encrypted. A lookup key and encryption key are derived from the content secure hash (e.g. take 256 bits each). The client will query the CDN using the lookup key, download the encrypted binary, decrypt then decompress locally, and finally verify against the original secure hash. 
-
-The encrypted binary may include a non-encrypted header that indicates encryption algorithm, compression algorithm, decompressed size, and metadata.
-
-A list of dependencies (lookup keys) will also be uploaded such that the CDN can request any missing dependencies or track dependencies for purpose of accounting, scoping sessions, or automatic garbage collection.
+Usefully, we might support garbage collection of the CDN. With encrypted data, it cannot directly read the data to find dependencies. But we could upload some metadata such as a list of lookup keys that should be present together with the data.
 
 ### Compression Pass
 

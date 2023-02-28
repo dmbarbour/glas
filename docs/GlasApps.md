@@ -6,7 +6,7 @@ A basic glas application, in context of [Glas CLI](GlasCLI.md), is represented b
 
 A step that returns successfully is committed. A failed step is aborted then retried, implicitly waiting for changes to external conditions. The first step receives 'init' and the final step returns 'halt'. Intermediate steps receive and return 'step'. This is an example of a *transaction machine* - modeling an application as a repeating transaction. 
 
-Transaction machines are conceptually simple yet offer a robust foundation for reactivity, concurrency, and process control. However, these benefits rely on optimizations that are difficult to robustly implement on step functions. To resolve this, I develop the 'proc' program model.
+Transaction machines are conceptually simple yet offer a robust foundation for reactivity, concurrency, and process control. However, these benefits rely on optimizations that are difficult to implement on step functions. To resolve this, I intend to develop a specialized program representation.
 
 ## Transaction Machines
 
@@ -22,7 +22,7 @@ Further, incremental computing can be supported. Instead of fully recomputing ea
 
 ### Concurrency and Parallelism
 
-Repeating a single transaction that makes a non-deterministic binary choice is equivalent to repeating two transactions that are identical before this choice then deterministically diverge. We can optimize non-deterministic choice using replication. Usefully, replicas can be stable under incremental computation. Introducing non-deterministic choice enables a single repeating transaction to represent a full dynamic set of repeating transactions.
+Repeating a single transaction that makes a non-deterministic binary choice is equivalent to repeating a set of two transactions that are identical before this choice then deterministically diverge. We can optimize non-deterministic choice using replication. Usefully, replicas can be stable under incremental computation. Introducing non-deterministic choice enables a single repeating transaction to represent a dynamic set of repeating transactions, i.e. a set of threads.
 
 Transactions in the set will interact via shared state. Useful interaction patterns such as channels and mailboxes can be modeled and typefully abstracted within shared state. Transactional updates and ability to wait on flexible conditions also mitigates many challenges of working directly with shared state.
 
