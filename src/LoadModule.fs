@@ -32,6 +32,7 @@ module LoadModule =
             let sourcesFile = Path.Combine(home, sources_name)
             let sourcesText = File.ReadAllText(sourcesFile)
             let parseDirEnts (ent : TextTree.TTEnt) =
+                if ent.Label.StartsWith("#") then [] else // ignore comments
                 let isBasicDirEnt = (ent.Label = "dir") && (List.isEmpty ent.Attrib)
                 if isBasicDirEnt then [Path.Combine(home, ent.Data)] else
                 logWarn ll (sprintf "unhandled entry in %s: %A" sources_name ent)

@@ -32,7 +32,7 @@ Spaces are trimmed, with a special exception for multi-line texts (see below). S
 
 ## Escape Sequences
 
-Entries that start with backslash ('\', codepoint 92) are reserved by the text tree parser for escapes and extensions. This can potentially support modularity (e.g. via '\include' or similar), macro calls, inline schema definitions, and other ad-hoc features. Currently, escapes are used only for multi-line texts and comments.
+Entries that start with backslash ('\', codepoint 92) are reserved by the text tree parser for escapes and extensions. This can potentially support modularity (e.g. via '\include' or similar), macro calls, inline schema definitions, and other ad-hoc features. Currently, escapes are used only for multi-line texts.
 
 *Aside:* An important design constraint for escapes is that their effect must be scoped to the entry they are embedded within. This simplifies local reasoning.
 
@@ -49,6 +49,4 @@ Unlike inline text, multi-line text is not trimmed. The indentation, '\' label, 
 
 ## Comments
 
-Entries whose labels start with two backslashes '\\' are (usually) dropped by the parser. This can be used similar to inline comments in many programming languages, but entries may form structured comments with attributes, multi-line texts, etc..
-
-As a convention, I also propose that entries whose labels start with '#' be 'semantic' comments that are processed normally by the text tree parser but represent ad-hoc annotations to the contextual interpreter of the text tree.
+The text tree format proposes a lightweight convention for comments: any entry whose label starts with '#' should be interpreted as a comment or annotation or metadata. This includes '#author', '#date', and so on. These entries are left accessible for post-processing, but should be understood as providing or supporting context without influence on meaning.

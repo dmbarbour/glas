@@ -68,8 +68,7 @@ module TextTree =
             let struct(data, llAttrib) = tryMultiLineText data0 ix ll0
             let struct(attribs, ll') = parseEntList [] (ix + 1) llAttrib
             let ent = { Label = lbl; Data = data; Attrib = attribs }
-            let acc' = if (lbl = "\\rem") then acc else (ent::acc)
-            parseEntList acc' indent ll'
+            parseEntList (ent::acc) indent ll'
         | _ -> struct((List.rev acc), ll)
 
     let parseEnts (s : string) : TTEnt list =
