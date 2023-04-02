@@ -10,51 +10,63 @@ The glas system starts with a command line tool 'glas'. This tool knows how to c
 
 ## Modules and Syntax
 
-Modules are global or local. Global modules are represented by folders, and are found based on configuration of the glas command line. Local modules are represented by files or subfolders in the same folder as a file currently being compiled or (if no such file) the current directory. Every valid module compiles to an arbitrary glas value.
+Modules are represented by files and folders. Every module compiles to a glas value. This value usually represents a dictionary of useful definitions, but there is no restriction on type.
 
-A folder compiles the contained 'public' file. This file may have any extension, such as "public.g0" or "public.json". Glas does not provide any mechanism to reference specific files across folder boundaries, thus the compiled value of a folder depends only on its content and global modules rather than its context.
+A file is compiled based on its file extensions. To process a file named "foo.ext", the glas command line will load the global module 'language-ext' then evaluate the compiler program defined by that module. File extensions may compose, e.g. to process file "foo.x.y" we'll first appy language-y followed by language-x.
 
-A file is compiled based on its file extensions. For example, to process a file named "foo.ext", the glas command line will load a global module named language-ext then extract a value representing a compiler function. This function is interpreted, receiving the file binary as input and producing the compiled value as output. 
+A folder is compiled to the value of the contained 'public' module, which must be a file. Folders also serve as the boundary for local modules: a local module must be another file or subfolder within the same folder as the file being compiled. This ensures folders are relocatable within a context of global modules.
 
-File extensions may compose, e.g. "foo.x.y" would imply a two-pass compile, first by language-y then by language-x. The value passed to language-x may be structured data. Use cases for composition include text preprocessors and building higher level compilers based on structured data.
+Global modules are represented by folders and are discovered based on command line configuration. Initially this configuration supports a conventional search path, but it should eventually include network repositories.
 
-The compiler function has a very limited effects API. Other than producing a value, it may load other modules and log some messages, e.g. describing warnings or errors to support debugging. The constraint on effects ensures a deterministic and cacheable outcome. Dependencies between modules must form a directed acyclic graph, otherwise the glas system will report dependency cycles as errors.
+The compiler function has a limited effects API to simplify caching and reproducibility. The glas system will also report an error in case of dependency cycles. See *Language Modules*
 
 ## Values
 
 Glas represents data using immutable binary trees, i.e. such that each node in a tree has optional left and right children respectively labeled '0' and '1'. The most naive representation is:
 
-        type T = ((1+T) * (1+T))
+        type Tree = ((1+Tree) * (1+Tree))
 
-A binary tree can directly represent unit `()`, pair `(a,b)`, and sum types `L a | R b`. However, glas systems generally favor labeled data because it is extensible and meaningful. Text labels are encoded into a null-terminated UTF-8 path through the tree. For example, label 'data' is encoded by path `01100100 01100001 01110100 01100001 00000000`, where '0' represents a left branch and '1' a right branch. Multiple labels can be encoded into a binary tree with shared prefixes, forming a [radix tree](https://en.wikipedia.org/wiki/Radix_tree) as the basis for record and dictionary data.
+A binary tree can easily represent unit `()`, pair `(a, b)`, and either types `(Left a | Right b)`. However, glas systems favor labeled data because labels are more meaningful and extensible. 
 
-To efficiently represent non-branching path fragments, the under the hood representation is closer to:
+Text labels are encoded into a *path* through a tree, using null-terminated UTF-8. For example, label 'data' would be encoded into the path `01100100 01100001 01110100 01100001 00000000` where '0' and '1' respectively represent following the left or right branch. Following the path will reach the associated value. A 'record' or 'dictionary' may have many such paths, sharing prefixes, thus forming a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). A 'variant' (aka 'tagged union') should have exactly one label.
 
-        type Bits = compact Bool list
-        type T = (Bits * (1 + (T * T)))
+To efficiently represent labeled data, non-branching paths must be compactly encoded far fewer allocations. One viable under the hood representation is closer to:
 
-Simple data such as integers and symbols can be encoded into bitstrings - trees with a single, non-branching path terminating in a leaf node. For example, a byte is an 8-bit bitstring, msb to lsb, such that `00010110` is byte 22. A variable-width natural number 22 is almost the same but loses the zeroes prefix `10110`. Negative integers can be conveniently represented by negating all the bits, so -22 is `01001`.
+        type Tree = (Stem * Node)
+        type Stem = compact Bool list
+        type Node = Leaf | Branch of Tree * Tree 
 
-Glas systems encode most sequential structures as lists. Logically, a list is tree representing a right-associative sequence of pairs, terminating in unit, i.e. `type List = (Elem * List) | ()`. 
+Short, simple data, such as integers and symbols, will be directly encoded into bitstrings. Bytes are encoded using a bitstring of exactly 8 bits, msb to lsb. Integers are usually encoded as variable length bitstring, msb to lsb, with negatives in one's complement:
 
-        /\
-       1 /\     the list [1,2,3]
-        2 /\
-         3  ()
+        Integer  Bitstring
+         4       100
+         3        11
+         2        10
+         1         1
+         0        ()    empty bitstring
+        -1         0
+        -2        01
+        -3        00
+        -4       011
 
-However, direct representation of lists is awkward and inefficient for many use-cases such as random access or queues. Thus, glas systems will often represent lists under-the-hood using [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_(data_structure)). Binaries (lists of bytes) are even more heavily optimized, being the most popular type for interfacing with external systems (filesystems, networks, etc.).
+Glas systems encode sequential structure as lists. Logically, a list is encoded into binary tree along the right spine, terminating in unit. 
 
-Glas systems can be further extended with specialized representations for tables, matrices, and other common types. This is related to *Acceleration*, which extends performance primitives without affecting formal semantics.
+        type List a = (a * List a) | () 
 
-Glas values may scale to represent entire databases. Subtrees of larger-than-memory values can be semi-transparently stored to disk then content-addressed by secure hash, optionally guided by program annotations. This pattern is called *Stowage* and it also contributes to performance of persistence, communication, and memoization.
+         /\
+        1 /\     the list [1,2,3]
+         2 /\
+          3  ()  
+
+Direct representation of lists is inefficient for many use cases. To mitigate this, glas systems favor a [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [rope](https://en.wikipedia.org/wiki/Rope_%28data_structure%29) representation under the hood. This optimized representation is accessible via *Acceleration* - for example, list slice and append functions are annotated for replacement by runtime built-ins.
+
+Glas values may scale to represent entire databases. Subtrees that aren't immediately necessary can be heuristically moved into content-addressed storage then referenced by secure hash. I call this pattern *Stowage*, and it will be heavily guided by program annotations. Stowage also simplifies performance of data persistence, memoization, and many communication patterns.
 
 ## Programs
 
-Programs are values with a stable interpretation. 
+Programs are values with a known interpretation. In this case, we're interpreting a structured glas value (rather than a binary or text), so we'll rely on a separate syntax layer such as ".g0" files compiled by mo language-g0 
 
-The interpretation described here is used for language modules and to represent basic applications for the glas command line. It is designed for simplicity and compositionality at significant costs to flexibility and convenience of direct use by humans. Performance can be augmented by acceleration and other specialized optimizations.
-
-Programmers usually express these programs indirectly, e.g. write ".g0" files that compile into dictionaries of reusable programs. Metaprogramming features can mitigate flexibility.
+ The interpretation described here is used by language modules and basic applications. It is designed primarily for simplicity and compositionality - e.g. it avoids any jumps, which are troublesome for composition. This is a *structured* program model. The concrete syntax must be defined by a language module (initially [language-g0](GlasZero.md)).
 
 ### Stack Operators
 
@@ -187,22 +199,24 @@ I discuss these ideas further under [glas applications](GlasApps.md) and [glas c
 
 ## Language Modules
 
-Language modules are global modules with a simple naming convention: `language-xyz` provides the compiler function for files with extension `".xyz"`. The language module must compiles to a value of form `(compile:prog:(do:Program, ...), ...)` expressing a 1--1 arity program. The 'prog' header is required to provide space for future extension. Fields other than 'compile' can support ad-hoc tooling, such as IDE or REPL integration.
+Language modules are global modules with a simple naming convention: `language-xyz` provides the compiler function for files with extension `".xyz"`. Language modules must currently compile to a value of form `(compile:prog:(do:Program, ...), ...)` expressing a 1--1 arity program. Symbols other than 'compile' may be defined to support tooling, such as IDE or REPL integration, a standard linter or formatter, etc.. 
 
-Input to the compiler function is usually the file binary. Final output is the compiled module value. Compilation may fail, preferably after logging some messages, in case of input errors. Compile-time effects are constrained to simplify caching, sharing, and reproducibility. Effects API:
+Input to the compiler function is (usually) a file binary. Final output is the compiled module value. Compilation may fail, hopefully after logging some error messages. Compile-time effects are constrained to simplify caching, sharing, and reproducibility. Effects API:
 
 * **load:ModuleRef** - Response is compiled value for the indicated module. The request may fail, e.g. if the module cannot be found or compiled, with cause implicitly logged. Currently propose a few forms of ModuleRef: 
   * *global:String* - search for global module based on configuration of CLI
   * *local:String* - search for module in same folder as file being compiled
-* **log:Message** - Message should be a record, e.g. `(text:"Uh oh, you messed up!", lv:warn)`, so that it can be flexibly extended with metadata. Response is unit. Behavior depends on development environment, e.g. might print the message to stderr with color based on level.
+* **log:Message** - Message should be a record, e.g. `(text:"Uh oh, you messed up!", lv:warn)`. This simplifies extension with contextual metadata or switching from texts to more structured content. Response is unit. Log messages should target the human user or the development environment.
 
-The glas command line will include a built-in implementation of the ".g0" compiler function, a Forth-like language with staged metaprogramming. This is used to bootstrap the [language-g0](GlasZero.md) module if possible. If bootstrap fails, a warning is reported and the built-in g0 compiler is used directly.
+The glas command line will include a built-in compiler for [language-g0](GlasZero.md), a Forth-like language with staged metaprogramming. This built-in compiler is used to bootstrap the actual language-g0 module if possible, emitting a warning on bootstrap failure. Other glas languages can build upon language-g0.
 
 ## Automated Testing
 
-Static assertions when compiling modules are useful for automated testing. However, build-time is deterministic and under pressure to resolve swiftly. This leaves an open niche for long-running or non-deterministic tests, such as overnight fuzz-testing. Use of a non-deterministic 'fork' effect would be useful for testing:
+Static assertions when compiling modules are useful for automated testing. However, build-time is deterministic and under pressure to resolve swiftly. This leaves an open niche for long-running or non-deterministic tests, such as overnight fuzz-testing that can heuristically search for failures. 
 
-* **fork** - Response is a non-deterministic boolean - i.e. a '0' or '1' bitstring. In context of testing, the choice doesn't need to be fair or random. It can be guided by heuristics, memory, and program analysis to search for failing test cases.
+Use of a non-deterministic 'fork' effect would be useful for testing:
+
+* **fork:List** - Response is a non-deterministic value from the list. In context of testing, the choice doesn't need to be fair or random. It can be guided by heuristics and analysis, e.g. filter out options that provably result in a successful test.
 
 A test might be represented as a 0--0 arity program that is pass/fail. In addition to fork, a 'log' effect would be useful for generating messages to support debugging.
 
@@ -294,9 +308,9 @@ Memoization can mitigate rework insofar as we have [consistent heuristics](https
 
 ### Provenance Tracking
 
-Manually tracing data to its sources is challenging and error-prone. Glas further hinders manual tracking because language module compiler functions cannot refer to file or module names. This ensures code can be moved or shared without changing its meaning. Only content-addressed provenance is possible, e.g. based on secure hash of binary, or notation within the code.
+The glas module system hinders manual provenance tracking, e.g. the compiler doesn't even have access to a filename. This hinders debugging. OTOH, even if I try to improve things, manual provenance tracking is almost doomed to failure when dealing with layers of macros, user-defined languages, etc..
 
-I hope to support provenance tracking in a more systematic manner, such that all data is traced to its sources without any explicit effort by the programmers. This might involve something similar to [SHErrLoc project's](https://research.cs.cornell.edu/SHErrLoc/) heuristics, e.g. assuming that widely used/tested dependencies (such as language parser code) contributes 'less' as a source.
+I want to automate provenance tracking at a lower layer, i.e. automatically track which regions of input are most likely to be relevant to a given region of output. This might involve something similar to [SHErrLoc project's](https://research.cs.cornell.edu/SHErrLoc/) heuristics, giving less weight to widely tested dependencies.
 
 ### Computation Model 
 

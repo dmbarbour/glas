@@ -177,3 +177,41 @@ prog p-repeat [
 ]
 macro repeat [p-repeat]
 assert [-9 20 [int-increment] repeat 11 eq]
+
+# word-to-nat: MachineWord -- Nat
+#   removes prefix '0' bits from a bitstring to produce a
+#   non-negative positive integer.
+prog word-to-nat [
+    type-bits
+    [0b0 get] loop
+]
+
+# word-to-int: MachineWord -- Int
+#   input word encodes integer, using 2's complement 
+#   for negative numbers. This returns the integer.
+prog word-to-int [
+    type-bits
+    [0b1 get]
+    [[0b1 get] loop int-decrement]
+    [word-to-nat]
+    try-then-else
+]
+
+assert [0x7F word-to-int 127 eq]
+assert [0x00 word-to-int  0 eq]
+assert [0xFF word-to-int -1 eq]
+assert [0xFE word-to-int -2 eq]
+assert [0xFD word-to-int -3 eq]
+assert [0x80 word-to-int -128 eq]
+assert [0xF01 word-to-int -255 eq]
+
+# nat-to-word: Nat WordLen -- Machine Word
+#   This will add some '0' bits to the word
+# 
+
+
+
+
+
+
+

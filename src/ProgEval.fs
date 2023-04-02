@@ -120,15 +120,20 @@ module ProgEval =
             Value.(|Stem|_|) (prefix s)
 
     module Profiler = 
-        type Profile = System.Collections.Generic.Dictionary<Value, Ref<Stats.S>>
+        // separating index from runtime data.
+        type ProfIndex = System.Collections.Generic.Dictionary<Value, int>
+        type ProfData = Stats.S array
 
-        let getProfReg (prof : Profile) (vChan : Value) =
-            match prof.TryGetValue(vChan) with
-            | true, reg -> reg
+        let initProfile (profIndex : ProfIndex) : ProfData =
+            Array.create (profIndex.Count) (Stats.s0) 
+
+        let getProfReg (profIndex : ProfIndex) (vChan : Value) : int =
+            match profIndex.TryGetValue(vChan) with
+            | true, ix -> ix
             | false, _ ->
-                let reg = ref (Stats.s0)
-                prof.Add(vChan, reg)
-                reg
+                let ix = profIndex.Count
+                profIndex.Add(vChan, ix)
+                ix
 
         let statsMsg (s : Stats.S) : Value =
             if(0UL = s.Cnt) then Value.unit else
@@ -149,10 +154,11 @@ module ProgEval =
                     ["count"; "avg"; "min"; "max"; "sdev"; "units"]
                     [nCount ; nAvg ; nMin ; nMax ; nSDev ; vUnits ]
 
-        let logProfile (io:Effects.IEffHandler) (prof:Profile) =
+        let logProfile (io:Effects.IEffHandler) (profIndex : ProfIndex) (profData : ProfData) : unit =
             let vProf = Value.symbol "prof"
-            for k in prof.Keys do
-                let s = prof[k].Value
+            for kvp in profIndex do
+                let k = kvp.Key
+                let s = profData[kvp.Value]
                 if (s.Cnt > 0UL) then
                     let vStats = statsMsg s
                     //printfn "chan: %s, stats: %s (from %A)" (Value.prettyPrint k) (Value.prettyPrint vStats) (s)
@@ -183,7 +189,7 @@ module ProgEval =
 
         // Runtime serves as an active evaluation environment for a program.
         // At the moment, runtime is separated from the program interpreter.
-        type OriginalRT =
+        type Runtime =
             val         private EffHandler  : Effects.IEffHandler
             val mutable private DeferTry    : int  // for lazy try/commit/abort
             val mutable private DataStack   : Value list
@@ -608,8 +614,6 @@ module ProgEval =
         // data stack and copies the data stack per transaction, but it's a bit
         // slower.
 
-        type Runtime = OriginalRT
-
         let inline rtErrMsg (rt:Runtime) (msg : Value) =
             let ds = rt.ViewDataStack() |> Value.ofList
             Value.variant "rte" <| Value.asRecord ["data";"event"] [ds; msg]
@@ -815,10 +819,6 @@ module ProgEval =
                 Effects.logErrorV io "runtime error" (rtErrMsg rt eMsg)
                 None
 
-        let evalProfiled (prof : Profiler.Profile) p io args =
-            // ignore the profile for now
-            eval p io args
-
     // todo: reimplement the finally tagless interpreter?
     // or jump straight to .NET dynamic assemblies and methods?
 
@@ -840,7 +840,6 @@ module ProgEval =
             { OnOK : Cont
             ; OnFail : Cont
             ; OnEff : CTE -> Cont
-            ; Prof : Profile
             }
 
         // utility
@@ -950,18 +949,8 @@ module ProgEval =
             // continuations being passed together. 
             match anno with
             | Record ["prof"] struct([ValueSome profOptions],anno') ->
-                let vChan = Value.record_lookup (Value.label "chan") profOptions
-                          |> ValueOption.defaultValue (Value.unit)
-                let reg = getProfReg (cte.Prof) vChan // shared register
-                let sw = new System.Diagnostics.Stopwatch() // per profiled location
-                let onExit k rt =
-                    sw.Stop()
-                    reg.Value <- Stats.add (reg.Value) (sw.Elapsed.TotalSeconds)
-                    k rt
-                let onEnter k rt =
-                    sw.Restart()
-                    k rt
-                bracket onEnter (compileAnno anno' p) onExit onExit cte
+                // nop for now
+                compileAnno anno' p cte 
             | Record ["stow"] struct([ValueSome vOpts], anno') ->
                 // nop for now
                 compileAnno anno' p cte
@@ -1120,7 +1109,7 @@ module ProgEval =
                 | _ -> onAccelFail
             | _ -> onAccelFail
 
-        let evalProfiled (prof : Profile) (p : Program) (io : Effects.IEffHandler) : Value list -> Value list option =
+        let eval (p : Program) : Effects.IEffHandler -> Value list -> Value list option =
             let onOK (rt : Runtime) = 
                 box (Some (rt.ViewDataStack()))
             let onFail (rt : Runtime) = 
@@ -1134,11 +1123,10 @@ module ProgEval =
                 { OnOK = onOK
                 ; OnFail = onFail
                 ; OnEff = onEff 
-                ; Prof = prof
                 }
             let lazyOp = // compile stuff once only
                 lazy(compile p cte0)
-            fun ds ->
+            fun io ds ->
                 let rt = new Runtime(ds, io)
                 let result = 
                     try 
@@ -1150,10 +1138,6 @@ module ProgEval =
                         None
                 // logProfile io prof
                 result
-
-        let eval p io =
-            // build profile normally, but ignore it
-            evalProfiled (new Profile()) p io
 
     module CompiledInterpreter =
         // This implementation of 'eval' uses System.Reflection.Emit to produce
@@ -1226,7 +1210,6 @@ module ProgEval =
                 FldData  : FieldBuilder     // array of static data
                 Methods  : MethodDict       // reusable methods
                 Statics  : DataDict         // tracks static data
-                Prof     : Profile          // user-provided registers for profiling. 
                 NextID   : Ref<int>         // simple internally unique identifiers
             }
 
@@ -1257,8 +1240,8 @@ module ProgEval =
             | true, m -> m
             | false, _ ->
                 let m = newSub cte
-                mkSub (m.GetILGenerator())
                 cte.Methods.Add(p, m)
+                mkSub (m.GetILGenerator())
                 m
 
         // create the type and initialize statics.
@@ -1273,7 +1256,7 @@ module ProgEval =
         // initCTE prepares an initial CTE with a type that is constructed by
         // giving it the Runtime argument. The profile is shared across all 
         // instances of this type, currently.
-        let initCTE (prof : Profile) : CTE =
+        let initCTE () : CTE =
             // for now, all named the same. Might need to distinguish later
             // to support debugging of exception stacks, but uncertain.
             let asmName = AssemblyName("Glas.ProgEval.DynCI")
@@ -1305,7 +1288,6 @@ module ProgEval =
             ; FldData = fldData
             ; Methods = new MethodDict()
             ; Statics = new DataDict()
-            ; Prof = prof
             ; NextID = ref 1000
             }
 
@@ -1504,14 +1486,6 @@ module ProgEval =
             // not well factored at the moment due to profiler and
             // continuations being passed together. 
             match anno with
-            | Record ["sub"] struct([ValueSome _], anno') ->
-                // introduce a reusable subroutine!
-                // later, might use options on sub to guide debug names 
-                let pSub = addSub cte (Prog(anno,p)) (compile cte (Prog(anno',p)))
-                il.Emit(OpCodes.Ldarg_0) // this
-                il.Emit(OpCodes.Ldarg_1) // effects handlers
-                il.Emit(OpCodes.Call, pSub) // call the reusable method
-                il.Emit(OpCodes.Brfalse, lblFail) // handle failure
             | Record ["prof"] struct([ValueSome profOptions],anno') ->
                 // I could feasibly allocate and handle the stopwatch, but dealing with
                 // the profile registers is a pain. Might need to use static fields same
@@ -1532,7 +1506,12 @@ module ProgEval =
                 | _ ->
                     compileAccel cte false vModel  p' lblFail il
             | _ -> // ignoring other annotations 
-                compileOp cte p lblFail il
+                // handle as a reusable subroutine call
+                let pSub = addSub cte p (compile cte p)
+                il.Emit(OpCodes.Ldarg_0) // this
+                il.Emit(OpCodes.Ldarg_1) // effects handlers
+                il.Emit(OpCodes.Call, pSub) // call the reusable method
+                il.Emit(OpCodes.Brfalse, lblFail) // handle failure
         and compileAccel cte bOpt vModel p lblFail il =
             let inline accelFail () =
                 // if acceleration is unavailable and optional, 
@@ -1664,16 +1643,16 @@ module ProgEval =
                 il.Emit(OpCodes.Call, rootProg)
                 il.Emit(OpCodes.Ret)
 
-        let evalProfiled (prof : Profile) (p : Program) (io : Effects.IEffHandler) : Value list -> Value list option =
+        let eval (p : Program) : Effects.IEffHandler -> Value list -> Value list option =
             let lazyType = lazy ( // defer compile to first call
                 //printfn "compiling program"
-                let cte = initCTE prof
+                let cte = initCTE ()
                 compileEntry cte p
                 let result = createType cte
                 //printfn "compile completed"
                 result
                 )
-            fun args ->
+            fun io args ->
                 let myType = lazyType.Force()
                 let rt = new Runtime(args, io)
                 let instArgs : obj array = [| rt |]
@@ -1692,136 +1671,422 @@ module ProgEval =
                     then Some (rt.ViewDataStack())
                     else None
 
-        let eval p io = 
-            evalProfiled (new Profile()) p io
+
+    module CompiledStackMachine =
+        open System.Reflection
+        open System.Reflection.Emit
+        open Value
+        open ProgVal
+
+        // This implementation aims to minimize allocations and GC associated 
+        // with data plumbing and backtracking conditional behavior. This can
+        // be achieved by pushing arguments onto the CLR data stack and use
+        // of pass-by-ref to return results.
+        //
+        // To represent the data stack I will use the CLR data stack indirectly.
+        // The stack is represented in arguments or local variables. I can use
+        // pass-by-reference for the return data.
+        // 
+        // To simplify things, I will not support reuse of effectful code across
+        // 'env' environments. This allows the code to statically know which fields
+        // for effects must be saved upon entry to a transaction. However, we do
+        // know which subprograms are pure.
+        // 
 
 
-    module PartialEval = 
-        // This module is intended to support compile-time optimization of programs.
-        // The optimization I'm most interested in is eliminating data plumbing at
-        // runtime (swap, copy, drop, dip, etc.). But let's how much else can be 
-        // achieved, and what I gain from optimizing in practice.
+        let v_undef = Value.symbol "undef"
 
-        type VarId = int
 
-        // partial values.
+        // Lightweight effect wrapper. 
+        // Features:
+        //   support 'unwind' of transaction after exception (need this!)
+        //   lazy try/commit/abort in case no effect is used
+        //   simplifies access from compiled code (no 'voption')
+        type EWrap = 
+            val private IO : Effects.IEffHandler
+            val mutable private DeferTry : int
+            val mutable private ActiveTry : int
+            new(io) = 
+                { IO = io
+                ; DeferTry = 0 
+                ; ActiveTry = 0
+                }
+
+            member ewrap.Try() =
+                ewrap.DeferTry <- ewrap.DeferTry + 1
+
+            member ewrap.Commit() =
+                if (ewrap.DeferTry > 0) then 
+                    ewrap.DeferTry <- ewrap.DeferTry - 1
+                else 
+                    assert(ewrap.ActiveTry > 0)
+                    ewrap.ActiveTry <- ewrap.ActiveTry - 1
+                    ewrap.IO.Commit()
+
+            member ewrap.Abort() =
+                if (ewrap.DeferTry > 0) then 
+                    ewrap.DeferTry <- ewrap.DeferTry - 1
+                else 
+                    assert(ewrap.ActiveTry > 0)
+                    ewrap.ActiveTry <- ewrap.ActiveTry - 1
+                    ewrap.IO.Abort()
+
+            member private ewrap.Activate() =
+                while (ewrap.DeferTry > 0) do
+                    ewrap.DeferTry <- ewrap.DeferTry - 1
+                    ewrap.ActiveTry <- ewrap.ActiveTry + 1
+                    ewrap.IO.Try()
+
+            member ewrap.Eff(arg:Value, result:outref<Value>) : bool =
+                ewrap.Activate()
+                match ewrap.IO.Eff(arg) with
+                | ValueNone -> 
+                    false
+                | ValueSome vResult ->
+                    result <- vResult
+                    true
+
+            member ewrap.Unwind() =
+                ewrap.DeferTry <- 0
+                while (ewrap.ActiveTry > 0) do
+                    ewrap.ActiveTry <- ewrap.ActiveTry - 1
+                    ewrap.IO.Abort()
+
+
+        // Static analysis and lightweight optimizations to support compilation.
+        // This is specialized to the compile phase, e.g. max stack must know how
+        // 'eff' is handled (and possibly other reusable subprograms).
         [<Struct>]
-        type PValue = { PStem : uint64; PTerm : PTerm }
-        and PTerm = 
-            | PConst of Value.Term
-            | PVar of VarId
-            | PStem64 of uint64 * PTerm
-            | PBranch of PValue * PValue
-
-        let inline ofPTerm pt = 
-            { PStem = StemBits.empty
-            ; PTerm = pt 
+        type Lim =
+            { ArityIn : int16
+            ; ArityOut : int16
+            ; MaxStack : int16
+            ; Effectful : bool
+            ; Aborted : bool  // if true, ArityOut is invalid
             }
 
-        let mkPStem64 (stem : uint64) (pt : PTerm) : PTerm =
-            match pt with
-            | PConst t -> PConst (Value.Stem64 (stem, t))
-            | _ -> PStem64 (stem, pt)
+        let limAddStack (d : int16) (a : Lim) : Lim =
+            if (d < 1s) then a else
+            { a with 
+                ArityIn = a.ArityIn + d
+                ArityOut = a.ArityOut + d 
+                MaxStack = a.MaxStack + d
+            }
+        
+        
+        let limSeq a b =
+            let d = a.ArityOut - b.ArityIn 
+            let bEff = a.Effectful || b.Effectful
+            let bAbort = a.Aborted || b.Aborted
+            if (d >= 0s) then
+                // add d unused inputs to b
+                { ArityIn = a.ArityIn
+                ; ArityOut = b.ArityOut + d
+                ; MaxStack = max (a.MaxStack) (b.MaxStack + d)
+                ; Effectful = bEff
+                ; Aborted = bAbort
+                }
+            else
+                // add -d unused inputs to a
+                { ArityIn = a.ArityIn - d
+                ; ArityOut = b.ArityOut
+                ; MaxStack = max (a.MaxStack - d) (b.MaxStack)
+                ; Effectful = bEff
+                ; Aborted = bAbort
+                }
 
-        let consPStemBit (b : bool) (pv : PValue) : PValue =
-            let bits' = StemBits.cons b pv.PStem
-            if StemBits.isFull pv.PStem 
-                then { PStem = StemBits.empty; PTerm = mkPStem64 bits' (pv.PTerm) }  
-                else { PStem = bits'; PTerm = pv.PTerm }
+        let inline limOfArity (i:int) (o:int) : Lim = 
+            { ArityIn = int16 i
+            ; ArityOut = int16 o
+            ; MaxStack = int16 (max i o)
+            ; Effectful = false 
+            ; Aborted = false
+            } 
+        
+        let acceptArity p =
+            match p with
+            | Stem lFail U | Stem lHalt _ -> false
+            | _ -> true
 
-        let rec private consPStemLoop (n : uint64) (nLen : int) (pv : PValue) : PValue = 
-            if(nLen = 0) then pv else
-            let b = (n &&& (1UL <<< (64 - nLen))) <> 0UL
-            let pv' = consPStemBit b pv
-            let nLen' = nLen - 1
-            consPStemLoop n nLen' pv'
+        // to support caching of arity
+        let lPure = Value.label "pure"
+        let lAbort = Value.label "abort"
+        let lIn = Value.label "in"
+        let lOut = Value.label "out"
+        let lMax = Value.label "max"
+        let lLim = Value.label "lim"
 
-        // Prepend 0 to 63 stem bits on a value, encoding length in the 64-bit
-        // integer based on the lowest '1' bit, e.g. `abc1000..0` is a 3 bit stem.
-        let consPStemBits (stem : uint64) (pv0 : PValue) : PValue =
-            assert(StemBits.isValid stem)
-            if StemBits.isEmpty pv0.PStem
-                then { PStem = stem; PTerm = pv0.PTerm }
-                else consPStemLoop stem (StemBits.len stem) pv0
+        let limVal (l : Lim) : Value =
+            let inline ar_out v =
+                if l.Aborted then record_insert lAbort unit v else
+                record_insert lOut (ofInt (int64 l.ArityOut)) v
+            let inline ar_in v =
+                record_insert lIn (ofInt (int64 l.ArityIn)) v
+            let inline max_stack v =
+                record_insert lMax (ofInt (int64 l.MaxStack)) v
+            let inline effectful v =
+                if l.Effectful then v else
+                record_insert lPure unit v
+            unit |> ar_out 
+                 |> ar_in 
+                 |> max_stack 
+                 |> effectful
 
-        // Prepend exactly 64 bits from a stem to a value.
-        let consPStem64 (stem64 : uint64) (pv0 : PValue) : PValue =
-            if StemBits.isEmpty pv0.PStem 
-                then ofPTerm (mkPStem64 stem64 pv0.PTerm)
-                else consPStemLoop stem64 64 pv0 
-
-        [<return: Struct>]
-        let (|Const|_|) (pv : PValue) : Value voption =
-            match pv.PTerm with
-            | PConst t -> ValueSome { Stem = pv.PStem; Term = t }
+        [< return: Struct >]
+        let (|Lim|_|) (v : Value) : Lim voption = 
+            match v with
+            | RecL [lPure; lAbort; lIn; lOut; lMax] ([optPure; optAbort; ValueSome (Int32 arIn); optOut; ValueSome (Int32 nMax)], U) ->
+                let bEffectful = ValueOption.isNone optPure
+                match optAbort, optOut with
+                | ValueNone, ValueSome (Int32 arOut) ->
+                    { ArityIn = int16 arIn
+                    ; ArityOut = int16 arOut
+                    ; MaxStack = int16 nMax
+                    ; Aborted = false
+                    ; Effectful = bEffectful
+                    } |> ValueSome
+                | ValueSome U, ValueNone ->
+                    { ArityIn = int16 arIn
+                    ; ArityOut = 0s
+                    ; MaxStack = int16 nMax
+                    ; Aborted = true
+                    ; Effectful = bEffectful
+                    } |> ValueSome
+                | _ -> ValueNone
             | _ -> ValueNone
 
-        let rec fillPT (env : VarId -> PValue) (pt : PTerm) : PValue =
-            match pt with
-            | PConst _ -> ofPTerm pt
-            | PVar varId -> env varId 
-            | PStem64 (stem, ptNode) ->
-                consPStem64 stem (fillPT env ptNode)
-            | PBranch (l, r) ->
-                match fill env l, fill env r with 
-                | Const l', Const r' -> ofPTerm (PConst (Value.Branch (l', r')))
-                | l', r' -> ofPTerm (PBranch (l', r'))
-        and fill (env : VarId -> PValue) (pv : PValue) : PValue =
-            consPStemBits (pv.PStem) (fillPT env pv.PTerm)
+        // lightweight caching of limits
+        let cacheLim (struct(lim, p)) =
+            let p' = addAnno lLim (limVal lim) p
+            struct(lim, p')
 
-        let rec ptermVars acc pt = 
-            match pt with
-            | PConst _ -> acc
-            | PVar v -> (v::acc)
-            | PStem64 (_, pt') -> ptermVars acc pt'
-            | PBranch (pvL, pvR) -> ptermVars (ptermVars acc pvR.PTerm) pvL.PTerm
+        let rec precomp (p0:Program) : struct(Lim * Program) =
+            match p0 with
+            | Stem lCopy U -> 
+                struct(limOfArity 1 2, p0)
+            | Stem lSwap U -> 
+                struct(limOfArity 2 2, p0)
+            | Stem lDrop U -> 
+                struct(limOfArity 1 0, p0)
+            | Stem lEq U -> 
+                struct(limOfArity 2 0, p0)
+            | Stem lGet U -> 
+                struct(limOfArity 2 1, p0)
+            | Stem lPut U -> 
+                struct(limOfArity 3 1, p0)
+            | Stem lDel U -> 
+                struct(limOfArity 2 1, p0)
+            | Stem lEff U -> 
+                // I'll assume the 'eff' handler is a separate method.
+                // Thus, influence on the local data stack is just one item.
+                struct({ limOfArity 1 1 with Effectful = true }, p0)
+            | Stem lFail U | Stem lHalt _ ->
+                struct({ limOfArity 0 0 with Aborted = true }, p0) 
+            | Dip p ->
+                let struct(l,p') = precomp p
+                struct(limAddStack 1s l, Dip p')
+            | Data _ ->
+                struct(limOfArity 0 1, p0)
+            | PSeq (List lP) ->
+                // several special cases here, so seq gets its own function.
+                let struct(lim, lP') = precompSeq (limOfArity 0 0) (Rope.empty) lP 
+                struct(lim, PSeq (Value.ofTerm lP'))
+            | Cond (pc, pa, pb) ->
+                let struct(c0, pc') = cacheLim <| precomp pc
+                let struct(a0, pa') = precomp pa
+                let struct(b0, pb') = precomp pb
+                let cond' = Cond(pc', pa', pb') 
+                let ca0 = limSeq c0 a0
+                let arIn = max (ca0.ArityIn) (b0.ArityIn)
+                let ca = limAddStack (arIn - ca0.ArityIn) ca0
+                let b = limAddStack (arIn - b0.ArityIn) b0
+                let bBalanced = (ca.ArityOut - ca.ArityIn) = (b.ArityOut - b.ArityIn)
+                let bEffectful = ca.Effectful || b.Effectful
+                let nMaxStack = max (ca.MaxStack) (b.MaxStack)
+                if bBalanced || ca.Aborted then
+                    // using arity from 'b' which is okay if balanced or if
+                    // the ca path is incomplete.
+                    let limCond = 
+                        { ArityIn = b.ArityIn
+                        ; ArityOut = b.ArityOut
+                        ; MaxStack = nMaxStack
+                        ; Effectful = bEffectful
+                        ; Aborted = ca.Aborted && b.Aborted
+                        }
+                    struct(limCond, cond')
+                elif b.Aborted then
+                    let limCond =
+                        { ArityIn = ca.ArityIn
+                        ; ArityOut = ca.ArityOut
+                        ; MaxStack = nMaxStack
+                        ; Effectful = bEffectful
+                        ; Aborted = false // from context, we know success path is not aborted
+                        }
+                    struct(limCond, cond')
+                else 
+                    // imbalanced AND neither side is aborted
+                    // this is just a plain error. Convert to 
+                    // a failed program.
+                    precomp <| Halt (Value.variant "cond-imbal" p0)
+            | While (pc, pa) ->
+                let struct(c0, pc') = cacheLim <| precomp pc
+                let struct(a0, pa') = precomp pa
+                let ca = limSeq c0 a0
+                let okBal = (ca.ArityIn = ca.ArityOut)
+                if okBal || ca.Aborted then
+                    let loop' = While(pc', pa') 
+                    struct(ca, loop')
+                else 
+                    precomp <| Halt (Value.variant "loop-arity" p0)
+            | Until (pc, pa) ->
+                let struct(c0, pc') = cacheLim <| precomp pc
+                let struct(a0, pa') = precomp pa
+                let okBal = (a0.ArityIn = a0.ArityOut)
+                if okBal || a0.Aborted then
+                    let loop' = Until(pc', pa')
+                    struct(limSeq a0 c0, loop')
+                else 
+                    precomp <| Halt (Value.variant "loop-arity" p0)
+            | Env (pwith, pdo) ->
+                // assume the 'with' handler is evaluated in a 
+                // separate method call, to simplify local stack
+                let struct(w0, pw') = cacheLim <| precomp pwith
+                let struct(d0, pd') = precomp pdo
+                let okHandler = (2s >= w0.ArityIn) && ((w0.ArityIn = w0.ArityOut) || (w0.Aborted))
+                if not okHandler then
+                    precomp <| Halt (Value.variant "env-arity" p0)
+                else 
+                    let env' = Env(pw', pd') 
+                    let bEff = d0.Effectful && w0.Effectful
+                    let envLim = limAddStack 1s { d0 with Effectful = bEff }
+                    struct(envLim, env')
+            | Prog (anno, pdo) ->
+                let struct(pLim, pdo') = precomp pdo
+                cacheLim (struct(pLim, Prog(anno, pdo')))
+            | _ ->
+                precomp <| Halt (Value.variant "prog-inval" p0)
 
-        let listVars (pv : PValue) : VarId list =
-            ptermVars [] (pv.PTerm)
+        and precompSeq l xs ys =
+            // allow short-circuiting in case of aborted sequence.
+            let bDone = l.Aborted || VTerm.isLeaf ys 
+            if bDone then struct(l, xs) else
+            match ys with
+            | Rope.ViewL struct(op, ys') ->
+                let struct(opLim, op') = precomp op
+                let l' = limSeq l opLim
+                let xs' = joinSeqs xs (asSeq op') // minor optimizations
+                precompSeq l' xs' ys'
+            | _ -> 
+                failwith "invalid rope"
+
+        // F# does not make it convenient to obtain TypeInfo objects for 
+        // byref parameters. I work around this, but the mechanism is ugly.
+        type M =
+            static member Op(a:byref<Value>, b:outref<Value>) : unit = ()
+
+        let private ty_ValueByRef =
+            typeof<M>.GetMethod("Op").GetParameters().[0].ParameterType
+
+        let private ty_ValueOutRef =
+            typeof<M>.GetMethod("Op").GetParameters().[1].ParameterType
+
+        let private ty_Value = 
+            typeof<Value>
 
 
-        // forward partial evaluation will output a modified
-        // program (eliminating unnecessary ops)
-        type P1 =
-            // required data plumbing becomes 'Move'
-            | Move of Src:PValue * Dst:PValue // source * dest
+        // Using parameter types directly for inputs and outputs.
+        //let private parameterTypesOfArity (arityIn : int) (arityOut : int) : System.Type array =
+        //    let inputs = Array.create arityIn ty_Value
+        //    let outputs = Array.create arityOut ty_ValueOutRef
+        //    Array.append (inputs) (outputs)
 
-            // control
-            | Eq of PValue * PValue
-            | Fail
-            | Halt of Msg:Value
-            | Get of Label:PValue * Rec:PValue * Dst:PValue
-            | Put of Label:PValue * Rec:PValue * Val:PValue * Dst:PValue
-            // cond, while, until
-            // env
-            // prog
-            // accel
 
-        [<Struct>]
-        type CTE1 =
-            { DataStack : PValue
-            ; EffStack  : PValue
-            ; DipStack  : PValue
+        // to simplify debugging, always set outrefs. 
+        let s_undef = Value.symbol "undef" 
+
+        type Addr = nativeint
+        type EnvStack = (struct(Addr * Value)) list // effects handler stack.
+
+
+        type HelperOps = 
+            static member DebugPrint(n:int) : unit =
+                printfn "(Debug) %d" n
+            static member DebugPrintVal(n:int, v:Value) : unit =
+                printfn "(Debug) %d %s" n (Value.prettyPrint v)
+
+            static member SplitValueVOption(arg : Value voption, valDst:outref<Value>) : bool =
+                match arg with
+                | ValueNone -> 
+                    valDst <- s_undef 
+                    false
+                | ValueSome v ->
+                    valDst <- v
+                    true 
+
+        // 'static data' - static data will be represented as an array.
+        // We will initialize this array after creating the type, then it
+        // is reused on each execution.
+        type DataDict = System.Collections.Generic.Dictionary<Value, int>
+
+        type CTE = 
+            { 
+                AsmB     : AssemblyBuilder  // assembly being constructed
+                ModB     : ModuleBuilder    // the only module in the assembly
+                TypB     : TypeBuilder      // the only type in the module
+                FldIO    : FieldBuilder     // Field for top-level handler.
+                EnvSt    : FieldBuilder     // Field for current environment 
+
+                StaticTable     : FieldBuilder     // array of static data
+                StaticData      : DataDict         // tracks static data
+                NextID   : Ref<int>         // simple unique identifiers
             }
 
-        // Current idea:
-        //
-        // Run a few passes, both forward and backwards, to optimize destinations
-        // for data.
+
+        let compiled (p : Program) : Effects.IEffHandler -> Value list -> Value list option =
+            match stackArity p with
+            | ArityDyn -> // program cannot be compiled
+                fun io _ -> 
+                    Effects.logError io "program arity invalid"
+                    None
+            | ArityFail _ -> // program always fails
+                fun _ _ -> None
+            | Arity (arityIn, arityOut) ->
+                let myType : TypeInfo = failwith "todo - compile type"
+                // compile an object representing the program
+                fun (io : Effects.IEffHandler) (ds : Value list) ->
+                    // check for sufficient arguments immediately.
+                    if (arityIn > List.length ds) then
+                        Effects.logError io "underflow - insufficient input"
+                        None
+                    else
+                        let eff = EWrap(io)
+                        // instantiate myType with 'eff' as only arg
+                        try
+                            None
+                            (*
+                            let ctorArgs : obj array = [| io |] 
+                            let myInst = System.Activator.CreateInstance(myType, ctorArgs)
+                            let inArgs : obj array = ds |> List.take arityIn |> Array.ofList |> Array.map box
+                            let outArgs : obj array = Array.zeroCreate arityOut
+                            let allArgs = Array.append inArgs outArgs
+                            let invokeAttr = BindingFlags.DoNotWrapExceptions
+                            let isOK = myType.GetMethod("Main").Invoke(myInst, invokeAttr, null, allArgs, null)
+                            if not (unbox<bool>(isOK)) then None else
+                            let outVals = allArgs |> Array.skip arityIn |> Array.map (unbox<Value>)
+                            let result = Array.foldBack (fun x xs -> (x::xs)) outVals (List.skip arityIn ds)
+                            Some result
+                            *)
+                        with
+                        | RTError(vMsg) ->
+                            eff.Unwind()
+                            Effects.logErrorV io "runtime error" vMsg
+                            None
 
 
-    module RMachine =
-        // Compile program to run on a virtual register machine, and partially
-        // evaluate to eliminate unnecessary data movement and stack allocation.
-        //
-        // Saving data for effects handlers is a challenge in this case.
 
-        // We can model registers or memory as an array of values.
-        type Memory = Value array
-
-        // Not sure I want to pursue this yet. Let's discover if I actually need
-        // more performance to implement the bootstrap, first. Or if I can implement
-        // the logic only once, in a glas module, then reuse it here.
+        let eval (p : Program) : Effects.IEffHandler -> Value list -> Value list option =
+            let lazyCompile = lazy (compiled p)
+            fun io ds -> lazyCompile.Force() io ds
 
 
     // OTHER OPTIONS:
@@ -1838,9 +2103,11 @@ module ProgEval =
         | "Interpreter" | "I" -> Interpreter.eval
         | "FinallyTaglessInterpreter" | "FTI" -> FinallyTaglessInterpreter.eval
         | "CompiledInterpreter" | "CI" -> CompiledInterpreter.eval
-        | _ -> defaultEval
+        | "CompiledStackMachine" | "CSM" -> CompiledStackMachine.eval
+        | "" | null -> defaultEval
+        | s ->
+            failwithf "unrecognized evaluator %s" s
     let configuredEval = lazy (selectEval ())
-
 
     /// The value list argument is top of stack at head of list.
     /// Returns ValueNone if the program either halts or fails. 

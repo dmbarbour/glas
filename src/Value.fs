@@ -1399,11 +1399,13 @@ module Value =
                 then verifyLenCC lRev 1
                 else verifyPrior lRev
 
+    let private _isRecordLabelChar b =
+        ((byte('a') <= b) && (b <= byte('z'))) ||
+        ((byte('0') <= b) && (b <= byte('9'))) ||
+        (b = uint8('-'))
 
-    let private _isRecordLabel lRev = 
-        // may assume valid utf8
-        // could add some extra validation on record labels here
-        true
+    let private _isRecordLabel = 
+        List.forall _isRecordLabelChar 
 
     let rec private _isRecord rs lb pb v =
         // lb is reversed.
@@ -1600,20 +1602,22 @@ type Value = Value.Value
 type Rope = Value.Term
 
 module PartialValue =
-    // Partial values, encoded as glas values.
+    // Values that contain references to an abstract or future context.
+    // Encoded as glas values. 
     //
-    // Logical encoding:
+    // Initial encoding:
     //
     // type PValue =
-    //   | PConst of Value                      prefix 00
-    //   | PRef of Value                        prefix 01
-    //   | PStem of Bits * PValue               prefix 10
-    //   | PBranch of PValue * PValue           prefix 11
+    //   | PConst of Value                  prefix 00
+    //   | PRef of Value                    prefix 01
+    //   | PStem of Bits * PValue           prefix 10
+    //   | PBranch of PValue * PValue       prefix 11
     //
-    // This encoding doesn't directly support logical concatenation of 
-    // partial lists or bitstrings. Though, it is feasible to indirectly
-    // support such features via references, and we can directly extend
-    // PValue through the reference variant.
+    // Note: It is feasible to represent computations within PRefs. Thus,
+    // further extension is via defining the 'type' of a reference.
+    //
+    // However, this does seem to be missing potentially useful features
+    // such as logical concatenation of partial lists.
 
     type PValue = Value
 
@@ -1641,11 +1645,9 @@ module PartialValue =
             PBranch(l, r)
         | _ -> failwith "type error: not a partial value"
 
-    let inline PConst (v : Value) : PValue = 
-        Value.withLabel lPConst v
+    let PConst = Value.withLabel lPConst 
 
-    let inline PRef (r : Value) : PValue =
-        Value.withLabel lPRef r
+    let PRef = Value.withLabel lPRef
 
     let PStem (p : Value) (pv : PValue) : PValue =
         if not (Value.isBits p) then failwith "type error: invalid bits" else
@@ -1654,7 +1656,7 @@ module PartialValue =
         | PConst(v) -> 
             PConst (Value.withLabel p v)
         | PStem(p2, pv') -> 
-            let p' = Value.withLabel p p2
+            let p' = Value.withLabel p p2 // append the labels
             Value.withLabel lPStem (Value.pair p' pv')
         | _ -> 
             Value.withLabel lPStem (Value.pair p pv)
@@ -1664,15 +1666,65 @@ module PartialValue =
         | PConst(lv), PConst(rv) -> PConst(Value.pair lv rv)
         | _ -> Value.withLabel lPBranch (Value.pair l r)
 
+    let rec private _getVarGen1 (st : PValue list) (pv : PValue) =
+        match pv with
+        | PConst _ -> _getVarGen0 st 
+        | PRef vRef -> Some(vRef, st)
+        | PStem (_, pv') -> _getVarGen1 st pv'
+        | PBranch (pvL, pvR) -> _getVarGen1 (pvR::st) pvL
+    and private _getVarGen0 (st : PValue list) : (Value * PValue list) option =
+        match st with
+        | (pv::st') -> _getVarGen1 st' pv
+        | [] -> None
+
+    let getVars (pv:PValue) : Value seq = 
+        Seq.unfold _getVarGen0 [pv]
+
+    let rec rewriteVars (rw : Value -> PValue) (pv:PValue) : PValue =
+        match pv with
+        | PConst _ -> 
+            pv
+        | PRef vRef -> 
+            rw vRef
+        | PStem (p, pvS) ->
+            let pvS' = rewriteVars rw pvS  
+            PStem p pvS'
+        | PBranch (pvL, pvR) ->
+            let pvL' = rewriteVars rw pvL
+            let pvR' = rewriteVars rw pvR 
+            PBranch pvL' pvR'
+
+    // simplify a PValue via identity rewrite. This will:
+    //  (1) merge sequential PStem elements
+    //  (2) merge PBranch or PStem into constant where possible
+    let simplify = rewriteVars PRef 
+
+    // TODO:
     // get/put/del on partial records (known static paths)
     // let record_delete 
 
-//module Lambda =
-    // Encoding of lambdas:
+
+module DataType =
+    // a representation of basic data types (as glas values)
     //
-    // type Expr =
-    //   | Var of Value
-    //   | Lambda of Var * Expr
-    //   | App of Expr * Expr
-    //   | Data of PValue
+    // Possible types.
+    //   - alt:(A * B)                      non-algebraic choice of types.
+    //   - rec:(path:Path eq:Type in:Type)  allows for open records.
+    //   - unit                             
+    //   - var:Var
+    //   - loop:(var:Var eq:Type)           where Type contains Var
+    //   - void                             the type of failure!
+    //
+    // Loops are awkward to express this way, IMO. Instead, it might be better to
+    // describe a loop as part of a unification of variables.
+
+    let lAlt = Value.label "alt"
+    let lRec = Value.label "rec"
+    let lVar = Value.label "var"
+    let lLoop = Value.label "loop"
+    let lUnit = Value.label "unit"
+    let lVoid = Value.label "void"
+
+    let lEq = Value.label "eq"
+    let lIn = Value.label "in"
 
