@@ -50,3 +50,5 @@ Unlike inline text, multi-line text is not trimmed. The indentation, '\' label, 
 ## Comments
 
 The text tree format proposes a lightweight convention for comments: any entry whose label starts with '#' should be interpreted as a comment or annotation or metadata. This includes '#author', '#date', and so on. These entries are left accessible for post-processing, but should be understood as providing or supporting context without influence on meaning.
+
+*Aside:* It is feasible to use escapes to indicate comments, perhaps labels starting with '\\'. But I'm currently avoiding this because it's often useful to process comments in some way.
