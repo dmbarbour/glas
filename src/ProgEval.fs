@@ -1988,6 +1988,7 @@ module ProgEval =
 
         module Emit = 
             // some helper utils to favor shorter opcodes
+            // (I should probably find a library for this)
             let ldarga (n : int16) (il : ILGenerator) =
                 if (n < 256s) 
                     then il.Emit(OpCodes.Ldarga_S, uint8 n)
@@ -2030,6 +2031,19 @@ module ProgEval =
                 if isSmall then il.Emit(OpCodes.Ldc_I4_S, int8 n) else
                 il.Emit(OpCodes.Ldc_I4, n)
 
+            let starg (n : int16) (il : ILGenerator) =
+                if (n < 256s) 
+                    then il.Emit(OpCodes.Starg_S, uint8 n)
+                    else il.Emit(OpCodes.Starg, n)
+            
+            let stloc (v : LocalBuilder) (il : ILGenerator) =
+                let n = v.LocalIndex
+                if (n = 0) then il.Emit(OpCodes.Stloc_0) else
+                if (n = 1) then il.Emit(OpCodes.Stloc_1) else
+                if (n = 2) then il.Emit(OpCodes.Stloc_2) else
+                if (n = 3) then il.Emit(OpCodes.Stloc_3) else
+                if (n < 256) then il.Emit(OpCodes.Stloc_S, v) else
+                il.Emit(OpCodes.Stloc, v)
 
         // F# does not make it convenient to obtain TypeInfo objects for 
         // byref parameters. I work around this by accessing parameter 
@@ -2045,34 +2059,19 @@ module ProgEval =
 
         let ty_Value = 
             typeof<Value>
-
-        let methodArgsFromArity (arIn : int16) (arOut : int16) : System.Type array =
-            let tyIn = Array.create (int arIn) ty_Value
-            let tyOut = Array.create (int arOut) ty_ValueOutRef
-            Array.append tyIn tyOut
         
-        let effHandlerArgs = methodArgsFromArity 1s 1s
-
-        // Reusable subprograms, including effects handlers.
-        type MethodID = (struct(Program * string)) // program and current effect method
-        type MethodDict = System.Collections.Generic.Dictionary<struct(Program * string), MethodInfo>
+        // Because programs are statically compiled with their effect context,
+        // we may need to recompile methods for different contexts. Exception is
+        // if we know the method is pure.
+        type EffMethod = string
+        type MethodName = string
+        type MethodBody = (struct(Program * EffMethod)) // program and current effect method
+        type MethodDict = System.Collections.Generic.Dictionary<MethodBody, MethodName>
         let noEffMethod = "(pure)" // not an actual method
 
         // 'static data' - static data as an array of values to assign
         // after the class is created (but before instances are created).
         type DataDict = System.Collections.Generic.Dictionary<Value, int>
-
-        // stack data is stored in either the arguments or a few extra
-        // locals that are allocated at the start of a method. (The 
-        // main alternative is to move everything into locals.)
-        type StackLoc =
-            | UsingArg of int16
-            | LocalVar of LocalBuilder
-        type StackReg = StackLoc array
-        type StackTop = int
-
-
-
 
         // global compile time env
         type CTE = 
@@ -2101,13 +2100,6 @@ module ProgEval =
                 cte.Statics.Add(v, ix)
                 ix
 
-        let loadStatic (cte:CTE) (v:Value) (il:ILGenerator) =
-            let ix = addStatic cte v 
-            il.Emit(OpCodes.Ldarg_0) // this
-            il.Emit(OpCodes.Ldfld, cte.FldData)
-            Emit.ldc_i4 ix il
-            il.Emit(OpCodes.Ldelem, typeof<Value>)
-
         // create the type and initialize statics.
         let createType (cte : CTE) : System.Type =
             let staticData : Value array = Array.zeroCreate (cte.Statics.Count)
@@ -2117,20 +2109,7 @@ module ProgEval =
             newType.GetField(cte.FldData.Name).SetValue(null, staticData)
             newType
 
-        // name for the initial effect method
-        let eff0 = "ExtEff"
-
-        let loadStackAddr (sp : StackLoc) (il : ILGenerator) =
-            match sp with
-            | UsingArg n -> Emit.ldarga n il
-            | LocalVar v -> Emit.ldloca v il
-        
-        let loadStackVal (sp : StackLoc) (il : ILGenerator) =
-            match sp with
-            | UsingArg n -> Emit.ldarg n il
-            | LocalVar v -> Emit.ldloc v il
-
-        let inline loadEWrap (cte : CTE) (il : ILGenerator) =
+        let loadEWrap (cte : CTE) (il : ILGenerator) =
             il.Emit(OpCodes.Ldarg_0) 
             il.Emit(OpCodes.Ldfld, cte.FldEWrap)
 
@@ -2146,129 +2125,110 @@ module ProgEval =
             loadEWrap cte il
             il.Emit(OpCodes.Call, typeof<EWrap>.GetMethod("Abort"))
 
-        let callEWrapEff (cte : CTE) (sp : StackLoc) (il : ILGenerator)=
-            // call this.IO.Eff(stackTop, &stackTop)
-            loadEWrap cte il
-            loadStackVal sp il
-            loadStackAddr sp il
-            il.Emit(OpCodes.Call, typeof<EWrap>.GetMethod("Eff"))
-
-        let callEff (cte : CTE) (effMethod : string) (sp : StackLoc) (il : ILGenerator) =
-            // top-level effect calls are inlined
-            if eff0 = effMethod then callEWrapEff cte sp il else
-            let m = cte.TypB.GetMethod(effMethod)
-            if isNull m then failwithf "unrecognized method %s" effMethod else
-            il.Emit(OpCodes.Ldarg_0)
-            loadStackVal sp il
-            loadStackAddr sp il
-            il.Emit(OpCodes.Call, m)
 
 
-        // initCTE prepares an initial CTE with a type that is constructed by
-        // giving it the Runtime argument. The profile is shared across all 
-        // instances of this type, currently.
-        let initCTE () : CTE =
-            // for now, all named the same. Might need to distinguish later
-            // to support debugging of exception stacks, but uncertain.
-            let asmName = AssemblyName("Glas.ProgEval.DynCSM")
-            let asmOp = AssemblyBuilderAccess.RunAndCollect
-            let asmB = AssemblyBuilder.DefineDynamicAssembly(asmName, asmOp)
-            let modB = asmB.DefineDynamicModule("M")
-            let typeAttr = TypeAttributes.Public ||| TypeAttributes.Sealed
-            let typB = modB.DefineType("Program", typeAttr)
-            let fldAttrEW = FieldAttributes.Private ||| FieldAttributes.InitOnly
-            let fldEW = typB.DefineField("IO", typeof<EWrap>, fldAttrEW)
-            let fldAttrData = FieldAttributes.Public ||| FieldAttributes.Static
-            let fldData = typB.DefineField("StaticData", typeof<Value array>, fldAttrData)
+        // stack data is stored in either the arguments or a few extra
+        // locals that are allocated at the start of a method. (The 
+        // main alternative is to move everything into locals.)
+        type SP =
+            | UsingArg of int16
+            | LocalVar of LocalBuilder
+        type SC = int // number of items currently on data stack
 
-            // the object constructor receives a wrapped EffHandler.
-            let ctor = typB.DefineConstructor(
-                    MethodAttributes.Public,
-                    CallingConventions.Standard,
-                    [| typeof<EWrap> |])
-            do
-                let il = ctor.GetILGenerator()
-                il.Emit(OpCodes.Ldarg_0)
-                il.Emit(OpCodes.Ldarg_1)
-                il.Emit(OpCodes.Stfld, fldEW)
-                il.Emit(OpCodes.Ret)
-            { AsmB = asmB
-            ; ModB = modB
-            ; TypB = typB
-            ; FldEWrap = fldEW
-            ; FldData = fldData
-            ; Methods = new MethodDict()
-            ; Statics = new DataDict()
-            ; NextId = ref 1000
+        let loadSPAddr (sp : SP) (il : ILGenerator) =
+            match sp with
+            | UsingArg n -> Emit.ldarga n il
+            | LocalVar v -> Emit.ldloca v il
+        
+        let loadSPVal (sp : SP) (il : ILGenerator) =
+            match sp with
+            | UsingArg n -> Emit.ldarg n il
+            | LocalVar v -> Emit.ldloc v il
+
+        let storeSPVal (sp : SP) (il : ILGenerator) =
+            match sp with
+            | UsingArg n -> Emit.starg n il
+            | LocalVar v -> Emit.stloc v il
+
+        // extra effect handler context
+        type ECX =
+            { EffMethod : EffMethod // method to call upon 'eff' (toplevel via 'eff0')
+            ; EffState  : FieldBuilder list // internal state to save on transactions
+            ; IOState   : bool   // need to save external state on transactions?
+            }
+        let eff0 = "(toplevel)" // special 'inlined' EffMethod
+
+        // stable method construction context
+        type MCX =
+            { CTE       : CTE                   // extends this global context
+            ; Lim       : Lim                   // computed
+            ; OnFail    : Label                 // target on failure
+            ; IL        : ILGenerator           // output
+            ; Stack     : SP array              // args and locals allocated for stack
+            ; ECX       : ECX
             }
 
-        type HelperOps = 
-            static member DebugPrint(n:int) : unit =
-                printfn "(Debug) %d" n
-            static member DebugPrintVal(n:int, v:Value) : unit =
-                printfn "(Debug) %d %s" n (Value.prettyPrint v)
+        let argsFromArity (mcx:MCX) (arIn : int) (arOut : int) (sc : SC) : SC =
+            let sc' = sc - arIn + arOut
+            assert((arIn >= 0) && (arOut >= 0) && (sc >= arIn)
+                && (mcx.Stack.Length >= max sc sc'))
+            for ix in 1 .. arIn do
+                loadSPVal (mcx.Stack[sc - ix]) (mcx.IL)
+            for ix in 1 .. arOut do
+                loadSPAddr (mcx.Stack[sc - ix]) (mcx.IL)
+            sc'
+                
+        // Helper ops are needed because it's difficult to reference F#
+        // functions directly
+        type HelperOps =
+            static member OpEq(a : Value, b : Value) : bool =
+                Value.eq a b
 
-(*
-        // call RT with zero arguments (very common)
-        let inline rtCall0 (cte:CTE) (opName : string) (il : ILGenerator) =
-            loadRT cte il
-            il.Emit(OpCodes.Call, typeof<Runtime>.GetMethod(opName))
+            static member OpGet(p : Value, r : Value, result : outref<Value>) : bool =
+                match p with
+                | Bits k ->
+                    match record_lookup k r with
+                    | ValueSome v ->
+                        result <- v
+                        true
+                    | ValueNone -> false
+                | _ -> raise (RTError(lTypeError))
 
-        // call RT with zero arguments then drop result (common)
-        let inline rtCall0_ cte opName il =
-            rtCall0 cte opName il
-            il.Emit(OpCodes.Pop) // ignore result
+            static member OpPut(p : Value, r : Value, v : Value, result : outref<Value>) : unit =
+                match p with
+                | Bits k -> result <- record_insert k v r 
+                | _ -> raise (RTError(lTypeError))
+            
+            static member OpDel(p : Value, r : Value, result : outref<Value>) : unit =
+                match p with
+                | Bits k -> result <- record_delete k r
+                | _ -> raise (RTError(lTypeError))
 
-        let inline rtCall0b cte opName (lblFail : Label) il =
-            rtCall0 cte opName il
-            assert(0 = opOK)
-            il.Emit(OpCodes.Brtrue, lblFail) 
+            static member OpHalt(eMsg : Value) : unit =
+                raise (RTError(eMsg))
+                
 
-        // primary method to run the compiled program
-        let entryMethod = "Run"
-
-        let emitDebugPrint (n : int) (il : ILGenerator) =
-            il.Emit(OpCodes.Ldc_I4, n)
-            il.Emit(OpCodes.Call, typeof<HelperOps>.GetMethod("DebugPrint"))
-            il.Emit(OpCodes.Pop)
-
-        let emitDebugHandlers (il : ILGenerator) = 
-            il.Emit(OpCodes.Ldarg_1)
-            il.Emit(OpCodes.Call, typeof<HelperOps>.GetMethod("PrintHandlers"))
-            il.Emit(OpCodes.Pop)
-
-        let inline emitSubExit (lblFail : Label) (il : ILGenerator) =
-            // nothing should be on stack when we reach exit.
-            // But we might jump to the final failure case.
-            // return true
-            //emitDebugPrint 301 il
-            il.Emit(OpCodes.Ldc_I4_1) 
-            il.Emit(OpCodes.Ret)
-            // or if operation branches to fail, return false
-            il.MarkLabel(lblFail)
-            //emitDebugPrint 302 il
-            il.Emit(OpCodes.Ldc_I4_0)
-            il.Emit(OpCodes.Ret)
-
-        let rec compile (cte:CTE) (p0:Program) (il:ILGenerator) : unit =
-            let lblFail = il.DefineLabel()
-            //emitDebugPrint 300 il
-            compileOp cte p0 lblFail il
-            emitSubExit lblFail il
-        and compileOp (cte:CTE) (p0:Program) (lblFail : Label) (il:ILGenerator) : unit =
-            let inline debugPrint (n : int) = emitDebugPrint n il
+        let rec compileOp (mcx:MCX) (sc:SC) (p0:Program) : SC =
             match p0 with
             | PSeq (List lP) -> 
-                compileSeq cte lP lblFail il
+                // compileOp signature was arranged for this to work.
+                Rope.fold (compileOp mcx) sc (lP)
             | Data v -> 
-                let ix = addStatic cte v // index of data in the "StaticData" array
-                loadRT cte il
-                il.Emit(OpCodes.Ldsfld, cte.FldData)
-                il.Emit(OpCodes.Ldc_I4, ix)
-                il.Emit(OpCodes.Ldelem, typeof<Value>)
-                il.Emit(OpCodes.Call, typeof<Runtime>.GetMethod("PushData"))
-                // no status to pop
-            | Cond (c, a, b) -> 
+                // add data to static store
+                let ix = addStatic (mcx.CTE) v
+                mcx.IL.Emit(OpCodes.Ldarg_0) 
+                mcx.IL.Emit(OpCodes.Ldsfld, mcx.CTE.FldData)
+                //Emit.ldc_i4 ix mcx.IL
+                mcx.IL.Emit(OpCodes.Ldc_I4, ix)
+                mcx.IL.Emit(OpCodes.Ldelem, typeof<Value>)
+                // store data to top of stack
+                assert((0 <= sc) && (sc < mcx.Stack.Length))
+                storeSPVal (mcx.Stack[sc]) mcx.IL
+                (sc + 1) // increment stack count
+            | Cond (ProgLim(c, cLim), a, b) -> 
+                // this is complicated, leave for later
+                failwith "todo: cond"
+                (*
                 let lblEndCond = il.DefineLabel()
                 let lblOnCondFail = il.DefineLabel()
                 // first run the cond
@@ -2284,35 +2244,60 @@ module ProgEval =
                 rtCall0_ cte "TXAbort" il
                 compileOp cte b lblFail il
                 il.MarkLabel(lblEndCond)
+                *)
             | Dip p ->
+                let il = mcx.IL
+                assert(sc > 0)
                 il.BeginScope()
-                let x = il.DeclareLocal(typeof<Value>)
-                // store top stack item into this local
-                loadRT cte il
-                il.Emit(OpCodes.Call, typeof<Runtime>.GetMethod("PopData"))
-                il.Emit(OpCodes.Stloc, x) 
-                compileOp cte p lblFail il 
-                loadRT cte il
-                il.Emit(OpCodes.Ldloc, x)
-                il.Emit(OpCodes.Call, typeof<Runtime>.GetMethod("PushData"))
+                let varTmp = il.DeclareLocal(typeof<Value>)
+                // hide top stack value in varTmp, run 'p', restore top stack val
+                loadSPVal (mcx.Stack[sc - 1]) il
+                Emit.stloc varTmp il
+                let sc' = compileOp mcx (sc - 1) p
+                assert(sc' < mcx.Stack.Length)
+                Emit.ldloc varTmp il
+                storeSPVal (mcx.Stack[sc']) il
                 il.EndScope()
+                (sc' + 1)
             | Stem lCopy U ->
-                rtCall0_ cte "Copy" il
+                assert((sc > 0) && (sc < mcx.Stack.Length))
+                loadSPVal (mcx.Stack[sc - 1]) (mcx.IL)
+                storeSPVal (mcx.Stack[sc]) (mcx.IL)
+                (sc + 1)
             | Stem lSwap U -> 
-                rtCall0_ cte "Swap" il
+                assert(sc >= 2)
+                // using CLR stack temporarily
+                loadSPVal (mcx.Stack[sc - 2]) (mcx.IL)
+                loadSPVal (mcx.Stack[sc - 1]) (mcx.IL)
+                storeSPVal (mcx.Stack[sc - 2]) (mcx.IL)
+                storeSPVal (mcx.Stack[sc - 1]) (mcx.IL)
+                sc
             | Stem lDrop U ->
-                rtCall0_ cte "Drop" il
+                // I could clear the location to provide early gc opportunity
+                // but it isn't essential to do so. 
+                assert(sc >= 1)
+                (sc - 1)
             | Stem lEq U -> 
-                rtCall0b cte "EqDrop" lblFail il
+                let sc' = argsFromArity mcx 2 0 sc
+                mcx.IL.Emit(OpCodes.Call, typeof<HelperOps>.GetMethod("OpEq"))
+                mcx.IL.Emit(OpCodes.Brfalse, mcx.OnFail)
+                sc'
             | Stem lGet U -> 
-                rtCall0b cte "TryGet" lblFail il
+                let sc' = argsFromArity mcx 2 1 sc
+                mcx.IL.Emit(OpCodes.Call, typeof<HelperOps>.GetMethod("OpGet"))
+                mcx.IL.Emit(OpCodes.Brfalse, mcx.OnFail)
+                sc'
             | Stem lPut U -> 
-                rtCall0_ cte "Put" il
+                let sc' = argsFromArity mcx 3 1 sc
+                mcx.IL.Emit(OpCodes.Call, typeof<HelperOps>.GetMethod("OpPut"))
+                sc' 
             | Stem lDel U -> 
-                rtCall0_ cte "Del" il
-            | Prog (anno, p) ->
-                compileAnno cte anno p lblFail il
+                let sc' = argsFromArity mcx 2 1 sc
+                mcx.IL.Emit(OpCodes.Call, typeof<HelperOps>.GetMethod("OpDel"))
+                sc'
             | While (c, a) -> 
+                failwith "todo: while loops"
+                (*
                 let lblRepeat = il.DefineLabel()
                 let lblExitLoop = il.DefineLabel()
                 il.MarkLabel(lblRepeat)
@@ -2323,7 +2308,10 @@ module ProgEval =
                 il.Emit(OpCodes.Br, lblRepeat)
                 il.MarkLabel(lblExitLoop)
                 rtCall0_ cte "TXAbort" il
+                *)
             | Until (c, a) ->
+                failwith "todo: until loops"
+                (*
                 let lblRepeat = il.DefineLabel()
                 let lblContLoop = il.DefineLabel()
                 let lblExitLoop = il.DefineLabel()
@@ -2336,19 +2324,30 @@ module ProgEval =
                 compileOp cte a lblFail il
                 il.Emit(OpCodes.Br, lblRepeat)
                 il.MarkLabel(lblExitLoop)
-                rtCall0_ cte "TXCommit" il 
+                rtCall0_ cte "TXCommit" il
+                *) 
             | Stem lEff U -> 
-                // this.method(tail rt) where method is determined by head(rt)
-                // using arg_1 to store jumps for env
-                il.Emit(OpCodes.Ldarg_0)
-                il.Emit(OpCodes.Ldarg_1)
-                il.Emit(OpCodes.Call, typeof<HelperOps>.GetMethod("DropHandler"))
-                il.Emit(OpCodes.Ldarg_1)
-                il.Emit(OpCodes.Call, typeof<HelperOps>.GetMethod("CurrHandler"))
-                let callConv = CallingConventions.HasThis ||| CallingConventions.Standard
-                il.EmitCalli(OpCodes.Calli, callConv, typeof<bool>, argsRTE, null)
-                il.Emit(OpCodes.Brfalse, lblFail)
+                if eff0 = mcx.ECX.EffMethod then
+                    // call the toplevel effect handler
+                    mcx.IL.Emit(OpCodes.Ldarg_0)
+                    mcx.IL.Emit(OpCodes.Ldfld, mcx.CTE.FldEWrap)
+                    let sc' = argsFromArity mcx 1 1 sc
+                    mcx.IL.Emit(OpCodes.Call, typeof<EWrap>.GetMethod("Eff"))
+                    mcx.IL.Emit(OpCodes.Brfalse, mcx.OnFail)
+                    assert(sc = sc')
+                    sc'
+                else
+                    // call user-defined effect handler
+                    let m = mcx.CTE.TypB.GetMethod(mcx.ECX.EffMethod)
+                    mcx.IL.Emit(OpCodes.Ldarg_0)
+                    let sc' = argsFromArity mcx 1 1 sc
+                    mcx.IL.Emit(OpCodes.Call, m)
+                    mcx.IL.Emit(OpCodes.Brfalse, mcx.OnFail)
+                    assert(sc = sc')
+                    sc'
             | Env (w, p) -> 
+                failwith "todo: env"
+                (*
                 // compile handler as a subroutine
                 let wSub = newSub cte
                 do
@@ -2371,32 +2370,27 @@ module ProgEval =
                 il.Emit(OpCodes.Call, pSub) // returns bool pass/fail
                 rtCall0_ cte "EnvPop" il
                 il.Emit(OpCodes.Brfalse, lblFail) // the 'pSub' call may fail
+                *)
             | Stem lFail U ->
-                il.Emit(OpCodes.Br, lblFail)
+                mcx.IL.Emit(OpCodes.Br, mcx.OnFail)
+                sc
             | Stem lHalt eMsg -> 
-                let ixMsg = addStatic cte eMsg
-                loadRT cte il
-                il.Emit(OpCodes.Ldsfld, cte.FldData)
-                il.Emit(OpCodes.Ldc_I4, ixMsg)
-                il.Emit(OpCodes.Ldelem, typeof<Value>)
-                il.Emit(OpCodes.Call, typeof<Runtime>.GetMethod("Halt"))
-                // halt will throw an exception, so we don't actually reach the 
-                // following codes. However, keeping them for MSIL validation.
-                il.Emit(OpCodes.Pop) // ignore status
-                il.Emit(OpCodes.Br, lblFail)
+                let ixMsg = addStatic (mcx.CTE) eMsg
+                mcx.IL.Emit(OpCodes.Ldarg_0)
+                mcx.IL.Emit(OpCodes.Ldsfld, mcx.CTE.FldData)
+                Emit.ldc_i4 ixMsg mcx.IL
+                mcx.IL.Emit(OpCodes.Call, typeof<HelperOps>.GetMethod("OpHalt"))
+                sc
+            | Prog (anno, p) ->
+                compileAnno mcx sc anno p
             | _ ->
                 // if an invalid program reaches our compiler, just treat it as a halt.
-                let eMsg = Value.variant "prog-invalid" p0 
-                compileOp cte (Value.variant "halt" eMsg) lblFail il  
-        and compileSeq (cte : CTE) (l : Value.Term) (lblFail : Label) (il : ILGenerator) : unit =
-            match l with
-            | Rope.ViewL(op, l') ->
-                compileOp cte op lblFail il
-                compileSeq cte l' lblFail il
-            | Leaf -> () 
-            | _ -> 
-                compileOp cte (Value.variant "halt" lTypeError) (lblFail) il
-        and compileAnno (cte : CTE) (anno : Value) (p : Program) (lblFail:Label) (il:ILGenerator) : unit =
+                let eMsg = Value.variant "unhandled" p0 
+                compileOp mcx sc (Value.variant "halt" eMsg)  
+        and compileAnno (mcx : MCX) (sc : SC) (anno : Value) (p : Program) : SC =
+            // TODO: handle acceleration (at least)
+            compileOp mcx sc p
+            (*
             // not well factored at the moment due to profiler and
             // continuations being passed together. 
             match anno with
@@ -2525,46 +2519,113 @@ module ProgEval =
                 | _ -> accelFail ()
             | _ -> accelFail ()
 
-        let compileEntry (cte:CTE) (p:Program) : unit =
-            let rootProg = newSub cte
-            compile cte p (rootProg.GetILGenerator())
-
-            // top-level effect handler must call this.RT.TopLevelEffect()
-            let eff0 = cte.TypB.DefineMethod(
-                        "eff0",
-                        MethodAttributes.Private ||| MethodAttributes.Final,
+        *)
+        and compileMethod (methodName:string) (cte:CTE) (ecx:ECX) (lim:Lim) (p0:Program) =
+            let methodArgs = 
+                let argsIn = Array.create (int lim.ArityIn) ty_Value
+                let argsOut = Array.create (int lim.ArityOut) ty_ValueOutRef
+                Array.append argsIn argsOut
+            let methodAttr = MethodAttributes.Public ||| MethodAttributes.Final
+            let m = cte.TypB.DefineMethod(methodName, methodAttr, 
                         CallingConventions.Standard,
-                        typeof<bool>, argsRTE)
+                        typeof<bool>, methodArgs)
+            let il = m.GetILGenerator()
+            // We'll need to declare a few things before adding program behavior.
+            //  - final failure target
+            //  - extra variables for data stack 
+            let lblFail = il.DefineLabel()
+            let stackReg = 
+                assert(lim.MaxStack >= lim.ArityIn)
+                let inputArgs = 
+                    // top of stack is arg 1, but highest 'sc'.
+                    // so I need to reorder things logically.
+                    let arr = Array.zeroCreate (int lim.ArityIn)
+                    for ix in 1 .. arr.Length do
+                        arr[arr.Length - ix] <- UsingArg (int16 ix)
+                    arr
+                let extraSpace =
+                    let arr = Array.zeroCreate (int (lim.MaxStack - lim.ArityIn))
+                    for ix in 1 .. arr.Length do
+                        let v = il.DeclareLocal(typeof<Value>)
+                        arr[ix - 1] <- LocalVar v
+                    arr
+                Array.append inputArgs extraSpace
+            let mcx =   
+                { CTE = cte
+                ; Lim = lim
+                ; OnFail = lblFail
+                ; IL = il
+                ; Stack = stackReg 
+                ; ECX = ecx
+                }
+            let sc' = compileOp mcx (int lim.ArityIn) p0
+            assert(sc' = int lim.ArityOut)
+            // (on success path)
+            // move results into output parameters
+            for ix in 1s .. lim.ArityOut do
+                Emit.ldarg (ix + lim.ArityIn) il        // address
+                loadSPVal (mcx.Stack[sc' - int ix]) il  // value from stack
+                il.Emit(OpCodes.Stobj, typeof<Value>)   // write
+            // return true 
+            il.Emit(OpCodes.Ldc_I4_1)
+            il.Emit(OpCodes.Ret)
+            // (on failure) just return false
+            il.MarkLabel(lblFail)
+            il.Emit(OpCodes.Ldc_I4_0)
+            il.Emit(OpCodes.Ret)
+
+        // initCTE prepares an initial CTE with a type that is constructed by
+        // giving it the Runtime argument. The profile is shared across all 
+        // instances of this type, currently.
+        let initCTE () : CTE =
+            // for now, all named the same. Might need to distinguish later
+            // to support debugging of exception stacks, but uncertain.
+            let asmName = AssemblyName("Glas.ProgEval.DynCSM")
+            let asmOp = AssemblyBuilderAccess.RunAndCollect
+            let asmB = AssemblyBuilder.DefineDynamicAssembly(asmName, asmOp)
+            let modB = asmB.DefineDynamicModule("M")
+            let typeAttr = TypeAttributes.Public ||| TypeAttributes.Sealed
+            let typB = modB.DefineType("P", typeAttr)
+            let fldAttrEW = FieldAttributes.Private ||| FieldAttributes.InitOnly
+            let fldEW = typB.DefineField("IO", typeof<EWrap>, fldAttrEW)
+            let fldAttrData = FieldAttributes.Public ||| FieldAttributes.Static
+            let fldData = typB.DefineField("SD", typeof<Value array>, fldAttrData)
+
+            // the object constructor receives a wrapped EffHandler.
+            let ctor = typB.DefineConstructor(
+                    MethodAttributes.Public,
+                    CallingConventions.Standard,
+                    [| typeof<EWrap> |])
             do
-                let il = eff0.GetILGenerator()
-                rtCall0 cte "TopLevelEffect" il
-                assert(opOK = 0) // validate Ldc_I4_0 is still okay
-                il.Emit(OpCodes.Ldc_I4_0)
-                il.Emit(OpCodes.Ceq) // true if status is OK
-                il.Emit(OpCodes.Ret)
-            
-            let entryB = cte.TypB.DefineMethod(
-                        entryMethod, 
-                        MethodAttributes.Public ||| MethodAttributes.Final,
-                        CallingConventions.Standard,
-                        typeof<bool>, null)
-            do 
-                let il = entryB.GetILGenerator()
+                let il = ctor.GetILGenerator()
                 il.Emit(OpCodes.Ldarg_0)
-                il.Emit(OpCodes.Ldftn, eff0)
-                il.Emit(OpCodes.Call, typeof<HelperOps>.GetMethod("InitRTE"))
-                il.Emit(OpCodes.Tailcall)
-                il.Emit(OpCodes.Call, rootProg)
+                il.Emit(OpCodes.Ldarg_1)
+                il.Emit(OpCodes.Stfld, fldEW)
                 il.Emit(OpCodes.Ret)
-*)
+            { AsmB = asmB
+            ; ModB = modB
+            ; TypB = typB
+            ; FldEWrap = fldEW
+            ; FldData = fldData
+            ; Methods = new MethodDict()
+            ; Statics = new DataDict()
+            ; NextId = ref 1000
+            }
 
+        let mainMethod = "EvalProg"
 
         let compiled (p : Program) : Effects.IEffHandler -> Value list -> Value list option =
             let struct(lim, p') = precomp p
-            let cte = initCTE ()
-            failwith "todo: compile method"
-            // todo: compileMethod cte "main" lim p'
-            let progType = createType cte
+            let progType =             
+                let cte = initCTE ()
+                let ecx0 = 
+                    { EffMethod = eff0
+                    ; EffState = []
+                    ; IOState = lim.Effectful 
+                    }
+                compileMethod mainMethod cte ecx0 lim p'
+                createType cte
+
             fun (io : Effects.IEffHandler) (ds : Value list) ->
                 if (int lim.ArityIn) > (List.length ds) then
                     Effects.logError io "underflow"
@@ -2579,8 +2640,8 @@ module ProgEval =
                             Array.append inArgs outArgs
                         let progInst = System.Activator.CreateInstance(progType, ctorArgs)
                         let invokeAttr = BindingFlags.DoNotWrapExceptions
-                        let bPass = unbox<bool> <| progType.GetMethod("main").Invoke(progInst, invokeAttr, null, invokeArgs, null)
-                        if not bPass then None else
+                        let pass = progType.GetMethod(mainMethod).Invoke(progInst, invokeAttr, null, invokeArgs, null)
+                        if not (unbox<bool>(pass)) then None else
                         let results = invokeArgs |> Array.skip (int lim.ArityIn) |> Array.map (unbox<Value>)
                         assert((int lim.ArityOut) = (Array.length results))
                         let resultList = Array.foldBack (fun x xs -> (x :: xs)) results (List.skip (int lim.ArityIn) ds)
