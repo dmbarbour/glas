@@ -404,22 +404,3 @@ module ProgVal =
         | PSeq (List ops) -> ops
         | _ -> Rope.cons op Leaf
 
-    // rewriting optimization at concatenation of two sequences
-    let rec joinSeqs (xs : Term) (ys : Term) : Term =
-        match xs, ys with
-        | Rope.ViewR struct(xs', Dip x0), Rope.ViewL struct(Dip y0, ys') ->
-            // dip:A dip:B => dip:[A B]
-            joinSeqs (Rope.snoc xs' (Dip (mkPairSeq x0 y0))) ys'
-        | Rope.ViewR struct(xs', Dip dipOp), Rope.ViewL struct(Stem lDrop U, ys') ->
-            // dip:A drop => drop A
-            joinSeqs (joinSeqs xs' (asSeq lDrop)) (joinSeqs (asSeq dipOp) ys')
-        | Rope.ViewR struct(xs', Stem lSwap U), Rope.ViewL struct(Stem lDrop U, ys') ->
-            joinSeqs xs' ys'
-        | _ ->
-            Rope.append xs ys
-
-    // form a sequence of two operations
-    // with some built-in optimizations
-    and mkPairSeq (x : Program) (y : Program) : Program =
-        joinSeqs (asSeq x) (asSeq y) |> Value.ofTerm |> PSeq
-

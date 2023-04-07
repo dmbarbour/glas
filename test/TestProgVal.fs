@@ -349,7 +349,7 @@ let test_ops =
                     Expect.equal (eff.Outputs) [msg] "logged outputs"
                     Expect.equal (sLog) [Value.unit] "eff return val"
 
-(*
+
             testCase "transactional eff" <| fun () ->
                 let varSym s = mkSeq [Data Value.unit; Data (Value.symbol s); Op lPut]
                 let tryOp p = Cond (p, Nop, Nop)
@@ -410,8 +410,6 @@ let test_ops =
                     Expect.isFalse (eff.InTX) "completed transactions"
                     Expect.equal (eff.Outputs) [b] "expected messages"
                     Expect.equal (sLog) [b1; a; Value.unit; c] "expected results"
-
-*)
 
             testCase "prog" <| fun () ->
                 for _ in 1 .. 10 do

@@ -1759,7 +1759,7 @@ module ProgEval =
             if (d < 1s) then a else
             { a with 
                 ArityIn = a.ArityIn + d
-                ArityOut = a.ArityOut + d 
+                ArityOut = a.ArityOut + d
                 MaxStack = a.MaxStack + d
             }
         
@@ -1878,8 +1878,11 @@ module ProgEval =
             | Data _ ->
                 struct(limOfArity 0 1, p0)
             | PSeq (List lP) ->
-                // several special cases here, so seq gets its own function.
-                let struct(lim, lP') = precompSeq (limOfArity 0 0) (Rope.empty) lP 
+                let fn (struct(lim, ops')) op =
+                    if lim.Aborted then struct(lim, ops') else
+                    let struct(limOp, op') = precomp op
+                    struct(limSeq lim limOp, Rope.snoc ops' op')
+                let struct(lim, lP') = Rope.fold fn (struct(limOfArity 0 0, Rope.empty)) lP
                 struct(lim, PSeq (Value.ofTerm lP'))
             | Cond (pc, pa, pb) ->
                 let struct(c0, pc') = cacheLim <| precomp pc
@@ -1931,10 +1934,19 @@ module ProgEval =
             | Until (pc, pa) ->
                 let struct(c0, pc') = cacheLim <| precomp pc
                 let struct(a0, pa') = precomp pa
-                let okBal = (a0.ArityIn = a0.ArityOut)
-                if okBal || a0.Aborted then
+                let okBal = (a0.ArityIn = a0.ArityOut) || (a0.Aborted)
+                if okBal then
                     let loop' = Until(pc', pa')
-                    struct(limSeq a0 c0, loop')
+                    let arIn = max c0.ArityIn a0.ArityIn
+                    let lim' = 
+                        { ArityIn  = arIn
+                        ; ArityOut = arIn - c0.ArityIn + c0.ArityOut
+                        ; MaxStack = max (arIn - c0.ArityIn + c0.MaxStack)
+                                         (arIn - a0.ArityIn + a0.MaxStack)
+                        ; Aborted = c0.Aborted // aborted or an infinite loop
+                        ; Effectful = c0.Effectful || a0.Effectful
+                        }
+                    struct(lim', loop')
                 else 
                     precomp <| Halt (Value.variant "loop-arity" p0)
             | Env (pwith, pdo) ->
@@ -1955,23 +1967,6 @@ module ProgEval =
                 cacheLim (struct(pLim, Prog(anno, pdo')))
             | _ ->
                 precomp <| Halt (Value.variant "prog-inval" p0)
-
-        and precompSeq l xs ys =
-            // short-circuit aborted sequences.
-            // also set arity out to zero in these cases.
-            // (but we can still evaluate for effects.)
-            if l.Aborted then struct( { l with ArityOut = 0s }, xs ) else
-            match ys with
-            | Leaf -> // completed
-                struct(l, xs)
-            | Rope.ViewL struct(op, ys') ->
-                let struct(opLim, op') = precomp op
-                let l' = limSeq l opLim
-                let xs' = joinSeqs xs (asSeq op') // minor optimizations
-                precompSeq l' xs' ys'
-            | _ -> 
-                // unreachable (in theory)
-                failwith "invalid rope"
 
         let (|ProgLim|) (p:Program) =
             match p with
@@ -2059,19 +2054,18 @@ module ProgEval =
 
         let ty_Value = 
             typeof<Value>
-        
-        // Because programs are statically compiled with their effect context,
-        // we may need to recompile methods for different contexts. Exception is
-        // if we know the method is pure.
-        type EffMethod = string
-        type MethodName = string
-        type MethodBody = (struct(Program * EffMethod)) // program and current effect method
-        type MethodDict = System.Collections.Generic.Dictionary<MethodBody, MethodName>
-        let noEffMethod = "(pure)" // not an actual method
+
+        let methodArgsFromArity (arIn : int) (arOut : int) : System.Type array = 
+            assert((arIn >= 0) && (arOut >= 0))
+            let argsIn = Array.create arIn ty_Value
+            let argsOut = Array.create arOut ty_ValueOutRef
+            Array.append argsIn argsOut
 
         // 'static data' - static data as an array of values to assign
         // after the class is created (but before instances are created).
         type DataDict = System.Collections.Generic.Dictionary<Value, int>
+        type HandlerName = string
+        type Handlers = System.Collections.Generic.Dictionary<HandlerName, struct(MethodBuilder * FieldBuilder)>
 
         // global compile time env
         type CTE = 
@@ -2082,15 +2076,8 @@ module ProgEval =
                 FldEWrap : FieldBuilder     // object for top-level effects.
                 FldData  : FieldBuilder     // an array for static data
                 Statics  : DataDict         // tracks static data
-                Methods  : MethodDict       // reusable subprograms
-                NextId   : Ref<int>         // global id gen
+                Handlers : Handlers         // effects handlers
             }
-
-        let genID (cte:CTE) : int =
-            let n = cte.NextId.Value
-            assert(n < System.Int32.MaxValue) 
-            cte.NextId.Value <- (n + 1)
-            n
 
         let addStatic (cte:CTE) (v:Value) : int =
             match cte.Statics.TryGetValue(v) with
@@ -2108,24 +2095,6 @@ module ProgEval =
             let newType = cte.TypB.CreateType()
             newType.GetField(cte.FldData.Name).SetValue(null, staticData)
             newType
-
-        let loadEWrap (cte : CTE) (il : ILGenerator) =
-            il.Emit(OpCodes.Ldarg_0) 
-            il.Emit(OpCodes.Ldfld, cte.FldEWrap)
-
-        let callEWrapTry (cte : CTE) (il : ILGenerator) =
-            loadEWrap cte il
-            il.Emit(OpCodes.Call, typeof<EWrap>.GetMethod("Try"))
-        
-        let callEWrapCommit (cte : CTE) (il : ILGenerator) =
-            loadEWrap cte il
-            il.Emit(OpCodes.Call, typeof<EWrap>.GetMethod("Commit"))
-
-        let callEWrapAbort (cte : CTE) (il : ILGenerator) =
-            loadEWrap cte il
-            il.Emit(OpCodes.Call, typeof<EWrap>.GetMethod("Abort"))
-
-
 
         // stack data is stored in either the arguments or a few extra
         // locals that are allocated at the start of a method. (The 
@@ -2152,11 +2121,10 @@ module ProgEval =
 
         // extra effect handler context
         type ECX =
-            { EffMethod : EffMethod // method to call upon 'eff' (toplevel via 'eff0')
+            { EffMethod : MethodBuilder option
             ; EffState  : FieldBuilder list // internal state to save on transactions
             ; IOState   : bool   // need to save external state on transactions?
             }
-        let eff0 = "(toplevel)" // special 'inlined' EffMethod
 
         // stable method construction context
         type MCX =
@@ -2177,7 +2145,7 @@ module ProgEval =
             for ix in 1 .. arOut do
                 loadSPAddr (mcx.Stack[sc' - ix]) (mcx.IL)
             sc'
-                
+
         // Helper ops are needed because it's difficult to reference F#
         // functions directly
         type HelperOps =
@@ -2209,24 +2177,79 @@ module ProgEval =
             static member OpHalt(eMsg : Value) : unit =
                 raise (RTError(eMsg))
                 
-            static member DebugPrintStart() =
-                printfn "(debug) STACK"
             static member DebugPrint(ix:int, v:Value) : unit =
                 printfn "(debug) [%d] %s" ix (Value.prettyPrint v)
+            static member DebugPrintStr(s:string) : unit =
+                printfn "(debug) %s" s
+
+        let debugPrintStr (mcx:MCX) (s:string) =
+            mcx.IL.Emit(OpCodes.Ldstr, s)
+            mcx.IL.Emit(OpCodes.Call, typeof<HelperOps>.GetMethod("DebugPrintStr"))
 
         let debugPrintStack (mcx:MCX) (sc:SC) = 
-            mcx.IL.Emit(OpCodes.Call, typeof<HelperOps>.GetMethod("DebugPrintStart"))
             for ix in 1 .. sc do
                 Emit.ldc_i4 ix (mcx.IL)
                 loadSPVal (mcx.Stack[sc - ix]) (mcx.IL)
                 mcx.IL.Emit(OpCodes.Call, typeof<HelperOps>.GetMethod("DebugPrint"))
 
+        // attempting to abstract out the transaction steps
+        [<Struct>]
+        type TXCC =
+            { OnAbort : unit -> unit
+            ; OnCommit : unit -> unit
+            }
+
+        let txBegin (mcx:MCX) (sc:SC) : TXCC =
+            // save data for ECX
+            let mutable onCommit : unit -> unit = id
+            let mutable onAbort : unit -> unit = id
+            if mcx.Lim.Effectful then
+                // save anything we might change via effects
+                // save external IO data
+                if mcx.ECX.IOState then
+                    mcx.IL.Emit(OpCodes.Ldarg_0)
+                    mcx.IL.Emit(OpCodes.Ldfld, mcx.CTE.FldEWrap)
+                    mcx.IL.Emit(OpCodes.Call, typeof<EWrap>.GetMethod("Try"))
+                    onAbort <- onAbort << fun () ->
+                        mcx.IL.Emit(OpCodes.Ldarg_0)
+                        mcx.IL.Emit(OpCodes.Ldfld, mcx.CTE.FldEWrap)
+                        mcx.IL.Emit(OpCodes.Call, typeof<EWrap>.GetMethod("Abort"))
+                    onCommit <- onCommit << fun () ->
+                        mcx.IL.Emit(OpCodes.Ldarg_0)
+                        mcx.IL.Emit(OpCodes.Ldfld, mcx.CTE.FldEWrap)
+                        mcx.IL.Emit(OpCodes.Call, typeof<EWrap>.GetMethod("Commit"))
+                // save effect handler stack
+                for effStFld in mcx.ECX.EffState do
+                    let varTmp = mcx.IL.DeclareLocal(typeof<Value>)
+                    mcx.IL.Emit(OpCodes.Ldarg_0)
+                    mcx.IL.Emit(OpCodes.Ldfld, effStFld)
+                    Emit.stloc varTmp mcx.IL
+                    onAbort <- onAbort << fun () ->
+                        mcx.IL.Emit(OpCodes.Ldarg_0)
+                        Emit.ldloc varTmp mcx.IL
+                        mcx.IL.Emit(OpCodes.Stfld, effStFld)
+            let arSave = int mcx.Lim.ArityIn
+            assert(sc >= arSave)
+            for ix in 1 .. arSave do
+                let sp = mcx.Stack[sc - ix]
+                let varTmp = mcx.IL.DeclareLocal(typeof<Value>)
+                loadSPVal sp mcx.IL
+                Emit.stloc varTmp mcx.IL
+                onAbort <- onAbort << fun () ->
+                    Emit.ldloc varTmp mcx.IL
+                    storeSPVal sp mcx.IL
+            { OnCommit = onCommit; OnAbort = onAbort }
+        
         let rec compileOp (mcx:MCX) (sc:SC) (p0:Program) : SC =
+            // note: sc < 0 indicates computation has already aborted
+            if (sc < 0) then sc else
+            assert(sc <= mcx.Stack.Length)
             match p0 with
             | PSeq (List lP) -> 
                 // compileOp signature was arranged for this to work.
                 Rope.fold (compileOp mcx) sc (lP)
             | Data v -> 
+                assert(sc < mcx.Stack.Length)
                 let ix = addStatic (mcx.CTE) v
                 mcx.IL.Emit(OpCodes.Ldsfld, mcx.CTE.FldData)
                 Emit.ldc_i4 ix (mcx.IL)
@@ -2234,25 +2257,33 @@ module ProgEval =
                 storeSPVal (mcx.Stack[sc]) mcx.IL
                 (sc + 1)
             | Cond (ProgLim(c, cLim), a, b) -> 
-                // this is complicated, leave for later
-                failwith "todo: cond"
-                (*
-                let lblEndCond = il.DefineLabel()
-                let lblOnCondFail = il.DefineLabel()
-                // first run the cond
-                rtCall0_ cte "TXBegin" il
-                compileOp cte c lblOnCondFail il  
-                // if we reach this point, we're on the true path
-                // but our failure destination changes.
-                rtCall0_ cte "TXCommit" il
-                compileOp cte a lblFail il
-                il.Emit(OpCodes.Br, lblEndCond)
-                // failure path
-                il.MarkLabel(lblOnCondFail)
-                rtCall0_ cte "TXAbort" il
-                compileOp cte b lblFail il
-                il.MarkLabel(lblEndCond)
-                *)
+                // this is complicated, leave for later conditional
+                mcx.IL.BeginScope()
+                let lblCondEnd = mcx.IL.DefineLabel() // after success path
+                let lblCondFail = mcx.IL.DefineLabel() // where to go on failure
+                let mcxCond = { mcx with OnFail = lblCondFail; Lim = cLim;  } 
+                let txcc = txBegin mcxCond sc
+                let scC = compileOp mcxCond sc c
+                assert(cLim.Aborted = (scC < 0))
+                // fall through to success case
+                txcc.OnCommit ()
+                mcx.IL.Emit(OpCodes.Ldc_I4_1) // record success
+                mcx.IL.Emit(OpCodes.Br, lblCondEnd)
+                mcx.IL.MarkLabel(lblCondFail)
+                txcc.OnAbort ()
+                mcx.IL.Emit(OpCodes.Ldc_I4_0) // record failure
+                mcx.IL.MarkLabel(lblCondEnd)
+                mcx.IL.EndScope() // enable GC of saved data
+                let lblSkipPass = mcx.IL.DefineLabel ()
+                let lblSkipFail = mcx.IL.DefineLabel ()
+                mcx.IL.Emit(OpCodes.Brfalse, lblSkipPass)
+                let scA = compileOp mcx scC a
+                mcx.IL.Emit(OpCodes.Br, lblSkipFail)
+                mcx.IL.MarkLabel(lblSkipPass)
+                let scB = compileOp mcx sc b
+                mcx.IL.MarkLabel(lblSkipFail)
+                assert((scA = scB) || (scA < 0) || (scB < 0))
+                max scA scB
             | Dip p ->
                 let il = mcx.IL
                 assert(sc > 0)
@@ -2303,40 +2334,57 @@ module ProgEval =
                 let sc' = argsFromArity mcx 2 1 sc
                 mcx.IL.Emit(OpCodes.Call, typeof<HelperOps>.GetMethod("OpDel"))
                 sc'
-            | While (c, a) -> 
-                failwith "todo: while loops"
-                (*
-                let lblRepeat = il.DefineLabel()
-                let lblExitLoop = il.DefineLabel()
-                il.MarkLabel(lblRepeat)
-                rtCall0_ cte "TXBegin" il
-                compileOp cte c lblExitLoop il
-                rtCall0_ cte "TXCommit" il
-                compileOp cte a lblFail il
-                il.Emit(OpCodes.Br, lblRepeat)
-                il.MarkLabel(lblExitLoop)
-                rtCall0_ cte "TXAbort" il
-                *)
-            | Until (c, a) ->
-                failwith "todo: until loops"
-                (*
-                let lblRepeat = il.DefineLabel()
-                let lblContLoop = il.DefineLabel()
-                let lblExitLoop = il.DefineLabel()
-                il.MarkLabel(lblRepeat)
-                rtCall0_ cte "TXBegin" il
-                compileOp cte c lblContLoop il
-                il.Emit(OpCodes.Br, lblExitLoop)
-                il.MarkLabel(lblContLoop)
-                rtCall0_ cte "TXAbort" il
-                compileOp cte a lblFail il
-                il.Emit(OpCodes.Br, lblRepeat)
-                il.MarkLabel(lblExitLoop)
-                rtCall0_ cte "TXCommit" il
-                *) 
+            | While (ProgLim(c, cLim), a) -> 
+                let lblRepeat = mcx.IL.DefineLabel()
+                let lblRunBody = mcx.IL.DefineLabel()
+                let lblTerminate = mcx.IL.DefineLabel()
+                mcx.IL.MarkLabel(lblRepeat)
+                // conditional
+                mcx.IL.BeginScope()
+                let lblOnCondFail = mcx.IL.DefineLabel()
+                let mcxCond = { mcx with Lim = cLim; OnFail = lblOnCondFail }
+                let txcc = txBegin mcxCond sc
+                let scC = compileOp mcxCond sc c 
+                assert(cLim.Aborted = (scC < 0))
+                txcc.OnCommit ()
+                mcx.IL.Emit(OpCodes.Br, lblRunBody)
+                mcx.IL.MarkLabel(lblOnCondFail)
+                txcc.OnAbort ()
+                mcx.IL.Emit(OpCodes.Br, lblTerminate)
+                mcx.IL.EndScope()
+                // loop body
+                mcx.IL.MarkLabel(lblRunBody)
+                let scA = compileOp mcx scC a
+                assert((scA = sc) || (scA < 0))
+                mcx.IL.Emit(OpCodes.Br, lblRepeat)
+                // exit loop
+                mcx.IL.MarkLabel(lblTerminate)
+                scA
+            | Until (ProgLim(c, cLim), a) ->
+                let lblExitLoop = mcx.IL.DefineLabel()
+                let lblRepeat = mcx.IL.DefineLabel()
+                mcx.IL.MarkLabel(lblRepeat)
+                mcx.IL.BeginScope()
+                let lblOnCondFail = mcx.IL.DefineLabel()
+                let mcxCond = { mcx with OnFail = lblOnCondFail; Lim = cLim }
+                let txcc = txBegin mcxCond sc
+                let scC = compileOp mcxCond sc c
+                assert(cLim.Aborted = (scC < 0))
+                // condition succeeds - commit then exit loop.
+                txcc.OnCommit ()
+                mcx.IL.Emit(OpCodes.Br, lblExitLoop)
+                // condition fails - abort, run body, then repeat loop
+                mcx.IL.MarkLabel(lblOnCondFail)
+                txcc.OnAbort ()
+                mcx.IL.EndScope()
+                let scA = compileOp mcx sc a 
+                assert((scA = sc) || (scA < 0))
+                mcx.IL.Emit(OpCodes.Br, lblRepeat)
+                mcx.IL.MarkLabel(lblExitLoop)
+                scC
             | Stem lEff U -> 
-                if eff0 = mcx.ECX.EffMethod then
-                    // call the toplevel effect handler
+                match mcx.ECX.EffMethod with
+                | None -> // call the toplevel effect handler
                     mcx.IL.Emit(OpCodes.Ldarg_0)
                     mcx.IL.Emit(OpCodes.Ldfld, mcx.CTE.FldEWrap)
                     let sc' = argsFromArity mcx 1 1 sc
@@ -2344,51 +2392,52 @@ module ProgEval =
                     mcx.IL.Emit(OpCodes.Brfalse, mcx.OnFail)
                     assert(sc = sc')
                     sc'
-                else
-                    // call user-defined effect handler
-                    let m = mcx.CTE.TypB.GetMethod(mcx.ECX.EffMethod)
+                | Some m -> // call user-provided effect handler
                     mcx.IL.Emit(OpCodes.Ldarg_0)
                     let sc' = argsFromArity mcx 1 1 sc
                     mcx.IL.Emit(OpCodes.Call, m)
                     mcx.IL.Emit(OpCodes.Brfalse, mcx.OnFail)
                     assert(sc = sc')
                     sc'
-            | Env (w, p) -> 
-                failwith "todo: env"
-                (*
-                // compile handler as a subroutine
-                let wSub = newSub cte
-                do
-                    let ilW = wSub.GetILGenerator()
-                    let wFail = ilW.DefineLabel()
-                    rtCall0_ cte "EnvPop" ilW
-                    compileOp cte w wFail ilW
-                    rtCall0_ cte "EnvPush" ilW
-                    emitSubExit wFail ilW
-                // to ensure handlers are in 'arg_1' position, we'll represent
-                // the called program as a subprogram.
-                let pSub = newSub cte
-                compile cte p (pSub.GetILGenerator()) 
-
-                rtCall0_ cte "EnvPush" il   
-                il.Emit(OpCodes.Ldarg_0) // 'this' arg for this.pSub(handlers) call
-                il.Emit(OpCodes.Ldarg_1)
-                il.Emit(OpCodes.Ldftn, wSub) // adding address of wSub to head of handlers list
-                il.Emit(OpCodes.Call, typeof<HelperOps>.GetMethod("PushHandler"))
-                il.Emit(OpCodes.Call, pSub) // returns bool pass/fail
-                rtCall0_ cte "EnvPop" il
-                il.Emit(OpCodes.Brfalse, lblFail) // the 'pSub' call may fail
-                *)
+            | Env (ProgLim(w, wLim), pDo) -> 
+                assert(sc > 0)
+                // separate effect handler into another method 
+                let struct(effMethod, effStFld) = 
+                    compileEffHandler (mcx.CTE) (mcx.ECX) wLim w
+                let ecxDo = 
+                    if wLim.Effectful then
+                        { EffMethod = Some effMethod
+                        ; EffState = effStFld :: mcx.ECX.EffState
+                        ; IOState = mcx.ECX.IOState
+                        }
+                    else // mask prior eff state
+                        { EffMethod = Some effMethod
+                        ; EffState = [effStFld]
+                        ; IOState = false 
+                        }
+                let mcxDo = { mcx with ECX = ecxDo } 
+                // store top stack item into effStFld
+                mcx.IL.Emit(OpCodes.Ldarg_0)
+                loadSPVal (mcx.Stack[sc - 1]) mcx.IL
+                mcx.IL.Emit(OpCodes.Stfld, effStFld)
+                let scDo = compileOp mcxDo (sc - 1) pDo
+                // unless aborted, restore eff state to stack
+                if scDo < 0 then scDo else
+                assert(scDo < mcx.Stack.Length)
+                mcx.IL.Emit(OpCodes.Ldarg_0)
+                mcx.IL.Emit(OpCodes.Ldfld, effStFld)
+                storeSPVal (mcx.Stack[scDo]) mcx.IL
+                (scDo + 1)
             | Stem lFail U ->
                 mcx.IL.Emit(OpCodes.Br, mcx.OnFail)
-                sc
+                -1
             | Stem lHalt eMsg -> 
                 let ixMsg = addStatic (mcx.CTE) eMsg
                 mcx.IL.Emit(OpCodes.Ldsfld, mcx.CTE.FldData)
                 Emit.ldc_i4 ixMsg mcx.IL
                 mcx.IL.Emit(OpCodes.Ldelem, typeof<Value>)
                 mcx.IL.Emit(OpCodes.Call, typeof<HelperOps>.GetMethod("OpHalt"))
-                sc
+                -1
             | Prog (anno, p) ->
                 compileAnno mcx sc anno p
             | _ ->
@@ -2526,13 +2575,75 @@ module ProgEval =
                     emitPartialAccel "AccelSmallNatGTE"
                 | _ -> accelFail ()
             | _ -> accelFail ()
-
         *)
+
+        and private compileEffHandler (cte:CTE) (ecx:ECX) (lim0:Lim) (p:Program) : (struct(MethodBuilder * FieldBuilder)) =
+            // effHandler is always 2--2, but produced method is 1--1. 
+            // One parameter is input as a field in the compiled class.
+            let lim = limAddStack (2s - lim0.ArityIn) lim0
+            assert((lim.ArityIn = 2s) && ((lim.ArityOut = 2s) || lim.Aborted))
+            let idSuffix = string (1 + cte.Handlers.Count)
+
+            let effStFldName = "EffSt" + idSuffix
+            let effStFldAttr = FieldAttributes.Private
+            let effStFld = cte.TypB.DefineField(effStFldName, typeof<Value>, effStFldAttr)
+
+            let methodArgs = methodArgsFromArity 1 1
+            let methodAttr = MethodAttributes.Private ||| MethodAttributes.Final
+            let methodName = "Eff" + idSuffix
+
+            let m = cte.TypB.DefineMethod(methodName, methodAttr,
+                        CallingConventions.Standard,
+                        typeof<bool>, methodArgs)
+            let result = struct(m, effStFld)
+            cte.Handlers.Add(methodName, result)
+
+            let il = m.GetILGenerator()
+            let lblFail = il.DefineLabel()
+            let stackReg =
+                assert(lim.MaxStack >= lim.ArityIn)
+                // trivial input args 
+                let inputArgs = [| UsingArg 1s |]
+                let extraSpace = 
+                    let arr = Array.zeroCreate (int (lim.MaxStack - 1s))
+                    for ix in 1 .. arr.Length do
+                        let v = il.DeclareLocal(typeof<Value>)
+                        arr[ix - 1] <- LocalVar v
+                    arr
+                Array.append inputArgs extraSpace
+            assert(stackReg.Length = int lim.MaxStack)
+            let mcx =
+                { CTE = cte
+                ; Lim = lim
+                ; OnFail = lblFail
+                ; IL = il
+                ; Stack = stackReg 
+                ; ECX = ecx
+                }
+            il.Emit(OpCodes.Ldarg_0)
+            il.Emit(OpCodes.Ldfld, effStFld)
+            storeSPVal (stackReg[1]) il
+            let sc' = compileOp mcx 2 p
+            assert((sc' = 2) || ((sc' < 0) && (lim.Aborted)))
+            // success path 
+            il.Emit(OpCodes.Ldarg_0)                
+            loadSPVal (stackReg[1]) il
+            il.Emit(OpCodes.Stfld, effStFld)        // saves effect handler state
+            il.Emit(OpCodes.Ldarg_2)
+            loadSPVal (stackReg[0]) il
+            il.Emit(OpCodes.Stobj, typeof<Value>)   // returns result via outref
+            il.Emit(OpCodes.Ldc_I4_1)               
+            il.Emit(OpCodes.Ret)                    // return true
+            // failure path 
+            il.MarkLabel(lblFail)
+            il.Emit(OpCodes.Ldc_I4_0)
+            il.Emit(OpCodes.Ret)                    // return false
+
+            // return the relevant objects
+            result
+
         and compileMethod (methodName:string) (cte:CTE) (ecx:ECX) (lim:Lim) (p0:Program) =
-            let methodArgs = 
-                let argsIn = Array.create (int lim.ArityIn) ty_Value
-                let argsOut = Array.create (int lim.ArityOut) ty_ValueOutRef
-                Array.append argsIn argsOut
+            let methodArgs = methodArgsFromArity (int lim.ArityIn) (int lim.ArityOut)
             let methodAttr = MethodAttributes.Public ||| MethodAttributes.Final
             let m = cte.TypB.DefineMethod(methodName, methodAttr, 
                         CallingConventions.Standard,
@@ -2567,7 +2678,7 @@ module ProgEval =
                 ; ECX = ecx
                 }
             let sc' = compileOp mcx (int lim.ArityIn) p0
-            assert(sc' = int lim.ArityOut)
+            assert((lim.Aborted && (sc' < 0)) || (sc' = int lim.ArityOut))
             // (on success path)
             // move results into output parameters
             for ix in 1s .. lim.ArityOut do
@@ -2615,9 +2726,8 @@ module ProgEval =
             ; TypB = typB
             ; FldEWrap = fldEW
             ; FldData = fldData
-            ; Methods = new MethodDict()
+            ; Handlers = new Handlers()
             ; Statics = new DataDict()
-            ; NextId = ref 1000
             }
 
         let mainMethod = "EvalProg"
@@ -2626,11 +2736,7 @@ module ProgEval =
             let struct(lim, p') = precomp p
             let progType =             
                 let cte = initCTE ()
-                let ecx0 = 
-                    { EffMethod = eff0
-                    ; EffState = []
-                    ; IOState = lim.Effectful 
-                    }
+                let ecx0 = { EffMethod = None; EffState = []; IOState = true }
                 compileMethod mainMethod cte ecx0 lim p'
                 createType cte
 
@@ -2666,6 +2772,18 @@ module ProgEval =
             let lazyCompile = lazy (compiled p)
             fun io ds -> lazyCompile.Force() io ds
 
+        // performance 
+        // without acceleration:
+        //   test-loop-perf.main
+        //     0 loops - 6.5s (time to load the deps)
+        //     100k loops - 13s
+        //     1M loops - 100s
+        //   test-loop-perf.interior
+        //     100k loops - 13s
+        //     1M loops - 98s
+        //
+        // with acceleration:
+        //    
 
     // OTHER OPTIONS:
     //  
