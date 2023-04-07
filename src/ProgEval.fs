@@ -2175,7 +2175,7 @@ module ProgEval =
             for ix in 1 .. arIn do
                 loadSPVal (mcx.Stack[sc - ix]) (mcx.IL)
             for ix in 1 .. arOut do
-                loadSPAddr (mcx.Stack[sc - ix]) (mcx.IL)
+                loadSPAddr (mcx.Stack[sc' - ix]) (mcx.IL)
             sc'
                 
         // Helper ops are needed because it's difficult to reference F#
@@ -2194,19 +2194,32 @@ module ProgEval =
                     | ValueNone -> false
                 | _ -> raise (RTError(lTypeError))
 
-            static member OpPut(p : Value, r : Value, v : Value, result : outref<Value>) : unit =
+            static member OpPut(p : Value, r : Value, v : Value, result : byref<Value>) : unit =
                 match p with
-                | Bits k -> result <- record_insert k v r 
+                | Bits k -> 
+                    result <- record_insert k v r
                 | _ -> raise (RTError(lTypeError))
             
-            static member OpDel(p : Value, r : Value, result : outref<Value>) : unit =
+            static member OpDel(p : Value, r : Value, result : byref<Value>) : unit =
                 match p with
-                | Bits k -> result <- record_delete k r
+                | Bits k ->
+                    result <- record_delete k r
                 | _ -> raise (RTError(lTypeError))
 
             static member OpHalt(eMsg : Value) : unit =
                 raise (RTError(eMsg))
                 
+            static member DebugPrintStart() =
+                printfn "(debug) STACK"
+            static member DebugPrint(ix:int, v:Value) : unit =
+                printfn "(debug) [%d] %s" ix (Value.prettyPrint v)
+
+        let debugPrintStack (mcx:MCX) (sc:SC) = 
+            mcx.IL.Emit(OpCodes.Call, typeof<HelperOps>.GetMethod("DebugPrintStart"))
+            for ix in 1 .. sc do
+                Emit.ldc_i4 ix (mcx.IL)
+                loadSPVal (mcx.Stack[sc - ix]) (mcx.IL)
+                mcx.IL.Emit(OpCodes.Call, typeof<HelperOps>.GetMethod("DebugPrint"))
 
         let rec compileOp (mcx:MCX) (sc:SC) (p0:Program) : SC =
             match p0 with
@@ -2214,17 +2227,12 @@ module ProgEval =
                 // compileOp signature was arranged for this to work.
                 Rope.fold (compileOp mcx) sc (lP)
             | Data v -> 
-                // add data to static store
                 let ix = addStatic (mcx.CTE) v
-                mcx.IL.Emit(OpCodes.Ldarg_0) 
                 mcx.IL.Emit(OpCodes.Ldsfld, mcx.CTE.FldData)
-                //Emit.ldc_i4 ix mcx.IL
-                mcx.IL.Emit(OpCodes.Ldc_I4, ix)
+                Emit.ldc_i4 ix (mcx.IL)
                 mcx.IL.Emit(OpCodes.Ldelem, typeof<Value>)
-                // store data to top of stack
-                assert((0 <= sc) && (sc < mcx.Stack.Length))
                 storeSPVal (mcx.Stack[sc]) mcx.IL
-                (sc + 1) // increment stack count
+                (sc + 1)
             | Cond (ProgLim(c, cLim), a, b) -> 
                 // this is complicated, leave for later
                 failwith "todo: cond"
@@ -2376,9 +2384,9 @@ module ProgEval =
                 sc
             | Stem lHalt eMsg -> 
                 let ixMsg = addStatic (mcx.CTE) eMsg
-                mcx.IL.Emit(OpCodes.Ldarg_0)
                 mcx.IL.Emit(OpCodes.Ldsfld, mcx.CTE.FldData)
                 Emit.ldc_i4 ixMsg mcx.IL
+                mcx.IL.Emit(OpCodes.Ldelem, typeof<Value>)
                 mcx.IL.Emit(OpCodes.Call, typeof<HelperOps>.GetMethod("OpHalt"))
                 sc
             | Prog (anno, p) ->
@@ -2589,7 +2597,7 @@ module ProgEval =
             let fldAttrEW = FieldAttributes.Private ||| FieldAttributes.InitOnly
             let fldEW = typB.DefineField("IO", typeof<EWrap>, fldAttrEW)
             let fldAttrData = FieldAttributes.Public ||| FieldAttributes.Static
-            let fldData = typB.DefineField("SD", typeof<Value array>, fldAttrData)
+            let fldData = typB.DefineField("StaticData", typeof<Value array>, fldAttrData)
 
             // the object constructor receives a wrapped EffHandler.
             let ctor = typB.DefineConstructor(

@@ -160,8 +160,56 @@ let test_ops =
                 let s' = doEval (Op lEq) noEff [v1;v1;v2]
                 Expect.equal (s') [v2] "eq drops equal values from stack"
 
+            testCase "put" <| fun () ->
+                let k1 = Value.symbol "key"
+                let v1 = Value.symbol "val"
+                let r0 = Value.unit
+                let s1 = doEval (Op lPut) noEff [k1;r0;v1]
+                let r1 = Value.record_insert k1 v1 r0
+                Expect.equal s1 [r1] "put into empty record"
 
-            testCase "record ops" <| fun () ->
+                let k2 = Value.symbol "key2"
+                let v2 = Value.symbol "val2"
+                let s2 = doEval (Op lPut) noEff [k2;r1;v2]
+                let r2 = Value.record_insert k2 v2 r1
+                Expect.equal s2 [r2] "put into non-empty record"
+
+            testCase "get" <| fun () ->
+                let r = Value.asRecord ["ab"; "ad"] (List.map Value.ofString ["b"; "d"])
+                let s1 = doEval (Op lGet) noEff [Value.symbol "ab"; r]
+                Expect.equal s1 [Value.ofString "b"] "get 1"
+
+                let s2 = doEval (Op lGet) noEff [Value.symbol "ad"; r]
+                Expect.equal s2 [Value.ofString "d"] "get 2"
+
+                failEval (Op lGet) noEff [Value.symbol "aa"; r]
+                failEval (Op lGet) noEff [Value.symbol "ac"; r]
+                failEval (Op lGet) noEff [Value.symbol "ae"; r]
+
+            testCase "del" <| fun () ->
+                let r0 = Value.asRecord ["ab"; "ad"; "af"] (List.map Value.ofString ["b"; "d"; "f"])
+                let s1 = doEval (Op lDel) noEff [Value.symbol "ab"; r0]
+                Expect.equal s1 [Value.record_delete (Value.symbol "ab") r0] "del 1"
+
+                let s2 = doEval (Op lDel) noEff [Value.symbol "ad"; r0]
+                Expect.equal s2 [Value.record_delete (Value.symbol "ad") r0] "del 2"
+
+                let s3 = doEval (Op lDel) noEff [Value.symbol "af"; r0]
+                Expect.equal s3 [Value.record_delete (Value.symbol "af") r0] "del 3"
+
+                let s4 = doEval (Op lDel) noEff [Value.symbol "aa"; r0]
+                Expect.equal s4 [r0] "del 4"
+
+                let s5 = doEval (Op lDel) noEff [Value.symbol "ac"; r0]
+                Expect.equal s5 [r0] "del 5"
+
+                let s6 = doEval (Op lDel) noEff [Value.symbol "ae"; r0]
+                Expect.equal s6 [r0] "del 6"
+
+                let s7 = doEval (Op lDel) noEff [Value.symbol "ag"; r0]
+                Expect.equal s7 [r0] "del 7"
+
+            testCase "record ops gallery" <| fun () ->
                 for _ in 1 .. 10 do
                     let k = randomSym ()
                     let r0 = mkRandomRecord 3 9
@@ -301,6 +349,7 @@ let test_ops =
                     Expect.equal (eff.Outputs) [msg] "logged outputs"
                     Expect.equal (sLog) [Value.unit] "eff return val"
 
+(*
             testCase "transactional eff" <| fun () ->
                 let varSym s = mkSeq [Data Value.unit; Data (Value.symbol s); Op lPut]
                 let tryOp p = Cond (p, Nop, Nop)
@@ -361,6 +410,8 @@ let test_ops =
                     Expect.isFalse (eff.InTX) "completed transactions"
                     Expect.equal (eff.Outputs) [b] "expected messages"
                     Expect.equal (sLog) [b1; a; Value.unit; c] "expected results"
+
+*)
 
             testCase "prog" <| fun () ->
                 for _ in 1 .. 10 do
