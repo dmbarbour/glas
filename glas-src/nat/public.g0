@@ -296,8 +296,8 @@ prog mod-impl [divmod swap drop]
 prog div [[div-impl] 'nat-div p-accel-opt apply]
 prog mod [[mod-impl] 'nat-mod p-accel-opt apply]
 
-prog gt-impl [[sub 0b1 get] verify]
-prog gte-impl [[sub] verify]
+prog gt-impl [sub 0b1 get drop]
+prog gte-impl [sub drop]
 
 # number comparisons
 #
@@ -307,7 +307,8 @@ prog gte-impl [[sub] verify]
 #  lt - less than
 #
 # These operations fail if the comparison is not true, otherwise
-# return their inputs unmodified.
+# drop two items from the data stack and continue. Consider 
+# use of copy2 or `[gt] verify` or similar to keep the input.
 #
 prog gte [[gte-impl] 'nat-gte p-accel-opt apply]
 prog gt [[gt-impl] 'nat-gt p-accel-opt apply]

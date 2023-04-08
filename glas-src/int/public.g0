@@ -193,8 +193,8 @@ assert [-100 1 -100 0 test-divmod]
 prog div [ divmod drop ]
 prog mod [ divmod swap drop ]
 
-prog gt-impl  [[sub 0b1 get] verify]
-prog gte-impl [[sub is-nat] verify]
+prog gt-impl  [sub 0b1 get drop]
+prog gte-impl [sub is-nat drop]
 
 prog gte [[gte-impl] 'int-gte p-accel-opt apply]
 prog gt [[gt-impl] 'int-gt p-accel-opt apply]

@@ -432,6 +432,7 @@ module ProgEval =
             member rt.AccelSmallNatGT() : Status =
                 match rt.DataStack with
                 | ((Nat64 n)::(Nat64 m)::ds') ->
+                    rt.DataStack <- ds'
                     if (m > n)
                         then opOK
                         else opFail
@@ -442,6 +443,7 @@ module ProgEval =
             member rt.AccelSmallNatGTE() : Status  =
                 match rt.DataStack with
                 | ((Nat64 n)::(Nat64 m)::ds') ->
+                    rt.DataStack <- ds'
                     if (m >= n)
                         then opOK
                         else opFail
@@ -492,6 +494,7 @@ module ProgEval =
             member rt.AccelSmallIntGT() : Status  =
                 match rt.DataStack with
                 | ((Int64 n)::(Int64 m)::ds') ->
+                    rt.DataStack <- ds'
                     if (m > n) 
                         then opOK
                         else opFail
@@ -501,6 +504,7 @@ module ProgEval =
             member rt.AccelSmallIntGTE() : Status  =
                 match rt.DataStack with
                 | ((Int64 n)::(Int64 m)::ds') ->
+                    rt.DataStack <- ds'
                     if (m >= n) 
                         then opOK
                         else opFail
@@ -2154,9 +2158,10 @@ module ProgEval =
         // for partial acceleration, we may need to fallback
         // to the original program when inputs are outside the
         // accepted range.
-        let accelOK = 0
+        type PartialAccel = int
+        let accelPass = 0
         let accelFail = 1
-        let accelFallback = 2 
+        let accelFallback = -1 
 
         // Helper ops are needed because it's difficult to reference F#
         // functions directly
@@ -2174,13 +2179,13 @@ module ProgEval =
                     | ValueNone -> false
                 | _ -> raise (RTError(lTypeError))
 
-            static member OpPut(p : Value, r : Value, v : Value, result : byref<Value>) : unit =
+            static member OpPut(p : Value, r : Value, v : Value, result : outref<Value>) : unit =
                 match p with
                 | Bits k -> 
                     result <- record_insert k v r
                 | _ -> raise (RTError(lTypeError))
             
-            static member OpDel(p : Value, r : Value, result : byref<Value>) : unit =
+            static member OpDel(p : Value, r : Value, result : outref<Value>) : unit =
                 match p with
                 | Bits k ->
                     result <- record_delete k r
@@ -2188,9 +2193,228 @@ module ProgEval =
 
             static member OpHalt(eMsg : Value) : unit =
                 raise (RTError(eMsg))
-                
-            static member DebugPrint(ix:int, v:Value) : unit =
+
+            static member AccelListPushl(l:Value, v:Value, result : outref<Value>) : unit =
+                match l with
+                | (List ll) ->
+                    result <- Value.ofTerm (Rope.cons v ll)
+                | _ -> 
+                    raise (RTError(lTypeError))
+
+            static member AccelListPushr(v:Value, l:Value, result : outref<Value>) : unit =
+                match l with
+                | (List ll) ->
+                    result <- Value.ofTerm (Rope.snoc ll v)
+                | _ -> 
+                    raise (RTError(lTypeError))
+
+            static member AccelListPopl(l:Value, l' : outref<Value>, v : outref<Value>) : bool =
+                match l with
+                | (List ll) ->
+                    match ll with
+                    | Rope.ViewL(struct(vv, ll')) ->
+                        l' <- Value.ofTerm ll'
+                        v  <- vv
+                        true
+                    | _ -> false
+                | _ -> 
+                    raise (RTError(lTypeError))
+
+            static member AccelListPopr(l:Value, v : outref<Value>, l' : outref<Value>) : bool =
+                match l with
+                | (List ll) ->
+                    match ll with
+                    | Rope.ViewR(struct(ll', vv)) ->
+                        v  <- vv
+                        l' <- Value.ofTerm ll'
+                        true
+                    | _ -> false
+                | _ -> 
+                    raise (RTError(lTypeError))
+            
+            static member AccelListAppend(r:Value, l:Value, lr : outref<Value>) : unit =
+                match l, r with
+                | List ll, List rr ->
+                    lr <- Value.ofTerm (Rope.append ll rr)
+                | _ ->
+                    raise (RTError(lTypeError))
+
+            static member AccelListVerify(l:Value, l':outref<Value>) : bool =
+                match l with
+                | List ll ->
+                    l' <- Value.ofTerm ll
+                    true
+                | _ -> 
+                    false
+
+            static member AccelListLength(l:Value, n:outref<Value>) : unit =
+                match l with
+                | List ll ->
+                    n <- Value.ofNat (Rope.len ll) 
+                | _ ->
+                    raise (RTError(lTypeError))
+
+            static member AccelListTake(n:Value, l:Value, l':outref<Value>) : bool =
+                match n, l with
+                | Nat64 nn, List ll ->
+                    if nn > Rope.len ll then false else
+                    l' <- Value.ofTerm (Rope.take nn ll)
+                    true
+                | _ ->
+                    raise (RTError(lTypeError))
+
+            static member AccelListSkip(n:Value, l:Value, l':outref<Value>) : bool =
+                match n, l with
+                | Nat64 nn, List ll ->
+                    if nn > Rope.len ll then false else
+                    l' <- Value.ofTerm (Rope.drop nn ll)
+                    true
+                | _ ->
+                    raise (RTError(lTypeError))
+
+            static member AccelListItem(n:Value, l:Value, v:outref<Value>) : bool =
+                match n, l with
+                | Nat64 ix, List t ->
+                    if (ix >= Rope.len t) then false else
+                    v <- Rope.item ix t
+                    true
+                | _ ->
+                    raise (RTError(lTypeError))
+
+            static member AccelBitsVerify(b:Value, b':outref<Value>) : bool =
+                if not (isBits b) then false else
+                b' <- b // in theory, this could be an accelerated rep.
+                true
+
+            static member AccelBitsNegate(b:Value, b':outref<Value>) : unit =
+                if not (isBits b) then raise (RTError(lTypeError)) else 
+                b' <- Accel.bits_negate b
+
+            static member AccelBitsReverseAppend(b:Value, acc:Value, b':outref<Value>) : unit =
+                if not (isBits b && isBits acc) then raise (RTError(lTypeError)) else
+                b' <- Accel.bits_reverse_append acc b
+
+            static member AccelBitsLength(b:Value, n:outref<Value>) : unit =
+                if not (isBits b) then raise (RTError(lTypeError)) else
+                n <- Value.ofInt (int64 (Accel.bits_len b))
+            
+            static member AccelSmallIntAdd(n:Value, m:Value, sum:outref<Value>) : PartialAccel =
+                match n, m with
+                | Int64 ni, Int64 mi ->
+                    try 
+                        sum <- Value.ofInt <| Microsoft.FSharp.Core.Operators.Checked.(+) mi ni
+                        accelPass
+                    with
+                    | :? System.OverflowException -> accelFallback
+                | _ -> accelFallback
+
+            static member AccelSmallIntMul(n:Value, m:Value, prod:outref<Value>) : PartialAccel =
+                match n, m with
+                | Int64 ni, Int64 mi ->
+                    try 
+                        prod <- Value.ofInt <| Microsoft.FSharp.Core.Operators.Checked.(*) mi ni
+                        accelPass
+                    with
+                    | :? System.OverflowException -> accelFallback
+                | _ -> accelFallback
+
+            static member AccelSmallIntSub(n:Value, m:Value, diff:outref<Value>) : PartialAccel =
+                match n, m with
+                | Int64 ni, Int64 mi ->
+                    try
+                        diff <- Value.ofInt <| Microsoft.FSharp.Core.Operators.Checked.(-) mi ni
+                        accelPass
+                    with 
+                    | :? System.OverflowException -> accelFallback
+                | _ -> accelFallback
+            
+            static member AccelSmallIntIncrement(n:Value, n':outref<Value>) : PartialAccel =
+                match n with
+                | Int64 ni when ni < System.Int64.MaxValue ->
+                    n' <- Value.ofInt (ni + 1L)
+                    accelPass
+                | _ -> accelFallback
+
+            static member AccelSmallIntDecrement(n:Value, n':outref<Value>) : PartialAccel =
+                match n with
+                | Int64 ni when ni > System.Int64.MinValue ->
+                    n' <- Value.ofInt (ni - 1L)
+                    accelPass
+                | _ -> accelFallback
+
+            static member AccelSmallIntGT(n:Value, m:Value) : PartialAccel =
+                match n, m with
+                | Int64 ni, Int64 mi ->
+                    if (mi > ni) 
+                        then accelPass 
+                        else accelFail
+                | _ -> accelFallback
+
+            static member AccelSmallIntGTE(n:Value, m:Value) : PartialAccel =
+                match n, m with
+                | Int64 ni, Int64 mi ->
+                    if (mi >= ni) 
+                        then accelPass
+                        else accelFail
+                | _ -> accelFallback
+
+            static member AccelSmallNatAdd(n:Value, m:Value, sum:outref<Value>) : PartialAccel =
+                match n, m with
+                | Nat64 ni, Nat64 mi when ((System.UInt64.MaxValue - ni) >= mi) ->
+                    sum <- Value.ofNat (ni + mi)
+                    accelPass
+                | _ -> accelFallback
+            
+            static member AccelSmallNatSub(n:Value, m:Value, diff:outref<Value>) : PartialAccel =
+                match n, m with
+                | Nat64 ni, Nat64 mi ->
+                    if (mi >= ni) then 
+                        diff <- Value.ofNat (mi - ni)
+                        accelPass
+                    else
+                        accelFail
+                | _ -> accelFallback
+
+            static member AccelSmallNatMul(n:Value, m:Value, prod:outref<Value>) : PartialAccel =
+                match n, m with
+                | Nat64 ni, Nat64 mi ->
+                    try
+                        prod <- Value.ofNat <| Microsoft.FSharp.Core.Operators.Checked.(*) mi ni
+                        accelPass
+                    with
+                    | :? System.OverflowException -> accelFallback
+                | _ -> accelFallback
+
+            static member AccelSmallNatDivMod(divisor:Value, dividend:Value, 
+                                              remainder:outref<Value>, quotient:outref<Value>) : PartialAccel =
+                match divisor, dividend with
+                | Nat64 nDivisor, Nat64 nDividend ->
+                    if (0UL = nDivisor) then accelFail else
+                    let struct(nQuot, nRem) = System.Math.DivRem(nDividend, nDivisor)
+                    remainder <- Value.ofNat nRem
+                    quotient <- Value.ofNat nQuot
+                    accelPass
+                | _ -> accelFallback
+
+            static member AccelSmallNatGT(n:Value, m:Value) : PartialAccel =
+                match n, m with
+                | Nat64 nn, Nat64 mm ->
+                    if (mm > nn)
+                        then accelPass
+                        else accelFail
+                | _ -> accelFallback
+
+            static member AccelSmallNatGTE(n:Value, m:Value) : PartialAccel =
+                match n, m with
+                | Nat64 nn, Nat64 mm ->
+                    if (mm >= nn) 
+                        then accelPass
+                        else accelFail
+                | _ -> accelFallback
+
+            static member DebugPrintIxV(ix:int, v:Value) : unit =
                 printfn "(debug) [%d] %s" ix (Value.prettyPrint v)
+
             static member DebugPrintStr(s:string) : unit =
                 printfn "(debug) %s" s
 
@@ -2202,7 +2426,7 @@ module ProgEval =
             for ix in 1 .. sc do
                 Emit.ldc_i4 ix (mcx.IL)
                 loadSPVal (mcx.Stack[sc - ix]) (mcx.IL)
-                mcx.IL.Emit(OpCodes.Call, typeof<HelperOps>.GetMethod("DebugPrint"))
+                mcx.IL.Emit(OpCodes.Call, typeof<HelperOps>.GetMethod("DebugPrintIxV"))
 
         // attempting to abstract out the transaction steps
         [<Struct>]
@@ -2487,108 +2711,108 @@ module ProgEval =
             | _ ->
                 // ignore annotation and inline
                 compileOp mcx sc p
-        and compileAccel (mcx:MCX) (sc:SC) (bOpt:bool) (vModel:Value) (p:Program) =
-            // todo
-            compileOp mcx sc p
-            (*
-            let inline accelFail () =
-                // if acceleration is unavailable and optional, 
-                // just run p directly.
-                if bOpt then compileOp cte p lblFail il else
-                // otherwise, to avoid silent performance degradation,
-                // halt and indicate the accelerator.
+        and compileAccel (mcx:MCX) (sc:SC) (bOpt:bool) (vModel:Value) (p:Program) : SC =
+            let inline helperOp methodName arIn arOut =
+                // for helper ops with no failure
+                let sc' = argsFromArity mcx arIn arOut sc
+                mcx.IL.Emit(OpCodes.Call, typeof<HelperOps>.GetMethod(methodName))
+                sc'
+            let inline helperOpB methodName arIn arOut =
+                // for helper ops that return pass/fail boolean
+                let sc' = helperOp methodName arIn arOut
+                mcx.IL.Emit(OpCodes.Brfalse, mcx.OnFail)
+                sc'
+            let inline helperOpP methodName arIn arOut =
+                // for helper ops that return pass/fail/fallback integer
+                let lblFin = mcx.IL.DefineLabel()
+                mcx.IL.BeginScope()
+                let resultVar = mcx.IL.DeclareLocal(typeof<int>)
+                let sc' = helperOp methodName arIn arOut
+                mcx.IL.Emit(OpCodes.Dup)
+                Emit.stloc resultVar mcx.IL
+                mcx.IL.Emit(OpCodes.Brfalse, lblFin)
+                Emit.ldloc resultVar mcx.IL
+                Emit.ldc_i4 accelFail mcx.IL
+                mcx.IL.Emit(OpCodes.Beq, mcx.OnFail)
+                mcx.IL.EndScope()
+                // fallback to program (usually as a subroutine)
+                let scFB = compileOp mcx sc p
+                assert((scFB = sc') || (scFB < 0))
+                mcx.IL.MarkLabel(lblFin)
+                sc'
+            let inline notImplemented () =
+                if bOpt then compileOp mcx sc p else
                 let eMsg = Value.variant "accel" vModel
-                compileOp cte (Value.variant "halt" eMsg) lblFail il 
-            let emitPartialAccel (rtMethod : string) =
-                // for cases where we need to handle 'accelFail'. 
-                // Also handles OK/Fail results.
-                let subNonAccel = addSub cte p (compile cte p)
-                let lblFin = il.DefineLabel()
-                il.BeginScope()
-                let result = il.DeclareLocal(typeof<int>)
-                rtCall0 cte rtMethod il // call accelerated method
-                il.Emit(OpCodes.Dup)
-                il.Emit(OpCodes.Stloc, result)  
-                il.Emit(OpCodes.Brfalse, lblFin) // on OK, skip the rest
-                assert(opFail = 1) 
-                il.Emit(OpCodes.Ldc_I4_1)
-                il.Emit(OpCodes.Ldloc, result)
-                il.Emit(OpCodes.Beq, lblFail) // on Fail, jump to failure 
-                il.EndScope()
-                // assuming accelFail; call the subroutine!
-                il.Emit(OpCodes.Ldarg_0)
-                il.Emit(OpCodes.Ldarg_1)
-                il.Emit(OpCodes.Call, subNonAccel)
-                il.Emit(OpCodes.Brfalse, lblFail)
-                il.MarkLabel(lblFin)
+                compileOp mcx sc (Value.variant "halt" eMsg) 
             match vModel with
             | Accel.Prefix "list-" vSuffix ->
                 match vSuffix with
                 | Value.Variant "pushl" U -> 
-                    rtCall0_ cte "AccelListPushl" il
+                    helperOp "AccelListPushl" 2 1
                 | Value.Variant "pushr" U ->
-                    rtCall0_ cte "AccelListPushr" il
+                    helperOp "AccelListPushr" 2 1
                 | Value.Variant "popl" U ->
-                    rtCall0b cte "AccelListPopl" lblFail il
+                    helperOpB "AccelListPopl" 1 2
                 | Value.Variant "popr" U -> 
-                    rtCall0b cte "AccelListPopr" lblFail il
+                    helperOpB "AccelListPopr" 1 2
                 | Value.Variant "append" U -> 
-                    rtCall0_ cte "AccelListAppend" il
+                    helperOp "AccelListAppend" 2 1
                 | Value.Variant "verify" U -> 
-                    rtCall0b cte "AccelListVerify" lblFail il
+                    helperOpB "AccelListVerify" 1 1
                 | Value.Variant "length" U -> 
-                    rtCall0_ cte "AccelListLength" il
+                    helperOp "AccelListLength" 1 1
                 | Value.Variant "take" U -> 
-                    rtCall0b cte "AccelListTake" lblFail il
+                    helperOpB "AccelListTake" 2 1
                 | Value.Variant "skip" U -> 
-                    rtCall0b cte "AccelListSkip" lblFail il
+                    helperOpB "AccelListSkip" 2 1
                 | Value.Variant "item" U -> 
-                    rtCall0b cte "AccelListItem" lblFail il
-                | _ -> accelFail ()
+                    helperOpB "AccelListItem" 2 1
+                | _ -> notImplemented ()
             | Accel.Prefix "bits-" vSuffix ->
                 match vSuffix with
                 | Value.Variant "verify" U -> 
-                    rtCall0b cte "AccelBitsVerify" lblFail il
+                    helperOpB "AccelBitsVerify" 1 1
                 | Value.Variant "negate" U -> 
-                    rtCall0_ cte "AccelBitsNegate" il
+                    helperOp "AccelBitsNegate" 1 1
                 | Value.Variant "reverse-append" U ->
-                    rtCall0_ cte "AccelBitsReverseAppend" il
-                //| Value.Variant "length" U -> accelFail ()
-                | _ -> accelFail ()
+                    helperOp "AccelBitsReverseAppend" 2 1
+                | Value.Variant "length" U -> 
+                    helperOp "AccelBitsLength" 1 1
+                | _ -> notImplemented ()
             | Accel.Prefix "int-" vSuffix ->
                 match vSuffix with
                 | Value.Variant "add" U ->
-                    emitPartialAccel "AccelSmallIntAdd"
+                    helperOpP "AccelSmallIntAdd" 2 1 
                 | Value.Variant "mul" U ->
-                    emitPartialAccel "AccelSmallIntMul"
-                //| Value.Variant "sub" U -> accelFail ()
-                //| Value.Variant "divmod" U -> accelFail ()
+                    helperOpP "AccelSmallIntMul" 2 1
+                | Value.Variant "sub" U -> 
+                    helperOpP "AccelSmallIntSub" 2 1 
+                //| Value.Variant "divmod" U -> notImplemented ()
                 | Value.Variant "increment" U -> 
-                    emitPartialAccel "AccelSmallIntIncrement"
+                    helperOpP "AccelSmallIntIncrement" 1 1
                 | Value.Variant "decrement" U -> 
-                    emitPartialAccel "AccelSmallIntDecrement"
+                    helperOpP "AccelSmallIntDecrement" 1 1
                 | Value.Variant "gt" U -> 
-                    emitPartialAccel "AccelSmallIntGT"
+                    helperOpP "AccelSmallIntGT" 2 0
                 | Value.Variant "gte" U -> 
-                    emitPartialAccel "AccelSmallIntGTE"
-                | _ -> accelFail ()
+                    helperOpP "AccelSmallIntGTE" 2 0
+                | _ -> notImplemented ()
             | Accel.Prefix "nat-" vSuffix ->
                 match vSuffix with 
                 | Value.Variant "add" U -> 
-                    emitPartialAccel "AccelSmallNatAdd"
+                    helperOpP "AccelSmallNatAdd" 2 1
                 | Value.Variant "sub" U -> 
-                    emitPartialAccel "AccelSmallNatSub"
+                    helperOpP "AccelSmallNatSub" 2 1
                 | Value.Variant "mul" U -> 
-                    emitPartialAccel "AccelSmallNatMul"
+                    helperOpP "AccelSmallNatMul" 2 1
                 | Value.Variant "divmod" U ->
-                    emitPartialAccel "AccelSmallNatDivMod"
+                    helperOpP "AccelSmallNatDivMod" 2 2
                 | Value.Variant "gt" U -> 
-                    emitPartialAccel "AccelSmallNatGT"
+                    helperOpP "AccelSmallNatGT" 2 0 
                 | Value.Variant "gte" U -> 
-                    emitPartialAccel "AccelSmallNatGTE"
-                | _ -> accelFail ()
-            | _ -> accelFail ()
-            *)
+                    helperOpP "AccelSmallNatGTE" 2 0
+                | _ -> notImplemented ()
+            | _ -> notImplemented ()
 
         and compileSub (cte:CTE) (ecx0:ECX) (lim:Lim) (p:Program) : MethodBuilder = 
             let ecx = // erase effect context if pure
@@ -2801,14 +3025,24 @@ module ProgEval =
             fun io ds -> lazyCompile.Force() io ds
 
         // performance 
-        // without acceleration:
-        //   test-loop-perf.main
-        //     0 loops - 5s (~time to compile deps)
-        //     100k loops - 12s
-        //     1M loops - 92s
+        //  test-loop-perf.main            FTI      CI    
+        //     0 loops      - 5s            1s       7s
+        //     100k loops   - 5s            1s       7s
+        //     1M loops     - 7s            4s       9s
+        //     10M loops    - 30s          25s      34s
+        //     100M loops   - 245s        234s 
+        //  test-loop-perf.interior (i.e. one call, internal loops)
+        //     10M loops    - 16s          25s      26s
+        //     100M loops   - 116s        250s     220s
         //
-        // with acceleration:
-        //    
+        // I'm not very satisfied with these results. I had hoped that removing
+        // the memory management and pattern matching overheads for basic data
+        // plumbing would reduce costs by a larger factor. Instead, it barely 
+        // achieves 2x improvement under special circumstances.
+        //
+        // This is about the limit of what I can do in scope of bootstrap. I could
+        // optimize the g0 programs further (e.g. combine 'dip dip') but that is
+        // better handled within the glas system itself, I think.
 
     // OTHER OPTIONS:
     //  
