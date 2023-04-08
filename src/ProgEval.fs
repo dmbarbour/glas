@@ -2067,6 +2067,10 @@ module ProgEval =
         type HandlerName = string
         type Handlers = System.Collections.Generic.Dictionary<HandlerName, struct(MethodBuilder * FieldBuilder)>
 
+        // support for subroutines. Subroutines are compiled in a static effect
+        // context, so the extra string arg indicates the effect context.
+        type SubProgs = System.Collections.Generic.Dictionary<struct(Program * string), MethodBuilder>
+
         // global compile time env
         type CTE = 
             { 
@@ -2077,6 +2081,7 @@ module ProgEval =
                 FldData  : FieldBuilder     // an array for static data
                 Statics  : DataDict         // tracks static data
                 Handlers : Handlers         // effects handlers
+                SubProgs : SubProgs         // reusable subroutines
             }
 
         let addStatic (cte:CTE) (v:Value) : int =
@@ -2145,6 +2150,13 @@ module ProgEval =
             for ix in 1 .. arOut do
                 loadSPAddr (mcx.Stack[sc' - ix]) (mcx.IL)
             sc'
+
+        // for partial acceleration, we may need to fallback
+        // to the original program when inputs are outside the
+        // accepted range.
+        let accelOK = 0
+        let accelFail = 1
+        let accelFallback = 2 
 
         // Helper ops are needed because it's difficult to reference F#
         // functions directly
@@ -2446,38 +2458,39 @@ module ProgEval =
                 compileOp mcx sc (Value.variant "halt" eMsg)  
         and compileAnno (mcx : MCX) (sc : SC) (anno : Value) (p : Program) : SC =
             // TODO: handle acceleration (at least)
-            compileOp mcx sc p
-            (*
-            // not well factored at the moment due to profiler and
-            // continuations being passed together. 
             match anno with
             | Record ["prof"] struct([ValueSome profOptions],anno') ->
-                // I could feasibly allocate and handle the stopwatch, but dealing with
-                // the profile registers is a pain. Might need to use static fields same
-                // as for the value fields. 
-                // nop for now
-                compileAnno cte anno' p lblFail il
+                // TODO: support for stopwatches and so; perhaps an extra argument
+                // to the compiled object when it is constructed. nop for now
+                compileAnno mcx sc anno' p
             | Record ["stow"] struct([ValueSome vOpts], anno') ->
                 // nop for now
-                compileAnno cte anno' p lblFail il
+                compileAnno mcx sc anno' p
             | Record ["memo"] struct([ValueSome memoOpts], anno') ->
                 // nop for now
-                compileAnno cte anno' p lblFail il
+                compileAnno mcx sc anno' p
             | Record ["accel"] struct([ValueSome vModel], anno') ->
                 let p' = Prog(anno', p)
                 match vModel with
                 | Variant "opt" vModel' ->
-                    compileAccel cte true  vModel' p' lblFail il
+                    compileAccel mcx sc true  vModel' p' 
                 | _ ->
-                    compileAccel cte false vModel  p' lblFail il
-            | _ -> // ignoring other annotations 
-                // handle as a reusable subroutine call
-                let pSub = addSub cte p (compile cte p)
-                il.Emit(OpCodes.Ldarg_0) // this
-                il.Emit(OpCodes.Ldarg_1) // effects handlers
-                il.Emit(OpCodes.Call, pSub) // call the reusable method
-                il.Emit(OpCodes.Brfalse, lblFail) // handle failure
-        and compileAccel cte bOpt vModel p lblFail il =
+                    compileAccel mcx sc false vModel  p' 
+            | Record ["lim"] struct([ValueSome (Lim lim)], anno') ->
+                // compile a reusable subroutine
+                let m = compileSub (mcx.CTE) (mcx.ECX) lim p
+                mcx.IL.Emit(OpCodes.Ldarg_0)
+                let sc' = argsFromArity mcx (int lim.ArityIn) (int lim.ArityOut) sc
+                mcx.IL.Emit(OpCodes.Call, m)
+                mcx.IL.Emit(OpCodes.Brfalse, mcx.OnFail)
+                sc'
+            | _ ->
+                // ignore annotation and inline
+                compileOp mcx sc p
+        and compileAccel (mcx:MCX) (sc:SC) (bOpt:bool) (vModel:Value) (p:Program) =
+            // todo
+            compileOp mcx sc p
+            (*
             let inline accelFail () =
                 // if acceleration is unavailable and optional, 
                 // just run p directly.
@@ -2575,9 +2588,27 @@ module ProgEval =
                     emitPartialAccel "AccelSmallNatGTE"
                 | _ -> accelFail ()
             | _ -> accelFail ()
-        *)
+            *)
 
-        and private compileEffHandler (cte:CTE) (ecx:ECX) (lim0:Lim) (p:Program) : (struct(MethodBuilder * FieldBuilder)) =
+        and compileSub (cte:CTE) (ecx0:ECX) (lim:Lim) (p:Program) : MethodBuilder = 
+            let ecx = // erase effect context if pure
+                if lim.Effectful then ecx0 else
+                { EffMethod = None; EffState = []; IOState = false }
+            let effHandler = // represent effect context as a string
+                match ecx.EffMethod with
+                | None -> ""
+                | Some m -> m.Name
+            let subId = struct(p, effHandler)
+            match cte.SubProgs.TryGetValue(subId) with
+            | true, m -> m
+            | false, _ ->
+                let name = "Sub" + string(1 + cte.SubProgs.Count)
+                let m = cte.TypB.DefineMethod(name, MethodAttributes.Private ||| MethodAttributes.Final)
+                cte.SubProgs.Add(subId, m)
+                buildMethod m cte ecx lim p
+                m
+
+        and compileEffHandler (cte:CTE) (ecx:ECX) (lim0:Lim) (p:Program) : (struct(MethodBuilder * FieldBuilder)) =
             // effHandler is always 2--2, but produced method is 1--1. 
             // One parameter is input as a field in the compiled class.
             let lim = limAddStack (2s - lim0.ArityIn) lim0
@@ -2595,6 +2626,7 @@ module ProgEval =
             let m = cte.TypB.DefineMethod(methodName, methodAttr,
                         CallingConventions.Standard,
                         typeof<bool>, methodArgs)
+
             let result = struct(m, effStFld)
             cte.Handlers.Add(methodName, result)
 
@@ -2628,10 +2660,10 @@ module ProgEval =
             // success path 
             il.Emit(OpCodes.Ldarg_0)                
             loadSPVal (stackReg[1]) il
-            il.Emit(OpCodes.Stfld, effStFld)        // saves effect handler state
+            il.Emit(OpCodes.Stfld, effStFld)        // save effect handler state
             il.Emit(OpCodes.Ldarg_2)
             loadSPVal (stackReg[0]) il
-            il.Emit(OpCodes.Stobj, typeof<Value>)   // returns result via outref
+            il.Emit(OpCodes.Stobj, typeof<Value>)   // return result via outref
             il.Emit(OpCodes.Ldc_I4_1)               
             il.Emit(OpCodes.Ret)                    // return true
             // failure path 
@@ -2642,19 +2674,13 @@ module ProgEval =
             // return the relevant objects
             result
 
-        and compileMethod (methodName:string) (cte:CTE) (ecx:ECX) (lim:Lim) (p0:Program) =
-            let methodArgs = methodArgsFromArity (int lim.ArityIn) (int lim.ArityOut)
-            let methodAttr = MethodAttributes.Public ||| MethodAttributes.Final
-            let m = cte.TypB.DefineMethod(methodName, methodAttr, 
-                        CallingConventions.Standard,
-                        typeof<bool>, methodArgs)
+        and buildMethod (m:MethodBuilder) (cte:CTE) (ecx:ECX) (lim:Lim) (p0:Program) = 
+            let argTypes = methodArgsFromArity (int lim.ArityIn) (int lim.ArityOut)
+            m.SetParameters(argTypes)
+            m.SetReturnType(typeof<bool>)
             let il = m.GetILGenerator()
-            // We'll need to declare a few things before adding program behavior.
-            //  - final failure target
-            //  - extra variables for data stack 
             let lblFail = il.DefineLabel()
             let stackReg = 
-                assert(lim.MaxStack >= lim.ArityIn)
                 let inputArgs = 
                     // top of stack is arg 1, but highest 'sc'.
                     // so I need to reorder things logically.
@@ -2728,16 +2754,18 @@ module ProgEval =
             ; FldData = fldData
             ; Handlers = new Handlers()
             ; Statics = new DataDict()
+            ; SubProgs = new SubProgs()
             }
 
-        let mainMethod = "EvalProg"
+        let mainMethod = "Run"
 
         let compiled (p : Program) : Effects.IEffHandler -> Value list -> Value list option =
             let struct(lim, p') = precomp p
-            let progType =             
+            let progType =
                 let cte = initCTE ()
-                let ecx0 = { EffMethod = None; EffState = []; IOState = true }
-                compileMethod mainMethod cte ecx0 lim p'
+                let m = cte.TypB.DefineMethod(mainMethod, MethodAttributes.Public ||| MethodAttributes.Final)
+                let ecx = { EffMethod = None; EffState = []; IOState = true }
+                buildMethod m cte ecx lim p'
                 createType cte
 
             fun (io : Effects.IEffHandler) (ds : Value list) ->
@@ -2775,12 +2803,9 @@ module ProgEval =
         // performance 
         // without acceleration:
         //   test-loop-perf.main
-        //     0 loops - 6.5s (time to load the deps)
-        //     100k loops - 13s
-        //     1M loops - 100s
-        //   test-loop-perf.interior
-        //     100k loops - 13s
-        //     1M loops - 98s
+        //     0 loops - 5s (~time to compile deps)
+        //     100k loops - 12s
+        //     1M loops - 92s
         //
         // with acceleration:
         //    
