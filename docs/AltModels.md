@@ -2,40 +2,28 @@
 
 This document explores some alternative program and data models for glas systems.
 
-Currently, glas models data as binary trees, and programs using a variation of combinatory logic. However, the current approach hinders convenient expression of parallel and concurrent behavior. And the current approach to data hinders expression of graph structures.
+## Program Model Variations
+
+What I want is a good 'low level' program model for glas that is suitable for incremental and distributed computing with the transaction machine model. This might eventually replace the 'prog' model of programs, or extend it, as a built-in to the 'glas' executable. This model may favor performance over compositionality, simplicity, and locality. 
+
+It can support accelerators while still providing a fallback implementation. Registers may have several primitive data types associated with them.
+
+
+
+
+* every program has a static set of registers for input, output, and memory. 
+* Programs are still non-recursive, to avoid issues of runtime register alloc.
+* the environment for effects is fine-grained and supports reuse of subprograms.
+* effects and reusable subprograms may share some state registers between them.
+* it is clear what needs to be saved for incremental computing
+
+
 
 ## Alternative Data 
 
-Currently, glas data is a binary tree. The ability to represent *sets* would be convenient for many use-cases, such as representing concurrent requests and responses or relational databases. However, it's important to retain *indexability* of data, similar to the binary tree.
+Currently, glas data is a binary tree. The ability to represent *sets* and *graphs* would be convenient for some use-cases. However, it is unclear to me how to achieve this while still ensuring data is indexable, shares structure, etc.. Additionally, it is unclear whether '0' and '1' edges are sufficient for graphs.
 
-Relatedly, it might be convenient to represent data as *graphs*, allowing for cyclic structure. However, I'm not convinced this is a good idea.
-
-### Set of Bitstrings? Meh.
-
-Representing an index on a *set of bitstrings* requires a relatively lightweight extension to binary trees as data. We simply need one extra bit per tree node to indicate whether the bitstring terminating in that tree node is part of the set.
-
-        type BitsSet = 
-            { Stem : Bits
-            ; Incl : Bool
-            ; Term : (1 + (BitSet * BitSet)
-            }
-
-The 'Incl' flag could be integrated into the Stem for performance. In normal form, we can erase any bitstring not included in the BitSet. A record could still be represented by a set of bitstrings.
-
-A related question: is this a useful feature? 
-
-I could directly represent a set of bitstrings using a binary tree. I'd need only to encode some extra size information per bitstring, e.g. in a header or in style of a varnat. So, in the end, there is not much benefit compared to use of binary trees as data.
-
-### Set of Binary Trees? How?
-
-I currently don't know how to efficiently represent a set of trees in a conveniently indexed manner. Fundamentally, representing a set of pairs as a pair of sets would represent a cross product, where we want to represent a specific subset of the cross products.
-
-It is feasible to 'interleave' representations of the left and right children of a pair into a bitstring. However, updating the tree would be non-trivial in this case.
-
-
-### Sets as Program Model Feature
-
-Ignoring the issue of sets as data, we could support a program model where each item on the data stack consists of a set of values. However, this doesn't need to be at the glas program model layer.
+For now, trees are convenient enough, and were chosen for their ability to directly represent structure of languages.
 
 ## Potential Program Models
 

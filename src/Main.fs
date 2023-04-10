@@ -210,8 +210,9 @@ let run (vref:string) (args : string list) : int =
     let ll = getLoader <| consoleErrLogger ()
     match getAppValue ll vref args with
     | ValueNone -> EXIT_FAIL
-    | ValueSome(p, args') ->
+    | ValueSome(p0, args') ->
         let eff = runtimeEffects ll 
+        let p = p0 // ProgVal.Optimizers.tryOptimize p0
         let pfn = eval p eff
         let rec loop st =
             let tx = withTX eff
