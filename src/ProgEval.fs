@@ -1412,6 +1412,16 @@ module ProgEval =
             for ix in 1 .. arOut do
                 loadSPAddr (mcx.Stack[sc' - ix]) (mcx.IL)
             sc'
+        
+        let prepareStack (argCt : int) (maxStack : int) (il : ILGenerator) : SP array =
+            assert((maxStack >= argCt) && (argCt >= 0))
+            let stackReg = Array.zeroCreate maxStack
+            for ix in 1 .. maxStack do
+                stackReg[maxStack - ix] <- il.DeclareLocal(typeof<Value>)
+            for ix in 1 .. argCt do
+                Emit.ldarg (int16 ix) il
+                Emit.stloc (stackReg[argCt - ix]) il
+            stackReg
 
         // for partial acceleration, we may need to fallback
         // to the original program when inputs are outside the
@@ -2114,21 +2124,7 @@ module ProgEval =
 
             let il = m.GetILGenerator()
             let lblFail = il.DefineLabel()
-            let stackReg =
-                assert(lim.MaxStack >= lim.ArityIn)
-                // trivial input args 
-                let inputArgs =
-                    let v = il.DeclareLocal(typeof<Value>)
-                    il.Emit(OpCodes.Ldarg_1)
-                    Emit.stloc v il
-                    [| v |] 
-                let extraSpace = 
-                    let arr = Array.zeroCreate (int (lim.MaxStack - 1s))
-                    for ix in 1 .. arr.Length do
-                        arr[ix - 1] <- il.DeclareLocal(typeof<Value>)
-                    arr
-                Array.append inputArgs extraSpace
-            assert(stackReg.Length = int lim.MaxStack)
+            let stackReg = prepareStack 1 (int lim.MaxStack) il
             let mcx =
                 { CTE = cte
                 ; Lim = lim
@@ -2165,23 +2161,7 @@ module ProgEval =
             m.SetReturnType(typeof<bool>)
             let il = m.GetILGenerator()
             let lblFail = il.DefineLabel()
-            let stackReg = 
-                let inputArgs = 
-                    // top of stack is arg 1, but highest 'sc'.
-                    // so I need to reorder things logically.
-                    let arr = Array.zeroCreate (int lim.ArityIn)
-                    for ix in 1 .. arr.Length do
-                        let v = il.DeclareLocal(typeof<Value>)
-                        arr[arr.Length - ix] <- v
-                        Emit.ldarg (int16 ix) il
-                        Emit.stloc v il
-                    arr
-                let extraSpace =
-                    let arr = Array.zeroCreate (int (lim.MaxStack - lim.ArityIn))
-                    for ix in 1 .. arr.Length do
-                        arr[ix - 1] <- il.DeclareLocal(typeof<Value>)
-                    arr
-                Array.append inputArgs extraSpace
+            let stackReg = prepareStack (int lim.ArityIn) (int lim.MaxStack) il
             let mcx =   
                 { CTE = cte
                 ; Lim = lim
