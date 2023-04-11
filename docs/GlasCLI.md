@@ -5,7 +5,7 @@ The glas command line supports two primary operations:
         glas --extract ValueRef
         glas --run ValueRef -- Args
 
-There are also a few secondary operations built-in, such as '--help' or '--version'. All built-in operations start with '--'. User-defined operations are supported via lightweight syntactic sugar:
+There are also a few secondary operations built-in, such as '--help' or '--version'. Built-in operations start with '--'. User-defined operations are supported via lightweight syntactic sugar:
 
         glas opname a b c 
             # implicitly rewrites to
@@ -29,17 +29,17 @@ This syntax limits which modules can be referenced. For example, if a module nam
 
 ## Configuration
 
-There is a folder identified as GLAS_HOME, with a default based on OS convention such as `~/.config/glas` in Linux or `%AppData%/glas` in Windows. This folder may contain ad-hoc configuration data information for the glas command line executable. 
+There is a folder identified as GLAS_HOME, configurable via environment variable. If this variable is not set, a user-local default follows an OS convention such as `~/.config/glas` in Linux or `%AppData%/glas` in Windows. This folder will centralize glas system configurations. By default, a persistent key-value database for use by applications will also be stored in GLAS_HOME.
 
-The primary configuration file is "sources.tt" which describes where to search for global modules. This file uses the [text-tree](../glas-src/language-tt/README.md) format - a lightweight alternative to XML or JSON. This file may contain 'dir' entries indicating local filesystem directories and '\rem' entries for remarks.
+The most important configuration file is perhaps "sources.tt". This file describes where to search for global modules. This file uses the [text-tree](../glas-src/language-tt/README.md) format - a lightweight alternative to XML or JSON. This file is currently limited to 'dir' entries indicating local filesystem, and entries that start with '#' for comments.
 
-        \rem example sources.tt
+        # example sources.tt
         dir ./src
         dir /home/username/glas
         dir C:\Users\username\glas
         dir ../../glas
 
-Any relative paths are relative to the configuration file. I intend to eventually support network locations and to use the network as the source for most global modules.
+Eventually, I intend to support network repositories as the primary source for global modules. However, short term a search path of the local filesystem will suffice. Relative paths are relative to the directory containing the configuration file. Order is relevant - the locations are searched sequentially.
 
 The glas executable may use a few more files within GLAS_HOME for features such as where to save stowed data, cached computations, or the key-value database. By default, these would be stored within GLAS_HOME. However, configuration files are most suitable for system-wide configuration.
 

@@ -10,7 +10,7 @@
 //
 //   glas verb parameters
 //      rewrites to
-//   glas --run glas-cli-verb.run -- parameters
+//   glas --run glas-cli-verb.main -- parameters
 //
 // However, this is a pre-bootstrap implementation that does not 
 // support --run. This considerably simplifies the scope.
@@ -210,9 +210,8 @@ let run (vref:string) (args : string list) : int =
     let ll = getLoader <| consoleErrLogger ()
     match getAppValue ll vref args with
     | ValueNone -> EXIT_FAIL
-    | ValueSome(p0, args') ->
+    | ValueSome(p, args') ->
         let eff = runtimeEffects ll 
-        let p = p0 // ProgVal.Optimizers.tryOptimize p0
         let pfn = eval p eff
         let rec loop st =
             let tx = withTX eff
@@ -245,7 +244,7 @@ let run (vref:string) (args : string list) : int =
             logError ll (sprintf "program %s halted on exception %A" vref e)
             EXIT_FAIL
 
-let rec main' (args : string list) : int =
+let main' (args : string list) : int =
     match args with
     | ["--extract"; b] ->
         extract b
@@ -263,20 +262,27 @@ let rec main' (args : string list) : int =
         print v 
     | ["--check"; v] ->
         check v
-    | (verb::args') when not (verb.StartsWith("-")) ->
-        // trivial rewrite supports user-defined behavior
-        let p = "glas-cli-" + verb + ".main"
-        main' ("--run" :: p :: "--" :: args')
     | args -> 
         eprintfn "unrecognized command: %s" (String.concat " " args)
         eprintfn "try 'glas --help'"
         EXIT_FAIL
 
+let rewriteArgs (args : string list) : string list = 
+    match args with
+    | (verb::args') when not (verb.StartsWith("-")) ->
+        // this rewrite supports user-defined behavior
+        // by making it easier to access and prettier
+        let p = "glas-cli-" + verb + ".main"
+        "--run" :: p :: "--" :: args'
+    | _ -> args
+
 [<EntryPoint>]
 let main args = 
     try 
         prepare_GLAS_HOME ()
-        main' (Array.toList args)
+        args |> Array.toList 
+             |> rewriteArgs 
+             |> main'
     with
     | e -> 
         eprintfn "Unhandled exception: %A" e

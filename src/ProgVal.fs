@@ -410,7 +410,6 @@ module ProgVal =
     // - then rewrite the parent program structure
     // 
     // This is context free - no reader state or aggregation of results.
-    // It is mostly used for a few 
     let rec rewriteProg (fn : Program -> Program) (p0:Program) : Program =
         match p0 with
         | Op _ | Data _ -> fn p0
@@ -441,61 +440,6 @@ module ProgVal =
         | _ -> 
             fn <| Halt (Value.variant "invalid" p0)
 
-    module Optimizers = 
-        // Some useful optimizations.
-        // (a) peephole optimizations on a zipper view of the program.
-        // (b) minimize data movement via abstract interpretation and
-        //     treating inputs as unknown variables
-
-        // local optimizations
-        let rec localOptSeq ll rr =
-            match ll, rr with
-            | _, Rope.ViewL(struct(PSeq (List seqOps), rr')) ->
-                // flatten sequences
-                localOptSeq ll (Rope.append seqOps rr')
-            | Rope.ViewR(struct(ll', Dip opL)), Rope.ViewL(struct(Dip opR, rr')) ->
-                // combine dip dip 
-                let dip' = localOptSeq (asSeq opL) (asSeq opR)
-                         |> Value.ofTerm |> PSeq |> Dip
-                localOptSeq ll' (Rope.cons dip' rr')
-            | Rope.ViewR(struct(ll', ((Data _) as opL))), Rope.ViewL(struct((Dip opR), rr')) ->
-                // dip over data    (data:A dip:P => P data:A)
-                localOptSeq ll' (Rope.cons opR (Rope.cons opL rr'))
-            | _, Rope.ViewL(struct(Dip (PSeq U), rr')) ->
-                // eliminate nop dip
-                localOptSeq ll rr'
-            | Rope.ViewR(struct(ll', Dip opL)), Rope.ViewL(struct((Stem lDrop U) as opDrop, rr')) ->
-                // drop over dip (dip:A drop => drop A) 
-                localOptSeq ll' (Rope.cons opDrop (Rope.cons opL rr'))
-            | Rope.ViewR(struct(ll', ((Data _) as opData))), Rope.ViewL(struct(Stem lCopy U, rr')) ->
-                // eval copy immediately
-                localOptSeq (Rope.snoc ll opData) rr'
-            | Rope.ViewR(struct(ll', Data _)), Rope.ViewL(struct(Stem lDrop U, rr')) ->
-                // eval drop immediately
-                localOptSeq ll' rr'
-            | Rope.ViewR(struct(ll', Stem lCopy U)), Rope.ViewL(struct(Stem lDrop U, rr')) ->
-                // elim copy drop
-                localOptSeq ll' rr'
-            | Rope.ViewR(struct(Rope.ViewR(struct(ll', ((Data _) as b))), ((Data _) as a))), Rope.ViewL(struct(Stem lSwap U, rr')) ->
-                let llEval = Rope.snoc (Rope.snoc ll' a) b
-                localOptSeq llEval rr'
-            | Rope.ViewR(struct(ll', Stem lSwap U)), Rope.ViewL(struct(Stem lSwap U, rr')) ->
-                localOptSeq ll' rr'
-            | _, Rope.ViewL(struct(op, rr')) ->
-                localOptSeq (Rope.snoc ll op) rr'
-            | _ -> Rope.append ll rr
-
-        // LocalOptimize - a peephole optimizer
-        //   This mostly operates on sequences.
-        let localOptimize = 
-            rewriteProg <| fun p ->
-                match p with
-                | PSeq (List lP) ->
-                    let lP' = localOptSeq (Rope.empty) lP
-                    PSeq (Value.ofTerm lP')
-                | _ -> p
-
-        // optimizations applied prior to '--run' by default.
-        // this is very ad-hoc. Later, might apply to all eval.
-        let tryOptimize p = 
-            localOptimize p
+    // Regarding optimization: I think it would be wiser to represent
+    // optimizations within the glas program layer. It's a deep subject
+    // that doesn't need to be part of the bootstrap.
