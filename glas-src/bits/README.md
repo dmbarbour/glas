@@ -12,9 +12,9 @@ A bitstring in glas is a binary tree where every node has exactly one or zero ch
            /        0
            \        1
 
-Bitstrings are useful for representing integers, symbols, and other simple data. However, large bitstrings are discouraged. For text or binary data, glas systems favor a list of bytes (8-bit bitstrings). 
+Bitstrings are useful for representing integers, bytes, symbols, and other simple data. However, bitstrings should be relatively short. A list of bytes is favored for texts or binaries.
 
-This module defines several useful operations on bitstrings. 
+This module defines many useful operations on bitstrings. 
 
 ## Compact Encoding Assumption
 
@@ -38,9 +38,9 @@ A viable data encoding:
             | Branch of Value * Value
             | ... (accelerated lists, binaries, etc.) ...
 
-With this compact encoding, short, simple data including symbols and nearly all int64 values (except int64 min), can be encoded without heap allocations. Further, binaries - lists of 8-bit bitstrings - can be specially optimized to support more efficient file and socket IO. 
+With this compact encoding, short, simple data including symbols and nearly all int64 values (except int64 min), can be encoded without heap allocations. Further, binaries can be specialized so we don't pay huge overheads for file or socket IO.
 
-*Note:* The Glas Object encoding of glas data will similarly compact bitstrings and binaries for efficient storage and serialization.
+*Note:* See also the Glas Object encoding.
 
 ## Operations Performance
 

@@ -14,16 +14,21 @@ Direct representation of lists only provides efficient access to the first few e
 
 ## Related Types
 
-The list type `type List a = (a * List a) | ()` describes lists as having elements of homogeneous type, for example a list of integers or a list of programs. However, the list structure can be used for many other sequential types. In these cases, many list functions still apply, but would have different implications for type inference.
+The list representation is also used for tuples and vectors. 
 
 ### Tuples
 
+A tuple is a fixed-sized list of heterogeneous types.
+
         type Tuple [a,b,c] = (a * (b * (c * ())))
 
-A tuple is described by a list of potentially heterogeneous types, and a tuple value looks like a fixed-length list of hetereogeneous values. Building tuples on lists simplifies composition, processing, and rendering. However, tuple types are awkward to extend. In glas systems, records should usually be favored over tuples, even short ones, especially at API boundaries.
+However, glas systems usually favor records over tuples. Records are much more extensible and self-documenting, and are still reasonably efficient.
 
 ### Vectors
 
+A vector is a fixed-sized list of homogeneous type.
+
         type Vector n a = List a of length n
 
-A vector is a homogeneous list of statically known length. Operations on vectors should have a static effect on the length. Though, we can have operations to convert vectors to list types and the inverse after verifying length. 
+Vectors are very useful in certain maths. 
+
