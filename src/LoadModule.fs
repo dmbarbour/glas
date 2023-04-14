@@ -152,7 +152,7 @@ module LoadModule =
         member ll.LoadFile (fp : FilePath) : Value voption =
             match Map.tryFind fp (ll.Cache) with
             | Some r -> // use cached value 
-                logInfo ll (sprintf "using cached result for file %s" fp)
+                //logInfo ll (sprintf "using cached result for file %s" fp)
                 r
             | None ->
                 if List.contains fp (ll.Loading) then
@@ -161,7 +161,7 @@ module LoadModule =
                     logError ll (sprintf "dependency cycle detected! %s" (String.concat ", " cycle))
                     ValueNone
                 elif File.Exists(fp) then
-                    logInfo ll (sprintf "loading file %s" fp)
+                    //logInfo ll (sprintf "loading file %s" fp)
                     let ld0 = ll.Loading
                     ll.Loading <- fp :: ld0
                     try 
