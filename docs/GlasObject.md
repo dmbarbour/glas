@@ -182,7 +182,7 @@ It is feasible to combine list-take (Size) and concatenation nodes in a way that
             Array
             Binary
         k > 0
-            Larger Array or Binary (via heuristics)
+            Larger Array or Binary (heuristic)
             Size . Node(k-1)
     Node(k) - two or three concatenated Digit(k)
     Digits(k) - one to four concatenated Digit(k)
@@ -193,7 +193,9 @@ It is feasible to combine list-take (Size) and concatenation nodes in a way that
         Single              Array | Binary | Node(k-1)
         Many                Size . (LDigits(k) ++ (Rope(k+1) ++ RDigits(k)))
 
-This structure represents a 2-3 finger-tree rope. The finger-tree rope is a convenient default for most use cases for large lists. It won't hurt too much if other balanced rope structures are blindly manipulated as finger-tree ropes.
+This structure represents a 2-3 finger-tree rope, where '2-3' refers to the size of internal nodes. It is possible that wider nodes and more digits would offer superior performance. In any case, the finger-tree rope is effective for many use cases for larger lists. 
+
+The ability to force a sublist into a flat array or binary is also useful.
 
 ### Glob Headers
 
@@ -211,6 +213,12 @@ Build a dictionary of useful values then share and reference as needed (via exte
 
 ## Potential Future Extensions
 
+Many ideas won't be worthwhile without enough end-to-end support from compilers. I'll defer them until later. 
+
+### Struct Records
+
+Support for encoding records as a (keys * vals) pair of lists or arrays. This would reduce overheads for repeating the same keys many times, and could work well with accelerated representation of records. 
+
 ### Matrices
 
 Matrices are useful across many problem domains. However, I'm uncertain about trying to specialize Glas Object to include matrix support. For example, it might prove more effective to represent matrices mostly as binary data (perhaps adding a small header), with accelerators that can manipulate it as a matrix of floats or other 'unboxed' data. Deferred for now.
@@ -219,4 +227,4 @@ If I do pursue matrices within Glas Object, I think we'd need some sort of chunk
 
 ### Tables
 
-Support for applying a list of labels to a vector or matrix of data. This could reduce repetition within a glob by a great deal, and is a good option for structure sharing of the header bits. But like matrices, I'm taking a wait and see approach.
+Support for applying a list of labels to a vector or matrix of data. This could reduce repetition within a glob by a great deal, and is a good option for structure sharing of the header bits. But like matrices, I'm taking a wait and see approach. Also look into array of structs vs. struct of arrays. 

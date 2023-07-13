@@ -1,12 +1,12 @@
 # Glas Applications
 
-A basic glas application, in context of [Glas CLI](GlasCLI.md), is represented by a transactional step function. 
+A basic glas application, in context of [Glas CLI](GlasCLI.md), is currently represented by a transactional step function.
 
         type Step = init:Params | step:State -> [Effects] (halt:Result | step:State) | Fail
 
-A step that returns successfully is committed. A failed step is aborted then retried, implicitly waiting for changes to external conditions. The first step receives 'init' and the final step returns 'halt'. Intermediate steps receive and return 'step'. This is an example of a *transaction machine* - modeling an application as a repeating transaction. 
+A step that returns successfully is committed. A failed step is aborted then retried, implicitly waiting for changes to external conditions. The first step receives 'init' and the final step returns 'halt'. Intermediate steps receive and return 'step'. 
 
-Transaction machines are conceptually simple yet offer a robust foundation for reactivity, concurrency, and process control. However, these benefits rely on optimizations that are difficult to implement on step functions. To resolve this, I intend to develop a specialized program representation.
+This is an example of a *transaction machine* - modeling an application as a repeating transaction. Transaction machines are simple yet offer a robust foundation for reactivity, concurrency, and process control. However, these benefits rely on optimizations that are difficult to implement on step functions. To resolve this, I intend to develop a specialized program representation.
 
 ## Transaction Machines
 
@@ -53,12 +53,6 @@ Further, we could varify that critical transactions evaluate with worst-case tim
 Transaction machines don't solve live coding, but they do lower a few barriers. Application code can be updated atomically between transactions. Threads can be regenerated according to stable non-deterministic choice in the updated code. Divergence or 'tbd' programs simply never commit; they await programmer intervention and do not interfere with concurrent behavior.
 
 Remaining challenges include stabilizing application state across minor changes, versioning major changes, provenance tracking across compilation stages, rendering live data nearby the relevant code.
-
-## Robust References
-
-Applications are in charge of allocating local references to objects, i.e. instead of `var foo = open filename` I favor an API style closer to `open filename as "foo"`. This allows for static allocation, hierarchical regions, or decentralization for dynamic allocations. References can carry convenient information for debugging. Importantly, it avoids concerns related to abstraction or forgery for references. 
-
-This design essentially makes references second-class, in the sense that they cannot be directly communicated between scopes. Indirect communication of references is still feasible, e.g. we could include an API that allows establishing a subchannel over an existing channel, or allows connecting two channels.
 
 ## Effects API
 
@@ -117,21 +111,19 @@ Operations may fail due to implicit validation, e.g. verify invariants upon put 
 
 ### Filesystem
 
-Filesystems are ubiquitous and awkward. The filesystem API is mostly supported for integration with external tools. If you just want some persistent state, use the *Shared Database* API instead.
-
-Console IO will be modeled as filesystem access with `std:in`, `std:out`, and `std:err` as implicit open file references. (By default, `std:err` is also used by the logging system, so there may be some interference.)
+Filesystems are ubiquitous and universally awkward. The filesystem API here provides a bare minimum for streaming files. Writes are buffered until committed, and reads may be limited to what is in the input buffer when the transaction starts. This should mostly be used for integration; if you just need data persistence, the *Shared Database* is a much better option due to abstracting integration with stowage.
 
 Proposed API:
 
 * **file:FileOp** - namespace for file operations. An open file is essentially a cursor into a file resource, with access to buffered data. 
-  * **open:(name:FileName, as:FileRef, for:Interaction)** - Response is unit, or failure if the FileRef is already in use. Binds a new filesystem interaction to the given FileRef. Usually does not wait on OS (see 'status').
+  * **open:(name:FileName, for:Interaction)** - Open a file, returning a fresh FileRef. This operation returns immediately; the user can check 'status' in a future transaction to determine whether the file is opened successfully. However, you can begin writing immediately. Interactions:
     * *read* - read file as stream. Status is set to 'done' when last byte is available, even if it hasn't been read yet.
     * *write* - open file and write from beginning. Will delete content in existing file.
     * *append* - open file and write start writing at end. Will create a new file if needed.
     * *delete* - remove a file. Use status to observe potential error.
     * *move:NewFileName* - rename a file. Use status to observe error.
   * **close:FileRef** - Release the file reference.
-  * **read:(from:FileRef, count:Nat)** - Response is list of up to Count available bytes taken from input stream. Returns fewer than Count if input buffer is empty. 
+  * **read:(from:FileRef, count:N, exact?)** - Tries to read N bytes, returning a list. May return fewer than N bytes if input buffer is low. Fails if 0 bytes would be read, or if 'exact' flag is included and fewer than N bytes would be read.
   * **write:(to:FileRef, data:Binary)** - write a list of bytes to file. Fails if not opened for write or append. Use 'busy' status for heuristic pushback.
   * **status:FileRef** - Returns a record that may contain one or more flags and values describing the status of an open file.
     * *init* - the 'open' request has not yet been seen by OS.
@@ -139,11 +131,11 @@ Proposed API:
     * *busy* - has an active background task.
     * *done* - successful termination of interaction.
     * *error:Message* - reports an error, with some extra description.
-  * **ref:list** - return a list of open file references. 
-  * **ref:move:(from:FileRef, to:FileRef)** - reorganize references. Fails if 'to' ref is in use. 
+  * **std:out** - returns FileRef for standard output
+  * **std:in** - returns FileRef for standard input
 
 **dir:DirOp** - namespace for directory/folder operations. This includes browsing files, watching files. 
-  * **open:(name:DirName, as:DirRef, for:Interaction)** - create new system objects to interact with the specified directory resource in a requested manner. Fails if DirRef is already in use, otherwise returns unit. Potential Interactions:
+  * **open:(name:DirName, for:Interaction)** - create new system objects to interact with the specified directory resource in a requested manner. Returns a DirRef.
     * *list* - read a list of entries from the directory. Reaches Done state after all items are read.
     * *move:NewDirName* - rename or move a directory. Use status to observe error.
     * *delete:(recursive?)* - remove an empty directory, or flag for recursive deletion.
@@ -155,10 +147,9 @@ Proposed API:
     * *ctime:TimeStamp* (optional) - creation time 
     * *size:Nat* (optional) - number of bytes
   * **status:DirRef** ~ same as file status
-  * **ref:list** - return a list of open directory references.
-  * **ref:move:(from:DirRef, to:DirRef)** - reorganize directory references. Fails if 'to' ref is in use.
   * **cwd** - return current working directory. Non-rooted file references are relative to this.
   * **sep** - return preferred directory separator substring for current OS, usually "/" or "\".
+
 
 It is feasible to extend directory operations with option to 'watch' a directory for updates.
 
@@ -177,36 +168,30 @@ Most network interactions with external services can be supported by TCP or UDP.
 
 * **tcp:TcpOp** - namespace for TCP operations
   * **l:ListenerOp** - namespace for TCP listener operations.
-    * **create:(port?Port, addr?Addr, as:ListenerRef)** - Create a new ListenerRef. Return unit. Whether listener is successfully created is observable via 'state' a short while after the request is committed.
+    * **create:(port?Port, addr?Addr)** - Listen for TCP connections. Returns a ListenerRef. The OS operation is deferred until after the current transaction commits; see 'status'.
       * *port* - indicates which local TCP port to bind. If omitted, OS chooses port.
       * *addr* - indicates which local network cards or ethernet interfaces to bind. Can be a string or bitstring. If omitted, attempts to bind all interfaces.
-    * **accept:(from:ListenerRef, as:TcpRef)** - Receive an incoming connection, and bind the new connection to the specified TcpRef. This operation will fail if there is no pending connection. 
+    * **accept:(from:ListenerRef)** - Receive an incoming connection, and return a TcpRef. This operation will fail if there is no pending connection. 
     * **status:ListenerRef** ~ same as file status
     * **info:ListenerRef** - For active listener, returns a list of local `(port:Port, addr:Addr)` pairs for that are being listened on. Fails in case of 'init' or 'error' status.
     * **close:ListenerRef** - Release listener reference and associated resources.
-    * **ref:list** - returns list of open listener refs 
-    * **ref:move:(from:ListenerRef, to:ListenerRef)** - reorganize references. Cannot move to an open ref.
-  * **connect:(dst:(port:Port, addr:Addr), src?(port?Port, addr?Addr), as:TcpRef)** - Create a new connection to a remote TCP port. Fails if TcpRef is already in use, otherwise returns unit. Whether the connection is successful is observable via 'state' a short while after the request is committed. Destination port and address must be specified, but source port and address are usually unspecified and determined dynamically by the OS.
-  * **read:(from:TcpRef, count:N)** - read 1 to N bytes, limited by available data, returned as a list. Fails if no bytes are available - see 'status' to diagnose error vs. end of input. 
+  * **connect:(dst:(port:Port, addr:Addr), src?(port?Port, addr?Addr))** - Create a new connection to a remote TCP port. Returns a TcpRef. The connection may fail, but it will only be visible in a future transaction; use 'status' to verify successful connection. If 'src' is omitted, it can be dynamically determined.
+  * **read:(from:TcpRef, count:N, exact?)** - read 1 to N bytes, limited by available data, returned as a list. Fails if no bytes are available - see 'status' to diagnose error vs. end of input. 
   * **write:(to:TcpRef, data:Binary)** - write binary data to the TCP connection. The binary is represented by a list of bytes. Use 'busy' status for heuristic pushback.
   * **limit:(of:Ref, cap:Count)** - fails if number of bytes pending in the write buffer is greater than Count or if connection is closed, otherwise succeeds returning unit. Not necessarily accurate or precise. This method is useful for pushback, to limit a writer that is faster than a remote reader.
   * **status:TcpRef** ~ same as file status
   * **info:TcpRef** - Returns a `(dst:(port, addr), src:(port, addr))` pair after TCP connection is active. May fail in some cases (e.g. 'init' or 'error' status).
   * **close:TcpRef**
-  * **ref:list** - returns list of open TCP refs 
-  * **ref:move:(from:TcpRef, to:TcpRef)** - reorganize TCP refs. Fails if 'to' ref is in use.
 
 * **udp:UdpOp** - namespace for UDP operations. UDP messages use `(port, addr, data)` triples, with port and address refering to the remote endpoint.
-  * **connect:(port?Port, addr?Addr, as:UdpRef)** - Bind a local UDP port, potentially across multiple ethernet interfaces. Fails if UdpRef is already in use, otherwise returns unit. Whether binding is successful is observable via 'state' after the request is committed. Options:
-    * *port* - normally included to determine which port to bind, but may be left to dynamic allocation. 
-    * *addr* - indicates which local ethernet interfaces to bind; if unspecified, attempts to binds all interfaces.
+  * **connect:(port?Port, addr?Addr)** - Return a UdpRef. This doesn't wait on the OS, so view 'status' in future transactions to determine whether there are problems with the connection.
+    * *port* - normally a small natural number specifying which port to bind, but may be left to dynamic allocation. 
+    * *addr* - normally indicates which ethernet interface and IP address to bind; if unspecified, attempts to binds all interfaces.
   * **read:(from:UdpRef)** - returns the next available UDP message value. 
   * **write(to:UdpRef, data:Message)** - output a UDP message. Message uses same `(port, addr, data)` record as messages read. Returns unit, and buffers message to send upon commit.
   * **status:UdpRef** ~ same as file status
   * **info:UdpRef** - Returns a list of `(port:Port, addr:Addr)` pairs for the local endpoint.
   * **close:UdpRef** - Return reference to unused state, releasing system resources.
-  * **ref:list** - returns list of open UDP refs.
-  * **ref:move:(from:UdpRef, to:UdpRef)** - reorganize UDP refs. Fails if 'to' ref is in use.
 
 A port is a fixed-width 16-bit number. An addr is a fixed-width 32-bit or 128-bit bitstring (IPv4 or IPv6) or a text string such as "www.example.com" or "192.168.1.42" or "2001:db8::2:1". Later, I might add a dedicated API for DNS lookup, or perhaps for 'raw' Ethernet.
 
@@ -214,49 +199,36 @@ A port is a fixed-width 16-bit number. An addr is a fixed-width 32-bit or 128-bi
 
 ### Channels
 
-A channel communicates using reliable, ordered, buffered message passing. Unlike TCP, channels will support structured data and fine-grained subchannels. This can support distributed object-oriented systems, for example. A viable API:
+A channel communicates using reliable, ordered, buffered message passing. A very useful feature for dynamic systems is the ability to establish fine-grained subchannels, and the ability to connect two channels to move future data directly. A viable API sketch:
 
-* **c:send:(data:Value, over:ChannelRef, many?)** - send a value over a channel. Return value is unit. Extensions:
-  * *multi* - optional flag. Value must be a list. Equivalent to separately sending each value in that list in order.
-* **c:recv:(from:ChannelRef, many?Count, exact?)** - receive data from a channel. Return value is the data. Fails if no input available or if next input isn't data (try 'accept'). Extensions:
-  * *many:Count* - optional. If specified, will return up to Count data items (at least one, otherwise read fails) as a list. If Count is zero, returns all available data items (still at least one).
-  * *exact* - optional flag. Used with 'many:Count', adjusts behavior to return exactly Count items as a list, otherwise fail. Always fails if 'many' is unspecified or Count is zero.
-* **c:attach:(over:ChannelRef, chan:ChannelRef, mode:(copy|move|bind))** - connect a channel over a channel. Behavior varies depending on mode:
-  * *copy* - a copy of 'chan' is sent (see 'copy')
-  * *move* - 'chan' is detached from calling process. (attach copy then drop original)
-  * *bind* - a new channel is established, with one endpoint bound to 'chan'. Fails if 'chan' in use.
-* **c:accept:(from:ChannelRef, as:NewChannelRef)** - Receives a channel endpoint, binding to the 'as' channel. This will fail if the next input on the channel is not a channel (or not available), such that send/attach order is preserved at recv/accept.
-* **c:pipe:(with:ChannelRef, and:ChannelRef, mode:(copy|move|bind))** - connect two channels such that future messages received on one channel are automatically forwarded to the other, and vice versa. This includes pending message and attached channels. Behavior varies depending on mode:
-  * *copy* - a copy of the channels is connected; original refs can tap communications.
-  * *move* - piped channels are detached from caller (see 'close'), managed by host system.
-  * *bind* - new channel is created between two references. Fails if either ChannelRef is already in use.
-* **c:copy:(of:ChannelRef, as:ChannelRef)** - duplicate a channel, its pending inputs, and future inputs including subchannels. Writes to the copy and original will be merged in some non-deterministic order.
-* **c:drop:ChannelRef** - detach channel from calling process, enabling host to recycle associated resources. Indirectly observable via 'test'.
-* **c:test:ChannelRef** - Fails if the channel is known by system to be defunct, supporting no possibility of further interaction. Succeeds otherwise, returning unit. Interaction includes reading messages or writing messages and having them read.
-* **c:tune:(chan:ChannelRef, with:Flags)** - Inform the system about your specific use-case for this channel, such that it can perform some extra optimizations. May restrict operations. Monotonic (no take-backs!). Multiple flags may be composed into a record. Flags:
-  * *no-write* - disables future 'send' and 'attach' operations for this channel. Future attempted writes will fail. 
-  * *no-read* - disables future 'recv' and 'accept' operations for this channel. Clears input buffer and arranges to silently drop future inputs. 
+* *c:create:(...)* - construct a connected pair of channels
+* *c:send:(...)* - send data over channel
+* *c:recv:(...)* - read data from channel
+* *c:attach:(...)* - send a channel over a channel
+* *c:accept:(...)* - read a channel from a channel
+* *c:drop:ChannelRef* - detach process from a channel and free resources
+* *c:test:ChannelRef* - test whether a channel is still available for interaction
+* *c:tune:(...)* - inform OS channel is read-only or write-only for optimizations
+* *c:copy:ChannelRef* - copy a channel reference and unread inputs; writes are merged
+* *c:route:(...)* - connect output from one channel as input to the other and vice versa
 
-Channels over TCP is a viable foundation for networked glas systems. See [Glas Channels](GlasChannels.md) for more discussion on this.
+For external communications with other glas system applications, we could support wrapping glas channels around an open TCP connection.
 
-* **c:tcp:bind:(wrap:TcpRef, as:ChannelRef)** - removes TcpRef from scope, binds ChannelRef. This implements the channel (and subchannels) over TCP, using [Glas Object](GlasObject.md) to represent values. The TCP connection will also handle protocol-layer interactions to support features such as querying for globs, providing access to a content-distribution network, routing pipes, and automatic code distribution.
-* **c:tcp:l:bind:(wrap:ListenerRef, as:ChannelRef)** - removes ListenerRef from Scope, binds ChannelRef. This ChannelRef can only 'accept' new subchannels, one for each received TCP connection.
+* *c:tcp:bind:TcpRef* - return a channel that communicates over TCP. It will begin processing the remaining data on the TCP input.
+* *c:tcp:l:bind:ListenerRef* - return a channel that can only 'accept' new channels. Same as using 'tcp:l:accept' then 'c:tcp:bind' on TCP channels.
 
-General reference manipulation:
-
-* **c:ref:list** - return a list of open channel references
-* **c:ref:move:(from:ChannelRef, to:ChannelRef)** - rename a ChannelRef. Fails if target reference is in use.
+I intend to develop this idea further in [Glas Channels](GlasChannels.md).
 
 ### Runtime Extensions
 
 A runtime can provide a few effects for manipulating itself. May be implementation-dependent and not very portable. A few ideas:
 
-* **rt:version** - return the string that would be printed by `glas --version`.
-* **rt:help** - return the string that would be printed by `glas --help`.
-* **rt:time:now** - same as 'time:now' except not frozen per transaction. This logically involves reflection over instructions computed by the runtime. Mostly intended for manual profiling.
-* **rt:gc:tune:(...)** - tune GC parameters
-* **rt:gc:force** - ask runtime to perform a GC immediately(-ish)
-* **rt:stat:Var** - return some useful metadata about the runtime
+* *rt:version* - return the string that would be printed by `glas --version`.
+* *rt:help* - return the string that would be printed by `glas --help`.
+* *rt:time:now* - similar to 'time:now' except not frozen within a transaction. This logically involves reflection over the runtime. Useful for manual profiling.
+* *rt:gc:tune:(...)* - tune GC parameters
+* *rt:gc:force* - ask runtime to perform a GC immediately(-ish)
+* *rt:stat:Var* - return some useful metadata about the runtime
 
 ### OS Extensions
 
@@ -272,20 +244,7 @@ The remote code would have very limited access to effects: read and write channe
 
 ## Procedures and Processes
 
-The 'proc' model expresses behavior as composition of transactional steps, with constraints on effects and shared state. This can be compiled to an equivalent 'prog' step function, but 'proc' should be easier to optimize for incremental computing, concurrency, and distribution.
-
-In design. Some likely features:
-
-* *annotations* - similar to 'prog' we can have a 'proc' header for annotations and the common variant for processes.
-* *sequence* - similar to a prog sequence, but each operation may require multiple transactions. I may require that each operation is uniquely labeled for some extra stability during live coding. 
-* *forks* - explicit partitioning of applications into multiple subtasks. This should appear within a 'stable' effects context. 
-  * *static forks* - all the forks can be labeled at compile-time and bound to distinct processes.
-  * *dynamic forks* - the set of forks is computed at runtime. The process is the same for every fork, but each may have its own runtime state. Some mechanism to support introducing or terminating forks.
-* *channels* - explicit asynchronous, non-shared-state communication between forks, preferably without assuming external effects. Static channels and subchannels might be especially convenient for optimization.
-  * *rendezvous* - this could be modeled in terms of a single element channel, with special recognition it might simplify optimization of the scheduler.
-* *effects* - instead of a single abstract effects environment with a single state value, it could be useful to distinguish effects with shared state, effects with forkable state, write-only effects similar to channels where write order is flexible. 
-* *conditionals* - likely need a couple layers such as stable conditionals (e.g. depending on configuration data) and instantaneous conditionals (decided as a process step).
-* *overlay* - ability to compose applications in overlay style, wrapping components. We might treat the initial app as an overlay of the identity operation to improve compositionality.
+The glas 'prog' model of programs is not optimal for transaction machine applications. It places a huge burden on the optimizer to support concurrency, parallelism, and incremental computing. I'd like to design a model better optimized for this role, including more fine-grained effects and tracking of shared vars (read-only, write-only, channel writes, read-write vars). Something based loosely on Kahn Process Networks or Lafont Interaction Networks might be a good start.
 
 ## Misc Thoughts
 
@@ -312,7 +271,7 @@ A promising target for glas is web applications - compiling applications to Java
 
 ### Reactive Dataflow Networks
 
-An intriguing option is to communicate using only ephemeral connections, where logical lifespan approaches zero. Connections and delegated authority are visible, revocable, reactive to changes in code, configuration, or security policy. This is a convenient guarantee for live coding, debugging, extensibility, and open systems.
+An intriguing option is to communicate using only ephemeral connections. Connections and delegated authority are visible, revocable, reactive to changes in code, configuration, or security policy. This is a convenient guarantee for live coding, debugging, extensibility, and open systems.
 
 A viable API:
 
@@ -334,5 +293,12 @@ Supporting synchronous remote procedure calls, i.e. within a transaction, is tec
 
 ### FFI
 
-Direct support for FFI is a bad idea. But it might be useful to eventually include DLLs and headers as modules, and somehow use them when compiling an application. 
+Direct support for FFI is a bad fit with transactions and effects handlers. But it seems feasible to include DLLs and headers as modules for use in an accelerated VM. Also, we could provide an API for evaluating a script between transactions after commit, perhaps prohibiting long-running scripts with loops to ensure this fits with my vision for live coding and extension. 
 
+### Robust References
+
+References are semantically awkward. I'd prefer to avoid them, but I haven't found a great means to do so while still integrating conveniently with modern operating systems (file handles, TCP sockets, etc.). I've considered explicit, local allocation of references, e.g. 'open (file) as (ref)'. This avoids reference abstraction and clarifies scope, but I found it inconvenient and inefficient in practice. 
+
+For now, I'll stick to the convention where the environment allocates and returns references. Where appropriate, we can arrange for unique, unforgeable references, e.g. including an HMAC as part of each reference would ensure references are robust even when round-tripped through networks or databases.
+
+A related issue: precise, automatic garbage collection is hindered if references are normal, serializable values. The glas program model will not have any built-in support for GC. However, it is feasible to abstract references and support GC in a higher program layer (that might compile to a glas program, or be interpreted via accelerator). 

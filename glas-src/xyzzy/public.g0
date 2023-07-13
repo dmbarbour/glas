@@ -1,0 +1,12 @@
+open prims 
+import nat as n
+import int as i
+
+assert [
+    1 10000 eff-nop [[i/decrement] n/repeat] 'tst1 p-prof-chan apply
+      -9999 eq
+]
+
+data hello ["Hello, World!"]
+
+export [hello]

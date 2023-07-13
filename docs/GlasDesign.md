@@ -22,13 +22,11 @@ The compiler function has a limited effects API to simplify caching and reproduc
 
 ## Values
 
-Glas represents data using immutable binary trees, i.e. such that each node in a tree has optional left and right children respectively labeled '0' and '1'. The most naive representation is:
+Glas represents data as finite, immutable binary trees, i.e. such that each node in a tree has optional left and right children respectively labeled '0' and '1'. The most naive representation is:
 
         type Tree = ((1+Tree) * (1+Tree))
 
-A binary tree can easily represent unit `()`, pair `(a, b)`, and either types `(Left a | Right b)`. However, glas systems favor labeled data because labels are more meaningful and extensible. 
-
-Text labels are encoded into a *path* through a tree, using null-terminated UTF-8. For example, label 'data' would be encoded into the path `01100100 01100001 01110100 01100001 00000000` where '0' and '1' respectively represent following the left or right branch. Following the path will reach the associated value. A 'record' or 'dictionary' may have many such paths, sharing prefixes, thus forming a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). A 'variant' (aka 'tagged union') should have exactly one label.
+A binary tree can easily represent a pair `(a, b)` or either type `(Left a | Right b)`. However, glas systems favor labeled data because labels are more meaningful and extensible. Labels are encoded into a *path* through a tree, favoring null-terminated UTF-8. For example, label 'data' would be encoded into the path `01100100 01100001 01110100 01100001 00000000` where '0' and '1' respectively represent following the left or right branch. A 'record' may have many such paths with shared prefixes, forming a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). A 'variant' (aka 'tagged union') should have exactly one label. 
 
 To efficiently represent labeled data, non-branching paths must be compactly encoded far fewer allocations. One viable under the hood representation is closer to:
 
@@ -43,13 +41,15 @@ Short, simple data, such as integers and symbols, will be directly encoded into 
          3        11
          2        10
          1         1
-         0        ()    empty bitstring
+         0         . (empty)   
         -1         0
         -2        01
         -3        00
         -4       011
 
-Glas systems encode sequential structure as lists. Logically, a list is encoded into binary tree along the right spine, terminating in unit. 
+The tree consisting of a single node with no children is widely used to represent zero, unit values, or an empty list or record. 
+
+Sequential structure is often encoded as a list. A list is represented as a binary tree where the left nodes are elements and the right nodes form the spine of the tree, terminating with unit.
 
         type List a = (a * List a) | () 
 
@@ -58,15 +58,15 @@ Glas systems encode sequential structure as lists. Logically, a list is encoded 
          2 /\
           3  ()  
 
-Direct representation of lists is inefficient for many use cases. To mitigate this, glas systems favor a [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [rope](https://en.wikipedia.org/wiki/Rope_%28data_structure%29) representation under the hood. This optimized representation is accessible via *Acceleration* - for example, list slice and append functions are annotated for replacement by runtime built-ins.
+However, direct representation of lists is inefficient for many use-cases. Under the hood, lists may be represented using arrays, binaries, and [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_%28data_structure%29). This representation would be accessible via specialized append, slice, and other list operations (see *Acceleration*).
 
-Glas values may scale to represent entire databases. Subtrees that aren't immediately necessary can be heuristically moved into content-addressed storage then referenced by secure hash. I call this pattern *Stowage*, and it will be heavily guided by program annotations. Stowage also simplifies performance of data persistence, memoization, and many communication patterns.
+To work with very large values, glas systems favor content-addressed storage to offload volumes of data to disk. I call this pattern *Stowage*, and it will be heavily guided by program annotations. Stowage simplifies efficient data persistence, memoization, and network communication in context of large values and structure-sharing update patterns.
 
 ## Programs
 
-Programs are values with a known interpretation. In this case, we're interpreting a structured glas value (rather than a binary or text), so we'll rely on a separate syntax layer such as ".g0" files compiled by mo language-g0 
+Programs are values with a known interpretation. In this case, the 'prog' model interprets a structured glas value. Separately, [language-g0](GlasZero.md) compiles text into these programs. User-defined syntax is possible in glas systems, bootstrapping from language-g0.
 
- The interpretation described here is used by language modules and basic applications. It is designed primarily for simplicity and compositionality - e.g. it avoids any jumps, which are troublesome for composition. This is a *structured* program model. The concrete syntax must be defined by a language module (initially [language-g0](GlasZero.md)).
+This program model prioritizes simplicity, locality, and compositionality. Performance and scalability take a hit. To recover performance, glas systems will rely on acceleration of specialized models or extension of the glas command line to recognize and interpret models other than 'prog'. 
 
 ### Stack Operators
 
@@ -99,7 +99,7 @@ The stack in glas is really an intermediate data plumbing model. User syntax cou
 
 ### Control Operators
 
-Glas programs must have static stack arity, i.e. the 'try-then' arity must match the 'else' arity, or a loop 'while-then' must have the same input and output arity. This is designed to be easy to verify.
+Glas programs must have static stack arity, i.e. the 'try-then' arity must match the 'else' arity, and a loop 'while-then' must have the same input and output arity. Arity is relatively easy to compute, albeit slightly complicated by 'fail' and 'halt'.
 
 * **seq:\[List, Of, Operators\]** - sequential composition of operators. 
   * *nop* - identity function can be represented by empty seq  
@@ -199,7 +199,7 @@ I discuss these ideas further under [glas applications](GlasApps.md) and [glas c
 
 ## Language Modules
 
-Language modules are global modules with a simple naming convention: `language-xyz` provides the compiler function for files with extension `".xyz"`. Language modules must currently compile to a value of form `(compile:prog:(do:Program, ...), ...)` expressing a 1--1 arity program. Symbols other than 'compile' may be defined to support tooling, such as IDE or REPL integration, a standard linter or formatter, etc.. 
+Language modules are global modules with a simple naming convention: `language-xyz` provides the compiler function for files with extension `".xyz"`. Initial language modules should compile to a dictionary of form `(compile:prog:(do:Program, ...), ...)` with a 1--1 arity program. 
 
 Input to the compiler function is (usually) a file binary. Final output is the compiled module value. Compilation may fail, hopefully after logging some error messages. Compile-time effects are constrained to simplify caching, sharing, and reproducibility. Effects API:
 
@@ -209,6 +209,8 @@ Input to the compiler function is (usually) a file binary. Final output is the c
 * **log:Message** - Message should be a record, e.g. `(text:"Uh oh, you messed up!", lv:warn)`. This simplifies extension with contextual metadata or switching from texts to more structured content. Response is unit. Log messages should target the human user or the development environment.
 
 The glas command line will include a built-in compiler for [language-g0](GlasZero.md), a Forth-like language with staged metaprogramming. This built-in compiler is used to bootstrap the actual language-g0 module if possible, emitting a warning on bootstrap failure. Other glas languages can build upon language-g0.
+
+Definitions other than 'compile' in the language module may be defined to support tooling, such as IDE or REPL integration, a standard linter or formatter, etc.. And glas may eventually accept compiler functions of types other than 'prog', e.g. to enhance caching or parallelism.
 
 ## Automated Testing
 
@@ -246,15 +248,17 @@ An accelerated VM can make a number of problem domains much more accessible, suc
 
 ### Stowage
 
-I use the word 'stowage' to describe the use of content-addressed storage to serialize larger-than-memory data to disk or the network, then loading it back into local memory as needed. Stowage serves as an alternative to virtual memory paging. Stowage indirectly supports compression, memoization, and content distribution.
+I use the word 'stowage' to describe systematic use of content-addressed storage to hibernate volumes of larger-than-memory data to disk or network. Stowage is the immutable variation on virtual memory paging. There are benefits for persistence, memoization, and communication of very large values.
 
-The [Glas Object](GlasObject.md) representation is designed for use with stowage. However, my vision is that stowage should mostly be implicit within glas systems. Program annotations can guide stowage without observing it. An application effects API can provide access to a persistent database and data channels that abstract over serialization, integrating stowage. 
+In context of glas systems, stowage will be semi-transparent: invisible to pure functions and *most* effects, yet guided by annotations and accessible to top-level effects as needed (data channels over TCP, persistent key-value database, runtime reflection). [Glas Object](GlasObject.md) is intended to be the main binary representation for stowed data.
 
 ### Memoization
 
-Purely functional subprograms in glas can be annotated for memoization. This can be implemented by storing a lookup table mapping inputs to outputs. This lookup table can be persistent to support reuse across builds, and integrate with stowage.
+Purely functional subprograms in glas can be annotated for memoization. This can be implemented by storing a lookup table mapping inputs to outputs. This lookup table can be persistent to support reuse across builds. 
 
-Glas systems assume memoization as a solution to many performance issues that would otherwise require explicit state. Without memoization, the potential scale of glas systems would be severely constrained.
+In combination with stowage, it is possible to incrementally process large data by memoizing recursive computations. This includes indexing of data, insofar as indexing can be expressed in terms of merging the indices of each component. Lists require special attention for stable chunking but it is possible to align memoization with the underlying finger-tree if we annotate a reducing function as associative (this annotation would be subject to proof or random testing).
+
+Indexing large data via memoization and stowage is an underlying assumption for my vision of glas systems. Without this, we would rely entirely on stateful indices, which are locally efficient but error prone and difficult to share, compose, extend, or update at runtime.
 
 ### Content Distribution
 
@@ -274,9 +278,17 @@ However, this is a solution to pursue mostly where accelerators are awkward (e.g
 
 ## Thoughts
 
+### Computation Models
+
+I'm tempted to build on a foundation that is more suitable for lazy, concurrent, and distributed computations compared to glas programs. Some ideas are to build on Kahn Process Networks, Lafont Interaction Nets, or the Verse calculus. The main issue is well-defined support for concurrent or lazy effects while preserving the mostly-static structure of glas programs.
+
+The KPN idea involves a PL designed around a hierarchical structure of concurrent processes that read and write labeled 'ports'. Effects are modeled in terms of operations on ports. A process may wire ports of its subcomponents. Temporal semantics could be introduced by default, to support reactive systems, clocks, and events.
+
+So far, every time I explore this, I end up deciding that simpler is better for the initial program model. We aren't stuck with the basic program model; it's just a starting point, and even KPNs can be accelerated. Meanwhile, it ensures computation is easily represented without complications from variables or 'holes' in data.
+
 ### Useful Languages
 
-The g0 language is used for bootstrap. It is a Forth-inspired language with expressive metaprogramming features. But it's intended as a stable starting point, not a final language, nor as something to directly improve. The glas system will need language modules for other use cases.
+The g0 language is used for bootstrap. It is a Forth-inspired language with expressive metaprogramming features. But it's intended as a simple, stable starting point, not the final language for users.
 
 Data languages will often be more convenient than embedding data in a programming language. In part because this simplifies working with external tools. We could support ".txt" files (e.g. convert UTF-16 to UTF-8, remove byte-order mark, check spelling, etc.). We can also support structured data files - JSON, XML, CSV, MsgPack, SQLite, Cap'n Proto, or even [Glas Object](GlasObject.md).
 
@@ -300,20 +312,17 @@ A relevant concern is that database files will tend to be much larger than text 
 
 ### Program Search
 
-I'm interested in a style of metaprogramming where programmers express hard and soft constraints, search spaces, and search tactics for programs. Type safety can be considered a hard constraint to guide program decisions. Programs expressed this way can resolve ambiguity, fill the gaps, and produce large working systems from relatively few words.
+I'm interested in a style of metaprogramming where programmers express hard and soft constraints, search spaces, and search tactics for programs. Type safety can be treated as a hard constraint to support type-driven overloading. But the emphasis will be modular, heuristic decisions expressed as soft constraints, with ability to prioritize some search paths over others. Incremental computing and caching are also essential.
 
-Search is expensive, so it is necessary to reduce rework. Stateful solutions are viable, i.e. we could use special editors or tools to move part of program search to edit-time. But I'd prefer stateless solutions, such as memoization.
+Something like an [A-star search algorithm](https://en.wikipedia.org/wiki/A*_search_algorithm) might work, assuming we can express soft constraints as costs with a [consistent heuristic](https://en.wikipedia.org/wiki/Consistent_heuristic), i.e. monotonic costs for various choices, preferably with costs adjusted based on context (perhaps indicate costs via effect that takes an arbitrary value, which is interpreted by the context).
 
-Memoization can mitigate rework insofar as we have [consistent heuristics](https://en.wikipedia.org/wiki/Consistent_heuristic) for utility, i.e. such that we can locally filter for good modular components without looking at global fitness. Of course, those heuristics are also contextual. Perhaps a monotonic heuristic can be aligned with expression of component search.
+The 'prog' model of programs is unsuitable because we'll also want concurrent construction, refinement, and analysis of the solution by multiple subprograms. Concurrent access would support overlays and refinements of decisions.
 
 ### Provenance Tracking
 
-The glas module system hinders manual provenance tracking, e.g. the compiler doesn't even have access to a filename. This hinders debugging. OTOH, even if I try to improve things, manual provenance tracking is almost doomed to failure when dealing with layers of macros, user-defined languages, etc..
+The glas module system hinders manual provenance tracking, e.g. we cannot access module name from the language module 'compile' function. This was intentional in that I do not want location-dependent semantics and factoring. However, it does have some costs with regards to debugging.
 
-I want to automate provenance tracking at a lower layer, i.e. automatically track which regions of input are most likely to be relevant to a given region of output. This might involve something similar to [SHErrLoc project's](https://research.cs.cornell.edu/SHErrLoc/) heuristics, giving less weight to widely tested dependencies.
+This can be mitigated by adding some provenance to log messages when compiling code. But this is very coarse grained. A better solution is to track provenance at a fine granularity within values, then distribute blame (or responsibility) heuristically, e.g. inverse to the number of direct observers of the source data (based on [SHErrLoc project's](https://research.cs.cornell.edu/SHErrLoc/) heuristics).
 
-### Computation Model 
+Fine-grained tracking of provenance will require somehow annotating or mapping values to their dependencies. I do have some concept of annoted values in [Glas Object](GlasObject.md) that might be something we can leverage for this purpose. But the details will require a lot of design and implementation work to get right.
 
-I'm tempted to replace the initial program model with something more friendly for laziness, parallelism, and concurrency, such as Lafont interaction nets or Kahn process networks. However, I hesitate to start with [alternative program models](AltModels.md) due to added complexity.
-
-Fortunately, there is room for future development. KPNs or interaction nets could feasibly be accelerated (perhaps indirectly, via compilation to an accelerated virtual machine). If necessary, models could be supported directly by the glas command line, so long as it doesn't affect bootstrap.

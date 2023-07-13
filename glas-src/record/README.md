@@ -1,45 +1,37 @@
 # Record Utilities
 
-Records are a very common data type in glas systems, and are represented as radix trees, with labels encoded using ASCII (or UTF-8) into a null-terminated bitstring path. 
+Records are a common data type in glas systems and are represented as radix trees. Labels are UTF-8 null-terminated text (or null-terminated binary) encoded into the bitstring path to each value.
 
-         'c'  0x63
-         /     0
-         \     1
-          \    1
-          /    0
-         /     0
-        /      0
-        \      1
-         \     1
-       <next>
+          'c'  0x63
+          /     0
+          \     1
+           \    1
+           /    0
+          /     0
+         /      0
+         \      1
+          \     1
+        <next>
 
-The value reached by following the null terminator (0x00, or 8 zero bits) represents the data recorded within the record at a given label.
+A null byte (0x00, or 8 sequential zero bits) separates the label from the embedded data. 
 
-This module provides a few utilities for working with records, such as converting between records and lists of key-value pairs, or converting between strings (lists of bytes) and symbols.
+This module provides a few utilities for working with records, such as obtaining the list of labels, or converting between records and key-value lists. It also supports working with labels as values.
 
-## Intmaps
+Some related types:
 
-As a variation, records can support fixed-width indices. This might be useful as a representation of sparse arrays or matrices, for example. Conversely, we can view records as being constructed using 8-bit intmaps.
+* *variant* - essentially a record with only a single label from a known set. This serves as the labeled sum type, where records are the labeled product type.
+* *dictionary* - represented as a record, but with dynamic labels and homogeneous data
+* *wordmaps* - uses fixed-length labels (e.g. 32-bit words) instead of null terminators; useful as a basis for hashmaps
+* *symbols* - just the utf-8 null-terminated bitstring representing a single label
 
-## Compact Encoding
+## Runtime Encoding
 
-Non-branching bit sequences are encoded in a compact manner. Given a word of K bits, we can encode up to K-1 bits.
+Due to compact encoding of bitstring fragments (see [bits](../bits/README.md)), records are radix trees by default. This representation is reasonably efficient but still involves significant allocation and access overheads. 
 
-        1000000..0      no bits
-        a100000..0      1 bit
-        ab10000..0      2 bits
-        abc1000..0      3 bits
-        ..
-        abcdef1..0      6 bits
-        etc.
+A compiler can potentially do much better, translating static record types into a 'struct' representation with a single allocation and efficient, offset-based access. Further, in-place updates are possible if the compiler knows a record is uniquely referenced. These performance features can be guided by annotations. 
 
-For bitstrings that require multiple words, we can arrange to use the full word in all except the first item. Something like this:
+Annotations can potentially elevate records into first-class data types in glas runtimes.
 
-        type Node = Leaf | Branch of Val * Val | Stem32 of Word32 * Node
-        type Val = (Word32 * Node) // encodes 0..31 stem bits
+## Regarding Key-Value Maps
 
-These are implementation details and may vary from one implementation to another. But it does provide a hint about how a runtime is expected to represent bitstrings and records. 
-
-
-
-
+It is feasible to support arbitrary key-value maps by encoding arbitrary glas values into bitstrings, but I'm not convinced this is a good idea. Viable alternatives include constructing a hashmap or a balanced binary search tree.

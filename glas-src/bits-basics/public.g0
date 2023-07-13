@@ -69,7 +69,6 @@ assert [
 
 # increment a bitstring reversed integer
 prog revint-increment [
-    type-int
     bits-empty swap
     [0b1 get][[0b0 bits-prefix] dip] while-do
     # now we have either: 0b, 0b0, 0b0xx
@@ -83,7 +82,7 @@ prog revint-increment [
     bits-suffix
 ]
 
-prog int-increment-impl [bits-reverse revint-increment bits-reverse]
+prog int-increment-impl [type-int bits-reverse revint-increment bits-reverse]
 
 # int-increment     Int -- Int
 #  implements increment via bitstring manipulation
@@ -116,8 +115,7 @@ assert [ 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF 0b0 bits-prefix
          test-int-increment]
 
 prog revint-decrement [
-    type-int
-    bits-empty swap
+    [bits-empty] dip
     [0b0 get] [[0b1 bits-prefix] dip] while-do
     [0b eq 0b0]             # 0 => -1
     [0b1 get
@@ -129,7 +127,7 @@ prog revint-decrement [
     bits-suffix
 ]
 
-prog int-decrement-impl [bits-reverse revint-decrement bits-reverse]
+prog int-decrement-impl [type-int bits-reverse revint-decrement bits-reverse]
 
 # int-decrement     Int -- Int
 #  implements decrement via bitstring manipulation
@@ -162,24 +160,24 @@ assert [ 0x0000000000000000000000000000000000
          0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF 0b0 bits-prefix
          test-int-decrement]
 
+prog nat-decrement [type-nat [0 eq][fail][int-decrement] try-then-else]
+prog nat-increment [type-nat int-increment]
+
 # N [Op] repeat
 #  will repeat [Op] N times.
 #  N may be dynamic and is required to be a natural number.
 prog p-repeat [
-    # prepare a loop
-    p-dip [int-decrement] p-prefix [0 eq] swap p-until-do 
+    # until N is zero, decrement then run Op
+    [0 eq] swap p-dip [int-decrement] p-prefix p-until-do
 
-    # verify N is non-negative
-    [type-nat [0b0 get] reject] p-prefix
-
-    # Thoughts: if 'int-decrement' isn't accelerated, this will be
-    # less efficient than reversing N's bits then revint-decrement.
+    # annotate or assert that N is a natural number 
+    [type-nat] p-prefix
 ]
 macro repeat [p-repeat]
 assert [-9 20 [int-increment] repeat 11 eq]
 
 # N [Op] static-repeat
-#  Equivalent to `Op` N times.
+#  Equivalent to writing subprogram `Op` N times
 #  e.g. 3 [Bork] static-repeat => Bork Bork Bork
 prog p-static-repeat [ swap [p-nop] dip [[copy] dip p-seq] repeat [drop] dip ]
 macro static-repeat [p-static-repeat]

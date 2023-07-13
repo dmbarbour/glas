@@ -1,14 +1,12 @@
 # Ideas for Glas Languages
 
-## Procedural Glas
-
-A variation on g0 extended with procedure and process support, concurrency, and perhaps a channel API. That is, building applications from atomic step functions and stable forks. Should have explicit yield points for live coding support.
-
 ## KPN Language
 
 I believe Glas systems would benefit heavily from good support for Kahn Process Networks, especially temporal KPNs (where processes, channels, and messages have abstract time). 
 
 I would like the KPN language to produce KPN representations without any specific assumption about the target platform, i.e. so it could be compiled to multiple targets - including, but not limited to, Glas processes.
+
+Instead of dynamic channels, might aim for labeled ports with external wiring. This would be a closer fit for the static-after-metaprogramming structure of glas systems.
 
 ## Soft Constraint Search
 

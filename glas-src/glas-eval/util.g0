@@ -1,0 +1,27 @@
+prog unit [0]
+prog empty-list [unit]
+prog empty-record [unit]
+prog list-singleton [dip[empty-list] pushl]
+
+prog drop-unit [unit eq]
+prog drop-empty-list [drop-unit]
+prog neq [ try [eq] then [fail] else [] ]
+
+prog variant [dip[dip[empty-record]] put]
+
+; As 'get' but fails if there are any branches. This provides some dynamic
+; type-safety, though it would be better to have static types.
+prog from-variant [
+    dip [copy] copy 
+    dip [del drop-unit] ; check for singleton 
+    get
+]
+
+; Value List  -- | FAILURE 
+prog value-in-list [
+    ; loop through list, halting on match
+    while [popl swap dip[neq drop]] do [] 
+    ; succeed if we halt before end of list
+    empty-list neq drop2
+]
+

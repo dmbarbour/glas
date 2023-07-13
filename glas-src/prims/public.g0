@@ -41,43 +41,26 @@ macro try [p-try]
 macro try-then [p-try-then]
 macro try-else [p-try-else]
 
-# try-else2     
-#   [P1][P2][C]try-else2 == [P1][[P2][C]try-else]try-else
-# try-then-else2  
-#   [P1][B1][P2][B2][C]try-then-else2 == [P1][B1][[P2][B2][C]try-then-else]try-then-else
-# similar for 3-7. 
+# halt - explicit divergence
+#  logically equivalent to entering an infinite loop, but makes this
+#  intention more explicit. Unlike 'fail', it is not possible to catch
+#  'halt' within the program under evaluation.
 #
-# These operations help 'flatten' common conditional behaviors. However, this 
-# grows awkward and unwieldy at higher numbers. Refactoring might help. Or an
-# intermediate data structure DSL could more precisely represent intentions.
-#  
-macro try-else2 [p-try-else p-try-else]
-macro try-else3 [p-try-else p-try-else p-try-else]
-macro try-else4 [p-try-else p-try-else p-try-else p-try-else]
-macro try-else5 [p-try-else p-try-else p-try-else p-try-else p-try-else]
-macro try-else6 [p-try-else p-try-else p-try-else p-try-else p-try-else p-try-else]
-macro try-else7 [p-try-else p-try-else p-try-else p-try-else p-try-else p-try-else p-try-else]
-macro try-then-else2 [p-try-then-else p-try-then-else]
-macro try-then-else3 [p-try-then-else p-try-then-else p-try-then-else]
-macro try-then-else4 [p-try-then-else p-try-then-else p-try-then-else p-try-then-else]
-macro try-then-else5 [p-try-then-else p-try-then-else p-try-then-else p-try-then-else 
-                      p-try-then-else]
-macro try-then-else6 [p-try-then-else p-try-then-else p-try-then-else p-try-then-else 
-                      p-try-then-else p-try-then-else]
-macro try-then-else7 [p-try-then-else p-try-then-else p-try-then-else p-try-then-else 
-                      p-try-then-else p-try-then-else p-try-then-else]
-
-assert [2 [1 eq 'a][2 eq 'b][drop 'c] try-else2 'b eq]
-
-# halt (divergence)
-#  equivalent to entering an infinite loop, but makes this
-#  intention more explicit (and supports a debug message).
+#  A debug message may be included such as 'halt:tbd' to indicate
+#  operation is to be defined, or 'halt:type-error' to indicate 
+#  this was a failed runtime type check.
+#
 prog p-halt-with-msg [0 'halt put]
 macro halt-with-msg [p-halt-with-msg]
 prog halt ['halt apply]
 prog halt-tbd ['tbd halt-with-msg]
 prog halt-type-error ['type-error halt-with-msg]
 prog halt-unreachable ['unreachable halt-with-msg]
+
+# Unit data.
+#  The tree with a single node is used to represent unit, zero,
+#  and empty records or lists.
+data unit [0]
 
 # PAIRS 
 # 
@@ -88,7 +71,7 @@ prog halt-unreachable ['unreachable halt-with-msg]
 # self-documentation. However, pairs are a useful low-level
 # type. Lists are formed from pairs. 
 
-prog pair [0 0b1 put 0b0 put]
+prog pair [unit 0b1 put 0b0 put]
 prog pair-fst [0b0 get]
 prog pair-snd [0b1 get]
 prog unpair [copy pair-fst swap pair-snd]
@@ -300,7 +283,7 @@ assert [
     'point get 'x get 11 eq
 ]
 
-# Constructing lists/tuples from stack items.
+# Constructing lists from stack items.
 #
 #   l0              empty list
 #   X l1            list of one item
@@ -330,7 +313,7 @@ prog unl5 [unpair unl4]
 prog unl6 [unpair unl5]
 prog unl7 [unpair unl6]
 
-assert ["omn-nom" copy [unl7 l7] dip eq]
+assert ["omn-nom" copy unl7 l7 eq]
 
 # Variants aka Tagged Unions
 #

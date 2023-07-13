@@ -1,6 +1,6 @@
 # Bitstring Manipulations
 
-A bitstring in glas is a binary tree where every node has exactly one or zero children. Each edge is labeled 0 or 1, respectively representing the left or right child. The bitstring is encoded into the path through these edges.
+A bitstring in glas is encoded as a binary tree where every node has one or zero children. Each edge is labeled 0 or 1, representing a left or right child. A bitstring is encoded into the path through these edges.
 
             /       0       Tree represents bitstring
             \       1           0b011010001
@@ -12,38 +12,30 @@ A bitstring in glas is a binary tree where every node has exactly one or zero ch
            /        0
            \        1
 
-Bitstrings are useful for representing integers, bytes, symbols, and other simple data. However, bitstrings should be relatively short. A list of bytes is favored for texts or binaries.
+Bitstrings are useful for representing integers, bytes, symbols, and other simple data. However, bitstrings in glas are not optimized for random access and should be relatively short. A binary (a list of bytes) is favored for large texts or binaries.
 
 This module defines many useful operations on bitstrings. 
 
 ## Compact Encoding Assumption
 
-I assume glas runtimes efficiently represent bitstrings and radix trees, storing multiple bits per allocation. One convenient mechanism is to encode bitstring length using the lowest '1' bit within a word:
+One assumption for glas systems is that non-branching bitstring fragments are encoded in a compact manner. One viable encoding that I've used in a few implementations:
 
-        10000..0    0 bits
-        a1000..0    1 bits
-        ab100..0    2 bits
-        abc10..0    3 bits
+        type Stem = Word64 // encodes 0..63 bits
+        type Node = Leaf | Branch of Val * Val | Stem64 of Word64 * Node
+        type Val = (Stem * Node) // struct 
 
-A viable data encoding:
+With a K-bit stem word we can encode up to K-1 bits and stem length. For example, with a 4-bit word, we can encode up to 3 stem bits:
 
-        type Value = struct 
-            { uint64 stem                   // 0..63 bits encoded
-            ; Term   term           
-            }
+        1000        0 bits
+        a100        1 bit
+        ab10        2 bits
+        abc1        3 bits
+        0000        unused
 
-        type Term =
-            | Leaf
-            | ExtStem of uint64 * Term      // full 64 bits encoded
-            | Branch of Value * Value
-            | ... (accelerated lists, binaries, etc.) ...
-
-With this compact encoding, short, simple data including symbols and nearly all int64 values (except int64 min), can be encoded without heap allocations. Further, binaries can be specialized so we don't pay huge overheads for file or socket IO.
-
-*Note:* See also the Glas Object encoding.
+In this case, short bitstring values (unit, small integers or symbols, etc. with a final Leaf node) will be non-allocating, which is very convenient.
 
 ## Operations Performance
 
-My vision for glas systems does not emphasize bitstring manipulations. Most operations on bitstrings will be O(N). Common operations may be optionally accelerated (via 'accel:opt:...' annotations) to improve performance, but we shouldn't depend on that. Glas systems should favor operating on binaries instead of very large bitstrings.
+My vision for glas systems does not emphasize bitstring manipulations. Common operations can be accelerated, but we shouldn't depend on it. Binaries (lists of bytes) should be favored over large bitstrings for serialization, and will be compacted by another mechanism.
 
-Eventually, to enter domains such as compression and cryptography, glas systems should accelerate a virtual machine oriented around manipulation of bitstrings or binaries. However, this is a task for another module.
+Eventually, to enter domains such as compression and cryptography, glas systems will accelerate virtual machines that support low-level 'bit banging' operations. However, this is a task for another module.

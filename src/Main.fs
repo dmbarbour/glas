@@ -68,7 +68,7 @@ let helpMsg = String.concat "\n" [
 let ver = "glas pre-bootstrap 0.2 (dotnet)"
 
 let EXIT_OKAY = 0
-let EXIT_FAIL = -1
+let EXIT_FAIL = 1
 
 // a short script to ensure GLAS_HOME is defined and exists.
 let GLAS_HOME = "GLAS_HOME"

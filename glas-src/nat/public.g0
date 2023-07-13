@@ -4,16 +4,14 @@
 open prims
 import bits-basics as bb
 import bits as b
-from [bb] import type-nat, repeat
+from [bb] import type-nat
+               , repeat
+               , nat-increment as increment
+               , nat-decrement as decrement
 
 prog is-nat [b/is-bits [0b0 get] reject]
-
 prog is-pos  [type-nat [0b1 get] verify]
 prog is-zero [type-nat 0 eq1]
-
-
-prog increment [type-nat bb/int-increment]
-prog decrement [type-nat [0b1 get] verify bb/int-decrement]
 
 # clarity functions
 prog revnat-increment [bb/revint-increment]
