@@ -230,6 +230,8 @@ A runtime can provide a few effects for manipulating itself. May be implementati
 * *rt:gc:force* - ask runtime to perform a GC immediately(-ish)
 * *rt:stat:Var* - return some useful metadata about the runtime
 
+An application runtime should usually *halt* if it does not recognize a requested effect. However, it is feasible to introduce runtime reflection on the available effects.
+
 ### OS Extensions
 
 I could support OS operations under an 'os:' prefix, and perhaps OS-specialized actions under a header such as 'os:posix:...'. Not really sure what I need, or how much of the OS should be exposed. Might develop incrementally as needed.

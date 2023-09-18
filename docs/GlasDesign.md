@@ -16,40 +16,53 @@ A file is compiled based on its file extensions. To process a file named "foo.ex
 
 A folder is compiled to the value of the contained 'public' module, which must be a file. Folders also serve as the boundary for local modules: a local module must be another file or subfolder within the same folder as the file being compiled. This ensures folders are relocatable within a context of global modules.
 
-Global modules are represented by folders and are discovered based on command line configuration. Initially this configuration supports a conventional search path, but it should eventually include network repositories.
+Global modules are represented by folders and are discovered based on command line configuration. Initially this configuration supports a conventional search path, but it should eventually include network repositories. Global and local modules are fully distinguished by default, with no fallback.
 
-The compiler function has a limited effects API to simplify caching and reproducibility. The glas system will also report an error in case of dependency cycles. See *Language Modules*
+The compiler function has very limited access to the environment: it can load modules and log warnings or errors, but is otherwise a pure function. This restriction is intended to simplify caching and reproducibility and cyclic dependency detection. See *Language Modules* below.
 
-## Values
+## Data
 
-Glas represents data as finite, immutable binary trees, i.e. such that each node in a tree has optional left and right children respectively labeled '0' and '1'. The most naive representation is:
+Glas represents data using finite, immutable binary trees. Instances of data without context are called values. A relatively naive encoding:
 
-        type Tree = ((1+Tree) * (1+Tree))
+        type Tree = ((1 + Tree) * (1 + Tree))   
+        // tree is pair of optional trees
 
-A binary tree can easily represent a pair `(a, b)` or either type `(Left a | Right b)`. However, glas systems favor labeled data because labels are more meaningful and extensible. Labels are encoded into a *path* through a tree, favoring null-terminated UTF-8. For example, label 'data' would be encoded into the path `01100100 01100001 01110100 01100001 00000000` where '0' and '1' respectively represent following the left or right branch. A 'record' may have many such paths with shared prefixes, forming a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). A 'variant' (aka 'tagged union') should have exactly one label. 
+A binary tree can easily represent a pair `(a, b)` or either type `(Left a | Right b)`. However, glas systems favor labeled data because labels are more meaningful and extensible. Labels are encoded into a *path* through a tree, favoring null-terminated UTF-8. For example, label 'data' would be encoded into the path `01100100 01100001 01110100 01100001 00000000` where '0' and '1' respectively represent following the left or right branch. A record such as `(height:180, weight:200)` may have many such paths with shared prefixes, forming a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). A variant would have exactly one label.
 
-To efficiently represent labeled data, non-branching paths must be compactly encoded far fewer allocations. One viable under the hood representation is closer to:
+To efficiently represent labeled data, non-branching paths are compactly encoded by the glas runtime system or [glas object serialization format](GlasObject.md). A viable runtime representation is closer to:
 
-        type Tree = (Stem * Node)
-        type Stem = compact Bool list
-        type Node = Leaf | Branch of Tree * Tree 
+        type Tree = (Stem * Node)       // as a struct
+        type Stem = uint64              // encoding 0..63 bits
+        type Node = 
+            | Leaf 
+            | Branch of Tree * Tree     // branch point
+            | Stem64 of uint64 * Node   // all 64 bits
 
-Short, simple data, such as integers and symbols, will be directly encoded into bitstrings. Bytes are encoded using a bitstring of exactly 8 bits, msb to lsb. Integers are usually encoded as variable length bitstring, msb to lsb, with negatives in one's complement:
+        Stem Encoding
+            10000..0     0 bits
+            a1000..0     1 bit
+            ab100..0     2 bits
+            abc10..0     3 bits
+            abcde..1    63 bits
+
+It is feasible to could further extend Node with specialized variants to support efficient binary data, list processing, records as structs instead of radix trees, etc.. The above offers a reasonable starting point, but the intention is that data in practice should be represented much more efficiently than the naive encoding of binary trees.
+
+Integers in glas systems are usually encoded as variable length bitstrings, msb to lsb, with negatives in one's complement:
 
         Integer  Bitstring
          4       100
          3        11
          2        10
          1         1
-         0         . (empty)   
+         0               // empty   
         -1         0
         -2        01
         -3        00
         -4       011
 
-The tree consisting of a single node with no children is widely used to represent zero, unit values, or an empty list or record. 
+Bytes and fixed-size words are instead encoded as bitstrings of exact size, e.g. 8 bits per byte, msb to lsb. For example, byte 4 would be '00000100'. 
 
-Sequential structure is often encoded as a list. A list is represented as a binary tree where the left nodes are elements and the right nodes form the spine of the tree, terminating with unit.
+Other than bitstrings, sequential structure is usually encoded as a list. A list is represented as a binary tree where the left nodes are elements and the right nodes form the spine of the tree, terminating with a leaf node.
 
         type List a = (a * List a) | () 
 
@@ -58,19 +71,25 @@ Sequential structure is often encoded as a list. A list is represented as a bina
          2 /\
           3  ()  
 
-However, direct representation of lists is inefficient for many use-cases. Under the hood, lists may be represented using arrays, binaries, and [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_%28data_structure%29). This representation would be accessible via specialized append, slice, and other list operations (see *Acceleration*).
+Direct representation of lists is inefficient for many use-cases. To enable lists to serve most roles, lists will often be represented using [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_%28data_structure%29). This involves extending the earlier 'Node' type with array and binary fragments and logical concatenation, then accelerating list operations to slice or append large lists.
 
-To work with very large values, glas systems favor content-addressed storage to offload volumes of data to disk. I call this pattern *Stowage*, and it will be heavily guided by program annotations. Stowage simplifies efficient data persistence, memoization, and network communication in context of large values and structure-sharing update patterns.
+To support larger-than-memory data, glas systems will also leverage content-addressed storage to offload volumes of data to disk. I call this pattern *Stowage*, and it will be heavily guided by program annotations. Stowage simplifies efficient memoization, and network communication in context of large data and structure-sharing update patterns. Stowage also helps separate the concerns of data size and persistence.
 
-## Programs
+## Programs and Performance
 
-Programs are values with a known interpretation. In this case, the 'prog' model interprets a structured glas value. Separately, [language-g0](GlasZero.md) compiles text into these programs. User-defined syntax is possible in glas systems, bootstrapping from language-g0.
+Programs are essentially values with known interpretation. There are many desirable qualities for a 'good' program model - simplicity, composability, efficiency, scalability, cacheability, debuggability, discoverability, optimizability, etc.. Unfortunately, achieving every quality to a great extent is infeasible; design tradeoffs and priorities are unavoidable.
 
-This program model prioritizes simplicity, locality, and compositionality. Performance and scalability take a hit. To recover performance, glas systems will rely on acceleration of specialized models or extension of the glas command line to recognize and interpret models other than 'prog'. 
+My vision of glas systems involves multiple program models specialized for different purposes. A useful pattern to achieve this is *acceleration*: an inefficient subprogram can be annotated for substitution by a built-in function or a fragment of code expressed using a more suitable model (for example, suitable for evaluation on a GPGPU). The non-accelerated version remains useful for verification.
+
+Nonetheless, glas systems require an initial program model for bootstrap. In this role, the 'prog' model is described below, prioritizing simplicity and composability above other desirable qualities.
+
+## The 'Prog' Model
+
+The 'prog' model of programs is minimalist, stack-oriented, dynamically typed, with backtracking conditional behavior and a flexible effects handler. Design priorities are simplicity and compositionality.
 
 ### Stack Operators
 
-Glas programs manipulate an implicit data stack. All operations apply to data near top of the stack.
+Operations manipulate a data stack instead of named variables or registers. There is no direct access to a 'heap', but large values on the stack may implicitly be represented using heap-allocated memory.
 
 * **copy** - copy top item on data stack
 * **drop** - remove top item on data stack
@@ -95,11 +114,9 @@ My type notation is a little ad-hoc, but might help clarify.
             ------------------------- 
             data:V ⊲ ∀S . S → (S * A)
 
-The stack in glas is really an intermediate data plumbing model. User syntax could hide stack shuffling behind local variables. The glas compiler can replace the stack with static memory and register allocations, leveraging static arity of valid glas programs. The main reason for the stack is that it simplifies operators, which don't need to specify input sources or output targets.
+The data stack in glas is essentially an intermediate data plumbing model to avoid explicit variables. A compiler can feasibly replace the stack with variables, or something even more fine-grained based on static knowledge of data structures.
 
 ### Control Operators
-
-Glas programs must have static stack arity, i.e. the 'try-then' arity must match the 'else' arity, and a loop 'while-then' must have the same input and output arity. Arity is relatively easy to compute, albeit slightly complicated by 'fail' and 'halt'.
 
 * **seq:\[List, Of, Operators\]** - sequential composition of operators. 
   * *nop* - identity function can be represented by empty seq  
@@ -111,6 +128,8 @@ Glas programs must have static stack arity, i.e. the 'try-then' arity must match
 * **eq** - Remove two items from data stack. If identical, continue, otherwise fail.
 * **fail** - always fail; causes backtracking in context of cond/loop
 * **halt:Message** - logically diverges, like an infinite loop but more explicit in its intention. Prevents backtracking. Message should indicate cause to a human programmer: undefined behavior, type-error, invalid accelerator, todo, etc.. 
+
+Static stack arity is required. For example, 'try-then' arity must match 'else' arity. A loop must have invariant arity for a complete cycle. Arity is easy to compute even with the complication of 'fail' or 'halt'.
 
         seq:[]              ∀S . S → S
         seq:(Op :: Ops)     (as SEQ)
@@ -142,60 +161,69 @@ User syntax can extend the effective set of control operators. For example, it i
 
 ### Data Operators
 
-Glas programs support a few operators to support ad-hoc manipulation of data (binary trees). These operators are most directly applicable to radix tree (aka record) manipulation but can be leveraged together with control operators to manipulate arbitrary data.
+These operators are directly applicable to manipulation of radix trees but can be leveraged together with control operators to achieve arbitrary data manipulation. A relevant assumption is that arithmetic, list processing, and other useful performance primitives will be supported via acceleration. 
 
 Operators:
 
-* **get** ((label:V|R) label -- V) - given label and record, extract value from record. Fails if label is not in record.
-* **put** (V (label?_|R) label -- (label:V|R)) - given a label, record, and value on the data stack, create new record with the given label associated with the given value. Will replace existing label in record.
-* **del** ((label?_|R) label -- R) - returns new record minus label and any vestigial prefix thereof (i.e. any prefix that isn't shared by another label in the record). Effectively will 'put' label with unit value then erase back towards branch.
+* **get** ((label:V|R) label -- V) - given label and record, extract value from record. Fails if label is not present in record.
+* **put** (V (label?_|R) label -- (label:V|R)) - given a label, record, and value on the data stack, create new record with the given label associated with the given value. Will replace existing label in record, if present.
+* **del** ((label?_|R) label -- R) - returns record minus the label and any vestigial suffix of the label, i.e. bits not shared by other labels in the record. This is equivalent to first putting the label into the record then removing it.
 
-Labels are bitstrings that often share prefixes but are distinguished by suffix. It is possible to operate on multiple fields within a record by operating on the shared prefix directly. *Note:* If the label input is not a bitstring, behavior is divergence instead of backtracking failure.
-
-Performance of data manipulations will depend on *Acceleration* in many cases.
+Any bitstring may be treated as a label. For example, a pair `(A, B)` can be viewed as a record using one-bit labels, e.g. `(0:A, 1:B)`. However, glas systems will usually favor symbolic labels for reasons described in *Values*. If a label argument is not a valid bitstring, these operators halt (divergence, not backtracking failure).
 
 ### Effects and Environments
 
-Glas effects are a based on a simple exchange of data with the host environment. An effects API can be described in terms of which types of values are accepted as requests and the external behavior and returned response for each type.
+We model effects as an ad-hoc exchange of data, interacting with the environment. An effects API might be described in terms of which values are recognized by the environment and how the environment is expected to respond.
 
 Operators:
 
-* **eff** - interact with the environment by exchange of data, 1--1 arity, `Request -- Response`. 
-* **env:(do:P, with:Handler)** - simulate environment for subprogram P. Captures top value from data stack as environment State, runs P threading State through each 'eff' handler, then returns final State to the data stack. The Handler should be a glas program with 2--2 arity, `Request State -- Response State`. 
+* **eff** - interact with environment by exchange of data (1--1 arity, `Request -- Response`).
+* **env:(do:P, with:Handler)** - sandbox the environment while evaluating subprogram P. The Handler should have 2--2 arity, `Request State -- Response State`. The top value from the data stack is hidden from P and treated as initial `State`. Every 'eff' call in P instead calls Handler. Final `State` is returned at top of data stack. 
 
-Dependent types or session types may be required to precisely describe an effects API. A top-level API must be documented for use by applications, perhaps specialized for context. 
+It is possible in theory to partially evaluate effects via abstract interpretation of requests and state, but it likely won't be easy in practice.
 
 ### Annotations
 
-Annotations in glas programs support tooling without affecting formal program behavior. The 'prog' header is also used as the required toplevel header for glas programs in many cases, even if no annotations are needed.
+The 'prog' header is used for both annotations and as the toplevel header for values in this model.
 
-* **prog:(do:P, ...)** - runs program P. If 'do' is elided, defaults to nop. All fields other than 'do' are annotations and must not affect formal behavior of program.
+* **prog:(do:P, ...)** - run program P. Labels other than 'do' are annotations. Annotations can affect performance, verification and validation, integration with development environments, and other useful properties. But behavior observable within a valid program must be same as P.
 
-Annotations can affect performance (acceleration, stowage, memoization, optimization), static analysis (types, preconditions, postconditions), debugging (tracing, profiling, assertions, breakpoints), decompilation (variable names, comments, etc.), and essentially anything other than program meaning or behavior. 
+Some potential annotations:
 
-Some proposed annotations:
+* *accel:Op* - ask interpreter or compiler to accelerate a subprogram. Here, 'Op' might be a symbol specifying a runtime built-in function (e.g. 'accel:list-append') or might represent code for a specialized target (e.g. 'accel:gpu:GpuCode' for eval on a GPGPU). The 'do:P' field should express equivalent behavior for verification purposes. 
+* *refl:Program* - `prog:(refl:Prog1, do:Prog2)` ask runtime to evaluate Prog1 with access to an ad-hoc, effectful reflection API, then evaluate Prog2. This reflection API must be designed such that it does not influence formal behavior of Prog2, though it could affect performance or debugging. In cases where runtime tweaks should be scoped, they're implicitly scoped to Prog2.
+* *stow:Options* - ask runtime to move a large value at the top of the data stack from RAM to disk. Typically uses content-addressed references under the hood (i.e. secure hashes).
+* *memo:Options* - ask runtime to memoize a function, such that repeated evaluation is more efficient. Options might include persistent storage, replacement strategies, etc.. 
+* *prof:Options* - ask runtime or compiler to add some code profiling support around the given subprogram. 
+* *name:Value* - name a given subprogram to support debugging or profiling. This might affect performance if there is any attempt by the optimizer to preserve names.
+* *arity:(i:Nat, o:Nat)* - a super lightweight static type, indicating a number of inputs and outputs on the data stack. Easily checked. 
+* *type:TypeDescriptor* - represent ad-hoc type assumptions for the subprogram. Might also include proof hints to support a type checker.
 
-* *accel:Model* - accelerate a program, i.e. replace it with a built-in. The Model here is usually a symbol identifying a known built-in, such as list-append. However, there is room for extension.
-* *stow:Options* - stow data heuristically, usually top item on data stack after running program. 
-* *memo:Options* - memoize the program. Might only memoize cases where no effects escape.
-* *prof:(chan:Value, ... Options)* - code profiling support. The profiling channel may aggregate from many subprograms.
-* *arity:(i:Nat, o:Nat)* - describe stack arity of a program. This can be checked by a compiler, or help stabilize partial evaluation.
-* *name:Value* - identify a subprogram to support debugging and other features. 
-* *sub* - hint to reuse this subprogram. A compiler is free to identify and reuse common subprograms heuristically, but an explicit hint can be useful.
+Annotations have the potential to be very flexible. But to fully leverage annotations will require a lot of non-trivial design and development work. 
 
-A lot more needs to be developed here, such as an effective type system and a better understanding of which options are useful for memoization and stowage.
+### Known Weaknesses and Mitigation Strategies
+
+The 'prog' model has several known weaknesses, but there are mitigation strategies.
+
+* There is no 'call function by name' operator. A common subroutine will be copied into a program many times. This is mitigated by structure sharing and memoization. A compiler could memoize typechecking, for example, or memoize a hash function for table lookups.
+* There is no direct support for first-class functions. This is primarily mitigated in the g0 language layer, which supports higher order programming via its macro system. Alternatively, it is feasible to accelerate 'prog-type' and 'prog-eval' functions to indirectly support first-class functions.
+* It is not difficult to accelerate individual arithmetic operators and data types. But high-performance number crunching (e.g. for compression, cryptography, or ray-tracing) would further benefit from acceleration of an abstract GPGPU.
+* Limited parallelism can be extracted based on dataflow analysis. But large-scale computations would further benefit from acceleration of a deterministic concurrency model, such as Kahn process networks. This may be further mitigated at the application layer, which can support non-deterministic concurrency.
+* Distributed effects are inefficient, hindered by a sequential env/eff bottleneck and implicit distributed transactions. This can be mitigated at the application layer with careful design of the effects API and use of types to prevent read-write conflicts at runtime.
+
+In case of accelerating an abstract GPGPU or Kahn process network, the accelerated code becomes the primary expression of behavior. The 'do:P' field would still exist, and should still express equivalent behavior, but could be the result of compiling GPGPU or KPN code to the 'prog' type.
 
 ## Applications
 
-The glas command line can run some applications with access to filesystem and network. I'm developing an application model around the idea of a repeating transactional step function:
+The glas command line can run some applications with access to filesystem and network. The initial application model is designed around the idea of a repeating transactional step function:
 
-        type Step = init:Params | step:State -> [Effects] (halt:Result | step:State) | Fail
+        type Step = init:Params | step:State -> [Effects] (halt:Result | step:State)
 
-A successful step is committed, then the application halts or continues based on return value. A failed step is aborted then retried. There are several useful optimizations that can be applied to this model. For example, we don't need to fully recompute failed transactions if we track dataflow dependencies. For non-deterministic choice, it is possible to evaluate both choices in parallel and even commit both if they don't have any read-write conflicts. 
+The step function is evaluated repeatedly by an implicit top-level loop until it returns 'halt'. If it returns 'step' that becomes input for future repetitions. A failed step is aborted and retried, but this can be optimized as awaiting changes to effectful observations. The effects API must be designed to work nicely with transactions, e.g. when interacting with a remote service, a request must be committed before a response can be expected.
 
-I discuss these ideas further under [glas applications](GlasApps.md) and [glas command line interface](GlasCLI.md).
+Concurrent applications can be expressed if we combine incremental computing optimizations with a non-deterministic choice effect. Essentially, given a **fork:List** request that is stable over many steps, a runtime can clone the app for each element in the list and treat each clone as an independent thread. See [glas applications](GlasApps.md) for more detail.
 
-*Note:* Although the ability to 'glas --run' an application is convenient, an alternative is to construct an executable binary value within the glas module system then use 'glas --extract' to access it. This trades convenience for flexibility.
+Beyond this initial application model, [glas command line](GlasCLI.md) enables extraction of executable binaries and may eventually be extended to 'run' alternative application models.
 
 ## Language Modules
 
@@ -210,7 +238,7 @@ Input to the compiler function is (usually) a file binary. Final output is the c
 
 The glas command line will include a built-in compiler for [language-g0](GlasZero.md), a Forth-like language with staged metaprogramming. This built-in compiler is used to bootstrap the actual language-g0 module if possible, emitting a warning on bootstrap failure. Other glas languages can build upon language-g0.
 
-Definitions other than 'compile' in the language module may be defined to support tooling, such as IDE or REPL integration, a standard linter or formatter, etc.. And glas may eventually accept compiler functions of types other than 'prog', e.g. to enhance caching or parallelism.
+Definitions other than 'compile' in the language module may be defined to support tooling, such as IDE or REPL integration, a standard linter or formatter, etc.. And glas systems may eventually recognize compiler functions expressed in models other than 'prog'.
 
 ## Automated Testing
 
@@ -230,21 +258,13 @@ Glas systems will at least check for stack arity ahead of time. A more precise s
 
 ### Acceleration
 
-        prog:(do:Behavior, accel:Model, ...)
+        prog:(do:P, accel:Op, ...)
 
-Acceleration is an optimization pattern where a compiler or interpreter substitutes subprograms with built-in implementations. The Model is very often a symbol such as 'list-append' indicating a specific built-in function. 
+Acceleration is an optimization pattern where we annotate a subprogram to be replaced by a more efficient or scalable implementation known to the interpreter or compiler. In the simplest case, this is a simple reference to a built-in function, such as 'accel:list-append'. In more sophisticated cases, this involves providing code in another language, e.g. 'accel:gpu:GpuCode' might describe a parallelizable pipeline of vector and matrix operations. The 'do:P' field should represent the same behavior as 'accel:Op' to support analysis and verification. 
 
-Acceleration is always explicit, via the 'accel' annotation. Keeping this explicit simplifies verification (e.g. a module can compare the accelerated and non-accelerated implementations) and resists silent performance degradation (a compiler or interpreter can report when acceleration fails, and replace with 'halt:accel:DebugMsg'). Optional acceleration can be expressed explicitly via 'accel:opt:Model'.
+Acceleration can indirectly extend runtime data representations. For example, 'accel:binary-type' might take a list of bytes as input and logically return the same list as output, but using a binary array under the hood. This requires much less memory than a linked list and would enable efficient access to other list processing accelerators (e.g. to index or slice the binary).
 
-Acceleration often involves specialized runtime representations. For example, accelerated operations on lists depend on lists being represented as finger-tree ropes. It is feasible for accelerators to essentially extend glas with conventional data types.
-
-### Accelerated VMs
-
-This is a useful pattern for acceleration.
-
-Instead of independently accelerating a large number of fixed-width and floating point arithmetic operations, we could model a virtual CPU or GPGPU that includes all these operations then accelerate evaluation of the model as a whole. The accelerator could then compile the program argument to run on an actual CPU or GPGPU. When the program is a static argument, this could easily be compiled ahead-of-time.
-
-An accelerated VM can make a number of problem domains much more accessible, such as compression, cryptography, ray tracing, physics simulations, and machine learning. The pattern also scales to accelerating a virtual 'network' of processors to achieve higher levels of parallelism than would be easily achieved with accelerating individual operations.
+Which accelerators are supported, and how well, depends on the interpreter or compiler. To resist silent performance degradation, it should be treated as an error if a requested accelerator is not supported. However, 'accel:opt:Op' is a lightweight convention to indicate acceleration is optional and disable the error.
 
 ### Stowage
 
@@ -276,27 +296,30 @@ The glas system is not forever stuck with the 'prog' program model and its foibl
 
 However, this is a solution to pursue mostly where accelerators are awkward (e.g. due to relationship with effects). 
 
+## Reflection
+
+A runtime can directly provide a reflection API as part of the application effects API. This would enable an application to review its resource consumption, performance profile, or debug outputs then adjust behavior appropriately. With sufficient runtime support, an application might also be able to update application code at runtime, e.g. requesting reload from source to support live coding.
+
+Additionally, a runtime could support annotations that provide limited access to a reflection API, e.g. the 'refl' annotation described earlier. This would also be capable of debug outputs and performance tuning. But annotations must not directly affect formal behavior of a program. At most, annotations could halt a problematic program early or provide useful hooks for the effectful reflection API.
+
 ## Thoughts
 
 ### Computation Models
 
-I'm tempted to build on a foundation that is more suitable for lazy, concurrent, and distributed computations compared to glas programs. Some ideas are to build on Kahn Process Networks, Lafont Interaction Nets, or the Verse calculus. The main issue is well-defined support for concurrent or lazy effects while preserving the mostly-static structure of glas programs.
+I'm tempted to switch to a program model more suitable for lazy, concurrent, and distributed computation compared to the initial glas 'prog' model. Perhaps something based around (temporal) Kahn process networks, for example. Abstract effects could be modeled as concurrent interactions.
 
-The KPN idea involves a PL designed around a hierarchical structure of concurrent processes that read and write labeled 'ports'. Effects are modeled in terms of operations on ports. A process may wire ports of its subcomponents. Temporal semantics could be introduced by default, to support reactive systems, clocks, and events.
-
-So far, every time I explore this, I end up deciding that simpler is better for the initial program model. We aren't stuck with the basic program model; it's just a starting point, and even KPNs can be accelerated. Meanwhile, it ensures computation is easily represented without complications from variables or 'holes' in data.
+So far, my conclusion is that a simpler model is wiser for bootstrap. But we aren't locked in to the 'prog' model. Beyond use of acceleration, it is feasible to extend the glas command line to support additional program models that might directly admit non-determinism and fine-grained concurrent effects.
 
 ### Useful Languages
 
-The g0 language is used for bootstrap. It is a Forth-inspired language with expressive metaprogramming features. But it's intended as a simple, stable starting point, not the final language for users.
+The initial g0 language is simple and supports metaprogramming well, but has many deficiencies. The intention is to develop more languages within the glas system. Some possibilities:
 
-Data languages will often be more convenient than embedding data in a programming language. In part because this simplifies working with external tools. We could support ".txt" files (e.g. convert UTF-16 to UTF-8, remove byte-order mark, check spelling, etc.). We can also support structured data files - JSON, XML, CSV, MsgPack, SQLite, Cap'n Proto, or even [Glas Object](GlasObject.md).
+* languages for embedding data - text files, JSON, XML, CSV, MsgPack, SQLite files, even [Glas Object](GlasObject.md).
+* languages with more flexible definitions - recursion, type-driven overloading, await/async compiled to state machines, more explicit type system and type annotations than g0, etc..
+* text preprocessor languages, i.e. where the compiler function is text->text. This would enable flexible metaprogramming of the text layer for any program, e.g. ".json.m4" could logically produce a JSON string much larger than the input using the text preprocessor.
+* graphical programming support, perhaps building upon a structured representation like JSON or database files.
 
-Programming languages can support mutually recursive definitions, multi-step procedures, process networks, variables, type annotations, type-guided overrides and program search, and many more features. The g0 language is quite awkward for some use-cases.
-
-Text preprocessor languages can support language-agnostic text-layer macros. We can leverage composition of file extensions, e.g. such that ".json.m4" will process a file first via text preprocessor 'language-m4' then via 'language-json'.
-
-It is feasible to develop graphical programming in glas, using structured files to represent modules within a program in a manner easily viewed and manipulated by tools other than text editors. This is a general direction I'd like to pursue relatively early in glas systems, though I don't have many precise ideas yet.
+Getting to the point where this is viable ASAP seems worthwhile.
 
 ### Abstract and Linear Data
 
@@ -316,7 +339,7 @@ I'm interested in a style of metaprogramming where programmers express hard and 
 
 Something like an [A-star search algorithm](https://en.wikipedia.org/wiki/A*_search_algorithm) might work, assuming we can express soft constraints as costs with a [consistent heuristic](https://en.wikipedia.org/wiki/Consistent_heuristic), i.e. monotonic costs for various choices, preferably with costs adjusted based on context (perhaps indicate costs via effect that takes an arbitrary value, which is interpreted by the context).
 
-The 'prog' model of programs is unsuitable because we'll also want concurrent construction, refinement, and analysis of the solution by multiple subprograms. Concurrent access would support overlays and refinements of decisions.
+This will likely also require a specialized program model.
 
 ### Provenance Tracking
 
@@ -325,4 +348,3 @@ The glas module system hinders manual provenance tracking, e.g. we cannot access
 This can be mitigated by adding some provenance to log messages when compiling code. But this is very coarse grained. A better solution is to track provenance at a fine granularity within values, then distribute blame (or responsibility) heuristically, e.g. inverse to the number of direct observers of the source data (based on [SHErrLoc project's](https://research.cs.cornell.edu/SHErrLoc/) heuristics).
 
 Fine-grained tracking of provenance will require somehow annotating or mapping values to their dependencies. I do have some concept of annoted values in [Glas Object](GlasObject.md) that might be something we can leverage for this purpose. But the details will require a lot of design and implementation work to get right.
-

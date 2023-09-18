@@ -9,18 +9,20 @@ Summary of API described for Glas Apps, albeit abstracting various reference man
 What we can do with channels:
 
 * *send* - send data over a channel.
-* *recv* - receive data from a channel
+* *recv* - receive data from a channel 
 * *attach* - send a new subchannel over a channel
-* *accept* - receive a subchannel from a channel (is ordered with receiving data)
-* *pipe* - ask system to permanently bind inputs from one channel as outputs to another and vice versa. 
+* *accept* - receive a subchannel from a channel
+* *pipe* - ask system to connect two channels, piping all future communications. This allows some optimizations by removing the program as a middleman.
 * *copy* - copy a channel such that inputs (recv/accept) is copied are copied and outputs (send/attach) are merged in non-deterministic order.
 * *drop* - tell system you won't be reading or writing from a channel in future. 
 * *test* - ask system whether channel is active - test fails if remote endpoints are closed and there is no pending input in the buffer. (More than one remote endpoint is possible due to 'copy'.)
-* *tune* - tell system that a channel will be used in some refined manner (such as read-only or write-only) to help optimize system performance. 
+* *tune* - inform the system that a channel will be used in some refined manner (read-only, write-only, attach/accept only, buffer size hints, etc.). 
+
+Note that 'accept' and 'recv' must preserve corresponding order with 'attach' and 'send'. 
 
 How we obtain our channels:
 
-* *create* - create a new, associated pair of channels. (This was called 'pipe' with mode:bind in source API.) These channels are local to the runtime, thus implementation is a lot more ad-hoc. 
+* *create* - create a new, associated pair of channels. These channels are local to the runtime, thus implementation is a lot more ad-hoc. 
 
 * *tcp binding* - create a channel by wrapping a TCP listener or TCP connection. This wrapper will implicitly handle subchannels, data serialization, content-addressed storage, and integration with content distribution networks. 
   * *listener* - a channel bound to a TCP listener will only receive subchannels corresponding to TCP connections. Close the listener via 'drop'. 
