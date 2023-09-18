@@ -19,7 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="fparsec" Version="1.1.1" />
+    <PackageReference Include="fparsec" Version="[1.1,)" />
   </ItemGroup>
 
 </Project>
