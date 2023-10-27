@@ -9,4 +9,4 @@ assert [
 
 data hello ["Hello, World!"]
 
-export [hello]
+# export [hello]

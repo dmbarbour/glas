@@ -25,7 +25,7 @@ The compiler function has very limited access to the environment: it can load mo
 Glas represents data using finite, immutable binary trees. Instances of data without context are called values. A relatively naive encoding:
 
         type Tree = ((1 + Tree) * (1 + Tree))   
-        // tree is pair of optional trees
+            a binary tree is pair of optional binary trees
 
 A binary tree can easily represent a pair `(a, b)` or either type `(Left a | Right b)`. However, glas systems favor labeled data because labels are more meaningful and extensible. Labels are encoded into a *path* through a tree, favoring null-terminated UTF-8. For example, label 'data' would be encoded into the path `01100100 01100001 01110100 01100001 00000000` where '0' and '1' respectively represent following the left or right branch. A record such as `(height:180, weight:200)` may have many such paths with shared prefixes, forming a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). A variant would have exactly one label.
 
@@ -77,11 +77,11 @@ To support larger-than-memory data, glas systems will also leverage content-addr
 
 ## Programs and Performance
 
-Programs are essentially values with known interpretation. There are many desirable qualities for a 'good' program model - simplicity, composability, efficiency, scalability, cacheability, debuggability, discoverability, optimizability, etc.. Unfortunately, achieving every quality to a great extent is infeasible; design tradeoffs and priorities are unavoidable.
+Programs are essentially values with known interpretation. There are many desirable qualities for a 'good' program model - simplicity, composability, efficiency, scalability, cacheability, debuggability, discoverability, etc.. However, design tradeoffs and priorities are unavoidable.
 
 My vision of glas systems involves multiple program models specialized for different purposes. A useful pattern to achieve this is *acceleration*: an inefficient subprogram can be annotated for substitution by a built-in function or a fragment of code expressed using a more suitable model (for example, suitable for evaluation on a GPGPU). The non-accelerated version remains useful for verification.
 
-Nonetheless, glas systems require an initial program model for bootstrap. In this role, the 'prog' model is described below, prioritizing simplicity and composability above other desirable qualities.
+Nonetheless, glas systems require an initial program model for bootstrap. In this role, the 'prog' model is described below, prioritizing simplicity and composability above other desirable qualities. Howver, I'm considering alternative.
 
 ## The 'Prog' Model
 
@@ -260,17 +260,23 @@ Glas systems will at least check for stack arity ahead of time. A more precise s
 
         prog:(do:P, accel:Op, ...)
 
-Acceleration is an optimization pattern where we annotate a subprogram to be replaced by a more efficient or scalable implementation known to the interpreter or compiler. In the simplest case, this is a simple reference to a built-in function, such as 'accel:list-append'. In more sophisticated cases, this involves providing code in another language, e.g. 'accel:gpu:GpuCode' might describe a parallelizable pipeline of vector and matrix operations. The 'do:P' field should represent the same behavior as 'accel:Op' to support analysis and verification. 
+Acceleration is an optimization pattern where we annotate a subprogram to be replaced by a more efficient or scalable implementation known to the interpreter or compiler. 
 
-Acceleration can indirectly extend runtime data representations. For example, 'accel:binary-type' might take a list of bytes as input and logically return the same list as output, but using a binary array under the hood. This requires much less memory than a linked list and would enable efficient access to other list processing accelerators (e.g. to index or slice the binary).
+In the simplest use case, users reference built-in functions such as 'accel:list-append' or 'accel:i64-add'. The runtime can specialize data representations to support these operations, e.g. use a rope structure to represent larger lists to ensure list-append is efficient. Relatedly, we can manually guide representation via 'accel:array-type' or similar, to indicate that a list should be represented under-the-hood by an array. This pattern extends glas systems with new performance primitives (without extending semantics).
 
-Which accelerators are supported, and how well, depends on the interpreter or compiler. To resist silent performance degradation, it should be treated as an error if a requested accelerator is not supported. However, 'accel:opt:Op' is a lightweight convention to indicate acceleration is optional and disable the error.
+As a more sophisticated use case, we might accelerate evaluation of code on an abstract, simulated GPGPU, CPU, Kahn Process Network. This might be expressed via 'accel:gpu:GpuCode'. The runtime compiles GpuCode to run on an actual GPGPU, so the GpuCode type should be easily translated, reasonably portable, memory-safe, and have other nice qualities. This allows acceleration to handle roles that would otherwise require FFI.
+
+Further, dynamic code can be indirectly supported via 'accel:prog-eval' and 'accel:prog-type'. Here 'accel:prog-type' simplifies reuse of a prog value by caching arity analysis, JIT compilation, and other one-off steps. 
+
+To resist silent performance degradation (across ports, runtime versions, etc.), the runtime or compiler should report an error where requested acceleration is unrecognized or unsupported. To recover portability, 'accel:opt:Op' permits silent fallback to the 'do:P' implementation. A prioritized list of fallbacks can be represented as `prog:(accel:opt:Option1, do:prog:(accel:opt:Option2, do:EtCetra))`.
+
+Ideally, the glas system will verify that 'accel:Op' and 'do:P' truly represent the same behavior. Although full verification via static analysis or exhaustive testing is often difficult, we can at least introduce unit tests and perhaps some fuzz testing or random sample testing.
 
 ### Stowage
 
-I use the word 'stowage' to describe systematic use of content-addressed storage to hibernate volumes of larger-than-memory data to disk or network. Stowage is the immutable variation on virtual memory paging. There are benefits for persistence, memoization, and communication of very large values.
+I use the word 'stowage' to describe systematic use of content-addressed storage (addressed by secure hash) to manage larger-than-memory data. Stowage is a variation on virtual memory paging, i.e. large subtrees can be moved from local memory to disk or a remote service if not immediately needed. Stowage simplifies support for large persistent variables, memoization, and incremental communication.
 
-In context of glas systems, stowage will be semi-transparent: invisible to pure functions and *most* effects, yet guided by annotations and accessible to top-level effects as needed (data channels over TCP, persistent key-value database, runtime reflection). [Glas Object](GlasObject.md) is intended to be the main binary representation for stowed data.
+In context of glas systems, stowage is semi-transparent - invisible to pure functions and most effects, but guided by annotations and potentially accessible via runtime reflection effects. [Glas Object](GlasObject.md) is intended to be an efficient representation for stowage and serialization of glas data.
 
 ### Memoization
 
@@ -306,15 +312,15 @@ Additionally, a runtime could support annotations that provide limited access to
 
 ### Computation Models
 
-I'm tempted to switch to a program model more suitable for lazy, concurrent, and distributed computation compared to the initial glas 'prog' model. Perhaps something based around (temporal) Kahn process networks, for example. Abstract effects could be modeled as concurrent interactions.
+I'm tempted to switch to a program model more suitable for lazy, concurrent, and distributed computation than the initial glas 'prog' model. Perhaps [something based around (temporal) Kahn process networks](GlasKPN.md), for example. Abstract effects could be modeled as concurrent interactions.
 
-So far, my conclusion is that a simpler model is wiser for bootstrap. But we aren't locked in to the 'prog' model. Beyond use of acceleration, it is feasible to extend the glas command line to support additional program models that might directly admit non-determinism and fine-grained concurrent effects.
+So far, my conclusion is that the simpler model is wiser for bootstrap. However, we also aren't locked in to the 'prog' model. Other models are accessible via acceleration, extension to the post-bootstrap glas command line, or compilation to executable binaries.
 
 ### Useful Languages
 
 The initial g0 language is simple and supports metaprogramming well, but has many deficiencies. The intention is to develop more languages within the glas system. Some possibilities:
 
-* languages for embedding data - text files, JSON, XML, CSV, MsgPack, SQLite files, even [Glas Object](GlasObject.md).
+* languages for embedding data - text files, JSON, XML, CSV, MsgPack, SQLite files, even [Glas Object](GlasObject.md). We might want to adapt or extend some of these for glas modularity.
 * languages with more flexible definitions - recursion, type-driven overloading, await/async compiled to state machines, more explicit type system and type annotations than g0, etc..
 * text preprocessor languages, i.e. where the compiler function is text->text. This would enable flexible metaprogramming of the text layer for any program, e.g. ".json.m4" could logically produce a JSON string much larger than the input using the text preprocessor.
 * graphical programming support, perhaps building upon a structured representation like JSON or database files.
@@ -323,15 +329,15 @@ Getting to the point where this is viable ASAP seems worthwhile.
 
 ### Abstract and Linear Data
 
-Abstraction is a property of a subprogram, not of data. Data is abstract *in context of* a subprogram that constructs and observes data only indirectly via externally provided functions. 
+Abstraction is a property of a subprogram. Data is abstract *in context of* a subprogram that constructs and observes data only indirectly via externally provided functions. Substructural types, such as linear types, extend this by also restricting copy and drop operations except via provided functions.
 
-Linear types extend these contextual restrictions to copy and drop operations. Linear types can potentially support in-place updates, reducing garbage collection. However, this optimization remains difficult to achieve in context of backtracking conditionals or debugger views. The more general motive for linear types is to typefully enforce protocols, such as closing a channel when done.
+It is feasible to annotate subprograms with linear types and leverage this to support in-place updates and reduce garbage collection. However, this optimization is difficult to achieve in context of backtracking conditionals or debugger views. The more general motive for linear types is to typefully enforce protocols, such as closing a channel when done.
 
 ### Databases as Modules
 
-It is feasible to design language modules that parse MySQL database files, or other binary database formats (LMDB, MessagePack, Glas Object, etc.). Doing so might simplify use of tooling that outputs such files from a visual or graphical programming environment. 
+It is feasible to design language modules that parse binary database formats (LMDB, MessagePack, [Glas Object](GlasObject.md), MySQL or SQLite files, etc.). Doing so should, in theory, simplify development of visual or graphical programming environment. My vision for glas systems is that code should be a flexible mix of text and structured input, using diagrams (boxes and wires, Kripke state machines, etc.) where convenient.
 
-A relevant concern is that database files will tend to be much larger than text files, and will receive more edits. This could be mitigated by partitioning a database into multiple files. But mostly I think we'll need to rely more upon explicit memoization instead of implicit caching per module.
+Incremental compilation over large databases is feasible via memoization or partitioning into multiple files. But I think it would be better if we favor support small, composable, modular databases for most use cases.
 
 ### Program Search
 
@@ -343,8 +349,6 @@ This will likely also require a specialized program model.
 
 ### Provenance Tracking
 
-The glas module system hinders manual provenance tracking, e.g. we cannot access module name from the language module 'compile' function. This was intentional in that I do not want location-dependent semantics and factoring. However, it does have some costs with regards to debugging.
+The glas module system currently hinders manual provenance tracking, e.g. we cannot access module names or file paths from the 'compile' function. Also, metaprogramming is widespread so we'd need to trace influence through macros. 
 
-This can be mitigated by adding some provenance to log messages when compiling code. But this is very coarse grained. A better solution is to track provenance at a fine granularity within values, then distribute blame (or responsibility) heuristically, e.g. inverse to the number of direct observers of the source data (based on [SHErrLoc project's](https://research.cs.cornell.edu/SHErrLoc/) heuristics).
-
-Fine-grained tracking of provenance will require somehow annotating or mapping values to their dependencies. I do have some concept of annoted values in [Glas Object](GlasObject.md) that might be something we can leverage for this purpose. But the details will require a lot of design and implementation work to get right.
+A partial mitigation strategy is that log messages can be associated with each file as it compiles. This is likely the only option short-term. A more complete solution will require tracing compiled output back to the inputs that influenced it, preferably to the precision of binary ranges within files. This is probably too much to trace efficiently, but we might try some heuristics around the notion of spreading and diluting blame similar to [SHErrLoc project](https://research.cs.cornell.edu/SHErrLoc/). 

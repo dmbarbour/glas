@@ -28,16 +28,13 @@ Glas Object uses stems heavily to encode bitstrings. Numbers, symbols, etc. are 
 
 The proposed encoding for Basic Nodes consumes 96 header types, and supports flexible encoding of large bitstring fragments. 
 
-        ttt0 abc1 - 3 stem bits in header (H3)
-        ttt0 ab10 - 2 stem bits in header (H2)
-        ttt0 a100 - 1 stem bits in header (H1)
-        ttt0 1000 - 0 stem bits in header (H0)
+        ttt0 abc1 - 3 stem bits in header
+        ttt0 ab10 - 2 stem bits in header
+        ttt0 a100 - 1 stem bits in header
+        ttt0 1000 - 0 stem bits in header
+        ttt0 0000 - reserved 
 
-        ttt0 0000 . (length) . (offset to bytes) - large stem
-            exact multiple of 8 bits
-            stem sharing is feasible
-
-        ttt1 fnnn . (bytes) - medium stem
+        ttt1 fnnn . (bytes) - stems of 4 to 64 bits
             f - full or partial first byte (0 - partial)  
             nnn - 1-8 bytes, msb to lsb
 
@@ -56,22 +53,22 @@ The proposed encoding for Basic Nodes consumes 96 header types, and supports fle
             011 - Stem-Branch and Branch (0x68) Nodes
                 header . (offset to right child) . (left child)
 
-This can compactly encode symbols, numbers, composite variants, radix trees, etc.. 
+This compactly encodes symbols, numbers, composite variants, radix trees, etc.. 
+
+*Note:* I've dropped support for shared stems via `ttt0 0000` because it was messy and inefficient. Currently there is no option to share common stems. But templated data could possibly fill this role (see *Potential Future Extensions*). 
 
 ### Lists
 
-Lists are a simple data structure formed from a right-spine of pairs (branch nodes), terminating in unit value (a leaf node).
+In glas systems, lists are conventionally encoded in a binary tree as a right-spine of branch nodes (pairs), terminating in a leaf node (unit value). This is a Lisp-like encoding of lists.
 
-                 /\     type List = (Value * List) | ()
-                a /\
-                 b /\   a list of 5 elements
-                  c /\      [a, b, c, d, e]
-                   d /\     
-                    e  ()
+          /\     type List = (Value * List) | ()
+         a /\
+          b /\   a list of 5 elements
+           c /\      [a, b, c, d, e]
+            d /\     
+             e  ()
 
-In Glas systems, lists are used for almost any sequential data structure - arrays, tuples, stacks, queues, deques, binaries, etc.. However, the direct representation of lists is awkward and inefficient for most use-cases. Thus, Glas systems use specialized representations under-the-hood, such as [finger-tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_(data_structure)). Rope structures must be preserved for efficient serialization.
-
-Specialized List Nodes:
+However, direct representation of lists is inefficient for many use-cases. Thus, glas runtimes support specialized representations for lists: binaries, arrays, and [finger-tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_(data_structure)). To protect performance, glas object also offers specialized list nodes:
 
 * *array* - header (0x0A) . (length - 1) . (array of offsets); represents a list of values of given length. Offsets are varnats all relative to the end of the array, denormalized to the same width. Width is determined by looking at the first varnat.
 * *binary* - header (0x0B) . (length - 1) . (bytes); represents a list of bytes. Each byte represents an 8-bit stem-leaf bitstring, msb to lsb.
@@ -190,21 +187,19 @@ It is feasible to combine list-take (Size) and concatenation nodes in a way that
         Single              Array | Binary | Node(k-1)
         Many                Size . (LDigits(k) ++ (Rope(k+1) ++ RDigits(k)))
 
-This structure represents a 2-3 finger-tree rope, where '2-3' refers to the size of internal nodes. It is possible that wider nodes and more digits would offer superior performance. In any case, the finger-tree rope is effective for many use cases for larger lists. 
-
-The ability to force a sublist into a flat array or binary is also useful.
+This structure represents a 2-3 finger-tree rope, where '2-3' refers to the size of internal nodes. It is possible that wider nodes and more digits would offer superior performance, but most gains will likely be due to favoring larger binary or array fragments.
 
 ### Glob Headers
 
-Headers can be directly encoded as part of a glob value then bypassed via 'accessor'. Alternatively, it could be encoded as an annotation. However, these options make it difficult to reason locally about whether the header is referenced externally and must be preserved by tools.
-
-An alternative is to use a simple convention where a glob binary that starts with an internal reference (0x88 (offset)) is leaving space for the header. Usually 0x88 supports structure sharing, but this wouldn't normally apply to the root element of the glob binary.
+As a simple convention, a glob binary that starts with an internal reference (0x88) is considered to have a header. The header should also be glas data, typically a record of form `(field1:Value1, field2:Value2, ...)`. 
 
         0x88 (offset to data) (header) (data)
 
-A header value might, by convention, be a record of form `(field1:Value1, field2:Value2, ...)` with ad-hoc symbolic labels as header fields.
+A header can be considered an annotation for the glob binary as a whole. Potential use cases include adding provenance metadata, glob extension or version information, or entropy for a convergence secret.
 
-The difference between a header and annotations is scope. The header should describe the glob binary as a whole rather than any specific data within. This could include version info, cryptographic signatures for trust, etc..
+### Deduplication and Convergence Secret
+
+It is possible for a glas system to 'compress' data by generating the same glob binaries, with the same secure hash. This is mostly a good thing, but there are subtle attacks and side-channels. These attacks can be greatly mitigated via controlled introduction of entropy, e.g. [Tahoe's convergence secret](https://tahoe-lafs.readthedocs.io/en/latest/convergence-secret.html).
 
 ### Shared Dictionary
 
@@ -214,7 +209,7 @@ Build a dictionary of useful values then share and reference as needed (via exte
 
 Many ideas won't be worthwhile without enough end-to-end support from compilers and runtimes. I'll defer them until we have a better idea of what is needed and whether the benefits are worth the complications.
 
-### Unboxed Structures
+### Unboxed Structures (Tentative)
 
 To represent unboxed vectors or matrices, glas systems can use an explicit unboxed view such as `matrix:(type:float64,rows:32, cols:48, data:Binary)` or a structured view involving a list of lists of numbers. Either way, accelerators can manipulate the matrix efficiently. However, glas object will (currently) serialize the structured view inefficiently.
 
@@ -233,3 +228,10 @@ This isn't a full lambda calculus, i.e. the parameters to 'app' cannot be deferr
 
 But I'm not convinced this feature is useful in practice. The added complexity isn't trivial. A runtime would need significant hints for when and where to use templates. Aside from contrived circumstances, I suspect it will be difficult to achieve significant benefits.
 
+### LSM-Tree Extensions (Unlikely)
+
+Currently glob doesn't offer a way to express: this tree, except with some insertions or deletions. Such a feature wouldn't be worth much within a glob, but (like path accessors) it could be useful at external reference boundaries, supporting [log-structured merge (LSM) trees](https://en.wikipedia.org/wiki/Log-structured_merge-tree) at the glob layer.
+
+This is not difficult to support. But it significantly increases cost and complexity of reads, and also it's much less useful than the current approach (i.e. path accessors) if programs tend to build values in small steps (instead of inserting large bitstrings). Further, if users truly require LSM-tree performance, they can model one directly (i.e. pair base tree with a diff, stow the base tree).
+
+I'll elide this feature for now. It might be worth revisiting in the future depending on use.
