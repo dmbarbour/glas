@@ -1,5 +1,9 @@
 # Glas GUI?
 
+TODO: this is old stuff I haven't looked at in years. Needs review badly.
+
+##
+
 Conventional GUI models hinder runtime composition, extension, and modification of applications. There is a huge disconnect between how data is computed and how it is presented and maintained in a retained mode GUI. 
 
 I'm uncertain whether I can fix this with Glas. It's a huge design challenge. 

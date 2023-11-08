@@ -22,7 +22,9 @@ The compiler function has very limited access to the environment: it can load mo
 
 ## Data
 
-Glas represents data using finite, immutable binary trees. Instances of data without context are called values. A relatively naive encoding:
+Glas currently represents data using finite, immutable binary trees. 
+
+Trees can directly represent structured and indexed data without modeling pointers, align well with the needs of parsing, and are simpler than graphs for expressing incremental construction or reasoning about termination. A relatively naive encoding:
 
         type Tree = ((1 + Tree) * (1 + Tree))   
             a binary tree is pair of optional binary trees
@@ -75,13 +77,14 @@ Direct representation of lists is inefficient for many use-cases. To enable list
 
 To support larger-than-memory data, glas systems will also leverage content-addressed storage to offload volumes of data to disk. I call this pattern *Stowage*, and it will be heavily guided by program annotations. Stowage simplifies efficient memoization, and network communication in context of large data and structure-sharing update patterns. Stowage also helps separate the concerns of data size and persistence.
 
-## Programs and Performance
 
-Programs are essentially values with known interpretation. There are many desirable qualities for a 'good' program model - simplicity, composability, efficiency, scalability, cacheability, debuggability, discoverability, etc.. However, design tradeoffs and priorities are unavoidable.
+## Programs
 
-My vision of glas systems involves multiple program models specialized for different purposes. A useful pattern to achieve this is *acceleration*: an inefficient subprogram can be annotated for substitution by a built-in function or a fragment of code expressed using a more suitable model (for example, suitable for evaluation on a GPGPU). The non-accelerated version remains useful for verification.
+Programs are values with a known interpretation. There are many desirable qualities for a model of programs - simplicity, composability, extensibility, usability, debuggability, discoverability, efficiency, scalability, cacheability, etc.. Alas, tradeoffs are necessary. The glas system can eventually support multiple program models, but the initial model for bootstrap will greatly impact development of the glas system.
 
-Nonetheless, glas systems require an initial program model for bootstrap. In this role, the 'prog' model is described below, prioritizing simplicity and composability above other desirable qualities. Howver, I'm considering alternative.
+I initially proposed a concatenative functional programming model, the 'prog' model below. This model is easy to implement but is more difficult to use than I'd prefer. I'm exploring a few alternatives based on process networks, grammars, and term rewriting.
+
+Regarding performance, there is a work-around to program models with weaker performance: the *acceleration* pattern enables a runtime to replace a function with a high-performance implementation. All glas program models should support annotations to guide acceleration and other performance or debugging extensions.
 
 ## The 'Prog' Model
 
@@ -205,13 +208,18 @@ Annotations have the potential to be very flexible. But to fully leverage annota
 
 The 'prog' model has several known weaknesses, but there are mitigation strategies.
 
-* There is no 'call function by name' operator. A common subroutine will be copied into a program many times. This is mitigated by structure sharing and memoization. A compiler could memoize typechecking, for example, or memoize a hash function for table lookups.
-* There is no direct support for first-class functions. This is primarily mitigated in the g0 language layer, which supports higher order programming via its macro system. Alternatively, it is feasible to accelerate 'prog-type' and 'prog-eval' functions to indirectly support first-class functions.
-* It is not difficult to accelerate individual arithmetic operators and data types. But high-performance number crunching (e.g. for compression, cryptography, or ray-tracing) would further benefit from acceleration of an abstract GPGPU.
-* Limited parallelism can be extracted based on dataflow analysis. But large-scale computations would further benefit from acceleration of a deterministic concurrency model, such as Kahn process networks. This may be further mitigated at the application layer, which can support non-deterministic concurrency.
-* Distributed effects are inefficient, hindered by a sequential env/eff bottleneck and implicit distributed transactions. This can be mitigated at the application layer with careful design of the effects API and use of types to prevent read-write conflicts at runtime.
+* There is no 'call function by name' operator. Common subroutines will be replicated in a program many times. This can be mitigated: 
+  * structure sharing can reduce memory overheads for repetition
+  * annotations can guide a compiler in breaking a program into subroutines
+  * dictionary compression pass can automatically break a program into subroutines
+  * memoization can reduce repetitive typechecking and on common subprograms
+* There are no first-class functions. This simplifies reasoning, especially about effects, but it does complicate some tasks. This can be mitigated via acceleration, e.g. accelerate a 'prog-eval' function, and perhaps a 'prog-type' function (to simplify JIT compilation).
+* Relies heavily on acceleration if we ever want high performance number crunching for physics simulations, graphics rendering, cryptography and compression, etc..
+* The lack of direct feedback for 'why did this fail' prevents selecting the most appropriate response. This can be mitigated with compiler support for recognizing common prefixes between a 'try' and 'else:try' clause, to avoid rework.
+* The prog model has no built-in support for parallelism. This can be mitigated via annotations and dataflow analysis, and perhaps via acceleration. We could 'accelerate' a Kahn Process Network to evaluate across multiple machines. 
+  * The state used in `env:(with, do)` is especially awkward for modeling parallel effects. It is much easier to insist that parallel computations are pure. But in theory we can partition handler state for parallel effects, and this might be worth trying. Someday.
 
-In case of accelerating an abstract GPGPU or Kahn process network, the accelerated code becomes the primary expression of behavior. The 'do:P' field would still exist, and should still express equivalent behavior, but could be the result of compiling GPGPU or KPN code to the 'prog' type.
+It is also feasible to mitigate weaknesses at the application layer.
 
 ## Applications
 
@@ -242,13 +250,17 @@ Definitions other than 'compile' in the language module may be defined to suppor
 
 ## Automated Testing
 
-Static assertions when compiling modules are useful for automated testing. However, build-time is deterministic and under pressure to resolve swiftly. This leaves an open niche for long-running or non-deterministic tests, such as overnight fuzz-testing that can heuristically search for failures. 
+Several approaches to automated testing in glas: 
 
-Use of a non-deterministic 'fork' effect would be useful for testing:
+* Modules may include static assertions, evaluated by language modules. This interacts awkwardly with latent extension to programs, and is unsuitable for long-running tests.
+* Programs may include annotations describing static assumptions that can be verified before running the program. These tests can be usefully deferred until after extensions. 
+* System tools may assume modules named with prefix 'test-' specify test programs. Tests can be run explicitly via CLI or run implicitly when module updates are published to a distribution.
 
-* **fork:List** - Response is a non-deterministic value from the list. In context of testing, the choice doesn't need to be fair or random. It can be guided by heuristics and analysis, e.g. filter out options that provably result in a successful test.
+System level testing is an important feature in my vision of glas systems. Every community, company, or personal distribution continuously maintains a health report. When a module update is published, dependent modules are tested again as needed. System tools can remember failed tests and adjust test priorities accordingly.
 
-A test might be represented as a 0--0 arity program that is pass/fail. In addition to fork, a 'log' effect would be useful for generating messages to support debugging.
+Test programs are still isolated to testing the module system. Effects are limited, e.g. 'log' and 'load' same as language modules. However, we extend this with a non-deterministic 'fork:N' effect, returning a natural number smaller than N, to support multi-test programs, probabilistic testing, etc.. The system could evaluate forks in parallel, guarantee forks are exhaustively tested up to reasonable limits, and remember fork paths for future testing or debugging.
+
+Developers may need more conventional approaches to verify behavior of software on an actual network, filesystem, or other hardware. But a lot of useful testing is possible via simulated environments.
 
 ## Type Checking
 
@@ -352,3 +364,7 @@ This will likely also require a specialized program model.
 The glas module system currently hinders manual provenance tracking, e.g. we cannot access module names or file paths from the 'compile' function. Also, metaprogramming is widespread so we'd need to trace influence through macros. 
 
 A partial mitigation strategy is that log messages can be associated with each file as it compiles. This is likely the only option short-term. A more complete solution will require tracing compiled output back to the inputs that influenced it, preferably to the precision of binary ranges within files. This is probably too much to trace efficiently, but we might try some heuristics around the notion of spreading and diluting blame similar to [SHErrLoc project](https://research.cs.cornell.edu/SHErrLoc/). 
+
+### Alternative Data
+
+I've often considered extending glas data to support graph structures or unordered sets. I think these could give some benefits to users, but it isn't clear to me how to effectively and efficiently work with them yet. For now, perhaps keep it to accelerated models.
