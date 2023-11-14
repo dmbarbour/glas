@@ -22,12 +22,12 @@ Grammar-logic languges have potential to be modular and extensible. OOP solved t
 
 Specific features I want for glas systems.
 
-* Structural termination guarantee for most computations. 
 * Support for annotation and acceleration of grammars.
 * Flexible extension and composition of grammars.
 * Expressive and scalable standard interaction model.
 * Convenient testing and verification extensions.
-* Simplicity - avoid first-class grammars and eval.
+* Program behavior is static at compile time.
+* Termination guarantee, if I can manage it.
 
 A staged model, where we build a simpler program that builds grammars and extensions and tests and so on, is a good approach to my goals.
 
@@ -35,50 +35,111 @@ A staged model, where we build a simpler program that builds grammars and extens
 
 ### Ordered Choice 
 
-It is feasible to model a ternary `if C then P else Q` structure that means something close to `(P when C) or (Q unless C)`. Specialized, we could also model a binary `P else Q` that means `P or (Q unless P)`.
+We can easily model ordered choice in terms of unordered choice and pattern guards.
 
-This gives a robust basis for ordered choice. If we build grammars entirely with ordered choice, we can easily reason about determinism. However, ordered choice does complicate expression and semantics insofar as we prioritize 'outer' choices over 'inner' choices.
+        P or-else Q             =>      P or (Q unless P)
+        if C then P else Q      =>      (P when C) or (Q unless C)
 
-### Deterministic Computation
+The if-then-else form is more general and more widely useful. We could extend this to pattern matching functions without much difficulty. 
 
-I need deterministic functions in many contexts. 
+Rewriting from ordered to unordered will hinder optimizations, so it's better to have ordered choice as a built-in. Also, ordered choice cannot represent unordered choice, so it provides a decent basis for deterministic computation.
 
-One potential approach: develop a grammar language for constructing deterministic functions, e.g. in terms of ordered choices and dataflows. This allows the language to ensure deterministic computation when programs are run in functional or procedural contexts, yet allows non-deterministic computation when evaluated with partial inputs. Logic programs can be represented by functions that return unit, focusing on the partial input. 
+*Todo:* Prove or-else is associative and idempotent. 
 
-I would prefer to support confluent computation, i.e. determinism with non-deterministic choices internally (behind pattern guards). But it isn't clear to me how to identify confluence. Unless this is solved, it isn't a viable solution.
+### Deterministic Functions
+
+Deterministic computations are useful in many contexts. I propose to design my grammar-logic language such that grammars always represent deterministic functions. That is, results are fully deterministic up to arguments and interactions. 
+
+Non-deterministic computations can still be modeled contextually by running a function with partial inputs, or even running backwards. The right-hand side of a match must still be valid 'grammar' pattern. 
+
+*Aside:* In special cases, it might be feasible to also take advantage of 'confluent' computations. But I don't know how to leverage this outside of accelerated functions. 
+
+### Extensions
+
+The simplest extension is similar to OOP single inheritance.
+
+        grammar foo extends bar with
+            integer = ... | prior.integer
+
+Here 'prior.integer' refers to bar's definition of integer, albeit with any reference to 'integer' within that definition referring instead to foo's definition. This allows foo to flexibly extend or override bar's original definitions. Of course, syntax for 'prior.' may vary. Any words not explicitly defined in 'foo' would be inherited from 'bar'. 
+
+Annotations could help represent usage assumptions, such as cases where certain methods should or should not be overridden. 
+
+Multiple inheritance can be modeled in terms of templated single inheritance. I'm not convinced to support templates in general, but it seems useful to explain my meaning here. 
+
+        mixin foo with ... => grammar foo<G> extends G with ...
+        mixin foo extends bar with ... => grammar foo<G> extends bar<G> with ...
+        mixin foo extends bar . baz with ... => grammar foo<G> extends bar<baz<G>> with ...
+
+The '.' operator here represents function composition of mixins. Syntax may vary. 
+
+The 'grammar' and 'mixin' declarations may conveniently compile to the same underlying model, leveraging annotations to describe distinct usage assumptions. For example, we might insist mixins may extend grammars but not vice versa. We can check that multiple inheritance of grammars does not introduce conflicting definitions - that the G parameter and grammar contain no overlapping definitions. A few simple rules can mitigate known problems with multiple inheritance.
+
+Users might explicitly mark 'abstract' methods that should be overridden, or mark 'final' methods that should not be. These assumptions can also be checked.
+
+### Components and Namespaces
+
+In some cases, I want to work with more than one version of a grammar, or simply organize my grammar into something like objects. The contained grammars or objects should remain extensible.
+
+One possibility is to develop a concise syntax for shifting a grammar (or mixin) into a namespace. We could specify that 'foo in f' means we add a prefix 'f/' to every method name used in grammar 'foo' (not applying to the final mixin parameter!). With this, we could model a grammar containing a component as something like the following:
+
+        grammar foo extends (bar in b) with
+            b/integer = int
+            int = ... | prior.b/integer
+
+Obviously the syntax needs serious work here! The name 'prior.b/integer' is verbose and ugly. Adding a dozen '(bar in b)' extensions in the header line would quickly grow out of control. It is unclear how we'd express private namespaces.
+
+A more procedural approach to grammar description is a viable solution. Mixins would become functions that directly manipulate a grammar. And if we define 'integer' more than once, each could refer to a different 'prior.integer' to support incremental definition. Conveniently, this grammar builder procedure shouldn't need loops or conditions.
+
+Syntax aside, namespaces and components can significantly improve scalability and expressiveness of the grammar-logic language. It allows grammars themselves to be used as higher-order functions or objects by designating a namespace for each 'instance'. 
+
+### Scope
+
+Grammars in a grammar-logic languages can support private methods similar to OOP. Private methods can be usefully understood in terms of introducing anonymous namespaces for local scratch work. Within this namespace, there is no need to worry about name conflicts, accidental overrides, etc.. This simplifies local reasoning and refactoring.
+
+A simple and effective concrete representation is to reserve a prefix character for private names, perhaps '\_'. This represents the anonymous namespace prefix within a given privacy scope, and structurally avoids conflicts between public and private names.
+
+### Interaction Model
+
+We can model interactions as a structured value that is mutually constrained by multiple component grammars. The simplest case is a procedure interacting with the environment, producing a request-response sequence where the procedure determines requests and the environment determines responses.
+
+I propose to build interaction primarily around forkable, duplex, temporal channels. Every event on such a channel either message data, a subchannel, or a time step. Relevantly, reading data or accepting a subchannel involve distinct keywords or syntax. The temporal aspect allows waiting to be separated from reading, to model asynchronous interaction. When a procedure or process 'waits', this is ultimately modeled as a time step that propagates to connected channels.
+
+Most methods are 'procedural' and interact with their environment through a standard request-response channel. But we can model processes, binding different subprograms to operate on disjoint subsets of channel names. Channel names can be masked or aliased for method calls within scope. We could enforce 'pure' functions by masking all the channels. 
+
+Beyond channels, support for implicit parameters (such as environment variables) is also a useful feature. We might also borrow writer semantics in special cases. I'll insist the interaction model is an extensible data structure. 
+
+### Default Definitions? Defer
+
+Default definitions can serve a useful role in many cases, improving concision in cases where the defaults are acceptable. But how should we model defaults? 
+
+* We could mark some definitions with a 'default' priority. Defaults can override and extend other defaults, but will not override a higher priority definition.
+* We could to introduce a 'default' namespace. If 'foo' is undefined, we can implicitly fall back to 'default/foo'. This is predictable and accessible, yet poorly integrated.
+* We could introduce a 'default' method, such that `default(foo:FooArgs)` represents the default behavior for 'foo'. This is difficult to reason about, yet very expressive.
+
+I hesitate to commit. Perhaps I should return to ths question later, after I start to experience the need for it in practice and can experiment with various solutions. 
+
+### Static Assertions
+
+We could introduce static assertions within grammars, which are assertions that a particular grammar produces a value. These static assertions would be computed after all extensions are in-place. This would allow some flexible testing of programs.
+
+Static assertions might be expressed as annotations. Type annotations are also possible, and would serve a similar role.
+
+### Weighted Grammars and Search
+
+Methods, instrumented by annotations, can generate natural numbers representing 'cost' and 'quality' and other ad-hoc attributes. The runtime can implicitly total these values and use them heuristically to guide search in context of non-deterministic computations. 
+
+Although this isn't a perfect solution, I think it might be adequate for guiding search algorithms. Conveniently, no semantics are required beyond flexible annotations.
 
 ### Staged Metaprogramming
 
-I would like the ability to express staged programs, a constrained basis for higher-order programming.
+Extension provides an effective approach to higher-order programming. Interaction via second-class channels provides another, supporting communication between remote regions of code. A third solution is to model *staged interactions*, i.e. design the interaction model and method syntax such that a predictable subset of inputs and outputs can be computed at compile-time.
 
-The most direct option is to develop functions that explicitly construct values that represent the next stage of computation. This approach is simple and flexible, but it's very poorly integrated. We cannot easily predict properties of the generated program or how they will be influenced by program extensions. Though dependent types and GADTs could offer a good start.
+I would prefer to avoid the scenario where I'm explicitly generating grammar values at the end of a stage. This would be poorly integrated with extensibility and other features.
 
-Less directly, we can model staging as partial evaluation. In the simplest case, a two-stage pure function `A -> (B, C -> D)` can be modeled as a grammar that represents a pair of inputs and outputs `((A,C), (B, D))` with a staging constraint where `B` depends deterministically on `A`. This would be complicated by interaction models and more flexible staging. In practice, dedicated syntax or session types may be necessary to protect staging constraints.
+### Acceleration
 
-I think the partial evaluation solution is worth exploring. If simple syntax or types are sufficient, perhaps we could base the bootstrap language on partial evaluation. 
+It is possible to support accelerated functions in context of grammar-logic languages. But they might not always be accelerated in every direction, e.g. it's easier to accelerate functions from input to output than vice versa.
 
-### Proposed Interaction Models
+## Program Model
 
-It is feasible for a grammar-logic language to support *multiple* interaction models for different functions, but I think it would be more convenient to develop a one-size-fits-all interaction trace. Preferably something that can be efficiently processed and partially evaluated based on which features are actually used.
-
-Procedural request-response is a simple and effective interaction model, but it isn't very concurrency friendly. Ignoring dependent types a 'handler' might be represented by an effectful function from `(Request, State) -> (Response, State)`. The requests and responses would become part of the interaction trace. However, it might be useful to support labeled effects - multiple independent request-response streams.
-
-Reader monad, or implicit parameters, is essentially an extra parameter or dictionary thereof that is implicitly input into function calls and accessed via keyword. This represents an 'environment' that is not specific to the call. This effect is trivial to implement, does not interfere with parallelism, and can be very useful in modeling 'context'.
-
-Writer monad. Each subprogram may write a list of outputs, and these lists are implicitly concatenated. More generally, any monoidal structure would work, but lists are a good option if we can't prove monoidal laws. A 'handler' would return the aggregate value generated by a subprogram. This is awkward for most use cases, and channels would cover all the exceptions, so I'm not inclined to pursue Writer.
-
-We could represent a State monad, essentially modeling a dictionary of mutable variables. I doubt I would want this for the top level interaction - that would model 'global' variables. But something like State might prove convenient for modeling local mutable variables within a 'loop' or similar. I should figure out how to express most conventional procedural patterns with grammars, and I expect this would be useful there.
-
-Process networks offer a potential basis for a concurrency-friendly interaction model. First-class channels are more troublesome, with significant risk of accidental aliasing or dropping a channel without 'closing' it. But second-class channels have potential, and can even be dynamic (e.g. if we use a separate 'chan' stack, or a separate environment containing only named channels). I'll break this out into a separate section.
-
-If we do model process networks with dynamic channels, it might be useful to model a procedural request-response stream as a standard channel. We could automatically construct a dynamic subchannel when we spawn a process.
-
-### Modeling Process Networks and Channels
-
-We can model channels with clever use of lists and logic unification variables. Essentially, we model partially specified list variables. Duplex channels, subchannels, and time steps can all be supported. However, modeling automatic aggregation of time steps isn't trivial, which might hinder performance of temporal process networks.
-
-It is possible but not very convenient to introduce 'race conditions' into the channel model. A race condition would essentially be a non-deterministic choice in the grammar.
-
-The challenge is to ensure channels are used correctly, i.e. that each 'write' is to a distinct location, that the list is terminated when we won't write any further, and so on. This requires syntactic support. First-class channels would also require abundant type support, so I think second-class channels might prove more convenient.
-
-One viable option is to extend each 'function call' with a section for keyword channel parameters and results. 

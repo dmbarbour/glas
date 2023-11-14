@@ -250,17 +250,15 @@ Definitions other than 'compile' in the language module may be defined to suppor
 
 ## Automated Testing
 
-Several approaches to automated testing in glas: 
+Glas system tools will assume all modules named with prefix 'test-' represent test programs, i.e. of form `(test:Program, ...)` where the Program has a recognized type like 'prog'. Test programs can be expressed as deterministic 0--0 arity functions with access to 'load', 'log', and 'fork' effects.
 
-* Modules may include static assertions, evaluated by language modules. This interacts awkwardly with latent extension to programs, and is unsuitable for long-running tests.
-* Programs may include annotations describing static assumptions that can be verified before running the program. These tests can be usefully deferred until after extensions. 
-* System tools may assume modules named with prefix 'test-' specify test programs. Tests can be run explicitly via CLI or run implicitly when module updates are published to a distribution.
+* **fork:N** - returns a natural number smaller than N.
 
-System level testing is an important feature in my vision of glas systems. Every community, company, or personal distribution continuously maintains a health report. When a module update is published, dependent modules are tested again as needed. System tools can remember failed tests and adjust test priorities accordingly.
+The fork effect represents non-deterministic choice and provides a basis for long-running fuzz testing. The system may guarantee some quota of forks is tested exhaustively - e.g. first fork by default, adjustable via annotation. Failures can be remembered to adjust future priorities. (Load and log effects behave the same as for language modules.)
 
-Test programs are still isolated to testing the module system. Effects are limited, e.g. 'log' and 'load' same as language modules. However, we extend this with a non-deterministic 'fork:N' effect, returning a natural number smaller than N, to support multi-test programs, probabilistic testing, etc.. The system could evaluate forks in parallel, guarantee forks are exhaustively tested up to reasonable limits, and remember fork paths for future testing or debugging.
+Tests can be evaluated explicitly via CLI, or implicitly and continuously as software distributions are updated. The latter allows the system to maintain a distribution-level health report.
 
-Developers may need more conventional approaches to verify behavior of software on an actual network, filesystem, or other hardware. But a lot of useful testing is possible via simulated environments.
+*Note:* Users can also express static assertions to be evaluated by language modules. Failed modules would also be part of a distribution's health report. This is very convenient for lightweight unit tests, yet unsuitable for long-running or probabilistic testing. 
 
 ## Type Checking
 
