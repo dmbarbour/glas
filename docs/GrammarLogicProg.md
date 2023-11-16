@@ -27,7 +27,7 @@ Specific features I want for glas systems.
 * Expressive and scalable standard interaction model.
 * Convenient testing and verification extensions.
 * Program behavior is static at compile time.
-* Termination guarantee, if I can manage it.
+* Termination guarantee, where I can manage it.
 
 A staged model, where we build a simpler program that builds grammars and extensions and tests and so on, is a good approach to my goals.
 
@@ -75,7 +75,7 @@ The '.' operator here represents function composition of mixins. Syntax may vary
 
 The 'grammar' and 'mixin' declarations may conveniently compile to the same underlying model, leveraging annotations to describe distinct usage assumptions. For example, we might insist mixins may extend grammars but not vice versa. We can check that multiple inheritance of grammars does not introduce conflicting definitions - that the G parameter and grammar contain no overlapping definitions. A few simple rules can mitigate known problems with multiple inheritance.
 
-Users might explicitly mark 'abstract' methods that should be overridden, or mark 'final' methods that should not be. These assumptions can also be checked.
+Users can explicitly mark 'abstract' the methods that should be overridden, or mark 'final' the methods that should not be. These assumptions can also be checked. Abstract methods provide a simple basis for higher-order programming of grammar-logic systems, albeit second-class.
 
 ### Components and Namespaces
 
@@ -99,47 +99,97 @@ Grammars in a grammar-logic languages can support private methods similar to OOP
 
 A simple and effective concrete representation is to reserve a prefix character for private names, perhaps '\_'. This represents the anonymous namespace prefix within a given privacy scope, and structurally avoids conflicts between public and private names.
 
+### Static Assertions
+
+A grammar could include assertions, e.g. that a grammar expression with some free variables (allowing for non-deterministic computations) computes at least one value. With 'unless' this would implicitly include negative assertions. Usefully, this would allow assertions to be tested in context of extensions, and could serve a role for unit tests and limited integration tests.
+
 ### Interaction Model
 
-We can model interactions as a structured value that is mutually constrained by multiple component grammars. The simplest case is a procedure interacting with the environment, producing a request-response sequence where the procedure determines requests and the environment determines responses.
+I propose to model interactions around transferable, temporal, duplex channels. In a given step, a channel may transfer data or a subchannel, or indicate a time step - that 'logical time' must advance before more inputs are available. A process can wait upon multiple channels until one has data, and waiting will implicitly propagate to all channels that the process holds. 
 
-I propose to build interaction primarily around forkable, duplex, temporal channels. Every event on such a channel either message data, a subchannel, or a time step. Relevantly, reading data or accepting a subchannel involve distinct keywords or syntax. The temporal aspect allows waiting to be separated from reading, to model asynchronous interaction. When a procedure or process 'waits', this is ultimately modeled as a time step that propagates to connected channels.
+The above implies a clear understanding of which channels a process 'holds'. To support this, channels are represented in a program model as special variables. If a variable is not explicitly referenced, it is not held by that procedure. We can introduce an explicit 'touch Channel' behavior for the very rare case that we want a loop to hold onto a channel for timing purposes only.
 
-Most methods are 'procedural' and interact with their environment through a standard request-response channel. But we can model processes, binding different subprograms to operate on disjoint subsets of channel names. Channel names can be masked or aliased for method calls within scope. We could enforce 'pure' functions by masking all the channels. 
+I propose to model program code as 'procedural' by default. Calls to grammar methods will implicitly thread a single, standard 'io' channel for procedural effects. It is possible to alias io via an 'effects handler'. It is possible to provide other channels to a method call as in-out parameters.
 
-Beyond channels, support for implicit parameters (such as environment variables) is also a useful feature. We might also borrow writer semantics in special cases. I'll insist the interaction model is an extensible data structure. 
+Aside from channels, I propose an implicit 'env' data parameter representing the implicit environment, similar to a reader monad. This specialized effect can offer superior performance than channels for some common use-cases. Similarly, in-out state parameters might be appreciated for certain method calls. And we might develop new ideas in the future. The data type representing interactions must be extensible.
+
+*Note:* A procedure cannot explicitly close a channel. Channels will be closed automatically when they leave scope. This simplifies wrapping of protocols within other protocols.
+
+### Channel-Based Objects and Functions
+
+An object can be modeled as a process that receives a subchannel for each 'object method call'. The caller would fill this subchannel with inputs representing an operation or query, then the object process would respond via the same subchannel, routing data back to the caller. Simple request-response patterns may generalize to flexible session-typed protocols. 
+
+An object reference is modeled by a channel that delivers method call subchannels. Without temporal semantics, we could model 'linear' objects (no aliasing, still useful) or non-deterministic ordering of method-calls (if we allowed non-determinism). Temporal semantics allow us to 'copy' the object reference, merging method calls deterministically within each logical time step.
+
+Functions can be modeled as method calls with known special properties. For example, if a runtime knows certain method calls are commutative and idempotent, then the runtime could relax the sequencing requirement and even cache results of prior computations. But we may need support from the program syntax and type system to robustly recognize the opportunity for optimization.
+
+Anyhow, channels can effectively support first-class functions and objects without 'mobile code' or 'shared codespace' semantics. This has some benefits in context of concurrency, distribution, and security reasoning.
+
+### Consistency of Grammars and Objects
+
+Methods in a grammar represent procedure calls as grammars generating interaction traces. Methods of a channel-based object represent interactions through a channel. In either case, a method call may require multiple data and channel inputs, and return multiple data and channel outputs. 
+
+Consistent syntax and behavior for these cases would be convenient, insofar as it is possible. 
+
+Some differences seem necessary. We cannot avoid referencing the channel for channel-based objects. We should not implicitly communicate local implicits such as 'env' or 'io' through the channel. But if we support session-typed interactions with objects, why not with grammars? Or conversely, I could restrict use of channels to be consistent with calling grammar methods.
+
+### Staged Programming
+
+A staged program returns the next program, to be evaluated in another context. This pattern is useful where performance is relevant and we don't want to recompute the initial stage repeatedly. Staged programming generalizes to more than two stages.
+
+A simple approach to staging is to return a value that represents the next program as text or abstract syntax tree. This value can be stored and communicated, evaluated independently. This option is effective, but integration can be awkward:
+
+* A staged program cannot easily extract its own behavior as a value, thus behavior is often represented twice and consistency is difficult to guarantee.
+* It can be difficult to reason about behavior or correctness of the returned program. Sophisticated types can help, such as Haskell's GADTs. 
+* It can be difficult to ensure behavior and performance is preserved. The client must provide the effectful environment and efficient eval function. 
+
+To simplify integration, a staged program may instead return an object or function that represents the next program. For example, a two-stage function might be represented as `A -> (B, C -> D)`. In context of grammar-logic, the returned object or function would instead be modeled as a channel.
+
+### No-Fail Contexts? 
+
+In some contexts we don't want backtracking. This is especially the case for binding effects to the real-world, i.e. we might want to insist that certain 'io' requests can only be issued in a 'no-fail context', such that there is no risk of trying to 'undo' the request.
+
+A no-fail context can call functions that may fail, under certain conditions, i.e. if the call is wrapped and the fallback behavior is no-fail. But a may-fail function cannot call functions that assume a no-fail context. This could be supported as something like an effect type, except that 'no-fail' is the effect instead of failure as an effect.
+
+A 'no-fail' effect is possible only in context of a type system that can guarantee exhaustive matching of potential inputs. If invalid inputs are provided, failure is inevitable. This requires dependent types in the general case, and is likely to interfere with ad-hoc extensions. It isn't a lightweight feature.
+
+### Type Safety
+
+It is feasible to augment methods with type annotations, which describe:
+
+* the data types for input and return values
+* the effects protocol used via 'io' channel
+* effects protocols for other bound channels
+* if method needs no-fail context assumption
+
+Protocols can potentially build on the notion of session types. 
+
+Partial evaluation is implicit insofar as a program produces partial outputs as a consequence of receiving partial inputs. Logic unification variables and channel-based interaction are very convenient for partial evaluation. 
+
+Session types can help make partial evaluation 'robust' by describing assumptions in a machine-checkable format, and enabling analysis of potential datalock.
 
 ### Default Definitions? Defer
 
 Default definitions can serve a useful role in many cases, improving concision in cases where the defaults are acceptable. But how should we model defaults? 
 
 * We could mark some definitions with a 'default' priority. Defaults can override and extend other defaults, but will not override a higher priority definition.
-* We could to introduce a 'default' namespace. If 'foo' is undefined, we can implicitly fall back to 'default/foo'. This is predictable and accessible, yet poorly integrated.
+* We could to introduce a 'default' namespace. If 'foo' is undefined, we can implicitly fall back to 'default/foo'. This is more extensible and accessible than priority.
 * We could introduce a 'default' method, such that `default(foo:FooArgs)` represents the default behavior for 'foo'. This is difficult to reason about, yet very expressive.
 
 I hesitate to commit. Perhaps I should return to ths question later, after I start to experience the need for it in practice and can experiment with various solutions. 
 
-### Static Assertions
-
-We could introduce static assertions within grammars, which are assertions that a particular grammar produces a value. These static assertions would be computed after all extensions are in-place. This would allow some flexible testing of programs.
-
-Static assertions might be expressed as annotations. Type annotations are also possible, and would serve a similar role.
-
 ### Weighted Grammars and Search
 
-Methods, instrumented by annotations, can generate natural numbers representing 'cost' and 'quality' and other ad-hoc attributes. The runtime can implicitly total these values and use them heuristically to guide search in context of non-deterministic computations. 
+Methods can be instrumented with annotations to generate numbers estimating 'cost' and 'fitness' and other ad-hoc numeric attributes. A runtime can implicitly compute and total these values, and use them heuristically to guide search in context of non-deterministic computations. This isn't a perfect solution, but I think it might be adequate for many use cases.
 
-Although this isn't a perfect solution, I think it might be adequate for guiding search algorithms. Conveniently, no semantics are required beyond flexible annotations.
-
-### Staged Metaprogramming
-
-Extension provides an effective approach to higher-order programming. Interaction via second-class channels provides another, supporting communication between remote regions of code. A third solution is to model *staged interactions*, i.e. design the interaction model and method syntax such that a predictable subset of inputs and outputs can be computed at compile-time.
-
-I would prefer to avoid the scenario where I'm explicitly generating grammar values at the end of a stage. This would be poorly integrated with extensibility and other features.
+Because this can build on annotations, no special semantics are needed. But dedicated syntax might be appropriate.
 
 ### Acceleration
 
 It is possible to support accelerated functions in context of grammar-logic languages. But they might not always be accelerated in every direction, e.g. it's easier to accelerate functions from input to output than vice versa.
 
 ## Program Model
+
+
+## Proposed Syntax
 
