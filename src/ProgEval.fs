@@ -2290,23 +2290,10 @@ module ProgEval =
     let eval (p:Program) (io:Effects.IEffHandler) : (Value list) -> (Value list option) =
         configuredEval.Force() p io
 
-    module private Pure = 
-        // For 'pure' functions, we'll also halt on first *attempt* to use effects.
-        exception ForbiddenEffectException of Value
-        let forbidEffects = {   
-            new Effects.IEffHandler with
-                member __.Eff v = 
-                    raise <| ForbiddenEffectException(v)
-            interface Effects.ITransactional with
-                member __.Try () = ()
-                member __.Commit () = ()
-                member __.Abort () = ()
-        }
-
     let pureEval (p : Program) : (Value list) -> (Value list option) =
-        let evalNoEff = eval p Pure.forbidEffects
+        let evalNoEff = eval p Effects.forbidEffects
         fun args -> 
             try evalNoEff args
             with 
-            | Pure.ForbiddenEffectException _ -> None
+            | Effects.ForbiddenEffectException _ -> None
 

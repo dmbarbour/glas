@@ -28,7 +28,6 @@ module Effects =
             abstract member Abort : unit -> unit
         end
 
-
     /// RAII support for transactions, to ensure they're closed in case of exception.
     ///   USAGE:  use tx = withTX effHandler; ...; tx.Commit(); (or Abort)
     /// If not explicitly commited or aborted, is implicitly aborted upon Dispose.
@@ -71,8 +70,19 @@ module Effects =
             abstract member Eff : Value -> Value voption
         end
 
+    // For 'pure' functions, we'll halt on first *attempt* to use effects.
+    exception ForbiddenEffectException of Value
+    let forbidEffects = {   
+        new IEffHandler with
+            member __.Eff v = 
+                raise <| ForbiddenEffectException(v)
+        interface ITransactional with
+            member __.Try () = ()
+            member __.Commit () = ()
+            member __.Abort () = ()
+    }
 
-    /// No effects. All requests fail. Transactions are ignored.
+    /// No effects. All requests fail, but it isn't treated as a type error.
     let noEffects =
         { new IEffHandler with
             member __.Eff _ = ValueNone
@@ -82,8 +92,18 @@ module Effects =
             member __.Abort () = ()
         }
 
-    /// Select effects with a matching header.
-    //let effHeader (b : Bits) 
+    /// Try effect from 'b' only if effect from 'a' fails (ValueNone)
+    let fallbackEffect (a:IEffHandler) (b:IEffHandler) : IEffHandler =
+        { new IEffHandler with
+            member __.Eff v =
+                match a.Eff v with
+                | ValueNone -> b.Eff v
+                | aResult -> aResult 
+          interface ITransactional with
+            member __.Try () = a.Try(); b.Try()
+            member __.Commit () = a.Commit(); b.Commit()
+            member __.Abort () = a.Abort(); b.Abort()
+        }
 
     /// Transactional Logging Support
     /// 
@@ -218,12 +238,67 @@ module Effects =
     let consoleErrLogger () : IEffHandler =
         TXLogSupport(consoleErrLogOut) :> IEffHandler
 
+
+    type BinaryWriterSupport =
+        val private WriteFrag : uint8 array -> unit
+        val mutable private TXStack : ((uint8 array) list) list
+
+        /// Set the committed output destination. Default behavior for aborted
+        /// transactions is to insert a '~' flag to every message.
+        new (out) = 
+            { WriteFrag = out
+            ; TXStack = [] 
+            }
+
+        member self.Write(msg : uint8 array) : unit =
+            match self.TXStack with
+            | (tx0::txs) ->
+                self.TXStack <- ((msg::tx0)::txs)
+            | [] ->
+                self.WriteFrag msg
+
+        member self.PushTX () : unit = 
+            self.TXStack <- [] :: self.TXStack
+
+        member self.PopTX (bCommit : bool) : unit =
+            match self.TXStack with
+            | (_::txs) when not bCommit ->
+                self.TXStack <- txs
+            | (tx0::tx1::txs) ->
+                self.TXStack <- (List.append tx0 tx1)::txs
+            | (tx0::[]) ->
+                self.TXStack <- []
+                tx0 |> List.rev |> List.iter self.WriteFrag
+            | [] -> invalidOp "pop empty transaction"
+
+        interface IEffHandler with
+            member self.Eff v =
+                match v with
+                | Value.Variant "write" (Value.BinaryArray msg) -> 
+                    self.Write(msg)
+                    ValueSome Value.unit
+                | _ -> ValueNone
+        interface ITransactional with
+            member self.Try () = self.PushTX ()
+            member self.Commit () = self.PopTX true
+            member self.Abort () = self.PopTX false
+
+
+
+
     // given log+load effects, return full runtime effects
     //
     // For now, I've decided to mostly elide this to after bootstrap rather than
     // implement it twice (once in F# and once within the glas module system). 
     let runtimeEffects (ll : IEffHandler) : IEffHandler =
         ll // TODO!
+
+    // given log+load effects, add a 'write' effect for extraction.
+    let extractionEffects (ll : IEffHandler) : IEffHandler = 
+        let stdout = System.Console.OpenStandardOutput()
+        let writeFrag b = stdout.Write(b,0,b.Length)
+        fallbackEffect (BinaryWriterSupport(writeFrag)) ll
+
 
 (*
 module Effects2 =

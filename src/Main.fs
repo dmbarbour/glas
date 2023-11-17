@@ -179,16 +179,28 @@ let extract (vref:string) : int =
     let ll = getLoader <| consoleErrLogger ()
     match getValue ll vref with
     | ValueNone -> EXIT_FAIL
-    | ValueSome (Value.BinaryArray b) ->
-        let stdout = System.Console.OpenStandardOutput()
-        stdout.Write(b,0,b.Length)
-        EXIT_OKAY
-    | ValueSome _ ->
-        // This pre-bootstrap is limited to extracting 2GB. That's okay. The glas
-        // executable should be small, a few megabytes at most. Larger files must
-        // wait until after bootstrap. 
-        logError ll (sprintf "value %s is not a binary (or is too big)" vref)
-        EXIT_FAIL
+    | ValueSome v -> 
+        match v with
+        | Value.Variant "data" (Value.BinaryArray b) ->
+            let stdout = System.Console.OpenStandardOutput()
+            stdout.Write(b,0,b.Length)
+            EXIT_OKAY
+        | Value.Variant "prog" _ ->
+            match stackArity v with
+            | Arity(0,0) -> 
+                let llw = extractionEffects ll
+                match eval v llw [] with
+                | Some _ -> 
+                    EXIT_OKAY
+                | None ->
+                    logError llw ("stream extraction terminated early")
+                    EXIT_FAIL
+            | _ ->
+                logError ll (sprintf "value %s has wrong arity for extract" vref)
+                EXIT_FAIL
+        | _ ->
+            logError ll (sprintf "value %s cannot be extracted as binary" vref)
+            EXIT_FAIL
 
 let print (vref:string) : int = 
     let ll = getLoader <| consoleErrLogger ()

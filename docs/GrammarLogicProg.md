@@ -175,9 +175,9 @@ Because this can build on annotations, no special semantics are needed. But dedi
 
 A glas module will compile to a dictionary of independent grammars, of form `(foo:gram:(ns:NS, ...), bar:gram:(...))`. The 'gram' header indicates the program model to the glas command line interface and to other language modules. The header also provides a space for definition-layer annotations. Formal behavior of the grammar is represented as a namespace of grammar-logic methods under 'ns'.
 
-Where a 'gram' is referenced as an application program (e.g. in context of language module 'compile', glas CLI 'run', or automatic 'test' programs), the default entry method is 'main'. An alternative entry can be specified via `entry:Name` annotation.
+Where a 'gram' is referenced as an application program, the standard entry method is 'main'. For example, we'll use 'main' in context of language module 'compile', glas CLI 'run', or automatic 'test' programs. 
 
-*Note:* I intend to avoid need for 'eval' within the language module 'compile' function. Thus, the proposed grammar-logic language does not support top-level assertions, static data, or macros. All definitions have type 'gram'.
+*Note:* To simplify bootstrap, I intend to avoid need for 'eval' within the language module 'compile' function. Thus, the proposed grammar-logic language does not support top-level assertions, static data, or macros. All definitions have type 'gram'.
 
 ### Staged Applications
 
@@ -191,25 +191,22 @@ Inferring run mode seems like unnecessary complexity. Explicit annotation of run
 
 ### Annotations Namespace
 
-One approach to annotate 'foo' with an author is to define 'anno/foo/author'.
+One approach to annotate 'foo' with an documentation is to define 'anno/foo/docs'.
 
-This approach is simple and has some nice properties. The annotations are easily extended or abstracted. They don't require unique syntax. Tools may warn when annotations are referenced from outside the 'anno' namespace or have unexpected types. Renaming requires a little extra work, but it's easily resolved at the syntax layer assuming awareness of the convention.
-
-I haven't discovered any significant disadvantages. I think this idea is worth trying in practice, albeit only for annotations on specific names.
+This approach is simple and has many nice properties. The annotations are easily extended or abstracted. They don't require unique syntax. Tools may warn when annotations are referenced from outside the 'anno' namespace or have unexpected types. With syntax aware of this convention, it is easy to automatically rename 'anno/foo/' when we rename 'foo'.
 
 ### Static Assertions
 
 A static assertions is a computation that should return 'true'. 
 
-In context of grammar-logic, an assertion is easily modeled as a method where the system evaluates whether the method accepts at least one input. This generally involves non-deterministic search for a passing input. Negative assertions are easily modeled, e.g. `() unless P`. 
+In context of grammar-logic, an assertion is easily modeled as a method where the system evaluates whether the method accepts at least one input. This generally involves non-deterministic search for a passing input. Negative assertions are easily modeled, `() unless P`.
 
-Within the grammar-logic language, we could express annotations in several ways:
+I propose to express assertions via naming conventions. If an assertion fails, it's name would be included in the failure report.
 
-* annotations on names, e.g. `anno/foo/assert/everything-is-awesome = ...`
-* shared namespace of assertions, e.g. `assert/everything-is-awesome = ...`
-* anonymous annotations on namespace, e.g. `assert "everything is awesome" ...`
+        anno/foo/assert/everything-is-awesome = ...
+        assert/math-still-works = ...
 
-I'm inclined to support both namespace options as a system convention. Assertions would be assigned unique and hopefully meaningful names, which are included in a failure report. Assertions bound to 'foo' may be skipped when 'foo' is not used within an application. Anonymous assertions are implicitly supported via private namespaces.
+Assertions under 'anno/foo/assert' should be checked if our application depends on 'foo'. Assertions in the general 'assert/' namespace should be checked if our application uses any method from the parent namespace. Assertions expressed within a private namespace cannot be overridden or weakened.
 
 ### Acceleration
 
@@ -217,9 +214,9 @@ It is possible to support accelerated functions in context of grammar-logic lang
 
 ## Namespace Builder
 
-The namespace builder procedurally constructs a namespace of mutually recursive 'methods'. Each operation manipulates a tacit prior namespace. Operations include method overrides, hierarchical namespace structure, scoped anonymous namespaces, and renaming of methods and namespaces.
+The namespace builder procedurally constructs a namespace of mutually recursive 'methods'. Each operation manipulates a tacit prior namespace. Operations include method overrides, hierarchical namespace structure, scoped anonymous namespaces, and renaming of methods and namespaces. No need for annotations at this layer - we'll instead rely on the *Annotations Namespace* convention.
 
-*Note:* I could support for anonymous annotations within a namespace. But it smells like unnecessary complexity in context of conventions such as *Annotations Namespace* and *Static Assertions*. 
+
 
 ## Grammar Methods
 

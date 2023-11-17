@@ -9,4 +9,8 @@ assert [
 
 data hello ["Hello, World!"]
 
-# export [hello]
+prog write [ 'write d1 eff drop ]
+prog eol [ 0x0A l1 write ]
+
+prog test-hello [ "Hello" write ", " write "World!" write eol ]
+

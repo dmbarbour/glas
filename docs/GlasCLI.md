@@ -1,21 +1,27 @@
 # Glas Command Line Interface
 
-The glas command line supports two primary operations:
+The glas command line supports one primary operation:
 
         glas --run ValueRef -- Args
-        glas --extract ValueRef
 
-The '--run' operation starts an application loop capable of network and filesystem access. The '--extract' operation prints binary data to stdout and is intended to simplify bootstrap. Other built-in operations include '--help' and '--version'. However, most glas operations will be user-defined. This begins with a lightweight syntactic sugar:
+This is intended for use with a lightweight syntactic sugar.
 
         glas opname a b c 
             # implicitly rewrites to
         glas --run glas-cli-opname.run -- a b c
 
-Behavior of 'run' depends on the program and may be influenced by annotations. As a rule, runtime parameters - such as memory quota, choice of garbage collector, or version of effects API - must be specified via annotation or effects.
+The behavior of 'run' is usually to start an application loop. The referenced value is compiled then interpreted as a program. Any runtime parameters - such as memory quota, choice of garbage collector, or effects API version - must be specified via annotation or effects.
+
+Other built-in methods may be provided, such as '--extract' to support bootstrap, '--test' to support automatic testing, or '--help' and '--version' as standard Linux options.
 
 ## Value References
 
-Both '--run' and '--extract' are parameterized by a reference to a value in the glas module system. This uses a simple dotted path such as `module-name.symbol.data`. The full syntax for a value reference:
+A value reference is a simple dotted path, starting with a module name. A global module is referenced by default, but local modules (within the current folder) may be specified via './' prefix.
+
+        global-module-name.foo
+        ./local-module-name.bar.baz
+
+This indicates compilation of the specified module to a glas value, then extraction of the value reached by following the indicated label. The syntax for a value reference:
 
         ValueRef = (ModuleRef)(ComponentPath)
         ModuleRef = LocalModule | GlobalModule
@@ -25,7 +31,7 @@ Both '--run' and '--extract' are parameterized by a reference to a value in the 
         Word = WFrag('-'WFrag)*
         WFrag = [a-z][a-z0-9]*
 
-This syntax limits what can be directly referenced. For example, it does not support modules named with emoji or indexing into a list. However, it is not difficult to work around these limitations with application macros.
+This syntax limits which fields and even which module names can be directly referenced. For example, users cannot directly reference a module whose name includes emoji. It is possible to work around these limits via application macros, writing an intermediate module, or simply avoiding use of troublesome names.
 
 ## Configuration
 
@@ -44,33 +50,27 @@ The glas executable may use a few more files within GLAS_HOME for features such 
 
 ## Running Applications
 
-The glas command line knows how to interpret some values as runnable applications, with access to ad-hoc effects including filesystem and network. See [glas applications](GlasApps.md).
+The glas command line knows how to interpret some values as runnable applications, with access to ad-hoc effects including filesystem and network. 
 
         glas --run ValueRef -- Args To App
 
 The referenced value must currently have a 'prog' or 'macro' type header. This will change as glas evolves. Arguments following the '--' separator are forwarded to the application. Any runtime tweaks (GC, JIT, quotas, profiling, etc.) must be expressed via annotations or effects instead of additional command line options. 
 
-### Basic Applications
+### Transaction Loop Applications
 
-A basic application process is represented by a glas program with the 'prog' header.
-
-        prog:(do:Program, ... Annotations ...)
-
-Currently, the program should have 1--1 arity and express a transactional step function:
+Transaction loop application is the default, represented by a glas 'prog:(...)'. This program should have 1--1 arity and express a transactional step function:
 
         type Step = init:Params | step:State -> [Effects] (halt:Result | step:State) | Fail
 
-In context of the command line, this process starts with `init:["List", "Of", "Args"]` and terminates by returning `halt:ExitCode`. The ExitCode should represent a small integer, with zero representing success and anything else a failure. If the step function returns `step:State` then computation continues with the same value as input to the next step.
+In context of the command line, this loop starts with `init:["Args", "To", "App"]` and terminates by returning `halt:ExitCode`. The ExitCode should represent a small integer, with zero representing success and anything else a failure. When the step function returns `step:State`, any effects are committed then computation proceeds with the same State value as input.
 
-If the step fails, any effects are aborted then the step is retried. Ideally, it is retried after some change to the effectful inputs, to avoid predictably computing failure. This provides a lightweight basis for programming reactive systems.
+A failed step aborts the current transaction, then retries. The retry might succeed if new data is available on input channels, or if different non-deterministic choices are made (e.g. via 'fork' effect). Ideally, the runtime will optimize this to wait or search for relevant changes that enable progress.
+
+See [glas applications](GlasApps.md).
 
 ### Application Macros
 
-Application macros are distinguished by the 'macro' header. At the moment, only 'prog' type macros are supported.
-
-        macro:prog:(do:Program, ...)
-
-To simplify caching, arguments are explicitly staged via '--':
+Application macros are programs that return a value representing another application program. Currently, this is mode is implied for a value of form 'macro:prog:(...)'. Arguments may be explicitly staged via '--':
 
         glas --run MacroRef -- Macro Args -- Remaining Args
 
@@ -78,14 +78,18 @@ The macro program must be a 1--1 arity function. This function receives `["Macro
 
 Macro evaluation has access to only language module effects, i.e. log and load. Essentially, application macros implement user-defined languages for the glas command line interface. Any program expressed via application macro can also be defined within a new module.
 
-## Extended Effects API
+### Other Modes?
 
-In context of glas command line, I propose a few specialized extensions to the effects API:
+I'm currently developing [Grammar Logic Programming](GrammarLogicProg.md), which would indicate run-mode (transaction loop, macro, etc.) via annotation instead of based on headers. I might end up deprecating the current 'prog' model.
 
-* **load:ModuleRef** - load current value of a module. Value of module may update between transactions. 
-* **reload** - rebuild and redeploy application from updated source while preserving application state. Fails if application cannot be rebuilt (e.g. if its source is in a bad state) or if redeployment is infeasible. Otherwise returns unit but the update is deferred until after commit.
+## Effects API
 
-These extend the effects API proposed in [glas apps](GlasApps.md), and would qualify as stable effects.
+Specialized effects for transaction loop apps in context of the glas CLI:
+
+* *load* and *log* - same as language modules, though module values may vary over time.
+* *reload* - asks runtime to update future application loops based on updated sources.
+
+Additionally, we might want other effects proposed in [glas apps](GlasApps.md). Ideally, 'load' and 'reload' should be stable effects, usable in the stable prefix of a forking application.
 
 ## Extracting Binaries
 
@@ -93,7 +97,14 @@ The glas command line can directly extract binary data to standard out.
 
         glas --extract ValueRef
 
-The reference must evaluate to binary data, that is a list of bytes. After evaluation, the binary is simply written to stdout. The primary motive for this feature is to support bootstrap without implementing a complete runtime effects API, but it can be useful for obtaining value from the glas module system in general.
+The referenced value may currently have two forms:
+
+* *data:Binary* - writes the binary to standard output
+* *prog:(...)* - a 0--0 arity program is evaluated with limited effects:
+  * *write:Binary* - writes the binary to standard output
+  * *load* and *log* - same behavior as language modules
+
+The primary motive for extract is to simplify bootstrap, by mitigating the need for a complete effects API in early versions of the glas executable. But this operation mode may prove convenient for extracting value from the glas module system in other use cases.
 
 ## Bootstrap
 
@@ -109,9 +120,9 @@ The bootstrap implementation for glas command line executable should be based ar
     # install
     sudo mv /tmp/glas /usr/bin/
 
-In practice, different binaries are needed for different operating systems and architectures. This is easily resolved. We could name modules for different targets, such as 'glas-binary-linux-x64'. Or we could introduce a 'target' module that serves a similar role as architecture-specific headers. We can override 'target' for cross compilation.
+In practice, different binaries are needed for different operating systems and architectures. This can be resolved by introducing a 'target' module that specifies the intended architecture for executable outputs, or by explicitly naming each binary (e.g. 'glas-binary.linux-x64'). 
 
-*Note:* During early bootstrap, we might favor an intermediate language, e.g. extract to ".c" file, then apply mature optimizing C compiler.
+*Note:* It is feasible to support early bootstrap with an intermediate ".c" output or similar, to benefit from a mature optimizing compiler. But I hope to eventually express all optimizations within the glas module system!
 
 ## Exit Codes
 
@@ -140,6 +151,10 @@ In addition, we might benefit from some built-in options for manipulation of the
 
 ## Thoughts
 
+### Automatic Testing
+
+I wouldn't mind a `glas --test` operation for running all test programs (based on 'test-*' modules) either globally or locally. I do hesitate because the best solutions involve a lot of caching and remembering which forks lead to failure. I expect we'll get a user-defined `glas test` first, then integrate it as a built-in later.
+
 ### Debug Mode
 
 It is feasible for the glas executable to support debugging of an app. This could be expressed via annotations to build a special debug view. However, it is also feasible to build this debug view manually via metaprogramming, like a macro that explicitly rewrites the program. The latter option would move debugging logic from the glas command line executable into the module system, and is more to my preference.
@@ -164,4 +179,6 @@ However, this requires a lot of careful design work that I'd prefer to avoid int
 
 ### Log Options
 
-Currently I log everything to stderr with some colored text. This works alright for loading modules initially, but it isn't a great fit for transaction machine applications. Something closer to a tree of messages, with a scrubbable history, might be appropriate.
+Currently I log everything to stderr with some colored text. This works alright for loading modules initially, but it isn't a great fit for transaction machine applications. Something closer to a tree of messages, with a scrubbable history, might be appropriate. Anyhow, this area could use a lot of work.
+
+
