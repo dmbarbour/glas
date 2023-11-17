@@ -272,7 +272,7 @@ let rewriteArgs (args : string list) : string list =
     | (verb::args') when not (verb.StartsWith("-")) ->
         // this rewrite supports user-defined behavior
         // by making it easier to access and prettier
-        let p = "glas-cli-" + verb + ".main"
+        let p = "glas-cli-" + verb + ".run"
         "--run" :: p :: "--" :: args'
     | _ -> args
 

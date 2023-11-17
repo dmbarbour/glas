@@ -9,9 +9,9 @@ The '--run' operation starts an application loop capable of network and filesyst
 
         glas opname a b c 
             # implicitly rewrites to
-        glas --run glas-cli-opname.main -- a b c
+        glas --run glas-cli-opname.run -- a b c
 
-This syntactic sugar combines nicely with *application macros* which, when run, return another application program based on command line arguments. Application macros provides an opportunity for staged metaprogramming, flexible code search and indexing, DSLs specific to an operation, or tuning runtime features (GC, JIT, caching, quotas, profiling, logging, effects API versioning, etc.) by injecting annotations or initialization steps.
+Behavior of 'run' depends on the program and may be influenced by annotations. As a rule, runtime parameters - such as memory quota, choice of garbage collector, or version of effects API - must be specified via annotation or effects.
 
 ## Value References
 
@@ -48,7 +48,7 @@ The glas command line knows how to interpret some values as runnable application
 
         glas --run ValueRef -- Args To App
 
-The referenced value must currently have a 'prog' or 'macro' header. (I intend to eventually extend this with a more performance-oriented process model.) The glas executable is free to improve performance by compiling and caching. Arguments following the '--' separator are forwarded to the application. Runtime performance tuning or instrumentation (GC, JIT, profiling, etc.) must be expressed using annotations or effects instead of additional command line options. 
+The referenced value must currently have a 'prog' or 'macro' type header. This will change as glas evolves. Arguments following the '--' separator are forwarded to the application. Any runtime tweaks (GC, JIT, quotas, profiling, etc.) must be expressed via annotations or effects instead of additional command line options. 
 
 ### Basic Applications
 
@@ -63,8 +63,6 @@ Currently, the program should have 1--1 arity and express a transactional step f
 In context of the command line, this process starts with `init:["List", "Of", "Args"]` and terminates by returning `halt:ExitCode`. The ExitCode should represent a small integer, with zero representing success and anything else a failure. If the step function returns `step:State` then computation continues with the same value as input to the next step.
 
 If the step fails, any effects are aborted then the step is retried. Ideally, it is retried after some change to the effectful inputs, to avoid predictably computing failure. This provides a lightweight basis for programming reactive systems.
-
-*Note:* We might eventually support alternative interpretations of the program, indicated by annotations. But the 'do' field should always be a basic glas program.
 
 ### Application Macros
 
@@ -111,7 +109,9 @@ The bootstrap implementation for glas command line executable should be based ar
     # install
     sudo mv /tmp/glas /usr/bin/
 
-In practice, different binaries are needed for different operating systems and machine architectures. With '--extract' we cannot provide target information on the command line, but we could create a module for each target (e.g. 'glas-binary-linux-x64') or define a 'target' module that describes the default compilation target.
+In practice, different binaries are needed for different operating systems and architectures. This is easily resolved. We could name modules for different targets, such as 'glas-binary-linux-x64'. Or we could introduce a 'target' module that serves a similar role as architecture-specific headers. We can override 'target' for cross compilation.
+
+*Note:* During early bootstrap, we might favor an intermediate language, e.g. extract to ".c" file, then apply mature optimizing C compiler.
 
 ## Exit Codes
 
