@@ -12,11 +12,23 @@ Pattern-matching with grammars often represent 'recursion' on the pattern side. 
 
 Interactive computation is implicit when two or more grammars constrain each other, but we can make it explicit. For example, a procedural 'interaction trace' might be modeled as `(args:Arguments, eff:[(Request1, Response1), (Request2, Response2), ...], return:Result)`. A 'procedure' can then be represented as a grammar that generates a trace by reading Arguments, writing Requests, reading Responses, and writing a Result. Similarly, the 'caller' would write Arguments and read Result. A 'effects handler' would read Requests and write Responses. In context of grammars, we can understand 'reading' as matching a wide range of values, and 'writing' as generating a small range of values. It is feasible to adapt [session types](https://en.wikipedia.org/wiki/Session_type) to grammars to precisely control interactions. 
 
-A runtime can bind interactions to the real-world. However, potential backtracking constrains the effects API and interferes with long-running computations. The [transaction machine application model](GlasApps.md) is a good match for grammar-logic programming with backtracking. Alternatively, it is feasible to prove (perhaps with type-system support) that backtracking is unnecessary for certain grammar-logic programs.
+A runtime can bind interactions to the real-world. However, potential backtracking constrains the effects API and interferes with long-running computations. The [transaction loop application model](GlasApps.md) is a good match for grammar-logic programming with backtracking. Alternatively, it is feasible to prove (perhaps with type-system support) that backtracking is unnecessary for certain grammar-logic programs.
 
 A gramar-logic language can modify the 'syntactic sugar' for functions (`->`) to represent interaction traces instead of relations. This would significantly enhance extensibility and expressiveness of the language, reducing need for programmers to manually thread interaction variables through a program. But procedural request-response is awkward for modeling concurrent interaction, so I'm exploring alternatives.
 
 Grammar-logic languges have potential to be modular and extensible. OOP solved the problem of extending systems of mutually recursive definitions via inheritance and mixin patterns. A grammar-logic language can build upon the idea of grammar 'classes' that implement named grammars, enabling extension or override or of specific elements. Alessandro Warth's [OMeta](https://en.wikipedia.org/wiki/OMeta) develops this idea effectively.
+
+## Why Grammar Logic?
+
+The glas system has many nice features - the simple data model, the simple module system semantics, the support for user-defined languages, the concept of transaction loop applications. 
+
+ , but the 'prog' model and the 'g0' language aren't among them. They erred too far towards simplicity, to the point of becoming a barrier to both psychology and performance. 
+
+A grammar-logic language has the potential to break the bar
+
+ want a more expressive and scalable language for glas systems - one where we can work with entire 'languages' as the basic unit, and where we can easily extend languages. 
+
+
 
 Functional programming, procedural programming, object-oriented programs, and process networks can be directly modeled as grammars. But without adequate language support, manually encoding complex interactive behavior into grammars inevitably results in an inefficient, incomprehensible, fragile mess. So the goal here is to design a viable PL upon pure grammar-logic semantics.
 
@@ -181,7 +193,7 @@ Where a 'gram' is referenced as an application program, the standard entry metho
 
 ### Staged Applications
 
-Staged programming is especially useful in context of glas CLI '--run' and the transaction machine application loop. But there is no 'macro' option in my proposed grammar-logic language. Some options:
+Staged programming is especially useful in context of glas CLI '--run' and the transaction loop application model. But there is no 'macro' option in my proposed grammar-logic language. Some options:
 
 * annotate a specific run mode for an entry method
 * introduce associated method to report a run mode

@@ -308,7 +308,7 @@ When compiling glas programs, a useful optimization pass is to identify common s
 
 ### Application Layer 
 
-The glas system is not forever stuck with the 'prog' program model and its foibles. It is feasible to extend the glas command line to support other program models for `glas --run`. As a concrete example, I intend to develop a 'proc' representation for transaction machine applications to better optimize incremental computing and concurrency (in [Glas Apps](GlasApps.md)).
+The glas system is not forever stuck with the 'prog' program model and its foibles. It is feasible to extend the glas command line to support other program models for `glas --run`. As a concrete example, I intend to develop a 'proc' representation for transaction loop applications to better optimize incremental computing and concurrency (in [Glas Apps](GlasApps.md)).
 
 However, this is a solution to pursue mostly where accelerators are awkward (e.g. due to relationship with effects). 
 

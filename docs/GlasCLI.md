@@ -171,7 +171,7 @@ For now, decided to treat application macros a lightweight extension to language
 
 ### Applications Objects
 
-I've been contemplating a more object-based application model. Instead of a global step function that conflates handling of GUI, data feeds, etc. the app could provide fine-grained methods that still follow the transaction machine model but are more specialized (i.e. per-method effect, parameter, and return types). 
+I've been contemplating a more object-based application model. Instead of a global step function that conflates handling of GUI, data feeds, etc. the app could provide fine-grained methods that still follow the transaction loop application model but are more specialized (i.e. per-method effect, parameter, and return types). 
 
 With some careful design, we could (for example) ensure that rendering an app doesn't affect application state, or that data subscriptions are very robust to network issues.
 
@@ -179,6 +179,6 @@ However, this requires a lot of careful design work that I'd prefer to avoid int
 
 ### Log Options
 
-Currently I log everything to stderr with some colored text. This works alright for loading modules initially, but it isn't a great fit for transaction machine applications. Something closer to a tree of messages, with a scrubbable history, might be appropriate. Anyhow, this area could use a lot of work.
+Currently I log everything to stderr with some colored text. This works alright for loading modules initially, but it isn't a great fit for transaction loop applications. Something closer to a tree of messages, with a scrubbable history, might be appropriate. Anyhow, this area could use a lot of work.
 
 

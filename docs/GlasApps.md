@@ -6,17 +6,17 @@ A basic glas application, in context of [Glas CLI](GlasCLI.md), is currently rep
 
 A step that returns successfully is committed. A failed step is aborted then retried, implicitly waiting for changes to external conditions. The first step receives 'init' and the final step returns 'halt'. Intermediate steps receive and return 'step'. 
 
-This is an example of a *transaction machine* - modeling an application as a repeating transaction. Transaction machines are simple yet offer a robust foundation for reactivity, concurrency, and process control. However, these benefits rely on optimizations that are difficult to implement on step functions. To resolve this, I intend to develop a specialized program representation.
+This is an example of a *transaction loop* - modeling an application as a repeating transaction. Transaction loops are simple yet offer a robust foundation for reactivity, concurrency, and process control. However, these benefits rely on optimizations that are difficult to implement on step functions. To resolve this, I intend to develop a specialized program representation.
 
-## Transaction Machines
+## Transaction Loops
 
-Transaction machines model software systems as an open set of repeating, atomic, isolated transactions in a shared environment. Scheduling of different transactions is non-deterministic. This is a simple idea, but has many nice systemic properties regarding extensibility, composability, concurrency, distribution, reactivity, and live coding. However, transaction machines depend on advanced optimizations such as replication to evaluate many non-deterministic choices in parallel, and incremental computing to stabilize replicas. Implementation of the optimizer is the biggest development barrier for this model.
+Transaction loops model software systems as an open set of repeating, atomic, isolated transactions in a shared environment. Scheduling of different transactions is non-deterministic. This is a simple idea, but has many nice systemic properties regarding extensibility, composability, concurrency, distribution, reactivity, and live coding. However, transaction loops depend on advanced optimizations such as replication to evaluate many non-deterministic choices in parallel, and incremental computing to stabilize replicas. Implementation of the optimizer is the biggest development barrier for this model.
 
 ### Waiting and Reactivity
 
 If nothing changes, repeating a deterministic, unproductive transaction is guaranteed to again be unproductive. The system can recognize a simple subset of unproductive transactions and defer repetition until a relevant change occurs. Essentially, we can optimize a busy-wait into triggering updates on change.
 
-The most obvious unproductive transaction is the failed transaction. Thus, aborting a transaction expresses waiting for changes. For example, if we abort a transaction after it fails to read from an empty channel, we'll implicitly wait on updates to the channel. Successful transactions are unproductive if we know repetition writes the same values to the same variables. Optimizing the success case would support spreadsheet-like evaluation of transaction machines.
+The most obvious unproductive transaction is the failed transaction. Thus, aborting a transaction expresses waiting for changes. For example, if we abort a transaction after it fails to read from an empty channel, we'll implicitly wait on updates to the channel. Successful transactions are unproductive if we know repetition writes the same values to the same variables. Optimizing the success case would support spreadsheet-like evaluation of transaction loops.
 
 Further, incremental computing can be supported. Instead of fully recomputing each transaction, it is feasible to implement repetition as rolling back to the earliest change in observed input and recomputing from there. We can design applications to take advantage of this optimization by first reading relatively stable variables, such as configuration data, then read unstable variables near end of transaction. This results in a tight 'step' loop that also reacts swiftly to changes in configuration data.
 
@@ -30,7 +30,7 @@ Concurrent transactions can evaluate in parallel insofar as they avoid read-writ
 
 ### Distribution 
 
-Distributed evaluation of transaction machines is possible using distributed transactions. However, arbitrary distributed transactions are expensive and vulnerable to denial-of-service and disruption. We can mitigate this by identifying a subset of distributed transactions that can be implemented robustly and efficiently, then designing our distributed applications around them.
+Distributed evaluation of transaction loops is possible using distributed transactions. However, arbitrary distributed transactions are expensive and vulnerable to denial-of-service and disruption. We can mitigate this by identifying a subset of distributed transactions that can be implemented robustly and efficiently, then designing our distributed applications around them.
 
 One good option is to build around a channels API with abstract intermediate communication. A 'writer' will write to a local buffer that is later moved to the remote buffer by separate transaction. This move transaction requires a lightweight, idempotent message-ack interaction with a single remote node.
 
@@ -40,17 +40,17 @@ There are other patterns that can also be optimized. But channels alone are adeq
 
 It is possible to apply [loop optimizations](https://en.wikipedia.org/wiki/Loop_optimization) to repeating transactions. Conceptually, we might view this as refining the non-deterministic transaction schedule. A random schedule isn't optimal because we must assume external updates to state between steps. By fusing transactions, we eliminate concurrent interference and enable optimization at the boundary. An optimizer can search for fusions that best improve performance. 
 
-Fusion could be implemented by a just-in-time compiler based on empirical observations, or ahead-of-time based on static analysis. Intriguingly, just-in-time fusions can potentially optimize communication between multiple independent applications and services. In context of distributed transaction machines, each application or service essentially becomes an patch on a network overlay without violating security abstractions.
+Fusion could be implemented by a just-in-time compiler based on empirical observations, or ahead-of-time based on static analysis. Intriguingly, just-in-time fusions can potentially optimize communication between multiple independent applications and services. In context of distributed transaction loops, each application or service essentially becomes an patch on a network overlay without violating security abstractions.
 
 ### Real-Time Systems 
 
-Transaction machines can wait on the clock by (logically) aborting a transaction until a desired time is reached. Assuming the system knows the time the transaction is waiting for, the system can schedule the transaction precisely and efficiently, avoiding busy-waits from watching the clock. Usefully, the system can precompute a transaction slightly ahead of time, such that effects apply almost exactly on time.
+Transaction loops can wait on the clock by (logically) aborting a transaction until a desired time is reached. Assuming the system knows the time the transaction is waiting for, the system can schedule the transaction precisely and efficiently, avoiding busy-waits from watching the clock. Usefully, the system can precompute a transaction slightly ahead of time, such that effects apply almost exactly on time.
 
 Further, we could varify that critical transactions evaluate with worst-case timing under controllable stability assumptions. This enables "hard" real-time systems to be represented.
 
 ### Live Coding
 
-Transaction machines don't solve live coding, but they do lower a few barriers. Application code can be updated atomically between transactions. Threads can be regenerated according to stable non-deterministic choice in the updated code. Divergence or 'tbd' programs simply never commit; they await programmer intervention and do not interfere with concurrent behavior.
+Transaction loops don't solve live coding, but they do lower a few barriers. Application code can be updated atomically between transactions. Threads can be regenerated according to stable non-deterministic choice in the updated code. Divergence or 'tbd' programs simply never commit; they await programmer intervention and do not interfere with concurrent behavior.
 
 Remaining challenges include stabilizing application state across minor changes, versioning major changes, provenance tracking across compilation stages, rendering live data nearby the relevant code.
 
@@ -58,7 +58,7 @@ Remaining challenges include stabilizing application state across minor changes,
 
 ### Concurrency
 
-Repetition and replication are equivalent for isolated transactions. If a repeating transaction externalizes a choice, it could be replicated to evaluate each choice and find an successful outcome. If this choice is part of the stable prefix for incremental computing, then these replicas also become stable, each repeating from some later observation. This provides a simple basis for task-based concurrency within transaction machines as an optimization of choice.
+Repetition and replication are equivalent for isolated transactions. If a repeating transaction externalizes a choice, it could be replicated to evaluate each choice and find an successful outcome. If this choice is part of the stable prefix for incremental computing, then these replicas also become stable, each repeating from some later observation. This provides a simple basis for task-based concurrency within transaction loops as an optimization of choice.
 
 * **fork:[List, Of, Values]** - Response is a value externally chosen from a non-empty list. Fails if the argument is empty or is not a list.
 
@@ -246,7 +246,7 @@ The remote code would have very limited access to effects: read and write channe
 
 ## Procedures and Processes
 
-The glas 'prog' model of programs is not optimal for transaction machine applications. It places a huge burden on the optimizer to support concurrency, parallelism, and incremental computing. I'd like to design a model better optimized for this role, including more fine-grained effects and tracking of shared vars (read-only, write-only, channel writes, read-write vars). Something based loosely on Kahn Process Networks or Lafont Interaction Networks might be a good start.
+The glas 'prog' model of programs is not optimal for transaction loop applications. It places a huge burden on the optimizer to support concurrency, parallelism, and incremental computing. I'd like to design a model better optimized for this role, including more fine-grained effects and tracking of shared vars (read-only, write-only, channel writes, read-write vars). Something based loosely on Kahn Process Networks or Lafont Interaction Networks might be a good start.
 
 ## Misc Thoughts
 
@@ -261,7 +261,7 @@ Console apps will support GUI indirectly via file and network APIs:
 * networked GUI, e.g. web-apps, X, RDP, dbus (configured for TCP) 
 * textual UI (TUI) with graphics extensions, e.g. kitty or sixel
 
-These mechanisms benefit from buffering of IO, which conveniently aligns with transaction machines. Support for native GUI is non-trivial and low priority, but may eventually be supported via extended effects API.
+These mechanisms benefit from buffering of IO, which conveniently aligns with transaction loops. Support for native GUI is non-trivial and low priority, but may eventually be supported via extended effects API.
 
 ### Notebook Applications
 
@@ -269,7 +269,7 @@ I like the idea of building notebook-style applications with live coding. But I'
 
 ### Web Applications
 
-A promising target for glas is web applications - compiling applications to JavaScript with read-write effects based on the Document Object Model, Web Sockets (or XMLHttpRequest), and Local Storage. Transaction machines are a reasonable fit for web apps, assuming something like React for rendering updated trees between transactions.
+A promising target for glas is web applications - compiling applications to JavaScript with read-write effects based on the Document Object Model, Web Sockets (or XMLHttpRequest), and Local Storage. Transaction loops are a reasonable fit for web apps, assuming something like React for rendering updated trees between transactions.
 
 ### Reactive Dataflow Networks
 
