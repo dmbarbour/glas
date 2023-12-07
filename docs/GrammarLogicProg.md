@@ -2,23 +2,19 @@
 
 ## Overview
 
-Grammars and logic are similar in underlying semantics. Dataflow is based around [logic unification](https://en.wikipedia.org/wiki/Unification_(computer_science)#Application:_unification_in_logic_programming). Computation can 'run backwards', searching for inputs that lead to a specified output. However, logic programming usually has the form `Proposition :- Derivation`. This is awkward for many use cases, relevantly including the modeling of effects. Grammars are rarely explored as a complete basis for programming. I occasionally see `Rule = Pattern -> Action` inspired from grammars (for example Alessandro Warth's [OMeta](https://en.wikipedia.org/wiki/OMeta)), but the right hand action is rarely modeled as a proper part of the grammar, much less any side-effects.
+Grammar and logic programs have similar semantics. Dataflow is based on [unification](https://en.wikipedia.org/wiki/Unification_(computer_science)#Application:_unification_in_logic_programming) and backtracking searches. Grammars generate and accept values. Logic programs generate or accept propositions. The two are easily unified: a guarded pattern (`Pattern when Guard`) in a grammar can essentially model logic `Proposition :- Derivation`. (Similarly, logical negation via `Pattern unless Guard`.)
 
-Grammars trivially include logic programs the moment we introduce *guard patterns* - 'P when G' generates (or recognizes) a subset of values in P where G also generates a value. P and G typically share some variables, thus requiring G to search for at least one value that shares elements with P. Negative guards are also possible, 'P unless G'. 
+A pure, deterministic function can be modeled as a grammar or logic that accepts a set of `(args, result)` pairs, where no two pairs have the same first element. An effectful function can be modeled as a grammar or logic that accepts a set of `(args, result, env)` triples, where the third element represents effectful interaction with the environment. A simplistic interaction model is a request-response list, `[(Request1, Response1), (Request2, Response2), ...]` where the environment accepts requests and generates responses. 
 
-Grammars can trivially model pure functions. A grammar generates or recognizes a set of values. Pure functions can be modeled as a set of ordered pairs, where no two distinct pairs have the same first element. We only need a little syntax to leverage this. 
+We can build a procedural language upon grammars and logic, where the environment parameter is implicit. Unification is expressive, not limited to simple request-response interactions. I propose to instead model concurrent channels and temporal semantics. Of course, this does limit us to deferred, safely ignorable, or undoable effects (see [transaction loop applications](GlasApps.md)) unless we guarantee commit. 
 
-Intriguingly, grammars can also model interactive computations. For example, instead of an ordered pair, we could generate a simplistic procedural trace of form `(arg:A, eff:[(Request1, Response1), (Request2, Response2)], return:R)`. We can view a procedure call as an interaction between two grammars - one representing the procedure, the other the caller. The caller writes the argument, reads requests, writes responses, then reads the result. The procedure inverts read and write. We can design our language such that read and write responsibilities are clear, or leverage [session types](https://en.wikipedia.org/wiki/Session_type) to typefully represent such responsibilities.
+Intriguingly, non-determinism can be controlled effectfully by the environment. The language doesn't need to provide direct access to unification variables. Assuming such a language, we might model logic propositions as deterministic functions that either return unit or fail, i.e. `Proposition -> ()`. We could search for passing propositions.
 
-A runtime can bind effects to the real world. However, due to potential failure and backtracking, we should limit the API to requests that can be deferred, undone, or safely ignored. The [transaction loop application model](GlasApps.md) is a good fit. Alternatively, if we prove backtracking is unnecessary in a subset of grammars (e.g. because failures are converted to error results) then we could support a more direct effects API.
-
-We aren't limited to procedural traces. We could instead model interactions around channels or pubsub, gaining significant benefits for scalability and compositionality. Channels and pubsub can be further enhanced and integrated via temporal semantics. 
-
-As an independent point, grammars can benefit from OOP-inspired inheritance and extensibility. For example, we might tweak an existing programming language by extending the parse rules for integers and loops.
+As an unrelated point, grammars and logic both benefit from OOP-like inheritance. For example, we might inherit from a grammar that represents a programming language but extend the rules for parsing numbers. Or we might inherit a system of logic propositions, then override the propositions that represent initial data.
 
 ## Why Another Language?
 
-A grammar-logic language should get me closer to immediately developing user-defined languages and completing bootstrap. Logic unification variables can provide more scalable foundation for effects. Ability to compute functions 'backwards' is convenient for a number of ideas - constraint based search, property testing, debugging and explaining computations.
+A grammar-logic language should be convenient for developing user-defined languages. Logic unification variables can model concurrent or distributed effects, enhancing scalability. The ability to compute functions backwards is very nice in many contexts - constraint systems, property testing, explaining computations.
 
 ## Brainstorming
 
@@ -29,85 +25,51 @@ We can easily model ordered choice in terms of unordered choice and pattern guar
         P or-else Q             =>      P or (Q unless P)
         if C then P else Q      =>      (P when C) or (Q unless C)
 
-The if-then-else form is more general and more widely useful. We could extend this to pattern matching functions without much difficulty. 
-
-Rewriting from ordered to unordered will hinder optimizations, so it's better to have ordered choice as a built-in. Also, ordered choice cannot represent unordered choice, so it provides a decent basis for deterministic computation.
-
-*Todo:* Prove or-else is associative and idempotent. 
+I propose to build the grammar-logic in terms of ordered choice, to support deterministic functions by default. No direct access to unordered choice. Indirectly, non-deterministic choice can be supported via effects and even prioritized via heuristic annotations.
 
 ### Deterministic Functions
 
-Deterministic computations are useful in many contexts. I propose to design my grammar-logic language such that grammars always represent deterministic functions. That is, results are fully deterministic up to 'inputs', whether those inputs are initial arguments or deferred via channels. 
+Methods in my grammar-logic language should represent deterministic functions, procedures, or processes by default. Non-deterministic computations will still be supported via effects or in contexts where we evaluate backwards. Mostly, this means programs cannot directly introduce unification variables or express unification. 
 
-This will limit how we introduce variables to something closer to functional languages. Though, support for second-class channels can still model deferred variable assignments.
+Unification variables can be introduced indirectly via effects or used in abstract by channels (and other primitives). Abstraction does impose constraints on the language: if we do not have static type checking to prove at compile time that channels are correctly used as channels, the runtime must instead track dynamic types (to at least distinguish channels from data).
 
-Non-deterministic computations can still be modeled contextually by running a function with partial inputs, or even running backwards. The right-hand side of a match must still be valid 'grammar' pattern. 
+### Non-Deterministic Choice
 
-*Aside:* In special cases, it might be feasible to also take advantage of 'confluent' computations. But I don't know how to leverage this outside of accelerated functions. 
+Non-deterministic choice can be expressed and controlled as an effect. Fair non-deterministic choice is useful for modeling concurrency in transaction loops. Biased choice is useful for modeling soft constraints and meta-stable reactive systems. To support biased choice, we might introduce scoring heuristics based on quality and stability. 
 
-### Extensions
+An intriguing possibility in context of grammar-logic programming is to model non-deterministic choice by returning a logic unification variable. This would make the choice implicitly adapt to the program. However, it would be difficult to implement fair choice from an infinite set.
 
-The simplest extension is similar to OOP single inheritance.
+### Extensible Namespaces
 
-        grammar foo extends bar with
-            integer = ... | prior.integer
+Instead of a monolithic grammar (or logic), I propose to model grammars as a collection of named rules. This allows us to express OOP-like inheritance and override. For example, we might want a new language the same as the old one, except with a new option to parse an integer.
 
-Here 'prior.integer' refers to bar's definition of integer, albeit with any reference to 'integer' within that definition referring instead to foo's definition. This allows foo to flexibly extend or override bar's original definitions. Of course, syntax for 'prior.' may vary. Any words not explicitly defined in 'foo' would be inherited from 'bar'. 
+        grammar foo extends bar . baz with
+            integer = ... | prior.integer 
 
-Multiple inheritance can be modeled in terms of templated single inheritance. I don't intend to support templates in general, but it seems useful to explain my meaning here. 
+We can generally support mixins and multiple inheritance. I propose to model all grammars as mixins, but use of the grammar keyword above would introduce an implicit constraint that `integer` must not be defined prior to `bar . baz`. Multiple inheritance is possible if two grammars don't overlap, or via the mixin keyword that does not have this constraint.
 
-        mixin foo with ... => grammar foo<G> extends G with ...
-        mixin foo extends bar with ... => grammar foo<G> extends bar<G> with ...
-        mixin foo extends bar . baz with ... => grammar foo<G> extends bar<baz<G>> with ...
+I don't expect to be needing first-class namespaces. That is, we don't instantiate grammars the way we instantiate objects. Grammars are stateless. There is also no performance need for final definitions.
 
-Grammars and mixins could use the same underlying model to allow consistent '.' composition. However, to mitigate [the diamond inheritance ambiguity problem](https://en.wikipedia.org/wiki/Multiple_inheritance#The_diamond_problem) I'd need to indicate that certain names should be undefined (or identical) in the G parameter.
+Related ideas:
 
-*Aside:* Many OO languages support a 'final' annotation, to express that certain methods should not be overridden. I have mixed feelings about this. Why arbitrarily restrict extension? Some of the motives, such as partial evaluation during separate compilation, seem less applicable to my grammar-logic language in glas.
+* *Hierarchical namespaces.* We might take `foo in f` to translate all names defined in foo to the `f/` namespace, such as `f/integer`. Hierarchical structure would help control name collisions while still allowing flexible extension to methods within that namespace.
 
-### Hierarchical Namespaces
+* *Anonymous namespaces.* Our language might logically rename methods and hierarchical namespaces that start with '~' to a fresh anonymous namespace, providing a space for private definitions.
 
-In some cases, I want to work with more than one version of a grammar.
+* *Explicit translations.* We could allow more precise renames, such as renaming 'integer' to 'int' in foo. This would be useful for adapting mixins to another target, for conflict avoidance, and for community localization. Ideally, renames can be abstracted for reuse.
 
-One possibility is to develop a concise syntax for shifting a grammar into a subordinate namespace. We could specify that 'foo in f' means we add a prefix 'f/' to every name defined and used in grammar 'foo' (not affecting the mixin parameter). With this, we could model a grammar containing a component as something like the following:
+* *Interfaces as incomplete namespaces.* We can define incomplete grammars where overrides are expected or required. These incomplete grammars may contain annotations describing expected properties or types. Those annotations could be checked when compiling the fully extended grammar, unless they too are explicitly overridden.
 
-        grammar foo extends (bar in b) with
-            b/integer = int
-            int = ... | prior.b/integer
+* *Annotations as conventional namespaces.* We can model most annotations as a lightweight convention on namespaces, e.g. annotate `integer` by defining `anno/integer/type`, `anno/integer/docs`, and so on. The compiler could know to rename `anno/integer/` when `integer` is renamed. Assertions might similarly be named and modeled via a conventional `assert/property` namespace. This design allows annotations to be extended or refactored like any other definition.
 
-Obviously the syntax needs serious work here! The name 'prior.b/integer' is verbose and ugly. Adding a dozen '(bar in b)' extensions in the header line would quickly grow out of control. A potentially useful observation is that `(bar in b) . (baz in b)` should be equivalent to `((bar . baz) in b)`, and `(bar in b) . (baz in z)` should commute.
+* *Nominative types.* Programs can potentially use arbitrary names from the namespace to wrap or unwrap data, or match wrapped data without unwrapping it. This would enable renames to also prevent some type conflicts. In context of anonymous namespaces, this would support user-defined abstract data types. Further, we could easily associate operations such as debug views through the namespace.
 
-### Anonymous Namespaces
 
-An anonymous namespace can conveniently be represented as a standard prefix on names, such as '~'. Use of a special prefix reduces risk of name shadowing, i.e. there should be no public names that start with '~'. An anonymous namespace can serve as a private scratch space for intermediate utility definitions.
 
-We might implement private scope as rewriting '~' to a freshly allocated anonymous prefix. This is easiest if the language also reserves a prefix for all compiler-provided definitions, perhaps '\_'. Then '~' might be rewritten to `_anon123/` or similar. 
-
-We can apply '~' to hierarchical namespaces, not just individual definitions. This does increase risk of repetition, with nearly identical anonymous namespaces found in multiple grammars. A compiler could later mitigate this by combining or compressing common definitions.
-
-### Translation 
-
-Translation (or rename) operations apply to a grammar or mixin definition. For example, if we translate 'int -> integer' in a mixin, then the translated mixin will override 'integer' in the target namespace, and leave 'int' alone. This design is consistent with hierarchical and anonymous namespaces, which are also scoped to grammar or mixin definitions. 
-
-To support reuse and refactoring, renames can be defined independently of grammars.  
-
-        translation aleph is 
-            int -> integer
-            xyzzy -> fizzbuzz
-            fizzbuzz -> xyzzy
-
-        grammar foo = aleph(bar) . baz
-
-Multiple symbols may be renamed simultaneously. This allows for 'cyclic' renames, such as swapping 'xyzzy' and 'fizzbuzz' in the example above. However, it is an error if a rename accidentally combines two words. Thus, in the example above, it would be an error if 'integer' is already defined or used within grammar bar. A translation collision error would ideally be caught early, at module compile time, but it can also be caught later.
-
-We could also define translations by composition, or apply a hierarchical namespace to a translation, or translate some names into private spaces 'int -> ~int', or rename hierarchical namespaces 'm/ -> math/'. These don't require much extra effort from the compiler.
-
-### Grammar Interfaces
-
-We might also benefit from something like an 'interface' or 'mask' where we explicitly list only the names we want to expose, and everything not exposed is moved into a fresh anonymous namespace. This is much simpler than a translation, and it fills a useful role similar to export lists. 
 
 ### Channel Based Interactions
 
-My initial thought is to model interactions around channels. This gives me many features I want - compositionality, simplicity, and scalability. Extensibility is hindered by linear ownership of channels, but this can be mitigated by modeling a databus or other extensible architecture.
+My initial thought is to model interactions around channels. This gives me many features I want - compositionality, simplicity, and scalability. Procedural interaction can be modeled via request-response channel. Although extensibility is limited due to linear ownership of channels, this can be mitigated by modeling a databus or other extensible architecture.
 
 Channels can be modeled as partial lists, with the writer holding a cursor at the 'tail' of the list, and the reader holding the 'head'. To write a channel, we unify the tail variable with a pair, where the second element is the new tail. Then we update the local cursor to the new tail, ensuring we only write each location once. A written channel may be 'closed' by unifying with the empty list. (Closing a channel can be implicit based on scope.)
 
@@ -115,57 +77,57 @@ Channels aren't limited to moving data, they can also transfer channels. We can 
 
 However, in context of deterministic computation, channels are essentially linear types. If there are two writers, writes will conflict. And even reading a channel must be linear if the reader might receive a writable channel. This can be mitigated - we can use *temporal semantics* to deterministically merge asynchronous writes. Or we could support non-deterministic merge based on arrival-order with runtime support (see *reflective race conditions*). With the ability to merge asynchronous events, channels can model openly extensible systems, such as a databus or router.
 
-An inherent risk with channels is potential deadlock, with multiple channels are waiting on each other in a cycle. This can potentially be mitigated by lazy reads (aka ["tying the knot"](https://wiki.haskell.org/Tying_the_Knot) in context of lazy evaluation). Or it could be avoided using [session types](https://en.wikipedia.org/wiki/Session_type) and static analysis.
+An inherent risk with channels is potential deadlock with multiple channels are waiting on each other in a cycle. This is mitigated by temporal semantics: if at least one channel in the cycle has latency, deadlock is broken. It can also be avoided via static analysis (perhaps [session types](https://en.wikipedia.org/wiki/Session_type)).
 
-### Channel-Based Objects and Functions
+#### Temporal Semantics? Tentative.
+
+Temporal semantics support deterministic merge of asynchronous events. This significantly enhances compositionality and extensibility, e.g. we can model processes interacting through a databus or publish-subscribe system.
+
+Temporal semantics can be implemented for channels by introducing time step messages. A reader blocks on time step messages. A process may wait, implicitly removing time steps from held input channels then writing time steps to held output channels. We might represent the balance of delay time steps and pending removals on input channels via an associated variable. 
+
+In context of temporal semantics, a process can deterministically return that a read fails because waiting is required. A process can wait and poll a list of channels for the first channel with a data message. Logical timeouts are possible, where a process limits the number of time steps it waits for a message. Channel latency can be expressed by inserting a few time steps into a read channel when it is initially allocated.
+
+Time steps can be mapped to real-world effects, e.g. one microsecond per time step. This would be useful for scheduling effects in time-sensitive contexts such as music or robotics. Intriguingly, transactional interactions might commit to a schedule of write-only effects relative to an idealized time of commit.
+
+The cost of temporal semantics is complexity. The language runtime must clearly track 'held' channels. And it is relatively inefficient to push time steps individually, so a runtime might compress sequential time steps, e.g. `(time-step * Count)` and accelerate operations that interact with time steps (e.g. polling). 
+
+I feel this idea is worth exploring, but it might not be available immediately. Ideally, I should develop the language such that temporal semantics can be introduced later with full backwards compatibility.
+
+#### Reflective Race Conditions? Tentative. As Effect. Disfavored.
+
+A runtime can potentially merge events from multiple channels non-deterministically based on arrival order. Arrival order will vary based on under-the-hood features such as multi-processing, cache sizes, and processor preemption by the operating system. This is a potential alternative to temporal semantics, and is much easier to implement efficiently. 
+
+However, this allows for race conditions to influence observable program behavior. Race conditions due to arrival-order non-determinism are worse for reasoning and testing than most other forms of non-determinism because it's highly machine dependent. This easily results in difficult to reproduce "works on my machine" bugs.
+
+Predictability can be mitigated insofar as we control where race conditions are introduced. But I think I would favor temporal semantics for most potential use cases. (AFAIK, there isn't a strong use case for combining the two.)
+
+#### Bundling and Abstracting Channels
+
+Duplex channels can be modeled as a read-write pair of partial lists. We could model a bundle as a dictionary of channels. These bundles could be mixed with data and pass-by-ref vars to serve as the primary type for arguments and environments. 
+
+A runtime must precisely track which elements represent channels in order to protect certain abstractions - linear reads and writes, temporal semantics when copying, implicit closing of channels when they leaves scope, etc.. Exactly how a runtime tracks this is an implementation detail, but options include associated type information at runtime or static type analysis at compile time.
+
+Assuming the runtime does an adequate job of tracking these things, then bundling isn't so different from normal data manipulation. Channels, including dictionaries or lists thereof, are effectively first-class. 
+
+#### Broadcast Channels? As Optimization.
+
+A broadcast channel is a read channel that receives only perfectly copyable content, such as data or channel-based functions. Consequently, a broadcast channel is also perfectly copyable. 
+
+A compiler or runtime could recognize broadcast channels and use a more efficient copy mechanism. This recognition can be supported via types (static or dynamic) and explicit declaration of broadcast read-write pairs (where we'll copy the reader). Attempting to write a non-copyable value through a broadcast channel would be a type error.
+
+The writer can still be copied imperfectly via temporal semantics or reflective race conditions. Copying the full reader-writer pair could essentially result in the databus pattern, which is also very useful.
+
+#### Pushback Operations
+
+A reader process can push data or messages backwards into an input channel, to be read locally. This is a very convenient operation in some use cases, reducing the complexity for conditioning inputs.
+
+#### Channel-Based Objects and Functions
 
 An object can be modeled as a process that accepts a subchannel for each 'method call'. The object reference would be the channel that delivers the method calls. The separate subchannel per call ensures responses are properly routed back to the specific caller, in case the reference is shared. (An object reference might be shared via *Temporal Semantics* or *Reflective Race Conditions*.)
 
 Functions can be modeled similarly as a *stateless* object. If the runtime knows the object is stateless, it can optimize method calls to evaluate in parallel, interactions may be forgotten because they don't affect any external state, and the channel may be freely copied because there is no need to track order of writes. Effectively, the channel serves as a first-class function (albeit with restrictions on how it is passed around or observed).
 
 Ideally, grammar methods and object methods via channels would have a consistent syntax and underlying semantics.
-
-#### Temporal Semantics? Tentative.
-
-Temporal semantics support deterministic merge of asynchronous events. This would allow modeling a databus or a publish-subscribe system simulate timeouts within a pure function. Without temporal semantics, we can abandon either deterministic merge (see *Reflective Race Conditions*) or asynchronous events (cf. [*Synchronous Reactive Programming*](https://en.wikipedia.org/wiki/Synchronous_programming_language)).
-
-Temporal semantics can be implemented by introducing time step messages, adding a mutable time variable to every procedure and channel read cursor, and some extra processing. 
-
-While reading, when process time is greater than or equal to channel time, we handle time step messages to advance the channel's time variable. Otherwise reads behave same as atemporal reads, waiting on future messages. If process time is less than channel time, read fails immediately. The process may observe a "wait for later" status. A process may explicitly 'wait' on multiple channels. Waiting will send time step messages to all writable channels held by the process. In practice, language support is required to precisely track held channels. 
-
-When a new channel pair is initialized, a logical latency value can be introduced representing the time it takes a message to transfer. This can be leveraged to model timeouts, i.e. create the channel just so we may wait on it.
-
-Temporal semantics can be mapped to real-world effects. Even with transaction loop applications, where transactions are logically instantaneous, we could treat each transaction as committing to a schedule of programmed events, mapping each time step to a nanosecond after an idealized time of commit. This future schedule would be most useful in time-sensitive domains such as music or robotics. Or time could be ignored beyond ordering effects - this would need to be documented as part of the effects API, and consistent.
-
-Although there are many benefits, I hesitate because temporal semantics adds considerable complexity to the language. For example, we'll need to track which channels are held so we can write the time steps. For example, we'll need to more explicitly represent concurrent operations (fork or fork-join) because otherwise they'd use the same process time variable. My intention is to give this a try, and find out if it's as big a mess as I fear.
-
-#### Reflective Race Conditions? Tentative. As Effect.
-
-A runtime can merge events from multiple channels non-deterministically based on arrival order, aka race conditions. This is a potential alternative to temporal semantics, and is much easier to implement efficiently. 
-
-Race conditions impose significant predictability costs. Arrival order is heavily influenced by context: parallel processing, memory cache sizes, compiler or runtime version, etc.. Applications that are developed and tested in context of observable race conditions often encounter undiscovered bugs when ported to new machines. Race conditions are worse than the normal challenges with non-determinism.
-
-Predictability can be mitigated if we control where race conditions are introduced, limit it to clear boundaries. But I think it might be better to develop temporal semantics.
-
-*Note:* It is feasible to combine race conditions with temporal semantics, i.e. race conditions within each time step. But I'm not aware of any strong use case, and I'm not convinced it's a good idea.
-
-#### Bundling of Channels or Arguments
-
-Duplex channels can be modeled as a simple read-write pair of cursors, `(r:RC, w:WC)`. A simplex channel could then be modeled as only half a duplex pair, such as `r:RC`, or as a duplex pair where one end or the other is explicitly 'closed'. 
-
-We could extend bundles to named channels. In this case, we might use `d:(foo:(...), bar:(...))` or similar, where `foo` and `bar` may each contain the `r`, `w`, and even another `d` to allow hierarchical dictionaries. Reading channel `foo.baz` may translate to operating on `d:foo:d:baz:r`. (A compiler might further translate to offsets in a struct.)
-
-Bundles can feasibly be extended with additional interaction models and common argument patterns for method calls. For example, pass-by-reference variables could be modeled as specialized channels, and simple data parameters could be understood as specialized read-only data channels. We could make 'bundle' the primary message type for both channels and grammar method calls, providing a basis for consistent interactions.
-
-*Note:* Above, I assume structural protection of abstractions. That is, the language is aware of bundle structures and knows that 'r' values represents a read-only channels. The syntax would ensure correct use of 'r'. This is essentially a lightweight type system. With a proper type system, bundles could be simplified.
-
-#### Broadcast Channels? As Optimization.
-
-A broadcast channel is a read channel that receives only perfectly copyable content, such as data or channel-based functions. A broadcast channel is also perfectly copyable: no need temporal semantics or non-deterministic race conditions. This is very convenient for the common one-to-many broadcast pattern.
-
-A compiler or runtime could recognize broadcast channels and use a more efficient copy mechanism. This recognition can be supported via static or dynamic types. In case of dynamic types, we may need to explicitly declare broadcast channels when we first create them (to reject non-copyable writes), and we might generalize 'simple copy' to be a flag on bundles.
-
-*Aside:* Programmers should also be given some tools to verify their performance assumptions. 
 
 ### Pubsub Set Based Interactions? Defer.
 
@@ -181,17 +143,10 @@ This request-response pattern can serve as a basis for function passing and inte
 
 Pubsub can potentially be adapted to *temporal semantics*. If successfully adapted, this should simplify integration with channel-based processes, which could maintain 'publish set' variables over time and read historical values of sets. However, there are still some theoretical and logistical challenges I'm working out, such as how to recognize when a process is done writing to a partial set. 
 
-The idea needs more work. However, I think it's a very promising direction to pursue, and a good fit for my vision of glas systems. Meanwhile, we can still model a broadcast or databus via channels.
+The idea needs work. However, it's a very promising direction to pursue, and a good fit for my vision of glas systems. Meanwhile, we can still model a broadcast or databus via channels.
 
 *Note:* Modeling partial sets in glas is non-trivial. But if we don't care about efficiency, we can encode values into bitstrings then model the set of bitstrings as a partial radix tree. To support pubsub, I assume partial sets are abstracted by the compiler and runtime, observed and manipulated only through keywords or built-in functions.
 
-### Staged Programming
-
-A staged program returns the next program, to be evaluated in a future context. Staged programming can be supported explicitly via first-class objects or closures, e.g. a two-stage function has type `A -> (B, C -> D)`. I think this would also work for most grammar-logic languages.
-
-In some cases, it would be useful to represent the staged program as a value. This might involve a decompiler option, something to extract the generated function as a grammar. A similar feature would be useful in most languages.
-
-Without first class functions or a decompiler, the remaining option is to manually build a value representing the next stage program. This option is effective, but integration can be awkward. For example, behavior shared between stages must be represented twice. Also, many host language features for extensibility or reasoning won't apply to the generated program.
 
 ### No-Fail Contexts? Defer.
 
@@ -201,71 +156,86 @@ This seems like a useful feature to develop later, but I also feel it's relative
 
 ### Type Safety
 
-It is feasible to augment methods with type annotations, which describe:
+We can use type annotations to describe expected types of methods, including arguments, the environment, and results. Data structure and channel protocols. Timing or latency assumptions in context of temporal semantics. Static parameter and result elements. Basically, anything we might want to check.
 
-* the data types for input and return values
-* the effects protocol used via 'io' channel
-* effects protocols for other bound channels
-* if method needs no-fail context assumption
+Ideally, users may be imprecise and we'll automatically infer missing properties based on context of use, specialized based on the current extensions. 
 
-Protocols can potentially build on the notion of session types. Session types would be adapted to work within the consistency constraints for grammar methods and limits of duplex channels and the need for implicit 'io' and 'env' arguments. That is, it might not be as powerful as session types in general, so long as it's expressive enough for our purposes.
+### Nominative Types
 
-Partial evaluation is implicit insofar as a program produces partial outputs as a consequence of receiving partial inputs. Logic unification variables and channel-based interaction are very convenient for partial evaluation.
-
-Session types can help make partial evaluation 'robust' by describing assumptions in a machine-checkable format, and enabling analysis of potential datalock.
+It is possible to model 
 
 ### Default Definitions? Tentative.
 
-Support for 'default' definitions is convenient in some cases. A default definition may override or extend another default definition, but it won't override normal definitions. We could model this as a priority on definitions. We could also model 'final' definitions as a priority: it's an error to even try to override a final definition with a normal or final definition, but a default definition would be ignored.
-
-I don't want subtle, fine-grained priorities. But if we limit to just a few priorities, I think that's acceptable. We might also add 'abstract' definitions as a priority.
+Support for 'default' definitions is convenient in some cases. A default definition would override or extend another default definition, but it won't override normal definitions. This would be understood as a special feature of the definition type.
 
 ### Weighted Grammars and Search
 
-Methods can be instrumented with annotations to generate numbers estimating 'cost' and 'fitness' and other ad-hoc numeric attributes. A runtime can implicitly compute and total these values, and use them heuristically to guide search in context of non-deterministic computations. This isn't a perfect solution, but I think it might be adequate for many use cases.
+Methods can be instrumented with annotations to generate numbers estimating cost and fitness and other ad-hoc attributes. A runtime can implicitly compute and total these values, and use them heuristically to guide search in context of non-deterministic computations. This isn't a perfect solution, but I think it might be adequate for many use cases.
 
 Because this can build on annotations, no special semantics are needed. But dedicated syntax can make this feature more accessible.
 
-### Annotations Namespace
+### Lazy Evaluation? Flexible.
 
-One approach to annotate 'foo' with documentation is to define associated words. For example, we could define 'anno/foo/docs' to a value representing documentation for 'foo'. This approach is simple and has many nice properties. Annotations are easily extended or abstracted. They don't require unique syntax. Tools may warn if annotations are referenced from outside the 'anno' namespace, or if recognized annotations have non-standard types. A compiler can implicitly apply translations to annotations. 
-
-I think this can be used for most cases where we want annotations on methods. 
-
-### Static Assertions
-
-A static assertions is a computation that should return 'true'. In context of grammar-logic, assertions can be modeled as methods where the system searches for an input that leads to computing a valid outcome. This is very expressive, capable of representing searches, negative assertions, and individual tests.
-
-We could support assertions as a conventional use of annotations or namespaces 
-
-        anno/foo/assert/basic-test = ...
-        assert/foo-bar-integration = ...
-
-A compiler may heuristically filter which assertions to test based on naming and transitive dependencies of the application. For example, if we use word 'a/foo' then we might test all assertions in 'a/assert/' plus all those in 'a/anno/foo/assert/'. 
+As an optimization tactic, lazy evaluation is a good fit for grammar-logic and functional programming. We could support annotations within the language to guide its use. But I'd prefer to avoid lazy evaluation semantics. No lazy fixpoints ["tying the knot"](https://wiki.haskell.org/Tying_the_Knot), for example. 
 
 ### Module Structure
 
-Modules may start with one `open Module` import, providing the initial namespace, then import individual definitions from other modules with optional aliasing (via `from ./xyzzy import foo, bar as baz, ...`). There are no qualified imports or hierarchical names at this layer. Modules may specify an optional export list. By default, everything is exported. 
+Toplevel module structure can be similar to g0 - one open module declaration (single inheritance), several imports and definitions, finally an optional export list. Imports could be qualified or provided as a list. 
 
-Modules additionally define grammars and mixins, translations and interfaces. The compiler eliminates references between modules-layer definitions via inling or application; compiled grammar definitions are independent. However, most code should be at the grammar-layer. Grammars can be understood as a more extensible and composable modular form.
+Definitions include grammars, mixins, perhaps translations. At least initially, I intend to avoid anything that requires compile-time eval: data definitions, macros, top-level assertions, export expressions, etc.. Those might be introduced later, after bootstrap and accelerated eval.
 
-There are no top-level assertions, macros, or data definitions. Nothing that might require a full 'eval' by the module-level compiler.
+A grammar represents an entire namespace, but we can follow the convention of defining a 'main' method for applications. We could use annotations (perhaps via `anno/main/run-mode`) to guide integration of main, e.g. selecting a staged programming mode.
 
-### Application Model
+### Applications as Servers
 
-As a convention, if a grammar namespace is referenced as a function, we may assume method 'main'. If present, the glas command line interface also evaluates a 'run-mode' annotation on 'main'. This can specify alternative run modes, or provide some extra parameters to the default run mode. Staged programs, such as selecting or configuring a program based on command line and environment parameters, can be supported via run mode.
+Applications might operate on a tuple space or mailbox of messages to avoid the awkward composition challenges of establishing HTTP listeners and so on. This would also support OS signals and other events. I think this would be a much better default.
 
-### Acceleration
+A compiler or runtime might also generate an administrative and debug interface for applications, providing access to state and configurations and so on. This might also be represented as an HTTP service.
 
-It is possible to support some accelerated functions in context of grammar-logic languages. This can be expressed using 'accel' annotations, which the runtime or compiler would know to check.
+Ideally, we provide data storage and configurations to applications at a higher level than 'files'. Let the runtime manage this difference in levels. 
 
-However, acceleration of higher-order functions is difficult to express. Also, we cannot necessarily accelerate running a function backwards or with partial inputs. Thus, relying on acceleration may hinder use of programs for non-deterministic search.
+### Extensible Syntax? Defer.
+
+I like the idea of supporting DSLs or dialects within programs. But this should be handled by compile-time eval, e.g. so we can load local modules as part of our extensible syntax. So, it will be deferred until at least after bootstrap and accelerated eval.
+
+### Fine-Grained Staged Programming
+
+It might be useful to support 'static' annotations to indicate which expressions should be statically computable within the fully extended grammar. This may propagate to static parameters in some use cases. Ideally, we could also support types that describe static arguments and results.
+
+### Method Call Syntax
+
+The toplevel argument to a method shall always be a dictionary. This ensures space for an 'env' parameter for the implicit environment. The primary argument might be named 'args'. We might represent return values as 'result'. I favor labels in case we later extend the interaction model.
+
+The 'args' parameter will typically be a list (positional parameters) or another dictionary (keyword parameters). Keyword parameters are advantageous for further extensibility, but sometimes a list is more concise and convenient. Grammars can potentially match on lists the same way they match on texts or source code, recognizing fragments of a list.
+
+Channels, pass-by-ref vars, etc. would be modeled as first-class elements of these lists or dictionaries. However, the language abstractions and runtime may protect linearity assumptions. Attempting to recognize a channel as a regular list value may either fail or be treated as a type error depending on context.
+
+It should be feasible to *fully abstract* over method arguments, e.g. such that even pass-by-ref vars might be included in the result of method calls, forwarding or providing views on inputs.
+
+The 'env' parameter is what the language passes or threads tacitly through every computation. This might be wrapped and abstracted via dedicated syntax, such as `with (env) { ... }`. The language must also provide dedicated syntax to access the environment. Typically, the environment is also a dictionary, providing access to the runtime (perhaps as a channel-based object) and potentially to some read-only environment vars or threaded state vars. We might support 'pure' computations that are essentially `with () { ... }`.
+
+### Pass By Reference Parameters
+
+We can roughly model pass-by-reference as a pair `(Curr, Dest)` where programs update `Curr` in place (via purely functional state patterns) then write (unify) the final value of `Curr` with `Dest` when the reference is about to exit scope. As with channels, this pair should be abstracted by the language, such that `Dest` is never observed by a program.
+
+There are a couple related challenges.
+
+First, we cannot copy a pass-by-ref parameter for concurrent operation. The `Dest` cannot be copied because we may only write it once and there is no sensible solution to merge writes. Consequently, pass-by-ref must be considered a linear type. What we can do is continue to pass-by-ref the current value, or copy the contained value (unless that value also restricts copy).
+
+Second, integration with temporal semantics needs careful attention. One idea is to model `Dest` as a write-once channel, in which case the channel might also include a number of implicit time step messages, and a process could query whether the referenced object has been returned yet. Conversely, `Curr` would need to include the read channel where the time steps are observed, and might be updated via pushback. The process could then potentially 'wait' on a pass-by-ref result. 
+
+I suspect this idea needs careful formalization, especially in context of composition: What happens, exactly, when a pass-by-ref var is passed-by-ref? How should pass-by-ref interact with mutable local vars?
+
+### Incremental Compilation
+
+We can design a grammar compiler such that it memoizes and composes partial results, aligned with expression of grammar inheritance. This could help avoid some rework. 
+
 
 ## Namespace Builder
 
 I want an AST for namespaces that efficiently compiles to a 'flat' dictionary with (rn:renames, def:definition) pairs. This could be followed by a function to apply renames to definitions. To keep it simple, the compiler may reserve a prefix for internal use; can easily raise an error if users attempt to define a reserved symbol.
 
-* *rename:(in:NS, map:\[(Prefix1, Prefix2), ...\])* - rename multiple names within NS. This also renames them within definitions in NS. Initial Prefixes must not overlap. Final prefixes may overlap, but it's an error if two names are combined. 
+* *rename:(in:NS, move:\[(Prefix1, Prefix2), ...\])* - rename multiple names within NS. This also renames them within definitions in NS. Initial Prefixes must not overlap. Final prefixes may overlap, but it's an error if two names are combined. 
 * *scope:(in:NS, hide:\[Prefix1, Prefix2, ...\])* - move all names that start with the given prefixes into a fresh, anonymous namespace. The compiler may reserve a name prefix for all the anonymous namespaces. In practice, we'll mostly `hide:"~"`.
 
 TODO:

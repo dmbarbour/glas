@@ -77,7 +77,6 @@ Direct representation of lists is inefficient for many use-cases. To enable list
 
 To support larger-than-memory data, glas systems will also leverage content-addressed storage to offload volumes of data to disk. I call this pattern *Stowage*, and it will be heavily guided by program annotations. Stowage simplifies efficient memoization, and network communication in context of large data and structure-sharing update patterns. Stowage also helps separate the concerns of data size and persistence.
 
-
 ## Programs
 
 Programs are values with a known interpretation. There are many desirable qualities for a model of programs - simplicity, composability, extensibility, usability, debuggability, discoverability, efficiency, scalability, cacheability, etc.. Alas, tradeoffs are necessary. The glas system can eventually support multiple program models, but the initial model for bootstrap will greatly impact development of the glas system.
