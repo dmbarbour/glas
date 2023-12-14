@@ -44,28 +44,67 @@ An intriguing possibility in context of grammar-logic programming is to model no
 Instead of a monolithic grammar (or logic), I propose to model grammars as a collection of named rules. This allows us to express OOP-like inheritance and override. For example, we might want a new language the same as the old one, except with a new option to parse an integer.
 
         grammar foo extends bar . baz with
-            integer = ... | prior.integer 
+            integer = ... | proto.integer 
 
-We can generally support mixins and multiple inheritance. I propose to model all grammars as mixins, but use of the grammar keyword above would introduce an implicit constraint that `integer` must not be defined prior to `bar . baz`. Multiple inheritance is possible if two grammars don't overlap, or via the mixin keyword that does not have this constraint.
-
-I don't expect to be needing first-class namespaces. That is, we don't instantiate grammars the way we instantiate objects. Grammars are stateless. There is also no performance need for final definitions.
+I propose to model all grammars as functions on a namespace. This allows for multiple inheritance. There are some issues that must be mitigated (see *Namespace Genealogy*).
 
 Related ideas:
 
 * *Hierarchical namespaces.* We might take `foo in f` to translate all names defined in foo to the `f/` namespace, such as `f/integer`. Hierarchical structure would help control name collisions while still allowing flexible extension to methods within that namespace.
 
-* *Anonymous namespaces.* Our language might logically rename methods and hierarchical namespaces that start with '~' to a fresh anonymous namespace, providing a space for private definitions.
+* *Anonymous namespaces.* Our language compiler can logically rename methods that start with a specific prefix, perhaps '.', to a fresh anonymous namespace. This provides a space for private definitions and local refactoring. 
 
 * *Explicit translations.* We could allow more precise renames, such as renaming 'integer' to 'int' in foo. This would be useful for adapting mixins to another target, for conflict avoidance, and for community localization. Ideally, renames can be abstracted for reuse.
 
-* *Interfaces as incomplete namespaces.* We can define incomplete grammars where overrides are expected or required. These incomplete grammars may contain annotations describing expected properties or types. Those annotations could be checked when compiling the fully extended grammar, unless they too are explicitly overridden.
+* *Annotations by naming convention.* For example, annotate `integer` by defining `anno/integer/type` and `anno/integer/doc`. This makes annotations accessible and extensible, subject to the same refactoring and abstraction as all other data, and mitigates specialized syntax for annotations to a syntactic sugar. 
 
-* *Annotations as conventional namespaces.* We can model most annotations as a lightweight convention on namespaces, e.g. annotate `integer` by defining `anno/integer/type`, `anno/integer/docs`, and so on. The compiler could know to rename `anno/integer/` when `integer` is renamed. Assertions might similarly be named and modeled via a conventional `assert/property` namespace. This design allows annotations to be extended or refactored like any other definition.
+* *Assertions by naming convention.* Similar to annotations, we might model assertions by defining `assert/property-name` to a method that is treated as a proposition. These assertions would be evaluated in context of extensions to the namespace.
 
-* *Nominative types.* Programs can potentially use arbitrary names from the namespace to wrap or unwrap data, or match wrapped data without unwrapping it. This would enable renames to also prevent some type conflicts. In context of anonymous namespaces, this would support user-defined abstract data types. Further, we could easily associate operations such as debug views through the namespace.
+* *Interfaces as partial namespaces.* An interface is essentially a grammar where the methods are declared but undefined, where we instead focus on annotations - documentation, types, assertions about how methods interact, etc.. Useful for both mixins and grammars. Testi
 
+* *Nominative types.* It is feasible to allow programs to use names to organize data, e.g. to wrap and unwrap data, or to index data. This can model open variant types and open records that are guaranteed to not conflict, or abstract data types via anonymous namespaces. However, nominative types are relatively awkward in context of open distributed systems.
 
+#### Namespace Genealogy? Tentative.
 
+Multiple inheritance has known issues that must be mitigated, such as [the diamond inheritance problem](https://en.wikipedia.org/wiki/Multiple_inheritance#The_diamond_problem). Consider a diamond inheritance example:
+
+            A
+           / \
+          B   C
+           \ /
+            D
+
+This diamond might be constructed from four grammars.
+
+        grammar A with ...
+        grammar B extends A with ...
+        grammar C extends A with ...
+        grammar D extends B . C with ...
+
+One reasonable interpretation is that B and C represent extensions to meanings from A, and there is no conflict unless they independently attempt to extend the same symbol with two different meanings. To implement this solution in context of building the namespace, we might track provenance for every symbol.
+
+        to apply G to NS:
+            local NS' = apply G's prototype to NS
+            for each symbol defined in G:
+                if symbol is defined in NS and is not derived from G:
+                    raise an error
+                else:
+                    update symbol and its genealogy in NS'
+            return NS'
+
+The grammar `(B . C)` can be interpreted as functional composition, compiling to `λ NS . apply B to (apply C to NS)`. In context, applying A twice would have no effect the second time, but `apply B` would raise an error if C and B each explicitly override the same symbol.
+
+In context of glas systems, grammars are represented as plain old data at the glas module layer. They don't have an extrinsic identity, but we can reasonably assume grammars with the same value have the same meaning (especially when grammars include annotations to document meaning). Recording the entire history of grammar values into genealogy might be a bit expensive, but a compiler could instead record a set of secure hashes, perhaps `hash((hash(G), symbol))`. (*Note:* unique genealogy per symbol is useful in context of renames.)
+
+Although resolving the multiple inheritance issue in this manner is feasible, I'm not convinced it's the right solution for glas systems. It requires mental gymnastics to understand which compositions of grammars are acceptable, order of application. 
+
+#### Alternatives to Genealogy
+
+I currently favor a simple solution: Single inheritance per method. That is, multiple inheritance of grammars is permitted only when the intersection of defined symbols is empty. More generally, we might specify for each symbol whether it it is assumed by the grammar (or mixin) to have already be defined or undefined.
+
+#### Access to Previous Definitions
+
+A keyword 'prior' might reference prior versions of definitions when extending definitions. This could reference the current method, or potentially reference other methods in context of multiple definitions updated atomically (e.g. foo = prior bar and bar = prior foo). The latter option is a little bit more flexible, though it may hinder refactoring of definition groups into mixins. OTOH, it does align with other atomic ops such as renames.
 
 ### Channel Based Interactions
 
@@ -129,24 +168,15 @@ Functions can be modeled similarly as a *stateless* object. If the runtime knows
 
 Ideally, grammar methods and object methods via channels would have a consistent syntax and underlying semantics.
 
-### Pubsub Set Based Interactions? Defer.
+### Pubsub Set Based Interactions? Defer. Tentative.
 
-Channels operate sequentially on *partial lists*. An intriguing alternative is to operate collectively on *partial sets*. 
+Channels operate sequentially on *partial lists*. An intriguing alternative is to operate collectively on *partial sets*. This would make writes commutative and idempotent - features we can potentially leverage. 
 
-Writing to a partial set is commutative and idempotent. These are very convenient properties. However, reading a partial set is relatively complicated because, at least in context of deterministic computation, we must not accidentally *observe* write-order. 
+Just as channels may transfer channels, partial sets may provide access to partial sets. A remote process might process a set of requests that include locations to write responses, and those responses would be routed back to the initial caller. If the process leverages idempotence and commutativity, it is feasible to coalesce concurrent requests and responses, only forking computations where they observe different data. This would result in a highly declarative and reactive system, similar to publish-subscribe systems.
 
-Consequently, read operations are continuous: there is no order, no first, thus cannot read first three items then stop. Instead, read would fork the computation, with each fork operating concurrently on one element of the set. Sequential reads would effectively model relational joins. And the reader is also limited to commutative, idempotent effects, such as writing to a partial set. These constraints on readers result in a very declarative, reactive programming style. Indeed, it's similar to publish-subscribe systems, so I've decided to call this 'pubsub sets'.
+Unfortunately, it significantly complicates reads because there is no clear starting point. It also complicates termination because no individual writer can take responsibility to say "that's it, no more, we're done". Temporal semantics might help, e.g. we might require a time step between writing and reading (read past, write future). But this idea still needs a lot of work before it becomes viable.
 
-Just as channels may transfer channels, partial sets may carry partial sets. This supports a useful request-response pattern: one program writes a request and includes a 'new' partial set just to receive the response. This response may include data and additional partial sets for further interaction. Also similar to channels, to structurally protect abstraction and dataflow, the grammar-logic language could use hierarchical 'bundles' of partial sets and data as the primary message type.
-
-This request-response pattern can serve as a basis for function passing and integration of real-world effects. Many effects can be adapted. For example, although we cannot directly model streaming files, we could model requests to read file regions or to apply patches later. And we could potentially even abstract this to look like a stream.
-
-Pubsub can potentially be adapted to *temporal semantics*. If successfully adapted, this should simplify integration with channel-based processes, which could maintain 'publish set' variables over time and read historical values of sets. However, there are still some theoretical and logistical challenges I'm working out, such as how to recognize when a process is done writing to a partial set. 
-
-The idea needs work. However, it's a very promising direction to pursue, and a good fit for my vision of glas systems. Meanwhile, we can still model a broadcast or databus via channels.
-
-*Note:* Modeling partial sets in glas is non-trivial. But if we don't care about efficiency, we can encode values into bitstrings then model the set of bitstrings as a partial radix tree. To support pubsub, I assume partial sets are abstracted by the compiler and runtime, observed and manipulated only through keywords or built-in functions.
-
+*Note:* We can awkwardly and inefficiently model partial sets in glas data by encoding values into bitstrings then modeling a partial radix tree. I assume that if this feature is developed, partial sets would instead be abstracted by the language and efficiently supported by the compiler and runtime.
 
 ### No-Fail Contexts? Defer.
 
@@ -160,19 +190,16 @@ We can use type annotations to describe expected types of methods, including arg
 
 Ideally, users may be imprecise and we'll automatically infer missing properties based on context of use, specialized based on the current extensions. 
 
-### Nominative Types
-
-It is possible to model 
-
 ### Default Definitions? Tentative.
 
-Support for 'default' definitions is convenient in some cases. A default definition would override or extend another default definition, but it won't override normal definitions. This would be understood as a special feature of the definition type.
+Support for 'default' definitions is convenient in some cases. Defaults might be represented by defining `anno/foo/default` in context of compiler awareness of defaults. The compiler would know to search for default definitions when the primary definition is not provided.
 
 ### Weighted Grammars and Search
 
 Methods can be instrumented with annotations to generate numbers estimating cost and fitness and other ad-hoc attributes. A runtime can implicitly compute and total these values, and use them heuristically to guide search in context of non-deterministic computations. This isn't a perfect solution, but I think it might be adequate for many use cases.
 
 Because this can build on annotations, no special semantics are needed. But dedicated syntax can make this feature more accessible.
+
 
 ### Lazy Evaluation? Flexible.
 
@@ -185,6 +212,7 @@ Toplevel module structure can be similar to g0 - one open module declaration (si
 Definitions include grammars, mixins, perhaps translations. At least initially, I intend to avoid anything that requires compile-time eval: data definitions, macros, top-level assertions, export expressions, etc.. Those might be introduced later, after bootstrap and accelerated eval.
 
 A grammar represents an entire namespace, but we can follow the convention of defining a 'main' method for applications. We could use annotations (perhaps via `anno/main/run-mode`) to guide integration of main, e.g. selecting a staged programming mode.
+
 
 ### Applications as Servers
 
@@ -202,29 +230,35 @@ I like the idea of supporting DSLs or dialects within programs. But this should 
 
 It might be useful to support 'static' annotations to indicate which expressions should be statically computable within the fully extended grammar. This may propagate to static parameters in some use cases. Ideally, we could also support types that describe static arguments and results.
 
-### Method Call Syntax
+### Method Calls
 
-The toplevel argument to a method shall always be a dictionary. This ensures space for an 'env' parameter for the implicit environment. The primary argument might be named 'args'. We might represent return values as 'result'. I favor labels in case we later extend the interaction model.
+I propose the initial language focus on the styles of procedural programming and pattern matching.
 
-The 'args' parameter will typically be a list (positional parameters) or another dictionary (keyword parameters). Keyword parameters are advantageous for further extensibility, but sometimes a list is more concise and convenient. Grammars can potentially match on lists the same way they match on texts or source code, recognizing fragments of a list.
+A conventional procedure call has at least three elements - argument, environment, and result. This might be concretely represented by an `(env, arg, ret)` triple, called an activation record. Each may contain an ad-hoc structured mix of data, channels, and pass-by-refs. Support for pass-by-refs in result is convenient for refactoring arguments.
 
-Channels, pass-by-ref vars, etc. would be modeled as first-class elements of these lists or dictionaries. However, the language abstractions and runtime may protect linearity assumptions. Attempting to recognize a channel as a regular list value may either fail or be treated as a type error depending on context.
+To improve pattern matching, I propose to introduce two more elements: remaining arguments (output) and an optional adjunct argument (input). This extends our activation record to `(env, adj, arg, rem, ret)`.
 
-It should be feasible to *fully abstract* over method arguments, e.g. such that even pass-by-ref vars might be included in the result of method calls, forwarding or providing views on inputs.
+* Remaining arguments supports incremental pattern matching. For example, when we parse an integer out of text, we would implicitly return the remaining text to the caller for further processing. This generalizes easily to matching on lists and records. 
+* The adjunct argument is provided *within* a pattern, distinct from the argument we're trying to matching against. It serves the same role as curried parameters in F# active patterns, i.e. `let (|P|_|) adj arg = ...` allows P to explicitly adjust via adj how and whether a match occurs on arg. 
 
-The 'env' parameter is what the language passes or threads tacitly through every computation. This might be wrapped and abstracted via dedicated syntax, such as `with (env) { ... }`. The language must also provide dedicated syntax to access the environment. Typically, the environment is also a dictionary, providing access to the runtime (perhaps as a channel-based object) and potentially to some read-only environment vars or threaded state vars. We might support 'pure' computations that are essentially `with () { ... }`.
+I will consider further extensions as needed, but this gives a good start at least. 
 
-### Pass By Reference Parameters
+*Note:* Normal programs won't extend the activation record. That's the domain of language design. But a useful level of extensibility for normal programs is assured by the ability to match flexibly on ad-hoc structure. For example, a method might accept both list and dict arg (i.e. positional and keyword arguments).
 
-We can roughly model pass-by-reference as a pair `(Curr, Dest)` where programs update `Curr` in place (via purely functional state patterns) then write (unify) the final value of `Curr` with `Dest` when the reference is about to exit scope. As with channels, this pair should be abstracted by the language, such that `Dest` is never observed by a program.
+#### Pass-by-Ref
 
-There are a couple related challenges.
+Pass-by-reference is supported for all cases, including returned values. Returning pass-by-ref is useful for refactoring and for symmetric control over created processes. Output-only can be supported typefully. We always need an initial value to handle extension with new unhandled elements, but we could provide an input that's an invalid output to require handling.
 
-First, we cannot copy a pass-by-ref parameter for concurrent operation. The `Dest` cannot be copied because we may only write it once and there is no sensible solution to merge writes. Consequently, pass-by-ref must be considered a linear type. What we can do is continue to pass-by-ref the current value, or copy the contained value (unless that value also restricts copy).
+Pass by ref can be modeled via implicit unification of a current value with a destination variable after we know we won't be updating the current value further. For write channels, this unification might be reversed, with the destination being an empty list, and unification instead closing the channel. A separate process could sequence the closed channel with a sequential copy. 
 
-Second, integration with temporal semantics needs careful attention. One idea is to model `Dest` as a write-once channel, in which case the channel might also include a number of implicit time step messages, and a process could query whether the referenced object has been returned yet. Conversely, `Curr` would need to include the read channel where the time steps are observed, and might be updated via pushback. The process could then potentially 'wait' on a pass-by-ref result. 
+#### Environment Manipulation
 
-I suspect this idea needs careful formalization, especially in context of composition: What happens, exactly, when a pass-by-ref var is passed-by-ref? How should pass-by-ref interact with mutable local vars?
+The environment is passed to and returned from each subprogram. Some elements of the environment are read-only, others might be read-write or pass-by-ref. Returns should happen ASAP after we know an element of the environment isn't used. Structure of the environment is stable within a context. This stability simplifies local reasoning, extension, and composition.
+
+Access to manipulate the environment might also be provided by implicit keyword variable named env. We could also provide structured access such as `with (newEnv) do { ... }` or a variation that runs to end of scope. But I'm uncertain anything special is needed. Perhaps even `let env = (newEnv) in { ... }` would be sufficient, with the idea being that there is an implcit argument named 'env' that is threaded everywhere but may be extended or overridden in lexical contexts.
+
+*Aside:* I could require explicit syntax to refer to prior versions of a symbols, such as `let env = ... | prior env`. This could even be similar to referencing grammar namespaces, though we might generally need to distinguish namespace refs from local variables.
+
 
 ### Incremental Compilation
 
@@ -240,7 +274,7 @@ I want an AST for namespaces that efficiently compiles to a 'flat' dictionary wi
 
 TODO:
 
-* *define* new words or overrides, should specify an extra prefix to locally refer to 'prior' definitions. Prior definitions are moved into a new anonymous namespace, then the given prefix is redirected to that namespace.
+* *define* new words or overrides, should specify an extra prefix to locally refer to prior definitions. Prior definitions are moved into a new anonymous namespace, then the given prefix is redirected to that namespace.
 
 * *initial* definitions - assert certain words are undefined (or only have default or abstract definitions). This cannot be a normal priority because it needs to wrap the grammar body *and* its extensions.
 * *final* and *default* and *abstract* definitions - could model as priority values on definitions. Abstract definitions could omit the definition body, mostly serve as stand-ins to ensure renames don't merge names by accident, and to help discover spelling errors.
