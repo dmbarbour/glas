@@ -109,6 +109,25 @@ Keys are bitstrings, and the database is usually a record/dict value. Operating 
 
 Operations may fail due to implicit validation, e.g. verify invariants upon put or commit. In some contexts, an effects handler might also rewrite keys, modeling a logical chroot or virtual memory.
 
+### Standardized Configurations
+
+Instead of configuration files, it would be convenient to support configuration as a standard feature provided through the runtime. This would simplify standardization of configuration interfaces and tooling. No need for a dedicated API here: Configurations could be recorded into the database or perhaps a runtime provided environment variable.
+
+### Standardized Mailbox
+
+A runtime can provide a simple mailbox model, or perhaps a more sophisticated structure such as tuple space or bulletin board. Providing HTTP services through this system would allow multiple applications to more readily share a single TCP port, and allow the runtime to provide standardized URLs for administration and debugging of applications. It would also simplify orthogonal persistence of applications.
+
+The main constraint on this API is that we'll need to search for events relevant to a subprogram. This implies some form of topic-based search, perhaps a cursor to iterate matching items, not a mere key-value lookup.
+
+### Environment Variables
+
+A simple API for access to OS environment variables, such as GLAS_PATH, or extended environment variables from the runtime.
+
+* **env:get:Key** - read-only access to environment variables. 
+* **env:list** - returns a list of defined environment variables.
+
+Glas applications won't update environment variables. However, it is possible to simulate the environment for a subprogram via effects handlers. 
+
 ### Filesystem
 
 Filesystems are ubiquitous and universally awkward. The filesystem API here provides a bare minimum for streaming files. Writes are buffered until committed, and reads may be limited to what is in the input buffer when the transaction starts. This should mostly be used for integration; if you just need data persistence, the *Shared Database* is a much better option due to abstracting integration with stowage.
@@ -152,15 +171,6 @@ Proposed API:
 
 
 It is feasible to extend directory operations with option to 'watch' a directory for updates.
-
-### Environment Variables
-
-A simple API for access to OS environment variables, such as GLAS_PATH.
-
-* **env:get:String** - read-only access to environment variables. 
-* **env:list** - returns a list of defined environment variables.
-
-Glas applications won't update environment variables. However, it is possible to simulate the environment for a subprogram via effects handlers. 
 
 ### Network
 

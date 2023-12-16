@@ -212,13 +212,10 @@ The 'prog' model has several known weaknesses, but there are mitigation strategi
   * annotations can guide a compiler in breaking a program into subroutines
   * dictionary compression pass can automatically break a program into subroutines
   * memoization can reduce repetitive typechecking and on common subprograms
-* There are no first-class functions. This simplifies reasoning, especially about effects, but it does complicate some tasks. This can be mitigated via acceleration, e.g. accelerate a 'prog-eval' function, and perhaps a 'prog-type' function (to simplify JIT compilation).
-* Relies heavily on acceleration if we ever want high performance number crunching for physics simulations, graphics rendering, cryptography and compression, etc..
-* The lack of direct feedback for 'why did this fail' prevents selecting the most appropriate response. This can be mitigated with compiler support for recognizing common prefixes between a 'try' and 'else:try' clause, to avoid rework.
-* The prog model has no built-in support for parallelism. This can be mitigated via annotations and dataflow analysis, and perhaps via acceleration. We could 'accelerate' a Kahn Process Network to evaluate across multiple machines. 
-  * The state used in `env:(with, do)` is especially awkward for modeling parallel effects. It is much easier to insist that parallel computations are pure. But in theory we can partition handler state for parallel effects, and this might be worth trying. Someday.
+* There are no first-class functions. This simplifies reasoning, especially about effects, but it does complicate some tasks. This can be mitigated via accelerated eval.
+* The prog model has no built-in support for parallel, concurrent, or distributed computation. The effects system is an awkward bottleneck for introducing these features.
 
-It is also feasible to mitigate weaknesses at the application layer.
+I might be replacing 'prog' with a [grammar-logic based programming model](GrammarLogicProg.md) soon.
 
 ## Applications
 
@@ -307,9 +304,7 @@ When compiling glas programs, a useful optimization pass is to identify common s
 
 ### Application Layer 
 
-The glas system is not forever stuck with the 'prog' program model and its foibles. It is feasible to extend the glas command line to support other program models for `glas --run`. As a concrete example, I intend to develop a 'proc' representation for transaction loop applications to better optimize incremental computing and concurrency (in [Glas Apps](GlasApps.md)).
-
-However, this is a solution to pursue mostly where accelerators are awkward (e.g. due to relationship with effects). 
+The initial 'prog' model isn't the best for scalability. The effects system imposes some structural limits. I'm currently developing [grammar logic programming](GrammarLogicProg.md) for glas that could serve as a more flexible and scalable basis for computation. 
 
 ## Reflection
 
