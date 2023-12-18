@@ -54,7 +54,7 @@ This is also a challenge in many popular languages today. But this problem is ex
             Z   // oops, might backtrack from X or Y
 
 
-These problems also appear in context of typical match-case syntax. I think I'll need a dedicated syntax for factoring conditionals. My first idea is to support subcases.
+These problems also appear in context of typical match-case syntax. I think I'll need a dedicated syntax for factoring conditionals. My first idea is to support subcases. Something like this:
 
         match arg with
         | C1 and
@@ -64,7 +64,7 @@ These problems also appear in context of typical match-case syntax. I think I'll
 
 This seems like it might be adequate for factoring most conditionals locally. I can give it a try and see if I have new ideas.
 
-Factoring is still limited more than I'd prefer. It isn't clear how to refactor partial function `C2 -> X | C3 -> Y` into a separate method call without conflating failures in X or Y with failures in C2 or C3. It seems feasible to use failure modes to specially support this factoring, but that feels like a hack. At least for now, I propose to allow only the final choice to be factored into a method call without a `->` separator. It doesn't matter why we fail if there is no next choice. This avoids a syntactic impression of a perfect factoring in cases where factoring isn't perfect.
+Factoring is still limited more than I'd prefer. It isn't clear how to refactor partial function `C2 -> X | C3 -> Y` into a separate method call without conflating failures in X or Y with failures in C2 or C3. It seems feasible to use failure modes to specially support this factoring, but that feels like a hack. At least for now, I propose to allow only the final choice to be factored into a method call (without the `->` separator). It doesn't matter why we fail if there is no next choice. This avoids any syntactic impression of a perfect factoring in cases where factoring isn't perfect.
 
 ### Deterministic Functions
 
@@ -83,7 +83,7 @@ An intriguing possibility in context of grammar-logic programming is to model no
 Instead of a monolithic grammar (or logic), I propose to model grammars as a collection of named rules. This allows us to express OOP-like inheritance and override. For example, we might want a new language the same as the old one, except with a new option to parse an integer.
 
         grammar foo extends bar . baz with
-            integer = ... | prior integer 
+            integer = ...  
 
 I propose to model all grammars as functions on a namespace. This allows for multiple inheritance, but see *Multiple Inheritance* for a discussion on conflict resolution.
 
@@ -91,7 +91,7 @@ Related ideas:
 
 * *Hierarchical namespaces.* We might take `foo in f` to translate all names defined in foo to the `f/` namespace, such as `f/integer`. Hierarchical structure would help control name collisions while still allowing flexible extension to methods within that namespace.
 
-* *Anonymous namespaces.* Our language compiler can logically rename methods that start with a specific prefix, perhaps '.', to a fresh anonymous namespace. This provides a space for private definitions and local refactoring. 
+* *Anonymous namespaces.* Our language compiler can logically rename methods that start with a specific prefix to a fresh anonymous namespace. This provides a space for private definitions and local refactoring. 
 
 * *Explicit translations.* We could allow more precise renames, such as renaming 'integer' to 'int' in foo. This would be useful for adapting mixins to another target, for conflict avoidance, and for community localization. Ideally, renames can be abstracted for reuse.
 
@@ -120,7 +120,7 @@ Sketch of algorithm:
 * When introducing a def, compiler saves current def and defers conflict detection.
 * Conflict detection is performed at next introduction or after inheritance is processed.
 
-The intention is to detect conflicts between inherited definitions after overrides are applied. Otherwise, we might eagerly report conflicts that are resolved by a later mixin. I expect conflict detection will be complicated by interaction with anonymous namespaces. But it might be simplified via clever use of secure hashes.
+This might need to be tweaked depending on how we compile definitions, and depending on how we implement anonymous namespaces. But the intention is to avoid comparing for equal definitions before overrides and extensions are applied. When overrides are applied, the entire history of prior definitions generally becomes part of that definition for comparison, though we might be more precise if an override doesn't reference its prior.
 
 #### Default Definitions
 
@@ -128,7 +128,48 @@ I could support defaults for arbitrary symbols. This might be a soft state betwe
 
 #### Access to Previous Definitions
 
-I propose use of 'prior foo' to refer to the prior version of a newly defined word. Here 'prior' would be a keyword, or I might instead try a sigil such as '%foo'. We'll define symbols in atomic sets, so we can refer to prior versions for multiple words in the set we're defining. This aligns with other atomic ops, such as rename.
+I propose use of keyword prior to reference previous versions of the current definitions. To simplify reasoning and implementation, only the current definition can reference its own prior. This ensures the history of each word can be taken independently (no need to think about which words updated together). 
+
+For convenient use of prior, we should provide a lightweight syntax to forward all arguments to another method. Would also be useful for delegation in general. Syntactically, something like `delegate to foo` or `foo(...)`. 
+
+#### Prefix to Prefix Renaming
+
+Ideally we can compose an indexed rename structure in a single pass while compiling grammars, such that all renames can be batched and easily cached.
+
+The main challenge is overlapping renames. When I rewrite prefix `foo => x` in context of renaming `bar => fo`, the composite rename must imply both `baro => x` and `barn => fon`. Note that `fo` cannot be a complete name, otherwise rename of `foo` would be invalid, thus we can assume `bar` must also have a suffix. We can handle every `bar(X)` case. We only need one identity case branch per bit.
+
+        bar(0b1) => fo(0b1)
+        bar(0b00) => fo(0b00)
+        bar(0b010) => fo(0b010)
+        ... identity bitstrings of size 4, 5, 6, 7
+        bar(0b01100110) => fo(0b01100110)   // barn => fon case
+        bar(0b01100111) => x                // baro => x   case
+
+This isn't pretty, but it should be within tolerable overheads for indexing these cases.
+
+A secondary challenge is indexing things the renames themselves. Assuming I'm building from the outside in, my current index has `bar => fo` and then I'm presented with the `foo => x` case and must somehow locate `bar` as a potential prefix of `foo`. This requires some form of reverse lookup index. 
+
+At the byte level, we would need to search for:
+
+* all indices that produce `food` (or other suffixes of `foo`)
+* all indices that produce `foo`
+* all indices that produce `fo`
+* all indices that produce `f`
+* all indices that produce the empty prefix
+
+Any of these could be a potential match for `foo => x` in context. And we'd need to generalize to bit-level matching. 
+
+Although, maintaining this index is not trivial, it should be possible to support ad-hoc prefix-to-prefix renaming in a reasonably efficient, compositional, top-down manner. A simplistic, less scalable implementation remains an option when getting started.
+
+#### Stable Anonymous Namespaces
+
+A related issue is how to represent anonymous namespaces. This is a good fit for renaming: the compiler implicitly renames symbols that start with a specific prefix (perhaps `.`) to an anonymous namespace. Ideally, this rename is stable - cacheable for incremental computing. 
+
+We could build stable identifiers for each included grammar based on inclusion path (using names in the original module). In the rare case we directly inherit from a mixin multiple times, we could we could introduce a numeric index and raise a stability warning.
+
+We could restrict use of anonymous symbols within namespaces because it would interfere with equivalence ofnmaespaces.
+
+*Note:* Content addressing doesn't work in context of renames unless we can guarantee there are no references from the private space back to public definitions. So we're stuck with path-based names. 
 
 ### Channel Based Interactions
 
@@ -152,7 +193,7 @@ In context of temporal semantics, a process can deterministically return that a 
 
 Time steps can be mapped to real-world effects, e.g. one microsecond per time step. This would be useful for scheduling effects in time-sensitive contexts such as music or robotics. Intriguingly, transactional interactions might commit to a schedule of write-only effects relative to an idealized time of commit.
 
-The cost of temporal semantics is complexity. The language runtime must clearly track 'held' channels. And it is relatively inefficient to push time steps individually, so a runtime might compress sequential time steps, e.g. `(time-step * Count)` and accelerate operations that interact with time steps (e.g. polling). 
+The cost of temporal semantics is complexity. The language runtime must clearly track 'held' channels. And it is relatively inefficient to push time steps individually, so a runtime must compress sequential time steps and accelerate operations that interact with time steps (e.g. polling). 
 
 I feel this idea is worth exploring, but it might not be available immediately. Ideally, I should develop the language such that temporal semantics can be introduced later with full backwards compatibility.
 
@@ -244,7 +285,9 @@ The environment can provide access to a mailbox or tuple space of requests which
 
 ### Extensible Syntax? Defer.
 
-I like the idea of supporting DSLs or dialects within programs. But this should be handled by compile-time eval, e.g. so we can load local modules as part of our extensible syntax. So, it will be deferred until at least after bootstrap and accelerated eval.
+One reasonable approach involves compile-time eval, compiling a local language to the structured AST. This is necessary so our embedded languages can load local modules and build subprograms, and also to stabilize meaning (extensions change definitions, but not the meaning of the original def). This approach requires compile-time eval and thus should be deferred to post-bootstrap.
+
+We could use indentation or braces to delimit the language (and perhaps only permit language extensions that respect pairing of braces, parens, brackets). To simplify indentation-sensitive languages, we might convert texts with indentation to use braces or control chars (e.g. STX/ETX).
 
 ### Fine-Grained Staged Programming
 
@@ -254,17 +297,15 @@ It might be useful to support 'static' annotations to indicate which expressions
 
 A conventional procedure call has at least three elements - argument, environment, and result. This might be concretely represented by an `(env, arg, ret)` triple, called an activation record. Each may contain an ad-hoc structured mix of data, channels, and pass-by-refs. Support for pass-by-refs in result is convenient for refactoring arguments.
 
-To better support my grammar-logic language, I propose to tune method calls a bit:
+To better support a grammar-logic language, I propose to tune method calls a bit:
 
-Returning unprocessed arguments is useful for incremental pattern matching by grammars. For example, we would typically return the remainder of the text after parsing out an integer, such that the remaining text can be processed to compute the rest of an AST. Intriguingly, this could be leveraged to *condition* inputs, e.g. to tokenize a text before processing with further match functions. This generalizes a 'sequence' of patterns from list processing to function composition over the matched structure.Further, this is a good fit for linear types (channels and pass-by-refs) that shouldn't be copied or dropped casually. 
+A grammar-logic method is typically applied in context of pattern matching. For example, we might apply integer within a pattern to parse an integer from a text, returning the computed integer. But, in addition to that integer result, we must return any remaining, unparsed text. The remaining input can be returned via pass-by-ref. This mechanism generalizes to returning the remainder of a structured list or dictionary. Intriguingly, this can also model conditioning input for further pattern matching, assuming users have sufficient access to rewrite the input.
 
-To support all this, the 'arg' itself is pass-by-ref. Match-case always takes a pass-by-ref argument. Method calls will implicitly start in context of `match &arg with { ... }`, but users can freely reference or manipulate remaining args in RHS of '->'.
+In addition to the main input for pattern matching, I want auxilliary inputs that could be used for lightweight abstraction or refinement of patterns. For example, we might express a ranged integer parse as `integer(min:-1, max:10)` as a pattern. To support procedural programming, we might allow normal method calls to focus on these other paramaters. One option is to treat pass-by-ref input as an implicit argument in certain contexts. 
 
-An adjunct argument supports lightweight abstraction of patterns, e.g. `integer(min:-1, max:10)` as a pattern. In general, we can assume all methods take an optional adjunct, i.e. we can call `foo(Arg)` or `foo(Adj)(Arg)`. When used on the LHS of a match-case, the `Arg` is implicit, and `Adj` is an optional explicit parameter. If unspecified, adj defaults to unit. Programs could access adj similar to how they might access env.
+We could similarly treat env as an implicit parameter. The return value might be understood as an output-only pass-by-ref parameter, albeit structurally enforced by the language. In general, the idea is that the caller exchanges data with a method through an activation record with keyword parameters, with a few contextually implicit parameters. Implicit parameters can potentially be adjusted in context of DSLs or macros, once I'm ready to support those.
 
-Anyhow, this shifts our activation record closer to `(env, adj, &arg, ret)`. Although env, adj, and ret are not pass-by-ref as a whole, they may freely contain pass-by-ref elements.
-
-*Note:* Unlike conventional procedural languages, method calls in a grammar-logic language are concurrent by default, constrained only by data dependencies. An optimizing compiler might be able to introduce a call stack or sequence in some cases, perhaps guided by performance annotations. Anyhow, this allows later parts of the program to communicate with earlier parts, and for return values to usefully contain pass-by-refs.
+*Note:* In contrast to conventional procedural languages, method calls in grammar-logic are concurrent by default, constrained by data dependencies. An optimizing compiler might use a call stack in cases where synchronous call-return aligns with dataflow, or may use lazy evaluation if we don't need the return value immediately, but must generally use a flexible evaluation order.
 
 #### Pass-by-Ref
 
@@ -293,7 +334,7 @@ I want an AST for namespaces that efficiently compiles to a 'flat' dictionary wi
 
 TODO:
 
-* *define* new words or overrides, should specify an extra prefix to locally refer to prior definitions. Prior definitions are moved into a new anonymous namespace, then the given prefix is redirected to that namespace.
+* *define* new words or overrides
 
 * *initial* definitions - assert certain words are undefined (or only have default or abstract definitions). This cannot be a normal priority because it needs to wrap the grammar body *and* its extensions.
 * *final* and *default* and *abstract* definitions - could model as priority values on definitions. Abstract definitions could omit the definition body, mostly serve as stand-ins to ensure renames don't merge names by accident, and to help discover spelling errors.
