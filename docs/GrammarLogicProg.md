@@ -91,7 +91,7 @@ Related ideas:
 
 * *Hierarchical namespaces.* We might take `foo in f` to translate all names defined in foo to the `f/` namespace, such as `f/integer`. Hierarchical structure would help control name collisions while still allowing flexible extension to methods within that namespace.
 
-* *Anonymous namespaces.* Our language compiler can logically rename methods that start with a specific prefix to a fresh anonymous namespace. This provides a space for private definitions and local refactoring. 
+* *Anonymous namespaces.* Our language compiler can logically rename methods that start with a prefix such as './' to a fresh anonymous namespace. This provides a space for private definitions and local refactoring. 
 
 * *Explicit translations.* We could allow more precise renames, such as renaming 'integer' to 'int' in foo. This would be useful for adapting mixins to another target, for conflict avoidance, and for community localization. Ideally, renames can be abstracted for reuse.
 
@@ -103,7 +103,7 @@ Related ideas:
 
 * *Nominative types.* It is feasible to use names within types, to index records or tag variants. There are advantages to use of names instead of bitstring labels: open records or variants can leverage the hierarchical namespaces and renaming to avoid conflicts. Anonymous names model abstract data types (ADTs). 
 
-* *Interfaces.* We could define interfaces as namespaces that declare methods and abstract types, then document them via annotations. Mixins could share an interface to help ensure they mean the same thing by any given symbol. Default definitions might be represented via interfaces.
+* *Interfaces.* We could define interfaces as namespaces that declare methods and abstract types, then document them via annotations. Mixins could share an interface to help ensure they mean the same thing by any given symbol. Default definitions might be represented via interfaces. Interface ascription could apply an export list based on an interface.
 
 *Note:* Different names are never truly equivalent in context of update or extension. A grammar can define `foo = bar` but later extension or a source code update to the grammar may cause 'foo' to diverge from 'bar'. Namespaces will not support strong aliasing.
 
@@ -117,14 +117,17 @@ Sketch of algorithm:
 
 * A grammar tracks for each symbol whether it is declaring, introducing, or overriding a definition.
   * A symbol must be declared before use, and introduced before override; introduction implies declaration.
+  * An override that doesn't use prior might be optimized as "replace" instead. Minimize history.
 * When introducing a def, compiler saves current def and defers conflict detection.
 * Conflict detection is performed at next introduction or after inheritance is processed.
 
-This might need to be tweaked depending on how we compile definitions, and depending on how we implement anonymous namespaces. But the intention is to avoid comparing for equal definitions before overrides and extensions are applied. When overrides are applied, the entire history of prior definitions generally becomes part of that definition for comparison, though we might be more precise if an override doesn't reference its prior.
+This strategy was written assuming a child to root (depth first) strategy for building the final dictionary, and assumes renames have already been applied. It might need to be adjusted depending on strategy. But the intention is to compare only complete definitions, after extensions and overrides are applied. Essentially, we're comparing a history of definitions that is reset at introduction.
 
 #### Default Definitions
 
-I could support defaults for arbitrary symbols. This might be a soft state between declared and introduced. Perhaps when we attempt to 'override' a default, it becomes an introduction, but if we 'introduce' a symbol that has a default, the default becomes a mere declaration.
+I could support defaults for arbitrary symbols. This might be modeled as a soft state between declared and introduced. When we 'override' default becomes an introduction, but if we 'introduce' default becomes declaration. Defaults would conflict with other defaults when they don't match definitions. 
+
+Defaults might get complicated if we try to generalize things (priorities, overrides of defaults that preserve default priority, etc.) but I think we can get most benefits and avoid most complications by simply restricting defaults to interfaces. Perhaps support overrides of defaults within derived interfaces.
 
 #### Access to Previous Definitions
 
@@ -134,42 +137,23 @@ For convenient use of prior, we should provide a lightweight syntax to forward a
 
 #### Prefix to Prefix Renaming
 
-Ideally we can compose an indexed rename structure in a single pass while compiling grammars, such that all renames can be batched and easily cached.
+I propose renames are applied root to child in a single pass and support ad-hoc prefix-to-prefix rewriting. 
 
-The main challenge is overlapping renames. When I rewrite prefix `foo => x` in context of renaming `bar => fo`, the composite rename must imply both `baro => x` and `barn => fon`. Note that `fo` cannot be a complete name, otherwise rename of `foo` would be invalid, thus we can assume `bar` must also have a suffix. We can handle every `bar(X)` case. We only need one identity case branch per bit.
+Assuming the root grammar has a `foo => x` prefix rewrite, and the child adds a `bar => fo` rewrite, we'll logically apply the root rewrite *after* the child rewrite. Thus, we must compose rewrites such as `baro => foo => x`. It is convenient to model this as an index containing both `bar => fo` and `baro => x`, with a rule where the longest matching prefix applies.
 
-        bar(0b1) => fo(0b1)
-        bar(0b00) => fo(0b00)
-        bar(0b010) => fo(0b010)
-        ... identity bitstrings of size 4, 5, 6, 7
-        bar(0b01100110) => fo(0b01100110)   // barn => fon case
-        bar(0b01100111) => x                // baro => x   case
+By building the root index before the child rename index, we simplify the problem of finding all suffixes of `fo` that must be rewritten again. Similarly, if our parent rule was `f => xy` then the child rule `bar => fo` would compose into the index as `bar => xyo`. The parent rename could be fully applied without any additional cases.
 
-This isn't pretty, but it should be within tolerable overheads for indexing these cases.
+This design can easily support hierarchical namespaces (rewrite empty prefix), anonymous namespaces (rewrite '.' prefix to something top-down path-dependent), and individual renames (by definition, symbols have unique prefixes). With the longest matching prefix rule, we can easily model export lists via renames: rename empty prefix to the anonymous namespace (see below), rename everything in the list to itself (or specified alias, if any).
 
-A secondary challenge is indexing things the renames themselves. Assuming I'm building from the outside in, my current index has `bar => fo` and then I'm presented with the `foo => x` case and must somehow locate `bar` as a potential prefix of `foo`. This requires some form of reverse lookup index. 
+#### Implementing Anonymous Namespaces
 
-At the byte level, we would need to search for:
+The compiler can pass a prefix representing the anonymous namespace together with the index for renames. This would be used for hiding definitions. Where a grammar inherits from other grammars, this anonymous namespace can be partitioned for each component grammar. The partitioning function should be stable enough for incremental compilation, but can be simple, e.g. a varnat index for each component.
 
-* all indices that produce `food` (or other suffixes of `foo`)
-* all indices that produce `foo`
-* all indices that produce `fo`
-* all indices that produce `f`
-* all indices that produce the empty prefix
+A deep inheritance hierarchy might result in long private names. But that shouldn't become a significant concern in practice. This design does hinder use of private names within interfaces or similar diamond pattern inheritance. But that seems like an acceptable limitation. 
 
-Any of these could be a potential match for `foo => x` in context. And we'd need to generalize to bit-level matching. 
+### Lifting Interfaces
 
-Although, maintaining this index is not trivial, it should be possible to support ad-hoc prefix-to-prefix renaming in a reasonably efficient, compositional, top-down manner. A simplistic, less scalable implementation remains an option when getting started.
-
-#### Stable Anonymous Namespaces
-
-A related issue is how to represent anonymous namespaces. This is a good fit for renaming: the compiler implicitly renames symbols that start with a specific prefix (perhaps `.`) to an anonymous namespace. Ideally, this rename is stable - cacheable for incremental computing. 
-
-We could build stable identifiers for each included grammar based on inclusion path (using names in the original module). In the rare case we directly inherit from a mixin multiple times, we could we could introduce a numeric index and raise a stability warning.
-
-We could restrict use of anonymous symbols within namespaces because it would interfere with equivalence ofnmaespaces.
-
-*Note:* Content addressing doesn't work in context of renames unless we can guarantee there are no references from the private space back to public definitions. So we're stuck with path-based names. 
+We'll likely need lightweight syntax to delegate entire interfaces across hierarchical namespaces. For example, to provide the local effects interface to a component namespace. 
 
 ### Channel Based Interactions
 
@@ -223,7 +207,7 @@ Ideally, grammar methods and object methods via channels would have a consistent
 
 #### Channels with Substructural Constraints
 
-If we want to pass-by-ref through a channel, we cannot copy the read end of that channel. If we want to freely copy a channel, we cannot pass any messages through that channel that are not themselves freely copyable. It seems useful to support constraints like this via dynamic types, perhaps based on flags when a channel pair is constructed. Even better if issues are detected at compile time. 
+If we want to pass-by-ref through a channel, we cannot copy the read end of that channel. If we want to freely copy a channel, we cannot pass any messages through that channel that are not themselves freely copyable. It seems useful to support this via dynamic types, perhaps adding flags when a connected read-write channel pair is constructed. Even better if issues are detected at compile time. 
 
 #### Pushback Operations
 
@@ -233,7 +217,7 @@ A reader process can push data or messages backwards into an input channel, to b
 
 Channels operate sequentially on *partial lists*. An intriguing alternative is to operate collectively on *partial sets*. This makes writes commutative and idempotent, features we can easily leverage. 
 
-Just as channels may transfer channels, values written into a partial set could contain a partial set for receiving the response. We might also need to track substructural types of pubsub sets to control copying. Readers could thus read a set of requests and write a set of responses back to the caller, forming an interaction. If the reader process leverages idempotence and commutativity, it is feasible to coalesce concurrent requests and responses, only forking computations where they observe different data. This would result in a highly declarative and reactive system, similar to publish-subscribe systems.
+Just as channels may transfer channels, values written into a partial set could contain a partial set for receiving the response. We might also track substructural types based on whether sets may include pass-by-refs or channels, i.e. to control copying. Readers could thus read a set of requests and write a set of responses back to the caller, forming an interaction. If the reader process leverages idempotence and commutativity, it is feasible to coalesce concurrent requests and responses, only forking computations where they observe different data. This would result in a highly declarative and reactive system, similar to publish-subscribe systems.
 
 Pubsub has some challenges. If we read and write within the same time-step, it isn't clear how we'd know the reader is done reading and hence done writing. This could be mitigated by temporal semantics - read the past, write the future - but it's also unclear how to stabilize temporal semantics and avoid high-frequency update cycles.  
 
@@ -289,13 +273,17 @@ One reasonable approach involves compile-time eval, compiling a local language t
 
 We could use indentation or braces to delimit the language (and perhaps only permit language extensions that respect pairing of braces, parens, brackets). To simplify indentation-sensitive languages, we might convert texts with indentation to use braces or control chars (e.g. STX/ETX).
 
+### Pattern Fragments? No.
+
+I could support some ultra-lightweight macros early on, in the form of parsing fragments of a program as data for easy AST-layer reuse. But I don't believe this is worthwhile - not with the more complete and general solution on the horizon shortly after bootstrap. Also, if I do want an early syntax-layer solution for macros, developing a text-to-text preprocessor language might be the wiser investment.
+
 ### Fine-Grained Staged Programming
 
 It might be useful to support 'static' annotations to indicate which expressions should be statically computable within the fully extended grammar. This may propagate to static parameters in some use cases. Ideally, we could also support types that describe static arguments and results.
 
 ### Method Calls
 
-A conventional procedure call has at least three elements - argument, environment, and result. This might be concretely represented by an `(env, arg, ret)` triple, called an activation record. Each may contain an ad-hoc structured mix of data, channels, and pass-by-refs. Support for pass-by-refs in result is convenient for refactoring arguments.
+A conventional procedure call has at least three elements - argument, environment, and result. This might be concretely represented by a `((env:Env, arg:Args), Result)` pair (consistent with modeling functions as pairs), albeit typically with effectful channels via env. The Env, Args, and Result may each contain an ad-hoc mix of data, channels, pass-by-refs, etc.. 
 
 To better support a grammar-logic language, I propose to tune method calls a bit:
 
@@ -303,9 +291,13 @@ A grammar-logic method is typically applied in context of pattern matching. For 
 
 In addition to the main input for pattern matching, I want auxilliary inputs that could be used for lightweight abstraction or refinement of patterns. For example, we might express a ranged integer parse as `integer(min:-1, max:10)` as a pattern. To support procedural programming, we might allow normal method calls to focus on these other paramaters. One option is to treat pass-by-ref input as an implicit argument in certain contexts. 
 
-We could similarly treat env as an implicit parameter. The return value might be understood as an output-only pass-by-ref parameter, albeit structurally enforced by the language. In general, the idea is that the caller exchanges data with a method through an activation record with keyword parameters, with a few contextually implicit parameters. Implicit parameters can potentially be adjusted in context of DSLs or macros, once I'm ready to support those.
+We can understand 'env' as an implicit parameter that, other than being implicit, is no different from declared parameters. The pass-by-ref 'input' would be an implicit parameter only in pattern matching contexts, explict when used outside of a pattern. Other arguments would be siblings with 'env' and 'input', and it would be an error to assign 'input' or 'env' in a context where it is assigned implicitly. The Result remains special, a free variable that called methods assign via logic unification.
+
+In general, the idea is that the caller exchanges data with a method through an activation record with keyword parameters, with a few contextually implicit parameters. Implicit parameters can potentially be adjusted in context of DSLs or macros, once I'm ready to support those.
 
 *Note:* In contrast to conventional procedural languages, method calls in grammar-logic are concurrent by default, constrained by data dependencies. An optimizing compiler might use a call stack in cases where synchronous call-return aligns with dataflow, or may use lazy evaluation if we don't need the return value immediately, but must generally use a flexible evaluation order.
+
+*Aside:* Support for pass-by-refs in Result is feasible due to the flexible dataflow with logic unification and is convenient for refactoring method calls.
 
 #### Pass-by-Ref
 
@@ -315,15 +307,24 @@ A pass-by-ref cannot be copied but it can be borrowed, i.e. we could further pas
 
 I would prefer to avoid depending on partial evaluation of Dest, at least implicitly. But an optimizing compiler could potentially determine the structure and some data in Dest before the final value is computed.
 
-#### Environment Manipulation
+#### Environment, Effects, and Concurrency
 
-The environment is passed to each subprogram. It isn't returned from a subprogram, but it might contain pass-by-ref elements or channels that are threaded between subprograms. The intention here is that env has a stable toplevel structure controlled by the caller, and any immutable data in env can be processed in parallel by each subprogram.
+The 'env' parameter is implicitly passed via linear copy to called methods, threading any bundled data, channels, or pass-by-refs in a procedural style. Users cannot directly manipulate env, but the language will include keyword syntax for scoped manipulation of env, e.g. `with (newEnv) do { ... }` might shadow env within scope of the subprogram, and a simple variation might run to end of the current scope.
 
-A program can control the environment exposed to its own subprograms. The syntax for this might be something like `with (newEnv) do ...`. Users would not directly define 'env', and it isn't directly mutable, but it can be controlled within a scope.
+Procedural style implicit effects can be supported through channels in the env. For example, to access the filesystem, we might use a channel-based object where the runtime handles requests. But env will often be abstracted to simplify extension. Access to the abstract env might be provided through an interface of methods, and the abstraction might be protected via nominative types.
+
+Dataflow of env will implicitly constrain concurrent computation in most cases. Users might work around this limitation via `with () { ... }` to reduce the environment to a trivial unit value, or perhaps `with (forkEnv()) { ... }` to explicitly construct an environment for concurrent computations. But these concurrent computations must interact through channels instead of shared memory.
+
+#### Local Variables
 
 ### Incremental Compilation
 
-Ideally, the grammar logic language should be designed such that some clever memoization and caching can reduce rework when building the same or similar grammars repeatedly.
+Modules compile separately into grammars. Large, composite grammars should compile incrementally into executables. That is, I should be able to cache many of the compilation steps in a manner that aligns with composition of the grammar. Prefix based renames already have this property, but there are a lot of other areas that need attention - incremental optimizations, etc..
+
+
+
+
+# OLD STUFF
 
 ## Namespace Builder
 
