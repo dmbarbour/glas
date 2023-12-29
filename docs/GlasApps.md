@@ -99,25 +99,42 @@ The implementation of random must backtrack on failure, such that we aren't impl
 
 ### Shared Database
 
-Glas applications provide access to a lightweight, hierarchical key-value database that is shared with concurrent and future applications. For many use-cases, this database is more convenient than working with the filesystem. Proposed API:
+Transaction loop applications constrain the effects API. Transactions easily support buffered interactions, such as reading and writing channels or mailboxes. However, they hinder synchronous request-response interactions with external services. If a remote service supports distributed transactions, or if we can reasonably assume a request is read-only and cacheable (like HTTP GET), then we could issue a request within the transaction. Otherwise, the request will be scheduled for delivery after we commit, and the response is deferred to a future transaction.
 
-* **db:get:Key** - get value associated with Key. May fail.
-* **db:put:(k:Key, v:Value)** - set value associated with Key. May fail. 
-* **db:del:Key** - remove Key from database. May fail.
 
-Keys are bitstrings, and the database is usually a record/dict value. Operating on the prefix of a key will operate on the record of all keys with a matching prefix. Keys should be short, but large values are supported via stowage. Updates are atomic, isolated, and durable. Consistency and security are left to applications. 
+The filesystem API doesn't conveniently integrate with glas structured data, stowage, and transactions. We could instead have the runtime provide a database to the application. A simplistic API might start with this:
 
-Operations may fail due to implicit validation, e.g. verify invariants upon put or commit. In some contexts, an effects handler might also rewrite keys, modeling a logical chroot or virtual memory.
+* **db:get:Key** - get value associated with Key.
+* **db:set:(k:Key, v:Value)** - set value associated with Key. 
+* **db:del:Key** - remove value from database.
+
+We could incrementally introduce more APIs for performance reasons:
+
+* **db:check:Key** - test if key is defined without reading it.
+* **db:read:(k:Key, n:Count)** - Key must refer to a List value. Remove and return a list of up to Count available items.
+* **db:write:(k:Key, v:List)** - Key must refer to a List value. Addend this list. 
+
+We could further extend this to databuses, pubsub systems, mailboxes, tuple spaces via shared structure more sophisticated than lists, and perhaps with abstraction and structure on Keys. Our database could also support abstract or accelerated sets. 
+
+Assuming Keys are abstracted, we can provide a few initial keys through the effectful environment and also provide APIs to derive keys, e.g. to restrict permissions, or build and discover associated structure similar to a filesystem directory. Examples of deriving Keys via API:
+
+* *db:assoc:(k:Key, rel:Label)* - derive and return a key corresponding to following a labeled edge from a given key. Label might be restricted to data, but we could develop a variation that supports labeling with other Keys.
+* *db:restrict:(k:Key, allow:Ops)* - return a derived key with restricted authority.
+
+Abstraction can be enforced through type systems, address translation tables, or cryptography (e.g. HMAC). Intriguingly, we can also control abstract keys via logical expiration, such that fresh keys must be continuously derived. This would ensure visibility, revocability, and development of reactive systems.
+
+I propose to start with a simple key-value database API, a few initial abstract keys (e.g. app home, user home, global shared), and a filesystem-based derivation rule for new keys. This would be enough for most apps while leaving room for performance and security extensions. 
+
+### Standardized Mailbox or Databus or Tuple Space
+
+Support for a lightweight mailbox style event systems would greatly simplify integration of an application with OS signals, HTTP services, and inter-app communication within glas systems. This could potentially build on the db API, or it could be a separate effect.
+
+One challenge is that we need each subprogram to filter for relevant events. This might involve abstraction of keys that apply simple filters, rather than applying a filter to every access.
 
 ### Standardized Configurations
 
-Instead of configuration files, it would be convenient to support configuration as a standard feature provided through the runtime. This would simplify standardization of configuration interfaces and tooling. No need for a dedicated API here: Configurations could be recorded into the database or perhaps a runtime provided environment variable.
+Instead of configuration files, it would be convenient to support configuration as a database feature. Perhaps one shared between application and runtime. This would allow configurations to be edited through runtime layer HTTP services, for example.
 
-### Standardized Mailbox
-
-A runtime can provide a simple mailbox model, or perhaps a more sophisticated structure such as tuple space or bulletin board. Providing HTTP services through this system would allow multiple applications to more readily share a single TCP port, and allow the runtime to provide standardized URLs for administration and debugging of applications. It would also simplify orthogonal persistence of applications.
-
-The main constraint on this API is that we'll need to search for events relevant to a subprogram. This implies some form of topic-based search, perhaps a cursor to iterate matching items, not a mere key-value lookup.
 
 ### Environment Variables
 

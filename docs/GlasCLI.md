@@ -1,41 +1,94 @@
 # Glas Command Line Interface
 
-The glas command line supports one primary operation:
+The glas command line interface supports one primary operation:
 
-        glas --run ValueRef -- Args
+        glas --run ModuleRef -- Args
 
 This is intended for use with a lightweight syntactic sugar.
 
         glas opname a b c 
-            # implicitly rewrites to
-        glas --run glas-cli-opname.run -- a b c
+            # rewrites to
+        glas --run glas-cli-opname -- a b c
 
-The behavior of 'run' is usually to start an application loop. The referenced value is compiled then interpreted as a program. Any runtime parameters - such as memory quota, choice of garbage collector, or effects API version - must be specified via annotation or effects.
+This feature combines nicely with *staged* applications. A staged application can browse the module system and select or construct another application based on given arguments. Effectively, user-defined operations become command line languages, consistent with user-defined file extensions in modules. 
 
-Other built-in methods may be provided, such as '--extract' to support bootstrap, '--test' to support automatic testing, or '--help' and '--version' as standard Linux options.
+To better support command line languages, runtime configuration parameters (such as memory quotas or GC tuning) are not directly provided through command line arguments. Instead, such parameters may be provided via configuration files in GLAS_HOME, environment variables, or annotations. Indirectly, a staged application can arrange annotations on the returned application based on arguments.
 
-## Value References
+Aside from '--run' the glas command line interface may define other built-in operations. For example, '--help' and '--version' are Linux standard, and we might provide a method to list global modules, simplify shebang scripting, or support lightweight debugging. But, in principle, anything users can do with built-in arguments should be achievable with a user-defined op. This principle might influence support for runtime reflection in the effects API.
 
-A value reference is a simple dotted path, starting with a module name. A global module is referenced by default, but local modules (within the current folder) may be specified via './' prefix.
+## ModuleRef
 
-        global-module-name.foo
-        ./local-module-name.bar.baz
+A ModuleRef is a string that uniquely identifies a module. Initially, this may be a global module or a filename.  
 
-This indicates compilation of the specified module to a glas value, then extraction of the value reached by following the indicated label. The syntax for a value reference:
+        global-module
+        ./FilePath
 
-        ValueRef = (ModuleRef)(ComponentPath)
-        ModuleRef = LocalModule | GlobalModule
-        LocalModule = './'Word
-        GlobalModule = Word
-        ComponentPath = ('.'Word)*
-        Word = WFrag('-'WFrag)*
-        WFrag = [a-z][a-z0-9]*
+A FilePath is recognized by containing at least one directory separator (such as '/'). The glas command line interface will attempt upon request to interpret any file or folder as a module. Otherwise, we'll search the active distribution for a global module of the given name. Eventually, we might extend these two options with URIs.
 
-This syntax limits which fields and even which module names can be directly referenced. For example, users cannot directly reference a module whose name includes emoji. It is possible to work around these limits via application macros, writing an intermediate module, or simply avoiding use of troublesome names.
+## Running Applications
+
+        glas --run ModuleRef -- Args
+
+Initially, the glas executable will only recognize grammar-logic modules, or modules that compile to a compatible value. This might have the form `g:(def:(app:gram:(...), MoreDefs), MetaData)`. A grammar-logic module potentially defines multiple independent grammars, each of which may define multiple interdependent methods. The grammars are represented in an intermediate language, thus further processing is necessary. Broadly, the glas executable will extract the 'app' grammar, JIT compile the 'main' method, then run it as an application. Ideally, many steps are memo-cached such that we aren't rebuilding the module and its transitive dependencies every time. 
+
+The glas runtime will support multiple application types. This is indicated via 'run-mode' annotation on 'main'. 
+
+Some feasible run modes:
+
+* *loop* - the default, a [transaction loop](GlasApps.md) step function
+* *staged* - application has type `Args -> Application`.
+  * arguments may be divided across stages using '--'.
+  * `glas --run staged-op -- stage one args -- stage two args`
+  * otherwise, all args go to the first stage
+* *binary* - application is a function from `Args -> Binary`. 
+  * binary is written to standard output once computed
+  * access to *log* and *load* (global) effects
+  * primary motive is to simplify bootstrap
+* *test* - application has type `() -> ()`, we're interested in pass/fail
+  * effects are *log*, *load* (global), and *fork(Nat)*
+  * fork is non-deterministic choice for parallel or fuzz testing
+
+A more conventional application model is feasible if we control backtracking or extend glas executable to recognize non-grammar program types. But, at least initially, to develop a conventional application involves producing an independently executable binary.
 
 ## Configuration
 
-There is a folder identified as GLAS_HOME, configurable via environment variable. If this variable is not set, a user-local default follows an OS convention such as `~/.config/glas` in Linux or `%AppData%/glas` in Windows. This folder will centralize glas system configurations. By default, a persistent key-value database for use by applications will also be stored in GLAS_HOME.
+I propose two environment variables to get started:
+
+* GLAS_HOME - a folder path for ad-hoc configuration and default location storage. Default is based on OS, e.g. `"~/.config/glas"` for Linux or `"%AppData%\glas"` for Windows.
+* GLAS_PROF - selects the active configuration *profile*. This enables users to efficiently change configuration for different roles or tasks. Default, is `"default"` referring to `"${GLAS_HOME}/default.prof"`. May be file path for profiles outside GLAS_HOME.
+
+### Profiles
+
+A profile may describe ad-hoc configuration features, such as:
+
+* active distribution via ".dist" file
+* storage locations for data and cache
+* configuration of logging options
+* binding external services, e.g. HTTP
+* enable debug mode features in runtime
+* ad-hoc performance tuning
+* trusted proxy compilers
+* content delivery networks
+
+Of these, support for distributions is urgent. Everything else can be deferred.
+
+        # default.prof
+        dist default.dist
+
+Other features can be developed later. Also, we might eventually support inheritance and composition of profiles, much as we do for distributions. But this is relatively low priority.
+
+### Distributions
+
+In context of glas, a distribution represents a set of global modules that are maintained and versioned together. Company or community distributions will often refer to a network repository instead of local filesystem. It is often convenient to express a user's distribution in terms of inheritance from a community distribution, perhaps adding a few clusters of modules from other sources, perhaps assigning defaults. Thus, distributions support multiple inheritance.
+
+Multiple inheritance can result in accidental conflicts. To mitigate this, distributions clearly indicate whether they are expecting to introduce or override each module. This allows suitable warnings or errors (which could be disable in cases where you don't care), and also tweaks some useful behavior such as automatically moving 'foo' to a private 'prior-foo' upon override. Conflicts can be resolved via rename or move.
+
+Private global modules are supported. This only affects inheritance, i.e. all private modules are hidden to the inheritance and cannot be extended further, but the glas command line interface still treats it as a normal global module. 
+
+To support discovery, I propose a description of modules be directly included in distributions. This could include some short text and additional attributes to simplify filtering.
+
+... TODO ...
+
 
 The most important configuration file is perhaps "sources.tt". This file describes where to search for global modules. This file uses the [text-tree](../glas-src/language-tt/README.md) format - a lightweight alternative to XML or JSON. This file is currently limited to 'dir' entries indicating local filesystem, and entries that start with '#' for comments.
 
@@ -46,76 +99,17 @@ The most important configuration file is perhaps "sources.tt". This file describ
 
 Eventually, I intend to support network repositories as the primary source for global modules. However, short term a search path of the local filesystem will suffice. Relative paths are relative to the folder containing the configuration file. Order is relevant - locations are processed sequentially.
 
-The glas executable may use a few more files within GLAS_HOME for features such as where to save stowed data, cached computations, or the key-value database. By default, these will be stored within GLAS_HOME.
-
-## Running Applications
-
-The glas command line knows how to interpret some values as runnable applications, with access to ad-hoc effects including filesystem and network. 
-
-        glas --run ValueRef -- Args To App
-
-The referenced value must currently have a 'prog' or 'macro' type header. This will change as glas evolves. Arguments following the '--' separator are forwarded to the application. Any runtime tweaks (GC, JIT, quotas, profiling, etc.) must be expressed via annotations or effects instead of additional command line options. 
-
-### Transaction Loop Applications
-
-Transaction loop application is the default, represented by a glas 'prog:(...)'. This program should have 1--1 arity and express a transactional step function:
-
-        type Step = init:Params | step:State -> [Effects] (halt:Result | step:State) | Fail
-
-In context of the command line, this loop starts with `init:["Args", "To", "App"]` and terminates by returning `halt:ExitCode`. The ExitCode should represent a small integer, with zero representing success and anything else a failure. When the step function returns `step:State`, any effects are committed then computation proceeds with the same State value as input.
-
-A failed step aborts the current transaction, then retries. The retry might succeed if new data is available on input channels, or if different non-deterministic choices are made (e.g. via 'fork' effect). Ideally, the runtime will optimize this to wait or search for relevant changes that enable progress.
-
-See [glas applications](GlasApps.md).
-
-### Application Macros
-
-Application macros are programs that return a value representing another application program. Currently, this is mode is implied for a value of form 'macro:prog:(...)'. Arguments may be explicitly staged via '--':
-
-        glas --run MacroRef -- Macro Args -- Remaining Args
-
-The macro program must be a 1--1 arity function. This function receives `["Macro", "Args"]` as input on the data stack and must return another value representing a runnable application (another macro is valid). The returned application is then run with `["Remaining", "Args"]` following the '--' separator; this separator may be omitted if there are no remaining arguments.
-
-Macro evaluation has access to only language module effects, i.e. log and load. Essentially, application macros implement user-defined languages for the glas command line interface. Any program expressed via application macro can also be defined within a new module.
-
-### Other Modes?
-
-I'm currently developing [Grammar Logic Programming](GrammarLogicProg.md), which would indicate run-mode (transaction loop, macro, etc.) via annotation instead of based on headers. I might end up deprecating the current 'prog' model.
-
-## Effects API
-
-Specialized effects for transaction loop apps in context of the glas CLI:
-
-* *load* and *log* - same as language modules, though module values may vary over time.
-* *reload* - asks runtime to update future application loops based on updated sources.
-
-Additionally, we might want other effects proposed in [glas apps](GlasApps.md). Ideally, 'load' and 'reload' should be stable effects, usable in the stable prefix of a forking application.
-
-## Extracting Binaries
-
-The glas command line can directly extract binary data to standard out.
-
-        glas --extract ValueRef
-
-The referenced value may currently have two forms:
-
-* *data:Binary* - writes the binary to standard output
-* *prog:(...)* - a 0--0 arity program is evaluated with limited effects:
-  * *write:Binary* - writes the binary to standard output
-  * *load* and *log* - same behavior as language modules
-
-The primary motive for extract is to simplify bootstrap, by mitigating the need for a complete effects API in early versions of the glas executable. But this operation mode may prove convenient for extracting value from the glas module system in other use cases.
-
 ## Bootstrap
 
-The bootstrap implementation for glas command line executable should be based around the '--extract' command. Assuming suitable module definitions, bootstrap could be expressed with just a few lines of bash:
+The bootstrap implementation for glas command line executable might be based around the 'stream' run-mode. 
 
     # build
-    /usr/bin/glas --extract glas-binary > /tmp/glas
+    /usr/bin/glas --run glas-binary > /tmp/glas
     chmod +x /tmp/glas
 
     # verify
-    /tmp/glas --extract glas-binary | cmp /tmp/glas
+    /tmp/glas --run glas-binary | cmp /tmp/glas
+    # maybe also check size, performance, etc.
 
     # install
     sudo mv /tmp/glas /usr/bin/
@@ -133,52 +127,42 @@ Keeping it simple.
 
 Using log messages for detailed warnings or errors.
 
+
 ## Secondary Operations
 
-I'd prefer to avoid built-ins with sophisticated logic. But a few lightweight utilities to support early development or OS integration are acceptable.
+Guiding principles for introducing more built-in operations: 
 
-Operations for early development:
+* Can implement as user-defined operation. 
+* Doesn't add too much logic to executable.
+* Sufficient utility to justify built-in.  
 
-* `--check ValueRef` - compile module and test that value is defined.
-* `--print ValueRef` - build then pretty-print a value for debugging.
+All three points should hold simultaneously. However, we can potentially extend the glas executable to make the first point true. For example, to support '--version' as a user-defined operation, we might add a method to the effects API accessible to applications. The question then becomes whether we're adding too much logic.
 
-Operations for OS integration:
+Proposed Operations:
 
-* `--version` - print executable version information
-* `--help` - print information about options
+* `--version` - print version to console
+* `--help` - print basic usage to console 
+* `--check ModuleRef` - compile module pass/fail, do not run
+* `--list-modules` - report modules in current distribution
 
-In addition, we might benefit from some built-in options for manipulation of the glas system, e.g. to configure the global module search path ($GLAS_HOME/sources.tt). But this is low priority. I hope to focus early on developing user-defined operations.
+### Scripting
+
+Proposed built-in operation:
+
+        glas --script(.ext)* (ScriptFile) (Args)
+
+Usage context:
+
+        #!/usr/bin/glas --script.g.m4
+        program goes here
+
+This operation would load the script file, remove the shebang line, compile the script body based on the specified extensions, then run the resulting application. This is much more suitable than '--run' because the '--' separator doesn't fit and file extensions are frequently elided. 
+
+As a user-defined op, we might need to use `#!/usr/bin/env -S glas script .g.m4` which is usable but relatively awkward. Additionally, we cannot read the script file within a staged app, so we might need accelerated evaluation instead.
 
 ## Thoughts
 
-### Automatic Testing
+### System Health
 
-I wouldn't mind a `glas --test` operation for running all test programs (based on 'test-*' modules) either globally or locally. I do hesitate because the best solutions involve a lot of caching and remembering which forks lead to failure. I expect we'll get a user-defined `glas test` first, then integrate it as a built-in later.
-
-### Debug Mode
-
-It is feasible for the glas executable to support debugging of an app. This could be expressed via annotations to build a special debug view. However, it is also feasible to build this debug view manually via metaprogramming, like a macro that explicitly rewrites the program. The latter option would move debugging logic from the glas command line executable into the module system, and is more to my preference.
-
-### Profiling
-
-Profiling will need some more consideration than I've given it so far. Some runtime support is needed to track the failed transactions efficiently. Annotations would guide profiling, e.g. enable or disable it for a subprogram, and give names to subprograms for profiling purposes.
-
-### Application Macro access to Environment Variables
-
-I could extend application macros with access to environment variables. However, I'm uncertain that I want to encourage use of the environment for interpreting the command line 'language'. Additionally, most use of the OS layer env is hindered without also having access to read files and other features. 
-
-For now, decided to treat application macros a lightweight extension to language modules for command line arguments. This ensures that anything we express via command line can also be easily abstracted within a new module and shared with other users, which is a convenient property.
-
-### Applications Objects
-
-I've been contemplating a more object-based application model. Instead of a global step function that conflates handling of GUI, data feeds, etc. the app could provide fine-grained methods that still follow the transaction loop application model but are more specialized (i.e. per-method effect, parameter, and return types). 
-
-With some careful design, we could (for example) ensure that rendering an app doesn't affect application state, or that data subscriptions are very robust to network issues.
-
-However, this requires a lot of careful design work that I'd prefer to avoid introducing as a prerequisite to a working glas system. My current decision on this is to develop it later. Perhaps start with implementing applet/objects by compiling to a more conventional global main-loop app.
-
-### Log Options
-
-Currently I log everything to stderr with some colored text. This works alright for loading modules initially, but it isn't a great fit for transaction loop applications. Something closer to a tree of messages, with a scrubbable history, might be appropriate. Anyhow, this area could use a lot of work.
-
+Distributions support automatic testing in the form of "test-" modules, both local and global. Tests can potentially perform automatic type checking, unit tests, and integration tests. But there are some limits, such as they cannot perform linting. Distributions can potentially leverage more conventional tooling at the repository level to support linting and other features. But this is beyond the scope of glas command line interface.
 
