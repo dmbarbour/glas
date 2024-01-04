@@ -203,14 +203,16 @@ In context of user-defined abstract data types, via nominative types, it might b
 
 ### Transaction Loop Applications
 
-Grammar-logic programs are very suitable for [transaction loop applications](GlasApps.md). Regarding integration: 
+Grammar-logic programs are very suitable for [transaction loop applications](GlasApps.md). 
+
+Integration tweaks relative to procedural transaction loop:
 
 * Step state should be plain old data; no holding refs to prior steps or timeline. 
-* Overlay networks with distributed transactions can be modeled via stable prefix. 
-* Consider logic unification vars for *search* instead of (just) bools and ratios.
 * In effects API, use named refs only to introduce channels; robust ocap security.
+* Consider logic unification vars for *search* instead of (just) bools and ratios.
+* Overlay networks with distributed transactions can be modeled via stable prefix. 
 
-The grammar-logic substrate is vastly more robust and scalable than the procedural approach. 
+Overlay networks would be based on establishing channels between distributed processes within the stable prefix of a transaction. This would benefit from location-specific effects channels. Before we commit the transaction, all of these processes terminate and the channels will be closed; but in context of incremental computing, we'll rebuild those channels and processes, effectively representing long-lived channels and processes. 
 
 ### Procedural Applications
 
@@ -305,9 +307,9 @@ An important concern is how to return values from meta-patterns. A repeating pat
 
         g:(def:(app:gram:(...), MoreDefs),  MetaData)
 
-A grammar-logic module will compile into a simple dictionary structure and ad-hoc metadata. The 'g' header will become useful when integrating multiple glas languages. A grammar-logic module that represents an application should define an 'app' grammar containing a 'main' method. 
+A grammar-logic module will compile into a simple dictionary structure and ad-hoc metadata. The 'g' header will become useful when integrating multiple glas languages. A grammar-logic module that represents an application will define an 'app' grammar containing a 'main' method. 
 
-I propose compiled definitions be represented by independent values. For example, in case of `grammar foo extends bar` we integrate the compiled value of bar within the compiled value of foo rather than 'foo' referring to 'bar' by name. This simplifies module-layer imports, exports, and local reasoning. Overrides are limited to the lowest and highest layers: methods within a grammar, or modules within a glas distribution.
+I propose compiled definitions be represented by independent values. For example, in case of `grammar foo extends bar` we integrate the compiled value of bar within the compiled value of foo rather than 'foo' referring to 'bar' by name. This simplifies module-layer imports, exports, and local reasoning. But it limits overrides to lower and higher layers: methods in a grammar, or modules in a distribution.
 
         import Module                   # toplevel import
         from Module import ImportList   # explicit import
