@@ -23,127 +23,78 @@ A ModuleRef is a string that uniquely identifies a module. Initially, this may b
         global-module
         ./FilePath
 
-A FilePath is recognized by containing at least one directory separator (such as '/'). The glas command line interface will attempt upon request to interpret any file or folder as a module. Otherwise, we'll search the active distribution for a global module of the given name. Eventually, we might extend these two options with URIs.
+A FilePath is recognized by containing at least one directory separator (such as '/'). The glas command line interface will attempt to interpret any file or folder as a module, if requested. Otherwise, we'll search the configured distribution for a global module of the given name. Eventually, we might extend these two options with URIs.
+
+## Configuration
+
+All relevant configuration information is centralized to a profile, a ".prof" file. The GLAS_PROFILE environment variable selects the active configuration. The default is OS-specific, such as `"~/.config/glas/default.prof"` in Linux or `"%AppData%\glas\default.prof"` in Windows.
+
+Potential configuration information includes:
+
+* active distribution
+* storage locations 
+* logging destinations
+* ad-hoc performance tuning
+* debug assertions or profiling
+* trusted proxy compilers
+* content delivery networks
+
+No need for reference between profiles yet, but some lightweight inheritance mechanism might be useful later. Also, application-specific sub-profiles are feasible, by expressing 'rules' that are sensitive to annotations (or environment variables). 
+
+As a short term scaffold, we might only support simplified definition of the distribution as a filesystem search path:
+
+        dist 
+            search Directory1
+            search Directory2
+            ...
+
+More features can be added as needed. I propose the [text tree syntax](TextTree.md). 
+
+## Distributions
+
+In context of glas, a distribution represents a set of named global modules that are maintained and versioned together. It is often convenient to express distributions in terms of inheriting from a community distribution (perhaps a DVCS repository), mixing in a few patch-like distributions, then adding a few local applications or overrides. To allow this, distributions will support multiple inheritance. For consistency, I intend to reuse multiple inheritance similar to that proposed for grammar-logic programming.
+
+Initially, we'll just use a search path in profile. After bootstrap, I intend to eventually support inheritance from ".dist" files with reference to DVCS branches and other repositories.
 
 ## Running Applications
 
         glas --run ModuleRef -- Args
 
-Initially, the glas executable will only recognize grammar-logic modules, or modules that compile to a compatible value. This might have the form `g:(def:(app:gram:(...), MoreDefs), MetaData)`. A grammar-logic module potentially defines multiple independent grammars, each of which may define multiple interdependent methods. The grammars are represented in an intermediate language, thus further processing is necessary. Broadly, the glas executable will extract the 'app' grammar, JIT compile the 'main' method, then run it as an application. Ideally, many steps are memo-cached such that we aren't rebuilding the module and its transitive dependencies every time. 
+The glas executable first compiles the referenced module into a value, which must be recognized as representing an application. Initially, [grammar-logic modules](GrammarLogicProg.md) are recognized, assuming the 'main' method of the 'app' grammar. This program may include annotations to configure runtime options. The run-mode annotation is especially relevant, influencing integration.
 
-The glas runtime will support multiple application types. This is indicated via 'run-mode' annotation on 'main'. 
-
-Some feasible run modes:
+Recognized run modes include:
 
 * *loop* - the default, a [transaction loop](GlasApps.md) step function
 * *staged* - application has type `Args -> Application`.
   * arguments may be divided across stages using '--'.
   * `glas --run staged-op -- stage one args -- stage two args`
-  * otherwise, all args go to the first stage
-* *binary* - application is a function from `Args -> Binary`. 
-  * binary is written to standard output once computed
-  * access to *log* and *load* (global) effects
-  * primary motive is to simplify bootstrap
 * *test* - application has type `() -> ()`, we're interested in pass/fail
   * effects are *log*, *load* (global), and *fork(Nat)*
   * fork is non-deterministic choice for parallel or fuzz testing
+* *binary* - application function from `Args -> Binary`. 
+  * binary is written to standard output once computed
+  * limited access to *log* and *load* (global) effects
+  * motive is to simplify bootstrap of glas executable 
 
-A more conventional application model is feasible if we control backtracking or extend glas executable to recognize non-grammar program types. But, at least initially, to develop a conventional application involves producing an independently executable binary.
+The glas executable might also evaluate assertions. A lot of processing can be cached, including assertions and JIT-compilation, to reduce rework across command line operations.
 
-## Configuration
+## Other Operations
 
-I propose two environment variables to get started:
+Guiding principles for introducing features: 
 
-* GLAS_HOME - a folder path for ad-hoc configuration and default location storage. Default is based on OS, e.g. `"~/.config/glas"` for Linux or `"%AppData%\glas"` for Windows.
-* GLAS_PROF - selects the active configuration *profile*. This enables users to efficiently change configuration for different roles or tasks. Default, is `"default"` referring to `"${GLAS_HOME}/default.prof"`. May be file path for profiles outside GLAS_HOME.
-
-### Profiles
-
-A profile may describe ad-hoc configuration features, such as:
-
-* active distribution via ".dist" file
-* storage locations for data and cache
-* configuration of logging options
-* binding external services, e.g. HTTP
-* enable debug mode features in runtime
-* ad-hoc performance tuning
-* trusted proxy compilers
-* content delivery networks
-
-Of these, support for distributions is urgent. Everything else can be deferred.
-
-        # default.prof
-        dist default.dist
-
-Other features can be developed later. Also, we might eventually support inheritance and composition of profiles, much as we do for distributions. But this is relatively low priority.
-
-### Distributions
-
-In context of glas, a distribution represents a set of global modules that are maintained and versioned together. Company or community distributions will often refer to a network repository instead of local filesystem. It is often convenient to express a user's distribution in terms of inheritance from a community distribution, perhaps adding a few clusters of modules from other sources, perhaps assigning defaults. Thus, distributions support multiple inheritance.
-
-Multiple inheritance can result in accidental conflicts. To mitigate this, distributions clearly indicate whether they are expecting to introduce or override each module. This allows suitable warnings or errors (which could be disable in cases where you don't care), and also tweaks some useful behavior such as automatically moving 'foo' to a private 'prior-foo' upon override. Conflicts can be resolved via rename or move.
-
-Private global modules are supported. This only affects inheritance, i.e. all private modules are hidden to the inheritance and cannot be extended further, but the glas command line interface still treats it as a normal global module. 
-
-To support discovery, I propose a description of modules be directly included in distributions. This could include some short text and additional attributes to simplify filtering.
-
-... TODO ...
-
-
-The most important configuration file is perhaps "sources.tt". This file describes where to search for global modules. This file uses the [text-tree](../glas-src/language-tt/README.md) format - a lightweight alternative to XML or JSON. This file is currently limited to 'dir' entries indicating local filesystem, and entries that start with '#' for comments.
-
-        # example sources.tt
-        dir ./src
-        dir /home/username/glas
-        dir C:\Projects\glas\glas-src
-
-Eventually, I intend to support network repositories as the primary source for global modules. However, short term a search path of the local filesystem will suffice. Relative paths are relative to the folder containing the configuration file. Order is relevant - locations are processed sequentially.
-
-## Bootstrap
-
-The bootstrap implementation for glas command line executable might be based around the 'stream' run-mode. 
-
-    # build
-    /usr/bin/glas --run glas-binary > /tmp/glas
-    chmod +x /tmp/glas
-
-    # verify
-    /tmp/glas --run glas-binary | cmp /tmp/glas
-    # maybe also check size, performance, etc.
-
-    # install
-    sudo mv /tmp/glas /usr/bin/
-
-In practice, different binaries are needed for different operating systems and architectures. This can be resolved by introducing a 'target' module that specifies the intended architecture for executable outputs, or by explicitly naming each binary (e.g. 'glas-binary.linux-x64'). 
-
-*Note:* It is feasible to support early bootstrap with an intermediate ".c" output or similar, to benefit from a mature optimizing compiler. But I hope to eventually express all optimizations within the glas module system!
-
-## Exit Codes
-
-Keeping it simple. 
-
-         0  pass
-         1  fail
-
-Using log messages for detailed warnings or errors.
-
-
-## Secondary Operations
-
-Guiding principles for introducing more built-in operations: 
-
-* Can implement as user-defined operation. 
+* Can support via user-defined operation. 
 * Doesn't add too much logic to executable.
 * Sufficient utility to justify built-in.  
 
-All three points should hold simultaneously. However, we can potentially extend the glas executable to make the first point true. For example, to support '--version' as a user-defined operation, we might add a method to the effects API accessible to applications. The question then becomes whether we're adding too much logic.
+These three points should hold simultaneously. In some cases we might add some effects or annotations to make the first point hold, e.g. to support '--version' as a user-defined op we can add a method to the runtime's reflection API.
 
 Proposed Operations:
 
 * `--version` - print version to console
 * `--help` - print basic usage to console 
 * `--check ModuleRef` - compile module pass/fail, do not run
-* `--list-modules` - report modules in current distribution
+* `--list-modules` - report global modules in configured distribution
+* `--script(.ext)*` - extended scripting support (see *Scripting*)
 
 ### Scripting
 
@@ -156,13 +107,31 @@ Usage context:
         #!/usr/bin/glas --script.g.m4
         program goes here
 
-This operation would load the script file, remove the shebang line, compile the script body based on the specified extensions, then run the resulting application. This is much more suitable than '--run' because the '--' separator doesn't fit and file extensions are frequently elided. 
+This operation loads the script file, removes the shebang line, compiles the script program (without local modules), then runs it as an application. 
 
-As a user-defined op, we might need to use `#!/usr/bin/env -S glas script .g.m4` which is usable but relatively awkward. Additionally, we cannot read the script file within a staged app, so we might need accelerated evaluation instead.
+## Exit Codes
 
-## Thoughts
+Keeping it simple. 
 
-### System Health
+         0  pass
+         1  fail
 
-Distributions support automatic testing in the form of "test-" modules, both local and global. Tests can potentially perform automatic type checking, unit tests, and integration tests. But there are some limits, such as they cannot perform linting. Distributions can potentially leverage more conventional tooling at the repository level to support linting and other features. But this is beyond the scope of glas command line interface.
+Using log messages for detailed warnings or errors.
 
+## Bootstrap
+
+The bootstrap implementation of 'glas' might support only the *binary* run-mode for applications. This reduces need to implement a complete effects system up front. Assuming we can print a binary to standard output, the following can potentially work:
+
+    # build
+    /usr/bin/glas --run glas-binary > /tmp/glas
+    chmod +x /tmp/glas
+
+    # verify
+    /tmp/glas --run glas-binary | cmp /tmp/glas
+
+    # install
+    sudo mv /tmp/glas /usr/bin/
+
+The target architecture could be provided as an argument or by defining a 'target' module.
+
+*Note:* It is feasible to support early bootstrap via intermediate ".c" file or similar, to leverage a mature optimizing compiler. But I hope to eventually express all optimizations within the glas module system!

@@ -12,13 +12,11 @@ This is an example of a *transaction loop* - modeling an application as a repeat
 
 Transaction loops model software systems as an open set of repeating, atomic, isolated transactions in a shared environment. Scheduling of different transactions is non-deterministic. This is a simple idea, but has many nice systemic properties regarding extensibility, composability, concurrency, distribution, reactivity, and live coding. However, transaction loops depend on advanced optimizations such as replication to evaluate many non-deterministic choices in parallel, and incremental computing to stabilize replicas. Implementation of the optimizer is the biggest development barrier for this model.
 
-### Waiting and Reactivity
+### Reactive and Incremental Computing
 
-If nothing changes, repeating a deterministic, unproductive transaction is guaranteed to again be unproductive. The system can recognize a simple subset of unproductive transactions and defer repetition until a relevant change occurs. Essentially, we can optimize a busy-wait into triggering updates on change.
+If nothing changes, repeating a deterministic, unproductive transaction is guaranteed to again be unproductive. The system can recognize a some obviously unproductive transactions and defer repetition until a relevant change occurs. Essentially, a runtime can optimize a busy-wait loop to trigger updates on change. Obviously unproductive transactions include failed transactions or successful transactions that write the same values to the same variables. 
 
-The most obvious unproductive transaction is the failed transaction. Thus, aborting a transaction expresses waiting for changes. For example, if we abort a transaction after it fails to read from an empty channel, we'll implicitly wait on updates to the channel. Successful transactions are unproductive if we know repetition writes the same values to the same variables. Optimizing the success case would support spreadsheet-like evaluation of transaction loops.
-
-Further, incremental computing can be supported. Instead of fully recomputing each transaction, it is feasible to implement repetition as rolling back to the earliest change in observed input and recomputing from there. We can design applications to take advantage of this optimization by first reading relatively stable variables, such as configuration data, then read unstable variables near end of transaction. This results in a tight 'step' loop that also reacts swiftly to changes in configuration data.
+Also, when a relevant change occurs, a runtime only needs to recompute the parts of a transaction affected by that change. There is a heuristic tradeoff between space and time (between memory and CPU). Programmers can aid this optimization by designing their step function to have a relatively *stable prefix*, such that we're mostly recomputing the suffix of the transaction.
 
 ### Concurrency and Parallelism
 
@@ -48,6 +46,14 @@ Transaction loops can wait on the clock by (logically) aborting a transaction un
 
 Further, we could varify that critical transactions evaluate with worst-case timing under controllable stability assumptions. This enables "hard" real-time systems to be represented.
 
+### Search
+
+An application can specify a fitness heuristic and constraint variables. A runtime can heuristically tune those variables to improve fitness and stabilize them. This search pattern works especially well in context of reactive systems and backtracking, such as transaction loop applications. Reactive systems allow for ongoing adaptation with fitness based on runtime observations, while backtracking enables testing proposed variable assignments without committing to them.
+
+Constraint variables might be understood as a form of unfair non-deterministic choice. Unfair in the sense that the best choice for variables is sticky or [metastable](https://en.wikipedia.org/wiki/Metastability). The system might apply machine learning algorithms to assign the variables efficiently. The fitness heuristic can be expressed as a program annotation insofar as it influences non-deterministic choice but doesn't actually restrict that choice.
+
+Potential use cases include calibration or adaptation of applications.
+
 ### Live Coding
 
 Transaction loops don't solve live coding, but they do lower a few barriers. Application code can be updated atomically between transactions. Threads can be regenerated according to stable non-deterministic choice in the updated code. Divergence or 'tbd' programs simply never commit; they await programmer intervention and do not interfere with concurrent behavior.
@@ -56,13 +62,26 @@ Remaining challenges include stabilizing application state across minor changes,
 
 ## Effects API
 
+TODO: Rewrite APIs to fit with a multiple channel based effects system and potentially abstract methods (in context of grammar-logic programming). This will simplify many APIs and help avoid most refs (limited to initial acquisition of a channel).
+
 ### Concurrency
 
-Repetition and replication are equivalent for isolated transactions. If a repeating transaction externalizes a choice, it could be replicated to evaluate each choice and find an successful outcome. If this choice is part of the stable prefix for incremental computing, then these replicas also become stable, each repeating from some later observation. This provides a simple basis for task-based concurrency within transaction loops as an optimization of choice.
+Repetition and replication are equivalent for isolated transactions. If a transaction loop involves a fair non-deterministic choice, we can implement this by replicating the transaction to try every choice. Multiple choices can commit concurrently if there is no read-write conflict, otherwise we have a race condition. When a choice is part of the stable incremental computing prefix for a repeating transaction, these replicas also become stable, effectively representing a multi-threaded application.
 
-* **fork:[List, Of, Values]** - Response is a value externally chosen from a non-empty list. Fails if the argument is empty or is not a list.
+* **fork:N** - Response is non-deterministic fair choice of natural number between 1 and N. 
 
-I propose modeling fork as a deterministic operation on a non-deterministic environment. This is subtly different from fork as a non-deterministic effect for backtracking and optimizations. For example, we can optimize `cond:(try:A, then:B, else:seq:[A, C])` to `seq:[A, B]` only if we assume `A` is a deterministic operation. Either way, we can effectively support concurrency.
+Fair choice means that, given enough time, the runtime will eventually try any valid prefix of fork choices in the future (regardless of the past). This isn't a guarantee that races resolve fairly, only that fork choices aren't sticky. Race conditions should instead be resolved by application design, perhaps introducing some queues.
+
+### Search
+
+In this case, the only effect is to ask the runtime for some specialized environment variables.  The runtime can heuristically adjust the variables over time and attempt to stabilize them. Potential API:
+
+* **tune:bool:Var** - Response is a boolean represented as a one-bit word, `0b0` or `0b1`. 
+* **tune:ratio:Var** - Response is a rational number between 0 and 1 (inclusive), represented as an `(A,B)` pair of natural numbers.
+
+The application might provide a heuristic function to the runtime via annotations. The alternative is to add more effects for output a fitness score. 
+
+*Note:* Search could be especially useful in context of staged applications, i.e. staged metaprogramming.
 
 ### Time
 
@@ -88,6 +107,8 @@ Logging is a convenient approach to debugging. We can easily support a logging e
 The proposed convention is that a log message is represented by a record of ad-hoc fields, whose roles and data types are de-facto standardized. For example, `(lv:warn, text:"I'm sorry, Dave. I'm afraid I can't do that.", msg:(event:(...),state:(...)) from:hal)`. This supports extension with new fields and structured content.
 
 Initially, log messages will simply write to standard error. Messages may be colored based on 'lv'. However, this could be improved significantly. I hope to eventually support a graphical tree-view of 'fork' processes where each process has its own stable subset of log messages, and we can scrub or search the timeline.
+
+*Note:* It is feasible to push logging into the debug layer, e.g. with a 'trace' annotation on a log function. Ideally we'd abstract logging effects.
 
 ### Random Data
 

@@ -73,7 +73,7 @@ Other than bitstrings, sequential structure is usually encoded as a list. A list
          2 /\
           3  ()  
 
-Direct representation of lists is inefficient for many use-cases. To enable lists to serve most roles, lists will often be represented using [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_%28data_structure%29). This involves extending the earlier 'Node' type with array and binary fragments and logical concatenation, then accelerating list operations to slice or append large lists.
+Direct representation of lists is inefficient for many use-cases, such as tuples or arrays or double-ended queues. To enable lists to serve most roles, lists will often be represented using [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_%28data_structure%29). This involves extending the earlier 'Node' type with array and binary fragments and logical concatenation, then accelerating list operations to slice or append large lists.
 
 To support larger-than-memory data, glas systems will also leverage content-addressed storage to offload volumes of data to disk. I call this pattern *Stowage*, and it will be heavily guided by program annotations. Stowage simplifies efficient memoization, and network communication in context of large data and structure-sharing update patterns. Stowage also helps separate the concerns of data size and persistence.
 
@@ -94,17 +94,20 @@ Languages also benefit from associated tools, such as REPLs, linters, intellisen
 
 ## Automated Testing
 
-As a simple convention, any module whose name starts with "test-" is assumed by the glas system to represent a test program. This includes local and global modules. We can develop glas system tools to discover, compile, and evaluate test programs. In context of a *Distribution* the glas system might automatically test a recently updated module and its transitive clients to maintain a distribution health report.
+As a simple convention, any module whose name starts with "test-" is assumed by the glas system to represent a test program. This includes local and global modules. We can develop glas system tools to discover, compile, evaluate, and cache results for test programs either local to a folder or for the active distribution. This could help us maintain a distribution health report.
 
-Test programs potentially have specialized run modes, defaulting to `unit -> unit` pass/fail. Testing will has limited access to effects: *log* and *load* - same as language modules - and non-deterministic choice such as *fork:N* returning a natural number between 1 and N. Use of *fork* would support parallel tests and fuzz testing. The fork path can be recorded for replay. Of course, compiling the test program may imply additional tests, such as evaluating static assertions.
+A test program can be expressed as a `unit -> unit` pass/fail function with simple effects:
 
-Tests of this form don't have access to real-world effects. A simulation environment could be developed for many useful tests. But real-world integration tests would need to be expressed and executed as more conventional applications.
+* *log* and *load* - same as language modules
+* *fork(N)* - return non-deterministic choice of natural number in range 1..N.
+
+Use of *fork* would support fuzz testing, parallel testing, and expressing many tests with a single program. Aside from evaluating the tests, tools might also evaluate assertions, types, and other useful properties. This approach to testing does limit access to the real world, so integration testing requires a more conventional solution. But we could feasibly simulate many environments.
 
 ## Applications
 
 The [transaction loop](GlasApps.md) is the default application model for glas systems. This model has nice properties for live coding, reactive systems, extensibility, and scaling. It is also aligns well with [grammar-logic programming](GrammarLogicProg.md), which implicitly requires transaction-like backtracking of effects. But it does complicate performance.
 
-Other application types might be supported by the command line, eventually. But it is also feasible to compile a conventional app to an executable binary entirely within the glas module system.
+Other useful application models include staged applications based on command line arguments and extraction of binary data. It is feasible to extract an executable binary, using glas as a build system.
 
 ## Performance
 

@@ -62,7 +62,7 @@ These problems also appear in context of typical match-case syntax. I think I'll
            | C3 -> Y
         | _ -> Z
 
-This seems like it might be adequate for factoring most conditionals locally. I can give it a try and see if I have new ideas.
+This seems like it might be adequate for factoring most conditionals locally. My intuition is that it would generalize into a 'decision tree' structure under the hood. I can give it a try and see if I have new ideas.
 
 Factoring is still limited more than I'd prefer. It isn't clear how to refactor partial function `C2 -> X | C3 -> Y` into a separate method call without conflating failures in X or Y with failures in C2 or C3. It seems feasible to use failure modes to specially support this factoring, but that feels like a hack. At least for now, I propose to allow only the final choice to be factored into a method call (without the `->` separator). It doesn't matter why we fail if there is no next choice. This avoids any syntactic impression of a perfect factoring in cases where factoring isn't perfect.
 
@@ -89,43 +89,29 @@ I propose to model all grammars as functions on a namespace. This allows for mul
 
 Related ideas:
 
-* *Hierarchical namespaces.* We might take `foo in f` to translate all names defined in foo to the `f/` namespace, such as `f/integer`. Hierarchical structure would help control name collisions while still allowing flexible extension to methods within that namespace.
+* *Hierarchical namespaces.* We can model hierarchical structure of names, based on some conventions for directory-like paths (e.g. `dir/name`). Hierarchical structure would help control name collisions while still allowing flexible extension to methods within that namespace.
 
-* *Anonymous namespaces.* Our language compiler can logically rename methods that start with a prefix such as './' to a fresh anonymous namespace. This provides a space for private definitions and local refactoring. 
+* *Anonymous or Private namespaces.* Our language compiler can reserve some prefixes for private use, then automatically rename private methods to avoid conflict. Compared to explicit 'private' methods, reserved prefixes would avoid conflict with public use of the same name in another context.
 
-* *Explicit translations.* We could allow more precise renames, such as renaming 'integer' to 'int' in foo. This would be useful for adapting mixins to another target, for conflict avoidance, and for community localization. Ideally, renames can be abstracted for reuse.
+* *Prefix Based Rename and Move.* It is feasible to construct a single-pass index to move and rename things, and also specify the rename destination for private names. This can support both automatic and manual resolution of conflicts. Moving a definition might leave the original name 'declared'. Hiding and erasing names can be modeled in terms of rename or move to a fresh anonymous name. It is technically feasible to 'merge' names, e.g. rename foo to bar when bar is already defined or declared, but I'm not sure this is a good idea; it at least should be prevented from happening by accident.  
 
-* *Containers.* A hierarchical namespace can be treated as a record-like container if we can easily rewrite things based on prefix: move `f/` to the root, simultaneously move everything else into an anonymous namespace.
+* *Higher Order Components and Containers.* We can support template-like abstraction or mixins, via something like: `import foo(a:x, b:y, c:z) as bar` or simply `from foo(a:x, b:y, c:z) import (importList)`. The first would create a namespace 'bar' based on grammar 'foo' where we override names 'a', 'b', 'c' with 'x', 'y', and 'z' in local context. The latter would allow directly binding some names into the local namespace from 'bar' into the local namespace. 
 
-* *Export Lists.* We could make it easy to restrict which symbols a grammar exports, perhaps renaming at the same time. All other symbols would be moved into an anonymous namespace. This could be useful to control conflicts.
-
-* *Annotations by naming convention.* For example, annotate `integer` by defining `anno/integer/type` and `anno/integer/doc`. This makes annotations accessible and extensible, subject to the same refactoring and abstraction as all other data, and mitigates specialized syntax for annotations to a syntactic sugar. 
+* *Annotations by naming convention.* We can bind names to annotations based on associated names, e.g. method `main` might be associated with `anno/main/type`, `anno/main/doc`, and others. When we specify renames or moves, annotations may also be renamed or moved. This design also makes annotations extensible.
 
 * *Assertions by naming convention.* Similar to annotations, we might model assertions by defining `assert/property-name` to a method that is treated as a proposition. These assertions would be evaluated in context of extensions to the namespace.
 
-* *Nominative types.* It is feasible to use names within types, to index records or tag variants. There are advantages to use of names instead of bitstring labels: open records or variants can leverage the hierarchical namespaces and renaming to avoid conflicts. Anonymous names model abstract data types (ADTs). 
+* *Nominative types.* It is feasible to use names within within types, e.g. to index records or to tag variants. This could be leveraged as a basis for abstract data types, especially when combined with private namespaces.
 
-* *Interfaces.* We could define interfaces as namespaces that declare methods and abstract types, then document them via annotations. Mixins could share an interface to help ensure they mean the same thing by any given symbol. Default definitions might be represented via interfaces. Interface ascription could apply an export list based on an interface.
-
-*Note:* Different names are never truly equivalent in context of update or extension. A grammar can define `foo = bar` but later extension or a source code update to the grammar may cause 'foo' to diverge from 'bar'. Namespaces will not support strong aliasing.
+* *Interfaces.* We can potentially declare methods and define their intended types and documentation separately from defining the implementation for a method. Default definitions can also be supported.
 
 #### Multiple Inheritance
 
-Multiple inheritance carries risk of ambiguity and confusion when a method is inherited from multiple sources. Ideally, we report issues to the user, but also resolve negligible conflicts without attention from the user. Two useful resolution strategies include genealogy (merge if edit history doesn't conflict) or unification (merge if definitions are the same). However, after exploring these I feel both are more complicated and expensive than I want, especially in context of renames, allocation of anonymous namespaces, and representing grammars as values (no extrinsic identity).
+Multiple inheritance carries risk of ambiguity and confusion when a method is inherited from multiple sources. Ideally, most conflicts can be avoided or automatically resolved, and programmers have tools for explicit and concise resolution where needed.
 
-I propose a simple alternative: programs will make certain assumptions explicit, such as whether we are *introducing* or *overriding* a definition. These assumptions are trivially verified when we construct the namespace. If we introduce a definition from two sources, we'll raise a conflict. This hinders use of multiple inheritance in general, but it does support a useful multiple inheritance pattern: single inheritance plus mixins.
+I propose a lightweight structural approach to automatic conflict resolution. For each method we indicate whether we expect to introduce or override that definition. If we attempt to introduce a method twice, or override a method that hasn't been defined, we have an error. We might introduce an additional rule to support interfaces, based on unification of definitions (feasible if we can exclude private names). Anyhow, what I want to avoid is any form of deep or complicated analysis for conflict resolution. This should be something that users can easily reason about while supporting usable strategies to avoid conflict.
 
-Interfaces specifically would benefit from a unification tactic. An interface will declare some methods (with optional defaults) while defining several annotations that document methods, add type declarations, and perhaps a few assertions. These annotations represent the meaning of the interface. Unification would allow multiple mixins to inherit the same interface while verifying that it is, indeed, using the same meaning for referenced methods.
-
-I think single inheritance augmented with mixins and interfaces covers most useful multiple inheritance patterns while avoiding conflict. I'll need to see how this works out in practice.
-
-When conflict does occur, it is usually one of two scenarios: 
-
-First, a word is used with two meanings, for example artist 'draw' image versus pump 'draw' water. In this case, the correct resolution is to *rename* one or both words, i.e. to 'artist-draw' and 'pump-draw'. Alternatively, we could *hide* the version we won't be using, essentially renaming it to an anonymous namespace.
-
-Second, a word is used with the same meaning, but has been implemented twice by accident. In this case, the correct resolution is to *move* at least one word, leaving references to the original word. We can override the original word with reference to the moved word. Indeed, use of 'move' is how we implement overrides with reference to the prior definition, we just have two prior definitions in case of conflicts. Alternatively we could *erase* the version we won't be using, essentially moving it to an anonymous namespace.
-
-Conflict resolution is feasible based on flexible move and rename operations, but it still adds friction to development. It is much preferable to avoid conflict. Hierarchical namespaces can also help users avoid conflict.
+Users can avoid most conflicts by sticking to patterns such as single inheritance of the main program plus mixins, interfaces, and hierarchical components. When conflict does occur, it is feasible to resolve this via rename (suitable when names have two different meanings) or move. Access to prior definitions can be modeled as moving the prior definition into a private space, but we can give users more explicit control over moves.
 
 #### Default Definitions
 
@@ -135,33 +121,13 @@ Defaults might get complicated if we try to generalize things (priorities, overr
 
 #### Access to Previous Definitions
 
-If we override 'foo' within a grammar, we might reference the prior definition. This could be implemented in terms of 'moving' the inherited foo to a new name (such as '^foo') that we make private to the current grammar. 
+When we override or shadow a definition, our language might automatically move the prior definition to a conventional private location, such as 'foo' to 'prior foo'. This should be implemented in terms of move, rename, and anonymous structure. The difference between override and shadow is whether existing references are also redirected to 'prior foo'.
 
-I'm uncertain exactly what syntax I'd want for this. Perhaps a keyword 'prior foo' instead of a sigil.
+#### Implementation of Namespaces
 
-#### Prefix to Prefix Renaming
+We'll compile a namespace into a flat dictionary of definitions. This involves prefix-oriented renaming of things. A set of renames might be expressed as an associative map such as `{ f => xy, foo => x }` where the longest matching prefix wins. We can compose rewrites from root to leaf, i.e. if the root applies the aforementioned rewrite and the child nodes `{ bar => fo }` we can compute a composite map `{ bar => fo, baro => x, f => xy, foo => x }`. This is based on the longest matching prefix including all possible suffixes of `fo`. It is feasible to apply renames in a single pass.
 
-I propose renames are applied root to child in a single pass and support ad-hoc prefix-to-prefix rewriting. 
-
-Assuming the root grammar has a `foo => x` prefix rewrite, and the child adds a `bar => fo` rewrite, we'll logically apply the root rewrite *after* the child rewrite. Thus, we must compose rewrites such as `baro => foo => x`. It is convenient to model this as an index containing both `bar => fo` and `baro => x`, with a rule where the longest matching prefix applies.
-
-By building the root index before the child rename index, we simplify the problem of finding all suffixes of `fo` that must be rewritten again. Similarly, if our parent rule was `f => xy` then the child rule `bar => fo` would compose into the index as `bar => xyo`. The parent rename could be fully applied without any additional cases.
-
-This design can easily support hierarchical namespaces (rewrite empty prefix), anonymous namespaces (rewrite '.' prefix to something top-down path-dependent), and individual renames (by definition, symbols have unique prefixes). With the longest matching prefix rule, we can easily model export lists via renames: rename empty prefix to the anonymous namespace (see below), rename everything in the list to itself (or specified alias, if any).
-
-*Note:* Support for 'move' separate from 'rename' might involve separating the index for renaming at the method scope versus method-body scope. A normal rename applies to both, but 'move' only to one the method layer. 
-
-*Aside:* It is feasible to implement 'prior' by means of move then rename, but I'd need to either improve conflict analysis or immediately rewrite private methods with content addressing (difficult!).
-
-#### Implementing Anonymous Namespaces
-
-The compiler can pass a prefix representing the anonymous namespace together with the index for renames. This would be used for hiding definitions. Where a grammar inherits from other grammars, this anonymous namespace can be partitioned for each component grammar. The partitioning function should be stable enough for incremental compilation, but can be simple, e.g. a varnat index for each component.
-
-A deep inheritance hierarchy might result in long private names. But that shouldn't become a significant concern in practice. This design does hinder use of private names within interfaces or similar diamond pattern inheritance. But that seems like an acceptable limitation. 
-
-### Lifting Interfaces
-
-We'll likely need lightweight syntax to delegate entire interfaces across hierarchical namespaces. For example, to provide the local effects interface to a component namespace. 
+Anonymous namespaces need special attention. The simplest implementation of anonymous namespaces is to reserve a privacy prefix for each component grammar, but this results in too many redundant definitions. One potential alternative is content addressing: we compute a secure hash for each 'clique' of mutually recursive definitions, then use content addressing in the compiled name for a method. This could be done for public methods, too, in which case the compiled dictionary would include this and a an association binding public names to content address. Common definitions can be shared. This would essentially add some extra passes to identify cliques and add clique-specific renames, but it could be incremental.
 
 ### Channel Based Interactions
 
@@ -237,15 +203,18 @@ In context of user-defined abstract data types, via nominative types, it might b
 
 ### Transaction Loop Applications
 
-Grammar-logic programs can be used to express [transaction loop applications](GlasApps.md). However, first-class channels would be troublesome at the loop boundary. We could restrict state to plain old data then rebuild channels within each loop. This might be acceptable if we're constructing stable channels as part of the stable transaction prefix.
+Grammar-logic programs are very suitable for [transaction loop applications](GlasApps.md). Regarding integration: 
 
-Distributed computations could be based on distributing code that communicates via stable channels. Each step just does a little work then commits then logically rebuilds all the channels to await the next interaction, but the logical rebuild could be almost instant if we don't destabilize anything. Threads based on fair non-deterministic choice could keep each transaction small and specialized.
+* Step state should be plain old data; no holding refs to prior steps or timeline. 
+* Overlay networks with distributed transactions can be modeled via stable prefix. 
+* Consider logic unification vars for *search* instead of (just) bools and ratios.
+* In effects API, use named refs only to introduce channels; robust ocap security.
 
-### No-Fail Contexts and Effects? Defer.
+The grammar-logic substrate is vastly more robust and scalable than the procedural approach. 
 
-It is feasible to restrict certain effects to contexts where we can fully commit to the effect, i.e. where no backtracking is needed after the effect. The benefit is that we can directly use use synchronous request-response effects with the environment, without the trappings of transactions. The disadvantage is that we must deal with errors locally, rather than simply aborting and undoing.
+### Procedural Applications
 
-I think this feature would be very difficult to implement without support from a type system and static analysis. But we could support it as a specialized run-mode for applications after the type system is sufficiently developed.
+If we can guarantee that certain contexts never backtrack, we can support more flexible APIs such as synchronous request-response. The disadvantage is that we'll very often be dealing explicitly with error values, undo, etc.. But it'd be nice to have the option. We can consider supporting this as a special run-mode if we develop a type or proof system that supports the guarantee.
 
 ### Type Safety
 
@@ -255,23 +224,11 @@ We can use type annotations to describe expected types of methods, including arg
 
 We could introduce annotations on methods that assign heuristic scores based on their inputs or results. The glas system could use these scores to guide non-deterministic search where fair choice is not required. 
 
-### Lazy Evaluation? Flexible.
+### Flexible Evaluation Order
 
-As an optimization tactic, lazy evaluation is a good fit for grammar-logic and functional programming. I could potentially support a few annotations within the language to guide laziness. But I'd prefer to avoid lazy evaluation semantics. No lazy fixpoints ["tying the knot"](https://wiki.haskell.org/Tying_the_Knot), for example. And preferably no reasoning about `_|_` in context of laziness.
+Method calls in grammar-logic are opportunistic in terms of computation order, constrained only by dataflow. But we could support some performance and analysis hints representing programmer intentions, e.g. annotate subprograms as eager, parallel, or lazy.
 
-### Module Structure
-
-A grammar-logic module will compile into a structure such as:
-
-        g:(def:(app:gram:(...), MoreDefs),  MetaData)
-
-Currently, it is mostly just a dictionary. Aside from grammars, we might introduce definition types for rename rules, or name sets for efficient export and import, etc.. Perhaps even macros, in the future. The module may have some module-level metadata and annotations, e.g. to record a secure hash of the original text, or top-level comments. The 'g' header can help distinguish and integrate multiple module types in the future.
-
-Within the module, we'll support imports. Imports can be understood as a form of inheritance, and we could support multiple inheritance with simple unification semantics (it's much easier in this context). We could also support references to 'prior foo' and similar at the grammar level. We can support qualified imports, where a definition is another 'g' type. 
-
-Modules and grammars can be statically referenced as data from within a method. This might use a syntax such as `quote-def foo` versus `quote-module foo`. 
-
-When interpreted as a program, we'll assume the 'main' method of the 'app' module is our entry.
+Lazy evaluation is a good fit for grammar-logic and functional programming, at least for pure functions. Effectful functions would effectively be eager until they're finished writing requests. However, I'd prefer to avoid lazy evaluation semantics: no lazy fixpoints ["tying the knot"](https://wiki.haskell.org/Tying_the_Knot), no divergence semantics. In general, computation should be opportunistic, i.e. anything that can be computed is computed, and any specific tactic is an optimization.
 
 ### Extensible Syntax? Defer.
 
@@ -291,13 +248,11 @@ A conventional procedure call has at least three elements - argument, environmen
 
 To better support a grammar-logic language, I propose to tune method calls a bit:
 
-A grammar-logic method is typically applied in context of pattern matching. For example, we might apply integer within a pattern to parse an integer from a text, returning the computed integer. But, in addition to that integer result, we must return any remaining, unparsed text. The remaining input can be returned via pass-by-ref. This mechanism generalizes to returning the remainder of a structured list or dictionary. Intriguingly, this can also model conditioning input for further pattern matching, assuming users have sufficient access to rewrite the input.
+A grammar-logic method is typically applied in context of pattern matching. For example, we might parse an integer from a text, returning both the computed integer and the remaining input. I think we need to support this 'remaining input' in a general way that generalizes to input types other than lists, such as a pass-by-ref variable.Intriguingly, we could also use this to return a conditioned input or represent pushback. 
 
-In addition to the main input for pattern matching, I want auxilliary inputs that could be used for lightweight abstraction or refinement of patterns. For example, we might express a ranged integer parse as `integer(min:-1, max:10)` as a pattern. To support procedural programming, we might allow normal method calls to focus on these other paramaters. One option is to treat pass-by-ref input as an implicit argument in certain contexts. 
+Auxilliary inputs could be used for lightweight abstraction or refinement of patterns. For example, we might express a ranged integer parse as `integer(min:-1, max:10)` method call as a pattern, with 'input' and 'env' both as tacit arguments. To support procedural programming, we might enable method calls to focus on these paramaters. One option is to treat pass-by-ref as an implicit argument in certain contexts. In general, we might simply treat 'input' as a standard parameter to method calls alongside 'env'. In any case, if a method doesn't use it, the pass-by-ref input would be returned immediately. 
 
-We can understand 'env' as an implicit parameter that, other than being implicit, is no different from declared parameters. The pass-by-ref 'input' would be an implicit parameter only in pattern matching contexts. Input would be explicit when used outside of a pattern. Other arguments, such as 'min' and 'max' above, would be siblings to 'env' and 'input'. It would be an error to explicitly assign 'env' or 'input' in contexts where they are assigned implicitly. DSLs might introduce other implicit parameters for various roles.
-
-*Note:* Method calls in grammar-logic are concurrent by default, constrained only by dataflow. But the implicit sequential threading of env will often constrain dataflow. Thus, concurrency in practice will largely revolve around controlling env.
+We can model 'input' and 'env' as otherwise normal parameters supported with some syntactic sugar. 
 
 #### Pass-by-Ref
 
@@ -323,64 +278,51 @@ It is possible to model local vars as something like arguments or pass-by-refs a
 
 ### Pattern Matching
 
-I need a concrete syntax and an understanding of semantics for patterns.
+Patterns are syntactic sugar over procedural fragments. We will support procedure fragments within the pattern to guarantee patterns have full flexibility of procedures. We can use method calls within patterns outside of a procedure fragment, in which case the 'input' parameter is implicitly threaded. Constants and lists have some special support, mostly operating on 'input' and returning themselves. 
 
-A string "Hello" should match any list (or perhaps list-like structure) that *starts with* the exact prefix, "Hello". We could try to generalize from "Hello": any list structure matches on a list prefix, and each element of the list should be fully matched in the sense that the remaining element is unit. Alternatively, embedding strings into patterns could be taken as a special case. I think generalizing is better, if feasible.
+In some cases an exact match is needed, in which case we'll insist that the 'remaining' input is unit. Our syntax can support both `parse &var with ...` and `match Expr with ...`, with the latter requiring an exact match. A normal method call might be defined in context of an implicit `parse &input with ...`.
 
+Thoughts:
 
-
-
-
-Unlike grammars on texts, I cannot simply assume I'm parsing a list input. We might primarily distinguish matching on lists versus records.
-
+* Constant Patterns
+  * Integer - match an integer (variable width bitstring) exactly, return matched integer. This includes all integer encodings such as `0xAB` and `0b101` and `42`.
+  * Symbol - match a symbol exactly, return matched symbol.
+  * Text - match start of text, return matched text, remaining text returned via input. Binaries as special encoding for text, maybe `x"0123456789ABCDEF"`
 * List Patterns
-  * `[A, B, C]` - match a list prefix
-  * `[P]*` - repeatedly match a list prefix.
-* Matching on `symbol:Pattern` will extract that symbol from a record, returning the remainder of the record.
-* We must fully match each element of
-* Matching a simple bitstring will 
-* Matching on a record
+  * `[A, B, C]` - match `(A, (B, (C, Rem)))` returning Rem as remaining input. A, B, C must be exact matches.
+* Record or Variant Patterns
+  * label:Pattern - match a specific label, removing it from input and returning remaining record. 
+  * typename of Pattern - similar but for nominative type indexed data
+* Meta Patterns
+  * P opt - optional match
+  * P rep - match P multiple times
+  * P until Q - match P repeatedly until Q is matched once.
+  * P or Q - match P or Q
 
-Matching on a list
+An important concern is how to return values from meta-patterns. A repeating pattern P has multiple variables the pattern P, but now we need a variable for the repetition. This could be supported by treating the variables as fields in a record of the metapattern. We could have special support for converting the array of structs to a structure of arrays if the meta-pattern variable isn't named. 
 
+### Module Layer
+
+        g:(def:(app:gram:(...), MoreDefs),  MetaData)
+
+A grammar-logic module will compile into a simple dictionary structure and ad-hoc metadata. The 'g' header will become useful when integrating multiple glas languages. A grammar-logic module that represents an application should define an 'app' grammar containing a 'main' method. 
+
+I propose compiled definitions be represented by independent values. For example, in case of `grammar foo extends bar` we integrate the compiled value of bar within the compiled value of foo rather than 'foo' referring to 'bar' by name. This simplifies module-layer imports, exports, and local reasoning. Overrides are limited to the lowest and highest layers: methods within a grammar, or modules within a glas distribution.
+
+        import Module                   # toplevel import
+        from Module import ImportList   # explicit import
+        import Module as LocalName      # qualified import
+        Definitions
+        export ImportList
+
+To avoid ambiguity, I propose we limit modules to a single toplevel import followed by any number of explicit and qualified imports, followed by module definitions. Further, we forbid shadowing of anything that is previously defined or assumed. We might extend the only toplevel import with an optional ImportList to support aliasing and assertions. For example, `import my-module with bar, foo as prior-foo` would import everything from my-module but would assert 'bar' is defined and rename 'foo' to 'prior-foo'.
+
+Definitions within a grammar-logic module would include grammars of various forms (including mixins or interfaces) and other program fragments that we might find reusable (such as macros or embedded DSLs, renames). However, anything requiring compile-time eval should be deferred until after bootstrap.
 
 ### Incremental Compilation
 
-Modules compile separately into grammars. Large, composite grammars should compile incrementally into executables. That is, I should be able to cache many of the compilation steps in a manner that aligns with composition of the grammar. Prefix based renames already have this property, but there are a lot of other areas that need attention - incremental optimizations, etc..
+The module layer compiles grammars to an AST or intermediate language. A lot of processing is still needed: partial evaluation, verification of assertions, analysis of types, translation to machine code and accelerated representations, compression of similar definitions, and so on. Ideally, all of these steps are 'incremental' in context of persistent memoization tables, such that a change to a source file rarely requires rebuilding an entire application. But how do we design for incremental compilation?
 
-
-
-
-# OLD STUFF
-
-## Namespace Builder
-
-I want an AST for namespaces that efficiently compiles to a 'flat' dictionary with (rn:renames, def:definition) pairs. This could be followed by a function to apply renames to definitions. To keep it simple, the compiler may reserve a prefix for internal use; can easily raise an error if users attempt to define a reserved symbol.
-
-* *rename:(in:NS, move:\[(Prefix1, Prefix2), ...\])* - rename multiple names within NS. This also renames them within definitions in NS. Initial Prefixes must not overlap. Final prefixes may overlap, but it's an error if two names are combined. 
-* *scope:(in:NS, hide:\[Prefix1, Prefix2, ...\])* - move all names that start with the given prefixes into a fresh, anonymous namespace. The compiler may reserve a name prefix for all the anonymous namespaces. In practice, we'll mostly `hide:"~"`.
-
-TODO:
-
-* *define* new words or overrides
-
-* *initial* definitions - assert certain words are undefined (or only have default or abstract definitions). This cannot be a normal priority because it needs to wrap the grammar body *and* its extensions.
-* *final* and *default* and *abstract* definitions - could model as priority values on definitions. Abstract definitions could omit the definition body, mostly serve as stand-ins to ensure renames don't merge names by accident, and to help discover spelling errors.
-* *compose* namespace builders - apply namespace operations sequentially.
-
-*Aside:* I could add explicit operations to move or undefine words, but I probably don't need them. No need to maximally generalize namespace operators. Provide what is needed, no more.
-
-## Grammar Methods
-
-
-## Misc
-
-### Channels
-
-### Method Interactions
-
-### Method Protocols?
-
-### Pass by Reference Parameters
+Identifying 'cliques' - subsets of mutually recursive definitions - is likely an important part of incremental compilation. Additionally, we might need to rely on secure-hash content addressing instead of allocation of anonymous namespaces. 
 
 
