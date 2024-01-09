@@ -131,7 +131,7 @@ Anonymous namespaces need special attention. The simplest implementation of anon
 
 ### Channel Based Interactions
 
-My initial thought is to model interactions around channels. This gives me many features I want - compositionality, simplicity, and scalability. Procedural interaction can be modeled via request-response channel. Although extensibility is limited due to linear ownership of channels, this can be mitigated by modeling a databus or other extensible architecture.
+My initial thought is to model interactions around channels. This gives me many features I want - compositionality, simplicity, scalability. Procedural interaction can be modeled via request-response channel. Although extensibility is limited due to linear ownership of channels, this can be mitigated by modeling a databus or other extensible architecture.
 
 Channels can be modeled as partial lists, with the writer holding a cursor at the 'tail' of the list, and the reader holding the 'head'. To write a channel, we unify the tail variable with a pair, where the second element is the new tail. Then we update the local cursor to the new tail, ensuring we only write each location once. A written channel may be 'closed' by unifying with the empty list. (Closing a channel can be implicit based on scope.)
 
@@ -145,15 +145,13 @@ An inherent risk with channels is potential deadlock with multiple channels are 
 
 Temporal semantics support deterministic merge of asynchronous events. This significantly enhances compositionality and extensibility, e.g. we can model processes interacting through a databus or publish-subscribe system.
 
-Temporal semantics can be implemented for channels by introducing time step messages. A reader blocks on time step messages. A process may wait, implicitly removing time steps from held input channels then writing time steps to held output channels. We might represent the balance of delay time steps and pending removals on input channels via an associated variable. 
+Temporal semantics can be implemented for channels by introducing time step messages. A process may wait for a time step, which implicitly writes a time step to every held output channel, and increments a counter var for every input channel. When a process reads a channel, if the next message is a 'time step' it will try to decrement the counter and remove that message. If the counter is already zero, read fails with a 'try again later' status, i.e. to require that the process wait a time step. Any number of messages may be delivered within a time step.
 
-In context of temporal semantics, a process can deterministically return that a read fails because waiting is required. A process can wait and poll a list of channels for the first channel with a data message. Logical timeouts are possible, where a process limits the number of time steps it waits for a message. Channel latency can be expressed by inserting a few time steps into a read channel when it is initially allocated.
+Logical time steps are potentially aligned with fine-grained schedules in the real-world, such as nanoseconds. Thus, the system needs to optimize a few cases: compress sequential time-steps in the channel, and allow waiting on a set of input channels to model efficient polling. This feature can support programming of time-sensitive systems. Even with transaction loop applications, we could schedule output events relative to an idealized commit time.
 
-Time steps can be mapped to real-world effects, e.g. one microsecond per time step. This would be useful for scheduling effects in time-sensitive contexts such as music or robotics. Intriguingly, transactional interactions might commit to a schedule of write-only effects relative to an idealized time of commit.
+The cost of temporal semantics is complexity. It must be clear which channels are 'held' by a process.
 
-The cost of temporal semantics is complexity. The language runtime must clearly track 'held' channels. And it is relatively inefficient to push time steps individually, so a runtime must compress sequential time steps and accelerate operations that interact with time steps (e.g. polling). 
-
-I feel this idea is worth exploring, but it might not be available immediately. Ideally, I should develop the language such that temporal semantics can be introduced later with full backwards compatibility.
+I feel this idea is worth exploring. Ideally, I should develop the language such that temporal semantics can be introduced later.
 
 #### Reflective Race Conditions? Tentative. As Effect.
 
@@ -197,6 +195,12 @@ Pubsub has some challenges. If we read and write within the same time-step, it i
 
 *Note:* The glas data type does not directly support sets. Indirectly, we could encode values into bitstrings and model a set as a radix tree, or we could model a set as an ordered list. To support pubsub, I assume the language would abstract and accelerate sets. 
 
+### Speech Act Based Interactions? Defer.
+
+I once read about an interesting language proposal called [Elephant](https://www-formal.stanford.edu/jmc/elephant/elephant.html) by the creator of Lisp. In this language, interactions are based on speech acts. Various speech acts are distinguished, such as assertions, questions, answers, offers, acceptances, commitments, and promises. But essentially we have an IO semantics beyond mere structured exchange of data.
+
+I'm uncertain where I'd want to go with this. But it does remind me of the HTTP distinctions between GET, PUT, and POST operations, where some interactions can be systematically cached by intermediate proxies while others cannot. We could try to augment interactions or specific exchanges with promises of idempotence, commutativity, monotonicity, cacheability, etc.. OTOH, structured approaches to guarantee monotonicity or idempotence, such as pubsub sets or abstract CRDTs, might offer a more robust foundation than mere promises by programmers.
+
 ### Substructural Types
 
 In context of user-defined abstract data types, via nominative types, it might be useful to mark certain objects with substructural properties similar to pass-by-ref or channels. This would be based on the premise that these types *might* have certain properties, and should be treated thusly, even if their current implementation does not. This might be expressed via flags when constructing the nominative type data.
@@ -205,7 +209,7 @@ In context of user-defined abstract data types, via nominative types, it might b
 
 Grammar-logic programs are very suitable for [transaction loop applications](GlasApps.md). 
 
-Integration tweaks relative to procedural transaction loop:
+Integration tweaks relative to my earlier prog model:
 
 * Step state should be plain old data; no holding refs to prior steps or timeline. 
 * In effects API, use named refs only to introduce channels; robust ocap security.
@@ -282,7 +286,7 @@ It is possible to model local vars as something like arguments or pass-by-refs a
 
 Patterns are syntactic sugar over procedural fragments. We will support procedure fragments within the pattern to guarantee patterns have full flexibility of procedures. We can use method calls within patterns outside of a procedure fragment, in which case the 'input' parameter is implicitly threaded. Constants and lists have some special support, mostly operating on 'input' and returning themselves. 
 
-In some cases an exact match is needed, in which case we'll insist that the 'remaining' input is unit. Our syntax can support both `parse &var with ...` and `match Expr with ...`, with the latter requiring an exact match. A normal method call might be defined in context of an implicit `parse &input with ...`.
+In some cases an exact match is needed, in which case we'll insist that the 'remaining' input is unit. Our syntax can support both `parse &var with ...` and `match Expr with ...`, with the latter requiring an exact match but allowing any expression for initial input. A normal method call might be defined in context of an implicit `parse &input with ...`. And we can explicitly provide an 'input' argument in contexts where one is not implicitly provided.
 
 Thoughts:
 
