@@ -26,9 +26,9 @@ My initial proposal was a step function that accounts for initialization, state,
 
         type Step = init:Args | step:State -> [Effects] (halt:Result | step:State) | FAILURE
 
-This is reasonably clear. But modeling State in this manner does complicate distributed evaluation, i.e. we'd need to precise
+This is reasonably clear. We start evaluation with 'init', repeat while it returns 'step', and end on returning 'halt'. Each evaluation is a separate transaction, committing upon success. A failed transaction is aborted does not stop the loop, but might be optimized to wait for changes. Depending on the language, we might need to limit the type of State, e.g. limit it to plain old data.
 
-This shifts most complexity to the *Effects API*, which must support access to arguments, halting the application with a final result, and application private state. If a separate initialization step is needed, users can statefully indicate whether initialization has completed. But, in many cases, it might be preferable to model initialization in the stable prefix of every step.
+This design is a bit awkward regarding how State interacts with parallelism or distribution: we must precisely track data dependencies to detect read-write conflicts within State to support parallel evaluation of transactions. It might prove easier to move state into a database. However, I think this is an adequate starting point.
 
 ## Effects API
 
