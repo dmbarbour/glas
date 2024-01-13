@@ -2,19 +2,15 @@
 
 ## Overview
 
-Grammar and logic programs have similar semantics. Dataflow is based on [unification](https://en.wikipedia.org/wiki/Unification_(computer_science)#Application:_unification_in_logic_programming) and backtracking searches. Grammars generate and accept values. Logic programs generate or accept propositions. The two are easily unified: a guarded pattern (`Pattern when Guard`) in a grammar can essentially model logic `Proposition :- Derivation`. (Similarly, logical negation via `Pattern unless Guard`.)
+Grammar and logic programs have very similar semantics. The direction of evaluation is flexible, i.e. with the same program we can evaluate whether an input is accepted or generate values that would be accepted. It's just that grammars generate and accept 'values' (or 'sentences') while logic programs generate or accept 'propositions'. The two are easily unified: a guarded pattern (`Pattern when Guard`) in a grammar can model logic `Proposition :- Derivation`. (Similarly, logical negation via `Pattern unless Guard`.) 
 
-A pure, deterministic function can be modeled as a grammar or logic that accepts a set of `(args, result)` pairs, where no two pairs have the same first element. An effectful function can be modeled as a grammar or logic that accepts a set of `(args, result, env)` triples, where the third element represents effectful interaction with the environment. A simplistic interaction model is a request-response list, `[(Request1, Response1), (Request2, Response2), ...]` where the environment accepts requests and generates responses. 
+Dataflow within a computation is based on [logic unification](https://en.wikipedia.org/wiki/Unification_(computer_science)#Application:_unification_in_logic_programming), i.e. a variable that appears twice in a pattern or proposition must have the same value in every location.
 
-We can build a procedural language upon grammars and logic, where the environment parameter is implicit. Unification is expressive, not limited to simple request-response interactions. I propose to instead model concurrent channels and temporal semantics. Of course, this does limit us to deferred, safely ignorable, or undoable effects (see [transaction loop applications](GlasApps.md)) unless we guarantee commit. 
+A function can be modeled as a grammar or logic that accepts or generates a set of `(args, result)` pairs, where no two pairs have the same first element. A simple procedural interaction could be represented as `(args, io, result)` where IO represents a request-response list, `[(Request1, Response1), (Request2, Response2), ...]`. The procedure outputs Requests while the environment returns Responses via logic unification. We can generalize to processes with multiple channels with [substructural types](https://en.wikipedia.org/wiki/Substructural_type_system) to limit each channel to a single writer.
 
-Intriguingly, non-determinism can be controlled effectfully by the environment. The language doesn't need to provide direct access to unification variables. Assuming such a language, we might model logic propositions as deterministic functions that either return unit or fail, i.e. `Proposition -> ()`. We could search for passing propositions.
+The proposed language will support procedures and processes. By default, it is programmed procedurally, relying on an implicit 'env' argument to provide standard IO channels. Processes must control or fork 'env'. Procedures are deterministic up to input, but may interact with a non-deterministic environment. For example, a procedure cannot casually introduce a new logic-unification variable, but can potentially request one via IO channel depending on effects API. Applications will generally be expressed in a manner friendly to backtracking evaluation, see [transaction loop applications](GlasApps.md).
 
-As an unrelated point, grammars and logic both benefit from OOP-like inheritance. For example, we might inherit from a grammar that represents a programming language but extend the rules for parsing numbers. Or we might inherit a system of logic propositions, then override the propositions that represent initial data.
-
-## Why Another Language?
-
-A grammar-logic language should be convenient for developing user-defined languages. Logic unification variables can model concurrent or distributed effects, enhancing scalability. The ability to compute functions backwards is very nice in many contexts - constraint systems, property testing, explaining computations.
+Aside from grammar-logic semantics, the proposed language supports OO-like mixins and patches of namespaces. This allows users to easily extend grammars in context of mutually recursive definitions, e.g. add a new rule for parsing integers. The language also takes inspiration from grammars in expression of pattern matching, with an implicit pass-by-ref 'input' parameter when a procedure is used as a pattern. This supports incremental matching on the input, such as reading just the head of a list.
 
 ## Brainstorming
 
@@ -101,7 +97,7 @@ Related ideas:
 
 * *Assertions by naming convention.* Similar to annotations, we might model assertions by defining `assert/property-name` to a method that is treated as a proposition. These assertions would be evaluated in context of extensions to the namespace.
 
-* *Nominative types.* It is feasible to use names within within types, e.g. to index records or to tag variants. This could be leveraged as a basis for abstract data types, especially when combined with private namespaces.
+* *Nominative types.* The system can easily abstract name-indexed records or tagged variants. This can mitigate conflict when extending open types, and provides a robust abstraction boundary with private names. 
 
 * *Interfaces.* We can potentially declare methods and define their intended types and documentation separately from defining the implementation for a method. Default definitions can also be supported.
 
@@ -207,7 +203,7 @@ In context of user-defined abstract data types, via nominative types, it might b
 
 ### Transaction Loop Applications
 
-Grammar-logic programs are very suitable for [transaction loop applications](GlasApps.md). 
+Grammar-logic programs are suitable for expressing [transaction loop applications](GlasApps.md).
 
 Integration tweaks relative to my earlier prog model:
 

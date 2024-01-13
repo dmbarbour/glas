@@ -1,74 +1,55 @@
 # Glas Applications
 
-A basic glas application, in context of [Glas CLI](GlasCLI.md), is currently represented by a transactional step function.
-
-        type Step = init:Params | step:State -> [Effects] (halt:Result | step:State) | Fail
-
-A step that returns successfully is committed. A failed step is aborted then retried, implicitly waiting for changes to external conditions. The first step receives 'init' and the final step returns 'halt'. Intermediate steps receive and return 'step'. 
-
-This is an example of a *transaction loop* - modeling an application as a repeating transaction. Transaction loops are simple yet offer a robust foundation for reactivity, concurrency, and process control. However, these benefits rely on optimizations that are difficult to implement on step functions. To resolve this, I intend to develop a specialized program representation.
+I propose the *transaction loop* as the basis for glas applications.
 
 ## Transaction Loops
 
-Transaction loops model software systems as an open set of repeating, atomic, isolated transactions in a shared environment. Scheduling of different transactions is non-deterministic. This is a simple idea, but has many nice systemic properties regarding extensibility, composability, concurrency, distribution, reactivity, and live coding. However, transaction loops depend on advanced optimizations such as replication to evaluate many non-deterministic choices in parallel, and incremental computing to stabilize replicas. Implementation of the optimizer is the biggest development barrier for this model.
+In the *transaction loop* application model, an application program represents a transaction that is repeated indefinitely. The system is represented by a set of applications. This has many nice qualities for my visions of glas systems, but it also requires difficult optimizations and language features.
 
-### Reactive and Incremental Computing
+*Incremental Computing, Reactivity, and Live Coding.* A transaction can start by reading relatively stable inputs, such as configuration, then switch to reading unstable variables, such as input queues. I call the former the *stable prefix* of a transaction. To reduce rework, a runtime might cache the stable prefix and only recompute the remainder. Relatedly, if a transaction is unproductive (e.g. aborted, or writes variables only with values they already had) the runtime can wait for relevant changes before recomputing. Live coding is implicit if a runtime reads application code as part of the transaction.
 
-If nothing changes, repeating a deterministic, unproductive transaction is guaranteed to again be unproductive. The system can recognize a some obviously unproductive transactions and defer repetition until a relevant change occurs. Essentially, a runtime can optimize a busy-wait loop to trigger updates on change. Obviously unproductive transactions include failed transactions or successful transactions that write the same values to the same variables. 
+*Parallelism and Concurrency.* We can introduce non-deterministic choice into our transactions. Repetition is equivalent to replication for isolated transactions, thus we can optimize a non-deterministic choice in the stable prefix by creating two transactions that are identical up to that choice, then each deterministically select a different choice. Concurrent transactions can evaluate in parallel insofar as there are no read-write conflicts, and a runtime can recognize frequently conflicting transactions and run them in separate time slots. (*Note:* There are also many opportunities for parallelism within transactions.)
 
-Also, when a relevant change occurs, a runtime only needs to recompute the parts of a transaction affected by that change. There is a heuristic tradeoff between space and time (between memory and CPU). Programmers can aid this optimization by designing their step function to have a relatively *stable prefix*, such that we're mostly recomputing the suffix of the transaction.
+*Distribution and Networks Overlay.* An effects API can include remote effects. An optimizer can potentially reduce network chatter by moving fragments of transaction code to the remote machine or a nearby server. If the transaction is internally expressed in terms of processes and subchannels, it is feasible for the stable prefix to include interactions between multiple machines. As a special case for optimization, a transaction that is stable up to distribution then operates only on one remote machine can be replicated remotely without extra synchronization.
 
-### Concurrency and Parallelism
+*Real-Time Systems.* A repeating transaction can self-schedule, e.g. abort if time isn't right. The runtime can optimize for this case, precompute the transaction for an indicated future time then drop the commit on time. This is soft real-time by default, but hard real-time is feasible if we can make contextual guarantees (e.g. how long evaluation takes, real-time OS scheduler). Of course, for very fine-grained timing it's often wiser to commit a buffer of future events for the system to process.
 
-Repeating a single transaction that makes a non-deterministic binary choice is equivalent to repeating a set of two transactions that are identical before this choice then deterministically diverge. We can optimize non-deterministic choice using replication. Usefully, replicas can be stable under incremental computation. Introducing non-deterministic choice enables a single repeating transaction to represent a dynamic set of repeating transactions, i.e. a set of threads.
+*Auto-tune and Search.* A reactive application can read tuning variables and have an associated fitness function. The system could automate tuning of those variables to improve fitness. Transactions make this easier because the system can easily experiment with tuning parameters without committing to them. This can potentially result in a more adaptive and reactive system while avoiding unnecessary state. In many cases, the fitness heuristic could be represented via annotation.
 
-Transactions in the set will interact via shared state. Useful interaction patterns such as channels and mailboxes can be modeled and typefully abstracted within shared state. Transactional updates and ability to wait on flexible conditions also mitigates many challenges of working directly with shared state.
+*Transaction Fusion.* It is feasible to apply [loop optimizations](https://en.wikipedia.org/wiki/Loop_optimization) to the transaction loop, e.g. fuse two transactions to gain obtain an opportunity for partial evaluation. A runtime might also fuse fragments of transactions in context of remote operations, relying on a just-in-time compiler. Fusion optimizations would be especially valuable in open systems where applications and services are developed independently.
 
-Concurrent transactions can evaluate in parallel insofar as they avoid read-write conflict. When conflict does occur, one transaction will be aborted by the system while the other proceeds. The system can record a conflict history to heuristically schedule transactions to reduce risk of conflict. Fairness is feasible if we ensure individual transactions do not require overly long to evaluate. Additionally, applications can be architected to avoid conflict, using intermediate buffers and staging areas to reduce contention.
+I have ideas on how to support most of these, but the gap between idea and implementation is intimidating.
 
-### Distribution 
+## Application Programs
 
-Distributed evaluation of transaction loops is possible using distributed transactions. However, arbitrary distributed transactions are expensive and vulnerable to denial-of-service and disruption. We can mitigate this by identifying a subset of distributed transactions that can be implemented robustly and efficiently, then designing our distributed applications around them.
+My initial proposal was a step function that accounts for initialization, state, and results:
 
-One good option is to build around a channels API with abstract intermediate communication. A 'writer' will write to a local buffer that is later moved to the remote buffer by separate transaction. This move transaction requires a lightweight, idempotent message-ack interaction with a single remote node.
+        type Step = init:Args | step:State -> [Effects] (halt:Result | step:State) | FAILURE
 
-There are other patterns that can also be optimized. But channels alone are adequate primitives for developing distributed applications. And I propose to start there.
+This is reasonably clear. But modeling State in this manner does complicate distributed evaluation, i.e. we'd need to precise
 
-### Transaction Fusion
-
-It is possible to apply [loop optimizations](https://en.wikipedia.org/wiki/Loop_optimization) to repeating transactions. Conceptually, we might view this as refining the non-deterministic transaction schedule. A random schedule isn't optimal because we must assume external updates to state between steps. By fusing transactions, we eliminate concurrent interference and enable optimization at the boundary. An optimizer can search for fusions that best improve performance. 
-
-Fusion could be implemented by a just-in-time compiler based on empirical observations, or ahead-of-time based on static analysis. Intriguingly, just-in-time fusions can potentially optimize communication between multiple independent applications and services. In context of distributed transaction loops, each application or service essentially becomes an patch on a network overlay without violating security abstractions.
-
-### Real-Time Systems 
-
-Transaction loops can wait on the clock by (logically) aborting a transaction until a desired time is reached. Assuming the system knows the time the transaction is waiting for, the system can schedule the transaction precisely and efficiently, avoiding busy-waits from watching the clock. Usefully, the system can precompute a transaction slightly ahead of time, such that effects apply almost exactly on time.
-
-Further, we could varify that critical transactions evaluate with worst-case timing under controllable stability assumptions. This enables "hard" real-time systems to be represented.
-
-### Search
-
-An application can specify a fitness heuristic and constraint variables. A runtime can heuristically tune those variables to improve fitness and stabilize them. This search pattern works especially well in context of reactive systems and backtracking, such as transaction loop applications. Reactive systems allow for ongoing adaptation with fitness based on runtime observations, while backtracking enables testing proposed variable assignments without committing to them.
-
-Constraint variables might be understood as a form of unfair non-deterministic choice. Unfair in the sense that the best choice for variables is sticky or [metastable](https://en.wikipedia.org/wiki/Metastability). The system might apply machine learning algorithms to assign the variables efficiently. The fitness heuristic can be expressed as a program annotation insofar as it influences non-deterministic choice but doesn't actually restrict that choice.
-
-Potential use cases include calibration or adaptation of applications.
-
-### Live Coding
-
-Transaction loops don't solve live coding, but they do lower a few barriers. Application code can be updated atomically between transactions. Threads can be regenerated according to stable non-deterministic choice in the updated code. Divergence or 'tbd' programs simply never commit; they await programmer intervention and do not interfere with concurrent behavior.
-
-Remaining challenges include stabilizing application state across minor changes, versioning major changes, provenance tracking across compilation stages, rendering live data nearby the relevant code.
+This shifts most complexity to the *Effects API*, which must support access to arguments, halting the application with a final result, and application private state. If a separate initialization step is needed, users can statefully indicate whether initialization has completed. But, in many cases, it might be preferable to model initialization in the stable prefix of every step.
 
 ## Effects API
 
-TODO: Rewrite APIs to fit with a multiple channel based effects system and potentially abstract methods (in context of grammar-logic programming). This will simplify many APIs and help avoid most refs (limited to initial acquisition of a channel).
+In context of [grammar logic programming](GrammarLogicProg.md), the runtime will extend the app grammar with a procedural effects API, and will provide a runtime environment to main. These procedures logically interact with the runtime via channels in env. To simplify abstraction and extension, I propose to model env as a name-indexed record, initially with names private to the runtime. To avoid name conflict, I propose 'eff/' as a common prefix for the procedures.
+
+In practice, I expect that many effectful procedures will be accelerated to avoid any extra concurrency loops. Static partial evaluation of effects is also possible in some cases, and could improve performance where applicable. 
+
+Below, I sketch a potential effects API in terms of procedural effects. The 'eff/' prefix is elided.
+
+### Halt the App
+
+* *halt(Result)* - ask runtime to stop the application with the given exit code. The application doesn't halt immediately, but will halt after commit.
+
+The system may have some standard transaction steps to simplify things. For example, to avoid relying on the optimizer to halt an application, I'd favor a standard 'halt' effect. To simplify live coding, the runtime might treat reading application code as part of a larger transaction.
+
 
 ### Concurrency
 
 Repetition and replication are equivalent for isolated transactions. If a transaction loop involves a fair non-deterministic choice, we can implement this by replicating the transaction to try every choice. Multiple choices can commit concurrently if there is no read-write conflict, otherwise we have a race condition. When a choice is part of the stable incremental computing prefix for a repeating transaction, these replicas also become stable, effectively representing a multi-threaded application.
 
-* **fork:N** - Response is non-deterministic fair choice of natural number between 1 and N. 
+* **fork(N)** - Response is non-deterministic fair choice of natural number between 1 and N. Does not fail, but `fork(0)` would diverge.
 
 Fair choice means that, given enough time, the runtime will eventually try any valid prefix of fork choices in the future (regardless of the past). This isn't a guarantee that races resolve fairly, only that fork choices aren't sticky. Race conditions should instead be resolved by application design, perhaps introducing some queues.
 
@@ -352,3 +333,10 @@ References are semantically awkward. I'd prefer to avoid them, but I haven't fou
 For now, I'll stick to the convention where the environment allocates and returns references. Where appropriate, we can arrange for unique, unforgeable references, e.g. including an HMAC as part of each reference would ensure references are robust even when round-tripped through networks or databases.
 
 A related issue: precise, automatic garbage collection is hindered if references are normal, serializable values. The glas program model will not have any built-in support for GC. However, it is feasible to abstract references and support GC in a higher program layer (that might compile to a glas program, or be interpreted via accelerator). 
+
+### Idea: Rendezvous? Likely no.
+
+It seems feasible to weaken isolation and introduce a [CSP-like rendezvous](https://en.wikipedia.org/wiki/Communicating_sequential_processes) to exchange data between concurrent transactions. These transactions would either commit together or abort together. The motive for this feature is that it would allow synchronous interaction between applications and services, i.e. forming multi-party transactions. 
+
+But there are too many non-trivial challenges. It is unclear how transactions should be ordered with respect to effects on shared resources, such as a shared database. Reentrancy requires very careful attention. It becomes difficult to reason locally about performance. 
+

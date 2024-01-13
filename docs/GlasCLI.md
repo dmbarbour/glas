@@ -48,12 +48,12 @@ Full support for distributions will be deferred at least until after glas CLI bo
 
         glas --run ModuleRef -- Args
 
-The glas executable first compiles the referenced module into a value, which must be recognized as representing an application. Initially, [grammar-logic modules](GrammarLogicProg.md) are recognized, assuming the 'main' method of the 'app' grammar. This program may include annotations to configure runtime options. The run-mode annotation is especially relevant, influencing integration.
+The glas executable first compiles the referenced module into a value, which must be recognized as representing an application. Initially, [grammar-logic modules](GrammarLogicProg.md) are recognized, running the main method of the app grammar. The runtime will read annotations on main to manage runtime configuration options. The run mode annotation is especially relevant, allowing the runtime to support multiple application types.
 
 Recognized run modes include:
 
-* *loop* - the default, a [transaction loop](GlasApps.md) step function
-* *staged* - application has type `Args -> Application`.
+* *step* - transaction loop step function. See [glas apps](GlasApps.md).
+* *stage* - application has type `Args -> Application`.
   * effects to build app are *log* and *load* (global) 
   * arguments may be divided across stages using '--'.
   * `glas --run staged-op -- stage one args -- stage two args`
@@ -61,12 +61,10 @@ Recognized run modes include:
   * effects are limited to *log*, *load*, and *fork(Nat)*
   * fork is non-deterministic choice for fuzz testing
   * might extend to allow `any->any` type like assertions
-* *binary* - application function from `Args -> Binary`. 
+* *text* - application function from `Args -> Binary`. 
   * binary is written to standard output once computed
   * limited access to *log* and *load* (global) effects
   * motive is to simplify bootstrap of glas executable 
-
-The glas executable might also evaluate assertions. A lot of processing can be cached, including assertions and JIT-compilation, to reduce rework across command line operations.
 
 ## Scripting
 
@@ -134,7 +132,8 @@ The executable should have minimum logic, but where should I focus initial atten
 * Bootstrap
 * Browsing module system.
 * Automated Testing
+* Command line calculator
 * REPLs
 * [Language Server Protocol](https://en.wikipedia.org/wiki/Language_Server_Protocol)
-
-I'd be mildly interested in a shell language based entirely on 'installing' glas-cli-opname commands.
+* FUSE filesystem support
+* IDE projectional editors, programmable wikis
