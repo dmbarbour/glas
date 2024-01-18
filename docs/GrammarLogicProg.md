@@ -64,7 +64,9 @@ Factoring is still limited more than I'd prefer. It isn't clear how to refactor 
 
 ### Deterministic Functions
 
-Methods in my grammar-logic language should represent deterministic functions, procedures, or processes by default. Non-deterministic computations will still be supported via effects or in contexts where we evaluate backwards. Mostly, this means programs cannot directly introduce unification variables or express unification. 
+Methods can represent deterministic procedures by default, introducing non-determinism via effects as needed. Alternatively, I could support arbitrary grammars, then use types to constrain certain operations. But I think it's more convenient to have determinism constructively at this layer.
+
+Non-deterministic computations will still be supported via effects or in contexts where we evaluate backwards. Mostly, this means programs cannot directly introduce unification variables or express unification. 
 
 Unification variables can be introduced indirectly via effects or used in abstract by channels (and other primitives). Abstraction does impose constraints on the language: if we do not have static type checking to prove at compile time that channels are correctly used as channels, the runtime must instead track dynamic types (to at least distinguish channels from data).
 
@@ -96,8 +98,6 @@ Related ideas:
 * *Annotations by naming convention.* We can bind names to annotations based on associated names, e.g. method `main` might be associated with `anno/main/type`, `anno/main/doc`, and others. When we specify renames or moves, annotations may also be renamed or moved. This design also makes annotations extensible.
 
 * *Assertions by naming convention.* Similar to annotations, we might model assertions by defining `assert/property-name` to a method that is treated as a proposition. These assertions would be evaluated in context of extensions to the namespace.
-
-* *Nominative types.* The system can easily abstract name-indexed records or tagged variants. This can mitigate conflict when extending open types, and provides a robust abstraction boundary with private names. 
 
 * *Interfaces.* We can potentially declare methods and define their intended types and documentation separately from defining the implementation for a method. Default definitions can also be supported.
 
@@ -197,10 +197,6 @@ I once read about an interesting language proposal called [Elephant](https://www
 
 I'm uncertain where I'd want to go with this. But it does remind me of the HTTP distinctions between GET, PUT, and POST operations, where some interactions can be systematically cached by intermediate proxies while others cannot. We could try to augment interactions or specific exchanges with promises of idempotence, commutativity, monotonicity, cacheability, etc.. OTOH, structured approaches to guarantee monotonicity or idempotence, such as pubsub sets or abstract CRDTs, might offer a more robust foundation than mere promises by programmers.
 
-### Substructural Types
-
-In context of user-defined abstract data types, via nominative types, it might be useful to mark certain objects with substructural properties similar to pass-by-ref or channels. This would be based on the premise that these types *might* have certain properties, and should be treated thusly, even if their current implementation does not. This might be expressed via flags when constructing the nominative type data.
-
 ### Transaction Loop Applications
 
 Grammar-logic programs are suitable for expressing [transaction loop applications](GlasApps.md).
@@ -266,11 +262,15 @@ I would prefer to avoid depending on partial evaluation of Dest, at least implic
 
 *Note:* Because method calls are concurrent, there is no specific issue with including refs in the return value. It is potentially very useful for refactoring method call arguments. But complicated use of pass-by-refs does increase risk of accidental deadlock. I'm interested in a lightweight static dataflow analysis to resist most issues.
 
+#### Shared State?
+
+It seems feasible to extend pass-by-refs with temporal semantics, such that when we 'wait' the ownership is temporarily forwarded, then eventually returned. This might be convenient in some cases. Of course, the another way to model shared state is to model channels to a shared object.
+
 #### Environment, Effects, and Concurrency
 
 The 'env' parameter is implicitly passed via linear copy to called methods, threading any bundled data, channels, or pass-by-refs in a procedural style. Users cannot directly manipulate env, but the language will include keyword syntax for scoped manipulation of env, e.g. `with (newEnv) do { ... }` might shadow env within scope of the subprogram, and a simple variation might run to end of the current scope.
 
-Procedural style implicit effects can be supported through channels in the env. For example, to access the filesystem, we might use a channel-based object where the runtime handles requests. But env will often be abstracted to simplify extension. Access to the abstract env might be provided through an interface of methods, and the abstraction might be protected via nominative types.
+Procedural style implicit effects can be supported through channels in the env. For example, to access the filesystem, we might use a channel-based object where the runtime handles requests. But env will often be abstracted to simplify extension. Access to an abstract env might be provided through a procedural interface.
 
 Dataflow of env will implicitly constrain concurrent computation in most cases. Users might work around this limitation via `with () { ... }` to reduce the environment to a trivial unit value, or perhaps `with (forkEnv()) { ... }` to explicitly construct an environment for concurrent computations. But these concurrent computations must interact through channels instead of shared memory.
 
@@ -294,7 +294,6 @@ Thoughts:
   * `[A, B, C]` - match `(A, (B, (C, Rem)))` returning Rem as remaining input. A, B, C must be exact matches.
 * Record or Variant Patterns
   * label:Pattern - match a specific label, removing it from input and returning remaining record. 
-  * typename of Pattern - similar but for nominative type indexed data
 * Meta Patterns
   * P opt - optional match
   * P rep - match P multiple times

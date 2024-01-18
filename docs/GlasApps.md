@@ -1,16 +1,20 @@
 # Glas Applications
 
-I propose the *transaction loop* as the basis for glas applications.
+I propose the *transaction loop* as the basis for glas applications, and *applications as interacting objects* as a theme.
 
 ## Transaction Loops
 
-In the *transaction loop* application model, an application program represents a transaction that is repeated indefinitely. The system is represented by a set of applications. This has many nice qualities for my visions of glas systems, but it also requires difficult optimizations and language features.
+In the *transaction loop* application model, an application program represents a transaction that is evaluated repeatedly. The system is represented by a set of applications. This has many nice qualities for my visions of glas systems, but it requires some difficult optimizations and careful API design.
 
-*Incremental Computing, Reactivity, and Live Coding.* A transaction can start by reading relatively stable inputs, such as configuration, then switch to reading unstable variables, such as input queues. I call the former the *stable prefix* of a transaction. To reduce rework, a runtime might cache the stable prefix and only recompute the remainder. Relatedly, if a transaction is unproductive (e.g. aborted, or writes variables only with values they already had) the runtime can wait for relevant changes before recomputing. Live coding is implicit if a runtime reads application code as part of the transaction.
+*Incremental Computing, Reactivity, and Live Coding.* A transaction can start by reading relatively stable inputs, such as configuration, then switch to reading unstable variables, such as input queues. I call the former the *stable prefix* of a transaction. To reduce rework, a runtime might cache the stable prefix and only recompute the remainder. Relatedly, if a transaction is unproductive (e.g. aborted, or writes variables only with values they already had) the runtime can wait for relevant changes before recomputing. Live coding is implicit if the transaction logically starts by reading application code.
 
-*Parallelism and Concurrency.* We can introduce non-deterministic choice into our transactions. Repetition is equivalent to replication for isolated transactions, thus we can optimize a non-deterministic choice in the stable prefix by creating two transactions that are identical up to that choice, then each deterministically select a different choice. Concurrent transactions can evaluate in parallel insofar as there are no read-write conflicts, and a runtime can recognize frequently conflicting transactions and run them in separate time slots. (*Note:* There are also many opportunities for parallelism within transactions.)
+*Parallelism and Concurrency.* For isolated transactions, repetition is equivalent to replication. We can optimize a non-deterministic choice within the stable prefix of a transaction by replicating the transaction as identical up to the choice, then replica selecting a different choice. If those transactions don't have any read-write conflicts, they can also commit together, otherwise we have a race condition. A runtime can heuristically schedule transactions that rarely conflict into the same time slots. *Note:* There are also many opportunities for parallelism and concurrency *within* transactions.
 
-*Distribution and Networks Overlay.* An effects API can include remote effects. An optimizer can potentially reduce network chatter by moving fragments of transaction code to the remote machine or a nearby server. If the transaction is internally expressed in terms of processes and subchannels, it is feasible for the stable prefix to include interactions between multiple machines. As a special case for optimization, a transaction that is stable up to distribution then operates only on one remote machine can be replicated remotely without extra synchronization.
+*Open Composition and Synchronous Interaction.* Application programs can be extended with a parameter representing a requested operation. This introduces an opportunity for applications to synchronously 'call' other applications from within a transaction. This must be paired with an effects API for system discovery, such that applications can be referenced. The primary transaction loop can be implemented as a repeating 'step' request by the runtime. 
+
+*Distribution and Networks Overlay.* A transaction can potentially interact with remote resources and services. This is expensive in general, requiring multi-phase distributed commit protocols. But the cost can be mitigated by optimization: We can move code fragments and cached data to remote nodes. When a node is only observed in the stable prefix of a transaction, we can use a cache consistency analysis instead of talking to that node. With a little design and API support (e.g. favoring asynchronous queues) this reduces a distributed transaction to a remote transaction loop on a single node. A transaction loop with concurrency can potentially represent an entire network.
+
+*Network Partitioning, Graceful Degradation, and Resilience.* Transaction loops applications are idempotent in a connected system: installing an application twice has the same behavior as installing it once. But network connectivity is often intermittent. If we install the application on multiple partitions, it can provide degraded service when disconnected and automatically resume full operation when connectivity is restored. Of course, this does require app and API design such that resources such as state are decentralized, configurations are mirrored, etc.. But this is much simpler than it is for conventional application models.
 
 *Real-Time Systems.* A repeating transaction can self-schedule, e.g. abort if time isn't right. The runtime can optimize for this case, precompute the transaction for an indicated future time then drop the commit on time. This is soft real-time by default, but hard real-time is feasible if we can make contextual guarantees (e.g. how long evaluation takes, real-time OS scheduler). Of course, for very fine-grained timing it's often wiser to commit a buffer of future events for the system to process.
 
@@ -20,30 +24,21 @@ In the *transaction loop* application model, an application program represents a
 
 I have ideas on how to support most of these, but the gap between idea and implementation is intimidating.
 
-## Application Programs
+## Applications as Interacting Objects
 
-My initial proposal was a step function that accounts for initialization, state, and results:
+An application program is expressed as an effectful procedure that is evaluated repeatedly in separate transactions. In context of glas ".g" modules, we run the 'main' method of the 'app' grammar. 
 
-        type Step = init:Args | step:State -> [Effects] (halt:Result | step:State) | FAILURE
+Applications have effectful access to state that persists between transactions. State includes simple variables but also may extend to abstract queues, CRDTs, and other specialized resources to mitigate conflict or improve performance. References to state resources should be abstract within the program. State is generally limited to plain old data and managing a graph of relationships between refs.
 
-This is reasonably clear. We start evaluation with 'init', repeat while it returns 'step', and end on returning 'halt'. Each evaluation is a separate transaction, committing upon success. A failed transaction is aborted does not stop the loop, but might be optimized to wait for changes. Depending on the language, we might need to limit the type of State, e.g. limit it to plain old data.
+A known subset of state resources may be shared with other apps. This provides a simple basis for *asynchronous* interaction, where applications communicate over time via separate transactions. The normal troubles with shared state are mitigated by transactional update, specialized resources, and control over permissions (e.g. separating read and write access to a queue). Asynchronous interaction is useful and helps keep transactions small, but is inconvenient for many problems.
 
-This design is a bit awkward regarding how State interacts with parallelism or distribution: we must precisely track data dependencies to detect read-write conflicts within State to support parallel evaluation of transactions. It might prove easier to move state into a database. However, I think this is an adequate starting point.
+To support synchronous interaction, the application procedure is parameterized by a requested operation. The procedure's return value becomes the result. Unlike state, requests and results may communicate transaction-local types such as channels, pass-by-ref, or state refs. The effects API should support system discovery and registration to receive ad-hoc calls. Registration may be associated with state resources representing a callback context. When an application is called many times within the transaction, we'll rely on temporal semantics to impose a total order. By default, a runtime repeatedly requests a 'step' operation, and perhaps standardizes a few requests to support OS signals or debugging. 
+
+An application is potentially called many times within a transaction. In context of interaction or reentrancy, a prior request does not necessarily complete before the next one starts. This can be resolved with temporal semantics imposing order.
 
 ## Effects API
 
-In context of [grammar logic programming](GrammarLogicProg.md), the runtime will extend the app grammar with a procedural effects API, and will provide a runtime environment to main. These procedures logically interact with the runtime via channels in env. To simplify abstraction and extension, I propose to model env as a name-indexed record, initially with names private to the runtime. To avoid name conflict, I propose 'eff/' as a common prefix for the procedures.
-
-In practice, I expect that many effectful procedures will be accelerated to avoid any extra concurrency loops. Static partial evaluation of effects is also possible in some cases, and could improve performance where applicable. 
-
-Below, I sketch a potential effects API in terms of procedural effects. The 'eff/' prefix is elided.
-
-### Halt the App
-
-* *halt(Result)* - ask runtime to stop the application with the given exit code. The application doesn't halt immediately, but will halt after commit.
-
-The system may have some standard transaction steps to simplify things. For example, to avoid relying on the optimizer to halt an application, I'd favor a standard 'halt' effect. To simplify live coding, the runtime might treat reading application code as part of a larger transaction.
-
+The runtime will extend the application namespace with a procedural effects API and provide an implicit parameter representing interaction with the runtime environment. In context of a ".g" module, I propose use of 'rte/' hierarchical namespace and 'env.rte' as the implicit parameter. The runtime environment parameter is left abstract, manipulated only via the provided effects API.  
 
 ### Concurrency
 
@@ -333,10 +328,3 @@ References are semantically awkward. I'd prefer to avoid them, but I haven't fou
 For now, I'll stick to the convention where the environment allocates and returns references. Where appropriate, we can arrange for unique, unforgeable references, e.g. including an HMAC as part of each reference would ensure references are robust even when round-tripped through networks or databases.
 
 A related issue: precise, automatic garbage collection is hindered if references are normal, serializable values. The glas program model will not have any built-in support for GC. However, it is feasible to abstract references and support GC in a higher program layer (that might compile to a glas program, or be interpreted via accelerator). 
-
-### Idea: Rendezvous? Likely no.
-
-It seems feasible to weaken isolation and introduce a [CSP-like rendezvous](https://en.wikipedia.org/wiki/Communicating_sequential_processes) to exchange data between concurrent transactions. These transactions would either commit together or abort together. The motive for this feature is that it would allow synchronous interaction between applications and services, i.e. forming multi-party transactions. 
-
-But there are too many non-trivial challenges. It is unclear how transactions should be ordered with respect to effects on shared resources, such as a shared database. Reentrancy requires very careful attention. It becomes difficult to reason locally about performance. 
-
