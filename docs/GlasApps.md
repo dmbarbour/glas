@@ -26,15 +26,13 @@ I have ideas on how to support most of these, but the gap between idea and imple
 
 ## Applications as Interacting Objects
 
-An application program is expressed as an effectful procedure that is evaluated repeatedly in separate transactions. In context of glas ".g" modules, we run the 'main' method of the 'app' grammar. 
+An application program is expressed as an effectful procedure. This procedure receives a parameter representing a request. The primary transaction loop behavior is to repeatedly run this procedure in separate transactions with a 'step' requests. Steps generally return unit, but in general the type of the result may depend on the request. 
 
-Applications have effectful access to state that persists between transactions. State includes simple variables but also may extend to abstract queues, CRDTs, and other specialized resources to mitigate conflict or improve performance. References to state resources should be abstract within the program. State is generally limited to plain old data and managing a graph of relationships between refs.
+Applications can issue requests to other applications. These requests represent synchronous interactions between applications. It is possible for a request or result to include channels for ongoing interactions. Temporal semantics can coordinate multiple ongoing interactions with an application. 
 
-A known subset of state resources may be shared with other apps. This provides a simple basis for *asynchronous* interaction, where applications communicate over time via separate transactions. The normal troubles with shared state are mitigated by transactional update, specialized resources, and control over permissions (e.g. separating read and write access to a queue). Asynchronous interaction is useful and helps keep transactions small, but is inconvenient for many problems.
+To receive requests, an application must be discovered by the other application. This may involve registering with a shared service. Registration may include some metadata about what the application can do, and a callback context so the application knows where each call is coming from. The registration and discovery APIs should be designed with attention to compositionality, reactivity, and security.
 
-To support synchronous interaction, the application procedure is parameterized by a requested operation. The procedure's return value becomes the result. Unlike state, requests and results may communicate transaction-local types such as channels, pass-by-ref, or state refs. The effects API should support system discovery and registration to receive ad-hoc calls. Registration may be associated with state resources representing a callback context. When an application is called many times within the transaction, we'll rely on temporal semantics to impose a total order. By default, a runtime repeatedly requests a 'step' operation, and perhaps standardizes a few requests to support OS signals or debugging. 
-
-An application is potentially called many times within a transaction. In context of interaction or reentrancy, a prior request does not necessarily complete before the next one starts. This can be resolved with temporal semantics imposing order.
+Applications have effectful access to state resources that persist between transactions. State resources obviously include variables, but more specialized forms such as queues can be supported when there is a good reason such as performance. State cannot hold any type that is ephemeral within a transaction, but it isn't a big problem to store references to state resources. Applications can interact asynchronously (over multiple transactions) through shared state. Most issues with shared state are mitigated in context of transactions and [robust references](https://en.wikipedia.org/wiki/Object-capability_model).
 
 ## Effects API
 
