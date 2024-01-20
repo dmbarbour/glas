@@ -78,52 +78,7 @@ An intriguing possibility in context of grammar-logic programming is to model no
 
 ### Extensible Namespaces
 
-Instead of a monolithic grammar (or logic), I propose to model grammars as a collection of named rules. This allows us to express OOP-like inheritance and override. For example, we might want a new language the same as the old one, except with a new option to parse an integer.
-
-        grammar foo extends bar . baz with
-            integer = ...  
-
-I propose to model all grammars as functions on a namespace. This allows for multiple inheritance, but see *Multiple Inheritance* for a discussion on conflict resolution.
-
-Related ideas:
-
-* *Hierarchical namespaces.* We can model hierarchical structure of names, based on some conventions for directory-like paths (e.g. `dir/name`). Hierarchical structure would help control name collisions while still allowing flexible extension to methods within that namespace.
-
-* *Anonymous or Private namespaces.* Our language compiler can reserve some prefixes for private use, then automatically rename private methods to avoid conflict. Compared to explicit 'private' methods, reserved prefixes would avoid conflict with public use of the same name in another context.
-
-* *Prefix Based Rename and Move.* It is feasible to construct a single-pass index to move and rename things, and also specify the rename destination for private names. This can support both automatic and manual resolution of conflicts. Moving a definition might leave the original name 'declared'. Hiding and erasing names can be modeled in terms of rename or move to a fresh anonymous name. It is technically feasible to 'merge' names, e.g. rename foo to bar when bar is already defined or declared, but I'm not sure this is a good idea; it at least should be prevented from happening by accident.  
-
-* *Higher Order Components and Containers.* We can support template-like abstraction or mixins, via something like: `import foo(a:x, b:y, c:z) as bar` or simply `from foo(a:x, b:y, c:z) import (importList)`. The first would create a namespace 'bar' based on grammar 'foo' where we override names 'a', 'b', 'c' with 'x', 'y', and 'z' in local context. The latter would allow directly binding some names into the local namespace from 'bar' into the local namespace. 
-
-* *Annotations by naming convention.* We can bind names to annotations based on associated names, e.g. method `main` might be associated with `anno/main/type`, `anno/main/doc`, and others. When we specify renames or moves, annotations may also be renamed or moved. This design also makes annotations extensible.
-
-* *Assertions by naming convention.* Similar to annotations, we might model assertions by defining `assert/property-name` to a method that is treated as a proposition. These assertions would be evaluated in context of extensions to the namespace.
-
-* *Interfaces.* We can potentially declare methods and define their intended types and documentation separately from defining the implementation for a method. Default definitions can also be supported.
-
-#### Multiple Inheritance
-
-Multiple inheritance carries risk of ambiguity and confusion when a method is inherited from multiple sources. Ideally, most conflicts can be avoided or automatically resolved, and programmers have tools for explicit and concise resolution where needed.
-
-I propose a lightweight structural approach to automatic conflict resolution. For each method we indicate whether we expect to introduce or override that definition. If we attempt to introduce a method twice, or override a method that hasn't been defined, we have an error. We might introduce an additional rule to support interfaces, based on unification of definitions (feasible if we can exclude private names). Anyhow, what I want to avoid is any form of deep or complicated analysis for conflict resolution. This should be something that users can easily reason about while supporting usable strategies to avoid conflict.
-
-Users can avoid most conflicts by sticking to patterns such as single inheritance of the main program plus mixins, interfaces, and hierarchical components. When conflict does occur, it is feasible to resolve this via rename (suitable when names have two different meanings) or move. Access to prior definitions can be modeled as moving the prior definition into a private space, but we can give users more explicit control over moves.
-
-#### Default Definitions
-
-I could support defaults for arbitrary symbols. This might be modeled as a soft state between declared and introduced. When we 'override' default becomes an introduction, but if we 'introduce' default becomes declaration. Defaults would conflict with other defaults when they don't match definitions. 
-
-Defaults might get complicated if we try to generalize things (priorities, overrides of defaults that preserve default priority, etc.) but I think we can get most benefits and avoid most complications by simply restricting defaults to interfaces. Perhaps support overrides of defaults within derived interfaces.
-
-#### Access to Previous Definitions
-
-When we override or shadow a definition, our language might automatically move the prior definition to a conventional private location, such as 'foo' to 'prior foo'. This should be implemented in terms of move, rename, and anonymous structure. The difference between override and shadow is whether existing references are also redirected to 'prior foo'.
-
-#### Implementation of Namespaces
-
-We'll compile a namespace into a flat dictionary of definitions. This involves prefix-oriented renaming of things. A set of renames might be expressed as an associative map such as `{ f => xy, foo => x }` where the longest matching prefix wins. We can compose rewrites from root to leaf, i.e. if the root applies the aforementioned rewrite and the child nodes `{ bar => fo }` we can compute a composite map `{ bar => fo, baro => x, f => xy, foo => x }`. This is based on the longest matching prefix including all possible suffixes of `fo`. It is feasible to apply renames in a single pass.
-
-Anonymous namespaces need special attention. The simplest implementation of anonymous namespaces is to reserve a privacy prefix for each component grammar, but this results in too many redundant definitions. One potential alternative is content addressing: we compute a secure hash for each 'clique' of mutually recursive definitions, then use content addressing in the compiled name for a method. This could be done for public methods, too, in which case the compiled dictionary would include this and a an association binding public names to content address. Common definitions can be shared. This would essentially add some extra passes to identify cliques and add clique-specific renames, but it could be incremental.
+See [Extensible Namespaces](ExtensibleNamespaces.md).0
 
 ### Channel Based Interactions
 

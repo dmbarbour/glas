@@ -48,8 +48,7 @@ Full support for distributions will be deferred at least until after glas CLI bo
 
         glas --run ModuleRef -- Args
 
-The glas executable first compiles the referenced module into a value, which must be recognized as representing an application. Initially, [grammar-logic modules](GrammarLogicProg.md) are recognized, running the main method of the app grammar. The runtime will read annotations on main to manage runtime configuration options. The run mode annotation is especially relevant, allowing the runtime to support multiple application types.
-
+The glas executable first compiles the referenced module into a value. This value must be recognized as representing an application. Initially, the glas command line will only recognize the the type used in ".g" modules
 Recognized run modes include:
 
 * *step* - transaction loop step function. See [glas apps](GlasApps.md).

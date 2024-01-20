@@ -71,11 +71,17 @@ Direct representation of lists is inefficient for many use-cases, such as random
 
 To support larger-than-memory data, glas systems will also leverage content-addressed storage to offload volumes of data to disk. I call this pattern *Stowage*, and it will be heavily guided by program annotations. Stowage simplifies efficient memoization, and network communication in context of large data and structure-sharing update patterns. Stowage also helps separate the concerns of data size and persistence.
 
-## Programs
+## Applications and Programs
 
-Programs are values with known interpretation. Although glas systems can support more than one program model, the quality and character of glas systems, and simplicity of bootstrap, will be deeply influenced by the initial language. I've developed and rejected several designs here, but the current proposal is based on [grammars and logic unification variables](GrammarLogicProg.md). This model is expressive, extensible, and scalable. Performance will be mitigated via *Acceleration*.
+This is rather involved (see [Glas Applications](GlasApps.md)). The general idea is that we define modules that define namespaces that describe second-class objects. The runtime adds effectful operations to the namespace, then integrates the application based on standard methods it defines, e.g. repeatedly evaluating a transactional 'step' method to represent background processing. The transaction loop has very nice systemic properties, albeit contingent on an optimizer.
 
-*Note:* I discarded an older 'prog' model, but there are still vestigial references to it.
+To support this, we must also develop a data type that effectively represents the modules, namespaces, and procedures. The proposed type for normal ".g" modules is a simple record of definitions with a trivial header. The application should be defined under 'app'.
+
+        g:(app:Namespace, MoreDefs)
+
+[Representation of the namespace](ExtensibleNamespaces.md) is sophisticated, so I'm developing it in a dedicated document. This is based on lazy rewriting of prefixes of names. Modulo constraints that names are represented by prefix-unique bitstrings and can be precisely identified, the namespace structure is effectively independent from what is defined within the namespace.
+
+The main remaining question is what a program or procedure should look like. I'm experiencing a bit of analysis paralysis on this matter. Some interesting possibilities include the [interaction calculus](https://github.com/VictorTaelin/Interaction-Calculus) or [grammar logic programming](GrammarLogic.md). 
 
 ## Language Modules
 
