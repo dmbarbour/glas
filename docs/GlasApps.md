@@ -2,106 +2,169 @@
 
 ## Applications as Objects
 
-In glas systems, applications will be expressed as a [hierarchical, stateful, extensible, partial namespace](ExtensibleNamespaces.md). This namespace effectively represents a static object that recursively contain more static objects, with a static graph of relationships between objects based on names. The stability of this object graph is an excellent fit for my vision of glas systems, which involves projectional editing, zoomable user interfaces, and live coding. 
+In glas systems, applications will be expressed as a [hierarchical namespace](ExtensibleNamespaces.md) that declares state and defines methods. This hierarchical, stateful namespace can effectively express a static composition of objects. Methods are evaluated within context of atomic, isolated transactions. 
 
-The application is integrated with the environment based on names it declares or provides. The runtime provides effectful methods under a hierarchical 'io' namespace and allocates space for defined state resources. Conversely, the application defines a 'step' method for background processing, and might define 'gui' and 'rpc' methods to provide a user interface or handle remote procedure calls. The namespace can precisely control which names are exposed to subprograms, thus names serve as lightweight, static [object capabilities](https://en.wikipedia.org/wiki/Object-capability_model).
+The application will provide *interfaces* that are recognized by the runtime. For example, the application may provide methods to support a graphical user interface or HTTP CGI service integration. Whether the runtime immediately renders the GUI might be configurable via environment variables or glas profile. Background processing is supported by providing a 'step' method, which is repeatedly called by the runtime, forming a *transaction loop* with many nice properties. 
 
-In practice, how gui or rpc are integrated should be configurable based on glas profile and environment variables. They may also be disabled.
-
-Application methods can be evaluated in context of a transaction. A failed transaction is aborted, any effects canceled or undone. This influences design of the provided effects API. In context of RPC and reentrancy, a transaction may involve multiple calls to multiple apps. But smaller transactions generally be favored for performance. 
-
-By default, the runtime repeatedly calls the 'step' method. This implements a *transaction loop* application, which has useful systemic qualities but requires a relatively sophisticated optimizer.
+Conversely, the application namespace may declare and describe abstract methods representing an *effects API*. The runtime should recognize and provide these methods based on name and description. Descriptions may include type annotations and version numbers; the runtime should raise an error if these requirements cannot be met. I propose these names are provided  under a hierarchical 'io' namespace to avoid conflicts and control effects.
 
 ## Transaction Loops
 
-In the transaction loop application model, systems are modeled by an open set of atomic, isolated, repeating transactions operating in an environment. This has many nice systemic properties:
+In the transaction loop application model, systems are modeled by an open set of atomic, isolated, repeating transactions operating in an environment. This has many nice systemic properties, contingent on a sufficiently powerful optimizer:
 
-* *Parallelism.* Multiple transactions can be opportunistically evaluated in parallel. A subset of those transactions with no read-write conflicts can be committed in parallel. The system can remember conflict history and heuristically schedule transactions that frequently conflict into different time slots. Programmers can easily mitigate conflict based on design. 
+* *Parallelism.* Multiple transactions can be opportunistically evaluated in parallel. A subset of transactions (those with no read-write conflicts) can be committed in parallel. In context of repeating transactions, the system can heuristically schedule transactions to avoid conflicts. Programmers can also mitigate conflict, e.g. by introducing intermediate queues. *Note:* Parallelism is possible within transactions, too.
 
 * *Concurrency.* For isolated transactions, repetition and replication are equivalent. A transaction that makes a non-deterministic choice can be modeled as a set of deterministic transactions that each make the same choice deterministically. Leveraging this, an application program can represent an entire system, with fine-grained transactions to handle subtasks.
 
-* *Incremental Computing.* We don't need to recompute every transaction from the start. If a transaction starts with a stable prefix (i.e. read slow-change vars before fast-change vars), the system can heuristically checkpoint (cache the partially evaluated transaction). Future repetition can start from the checkpoint until it is invalidated. This combines with concurrency when the non-deterministic choice is stable.
+* *Reactivity.* The system can recognize obviously unproductive transactions, such as failed transactions or those that repeatedly write the same values to variables. Instead of warming the CPU with unproductive recomputation, the system can arrange to wait for relevant changes before rescheduling.
 
-* *Reactivity.* The system can recognize some obviously unproductive transactions, such as failed transactions or those that repeatedly write the same values to variables. In these cases, the system can deschedule these transactions until a relevant change occurs. 
+* *Incremental Computing.* We don't need to recompute every transaction from the start. When a transaction starts with a stable prefix, the system can heuristically cache the partially evaluated transaction. This cached computation can serve as a checkpoint for further evaluation. This combines nicely with concurrency when a non-deterministic choice is stable.
 
-* *Consistency.* Although transactions aren't inherently consistent, it is possible for applications to express transactional invariants, and for the system to enforce these invariants by aborting transactions that would break them.
+* *Consistency.* Although transactions aren't inherently consistent, it isn't difficult to express transactional invariants that must pass before the transaction is committed. Any transaction that would break these invariants can be aborted.
 
-* *Live Coding.* We can model a transaction as reading relevant code as it runs, allowing atomic updates of code and state between transactions. Transactions also make it easier to check for safety of proposed updates in a live system before committing the changes.
+* *Live Coding.* Application state is held outside the loop. We can atomically update the transaction loop code and relevant state between transactions. Transactions make it feasible to check safety of proposed updates before committing. 
 
-* *Distribution.* Distributed transactions are expensive, but can be mitigated. A runtime can distribute code to run parts of a transaction remotely. If a node is only observed within the stable prefix of a transaction, we could replace talking to that node per transaction with a cache consistency analysis between the remaining nodes. If transactions support *internal* concurrency, that stable prefix potentially includes observations on multiple nodes. Between these, an application might run transactions on remote nodes without talking to the origin, effectively representing an overlay network.
+* *Distribution.* The system can support distributed transactions and mitigate their cost. High-level code can be safely copied to remote nodes for computing. When a node is observed only within the stable prefix of a transaction, we can potentially use a cache consistency analysis instead of including that node in the expensive distributed commit protocol. Between these, incremental transactions can evaluate on remote nodes without communicating with their origin (modulo an infrequent heartbeat), effectively forming a distributed overlay network.
 
-* *Partitioning Tolerance.* A transaction loop application can be installed on multiple nodes, configured to use the same state resources. While the system is fully connected, there is no difference between running on one node or multiple nodes because they'll all run the same transaction. During a break down in communications, each local instance of the app can continue to provide degraded service based on a subset of transactions that only require resources available on the local partition. To fully leverage this requires attention to organization of resource and may benefit from specialized resources models such as CRDTs.
+* *Partitioning Tolerance.* A transaction loop application with distributed transactions can be installed on multiple nodes. When the system is fully connected, this has no additional effect because where the distributed transaction starts doesn't affect its behavior. When the system is partitioned, each application instance can continue to provide degraded service based on which resources are locally available on the partition. To fully leverage this requires deliberate design of the application such that concurrent subtasks only involve subsets of partitions. It also benefits from careful attention to resource models, e.g. favoring queues between partitions or CRDTs for data shared between partitions.
 
-* *Real-time Systems.* An atomic transaction cannot usefully 'sleep', but it can ask whether current time is below a given timestamp, then contingently abort. The runtime may then precompute the transaction just before the observed condition changes and have it ready to commit. This would be *soft* real-time by default, but could become hard real-time if we control relevant external conditions. Of course, for fine-grained timing, we can also commit a buffer of future events.
+* *Real-time Systems.* Transactions may abort if the time isn't right. If this is expressed without directly observing time, the runtime can potentially wait for the clock before evaluating, and can also evaluate slightly ahead of time then hold the transaction ready to commit. This allows for relatively precise time control, though it's at best *soft* real-time unless relevant external conditions are also controlled.
 
-*Auto-tune and Search.* A reactive application could read tuning variables and have an associated fitness function. The system could automate tuning of those variables to improve fitness. Transactions make this easier because the runtime can systematically experiment with tuning parameters without committing to changes. This can potentially result in a more adaptive and reactive system while avoiding unnecessary state. In many cases, the fitness heuristic could be represented via annotation.
+* *Auto-tune and Search.* A reactive application can read tuning variables and output a hueristic fitness metric. The system can automate tuning to improve fitness. Transactions make it easy for the system to experiment and search without committing to changes. This can potentially result in a more adaptive and reactive system.
 
-I have ideas on how to support most of these, but the gap between idea and implementation is intimidating.
+* *Loop fusion.* Multiple transaction steps can be merged into a larger transaction. Doing so can be useful for performance, e.g. allowing some partial evaluation optimizations. It can also be useful for testing or debugging, i.e. we can simulate outcome for a few steps without committing to anything.
 
-## Static State Resources
+Transaction loops are very nice in theory, but the gap between idea and implementation is intimidating.
 
-The application namespace can declare state resources, such as variables or queues, that the runtime implements. Access to these resources is implicit based on access to the namespace. If programs express concurrent computations, they will need to resolve access to state resources, e.g. treating the runtime environment as an additional implicit parameter with temporal semantics. 
+## Ephemeral References
 
-## Applications as Objects
+I propose an *ephemeral references* rule: references to objects or functions, and abstract or nominative types, are valid only within the current transaction. That is, state maintained between transactions is limited to plain old data. This is mitigated in context of incremental computing of the *transaction loop*, where ephemeral references may be cached rather than recomputed every step. 
 
-* namespaces can define methods 
-* namespaces may declare variables
-* namespaces are hierarchical (static objects)
-* anonymous or private names are supported
-* lightweight per-object naming conventions for:
-  * annotations - types, versions, authorship, etc.
-  * assertions - static tests, transactional invariants
-  * debugging - diagnostics and debug views
-  * admin or user interface - notifications, dashboards, main views
-* the runtime extends the 'io' namespace to support effects
-  * required definitions must be declared, may have defaults
-  * runtime may be guided by annotations within io (e.g. type, version)
-* the application defines the 'main' namespace (static object)
+This ephemeral references rule supports my vision for live coding, adaptivity, and security:
+
+* Live coding is easier because we don't need to consider whether state is holding references to deprecated or deleted functions. This is especially relevant in open systems, where much state is owned by remote and time-varying apps or services. 
+* Adaptivity is supported indirectly: by designing discovery APIs to return ephemeral references, we ensure system discovery and integration is an ongoing process rather than a startup event. 
+* Security is simplified insofar as ephemeral references represent revocable authority with continuous visible distribution in context of [object capability security](https://en.wikipedia.org/wiki/Object-capability_model). Revocability and visibility are useful [principles of secure interaction design](http://zesty.ca/sid/).
+
+Ephemeral references might be concretely represented as indices into a transaction-specific table. In context of stable concurrent forks, the table could also be forked, i.e. with both forks inheriting some references. In context of open distributed transactions (e.g. remote procedure calls) there may be table per runtime, and we might leverage HMAC signatures or cryptographic sparse allocation to ensure references are unforgeable within a transaction.
+
+Persistent references can be modeled as indices, URLs, scripts, and other plain old data. If necessary, they can be secured via lightweight cryptographic signature, such as [HMAC](https://en.wikipedia.org/wiki/HMAC). Ideally, most effects APIs would convert persistent references to ephemeral references to control direct observation of the URL, and only convert back at sensible boundaries.
+
+## Remote Procedure Calls
+
+I propose remote procedure calls (RPC) as a primary basis for interaction between applications. A transaction may involve multiple calls across multiple applications. A subset of applications might primarily service such requests.
+
+To provide an RPC API, applications might define a hierarchical 'rpc' namespace. The runtime could implicitly expose methods defined in this namespace. State resources might exposed via associated methods such as 'get' and 'set'. To use an RPC API, the runtime can provide APIs to discover apps or look them up by URL, returning ephemeral references to objects representing remote applications. With a little language support, this lookup might support a lightweight interface type check.
+
+Applications aren't limited to RPC, and may also communicate via TCP or UDP. But writes would generally be buffered, deferred for delivery upon transaction commit, forcing asynchronous interaction. RPC would supports transactions, incremental computing, data stowage, and other features beyond the boundary of a single application or service.
+
+## Securing RPC?
+
+Applications can secure their own RPC methods. E.g. an RPC method may receive a parameter representing an access token for a more elevated ephemeral reference. But it would be convenient if common use cases are handled systemically.
+
+Applications can reasonably distinguish roles or trust groups in API design, e.g. trusted admin versus distrusted client. A separate RPC interface can be defined per group, perhaps `rpc.group.method`. A separate configuration might indicate where interfaces are registered, and what constitutes valid proof of authority to access each group.
+
+Configurations may also describe where to search for RPC resources, relevant access tokens, and so on. This could also be organized into different role labels, enabling applications to control which authorities they apply to a task.
+
+## Transactional User Models
+
+In some cases, it might be convenient to interact with a user within a transaction, e.g. ask a question, get a response. Of course, we cannot actually *undo* asking that question, but I imagine many use cases where that isn't a problem. 
+
+In context of a transaction loop, the same question would be asked repeatedly, which is a problem. So we'll need a user model that can remember which questions were asked, the answers to them, and allow for editing those answers at any time (applying edits between transactions). Questions that haven't been asked in a long time could be displayed in a faded color, and potentially expire. If there is no answer, or the answer is invalid, the transaction might abort. We could generalize to scripted answers.
+
+Within a transaction, access to the user might be represented as an ephemeral object, provided as a parameter to certain RPC calls. 
+
+## Mitigating Reentrancy
+
+Reentrancy is difficult to control under premise of remote procedure calls or first-class functions. Reentrancy is a common source of bugs, e.g. when a subprogram manipulates state that the caller is also in the midst of manipulating. Reentrancy hinders parallel deterministic computation insofar as subprograms must be ordered relative to each other. I hope to mitigate and control these issues.
+
+Viable strategies:
+
+* Use state patterns or annotations to support awareness of reentrancy on state resources, e.g. MVars or non-reentrant locking annotations. Annotations can abort a transaction that would violate assumptions, same as a type error. If feasible, statically analyze for likely errors. 
+* Explicitly annotate assumptions about parallel evaluation then analyze and report issues, e.g. that two operations cannot deterministically run in parallel due to operating on shared state. 
+* Develop specialized state types and operations that are amenable to parallel and reentrant operations. For example, multiple operations can 'write' in parallel to a queue, then we only need an ordered merge before reading the queue. 
+
+Ultimately, the programmer owns the problem. Annotations or state patterns would be sufficient to guard against accidental reentrancy and make intentional reentrancy more explicit. Explicit annotations on parallelism would guard against accidental loss of performance assumptions. Specialized state should improve opportunities for safe parallelism and reentrancy, but no actual locks should be involved (because we're not allowed to observe race conditions at this layer).
+
+## Regarding Race Conditions
+
+In context of the transaction loop application model, there are implicit races between transactions. Intriguingly, we can also model races *within* transactions. Fairness is not implied, thus races can be stable in context of partial evaluation, incremental computing, or loop fusions. However, I think it would be wiser to avoid observing races within transactions because they compromise consistency of behavior between implementations or installations.
+
+Unfortunately, race conditions are efficient compared to most mechanisms to control them. For example, we could merge events into a channel based on arrival order, or we could implement temporal semantics to merge writes. The latter adds some overhead to track and communicate time to many operations within the transaction.
+
+I'm inclined to pay the systematic cost of avoiding race conditions within a transaction. But I hope to mitigate and minimize the overheads. The language could support type-checked parallelizability of APIs, perhaps up to clear boundaries. This might rely on dedicated state models (CRDTs, queues, etc.) where writes can be deferred or commuted. We could then encourage programmers to favor parallelizable APIs at distribution boundaries, such as RPC. 
+
+## Regarding Location-Specific Resources
+
+Many resources are location specific, such as filesystem access or opening a TCP listen port. Some resources are even process instance specific, such as process ID, command line arguments, or the OS environment. It isn't obvious how to provide a location-agnostic API in context of replicated applications.
+
+I propose to make local apps the default, i.e. following convention in this aspect, and to later develop an effects API adapter to support replication of location-agnostic apps. The adapter would wrap the instance specific effects API, but might be deliberately imperfect by providing escape hatches for local resources as needed. 
+
+In context of distributed and replicated apps, we may also need to guide locations of declared state in the namespace. This could feasibly be supported via annotations.
+
+## Application State
+
+State resources are declared in a namespaces. Like methods, it might be convenient to incrementally define some resources, especially in cases where per connection resources might be allocated (such as a databus).  
+
+## Ideas for Runtime Interfaces
+
+### Main Loop
+
+A simple 'step' method. This is called as often as possible. Modulo RPC, this would be the only method called within the transaction.
+
+### Graphical User Interface
+
+An application may define user interface methods that are parameterized by ephemeral reference to an abstract user model. The separate user model allows for multiple concurrent users and multiple views per user. 
+
+The user model would provide information such as perspective, preferences, proof of authority, focus and pending user input, and per-user state. Operations on the user model may support directly rendering a view ([immediate mode](https://en.wikipedia.org/wiki/Immediate_mode_GUI)) or manipulating a graph of objects (such as [DOM](https://en.wikipedia.org/wiki/Document_Object_Model)) that will separately be rendered ([retained mode](https://en.wikipedia.org/wiki/Retained_mode)). Navigation may also be supported, e.g. in the form of redirection or iframes.
+
+Aside from the main views, methods on the user interface might support zoomed-out views (for a zoomable user interface), dynamic icons, notifications, etc.. Intriguingly, it is feasible to leverage transactional GUI views to render without commit, in context of 'safe' read-only views or previews for the result of committing to some operation.
+
+*Aside:* An administrative or debug view might provide access not only to the main GUI but also browsing the underlying application namespace and rendering a GUI for each component, and rendering application state resources.
+
+### Remote Procedure Calls
+
+Need to consider both which methods to provide, and how to access RPC. In some cases, we might also want something like callback parameters, maybe via ephemeral references or signed URLs.
+
+Public methods defined under hierarchical namespace 'rpc' are implicitly registered for external access. This might include a few standard interfaces (such as SOAP or CORBA), but I'm likely to favor some specialized interfaces to work better with transactions and incremental computing. 
+
+### HTTP
+
+HTTP can serve an ad-hoc role as both RPC and GUI. We could model incoming HTTP requests as a form of RPC with some conventions and type restrictions. I need to think about a suitable API for this - preferably an API that accounts for proxies, and providing multiple apps through one website or even one webpage. Web sockets might also need some attention.
+
+A good reflection API might also be useful for converting subprograms to WASM.
+
+### Administrative Methods
+
+We could include some methods or state resources to:
+
+* receive OS signals or events
+* gracefully halt the app
+* orthogonal persistence - hibernate and recovery methods
+* 
+
+restart
+* 
+* represent progress
 
 
-First, an application's access to *effects* will often be integrated with the application via extending the namespace. This will be isolated to a hierarchical `io/` namespace. The runtime namespace should already represent the expected interface via 
+### Publish Subscribe
 
- (e.g. by defining some annotations and declared methods)
+A step function can maintain data dependencies in the background. But it might be more convenient for composition and optimization to make data dependencies and published data directly visible in the API. The runtime could ask for current subscriptions, automatically signal updates, etc..
 
-. The namespace type should support *interfaces* that are already declared, which the runtime will integrate..
+### Shared State
 
-The namespace should already have declared the required interfaces.
+Applications could directly share some state resources, e.g. we might share resources that are in the RPC section by automatically exposing all methods to manipulate that state.
 
-In general, the 
+## Application State
 
-
-Some applications will be recognized as *staged*. 
-
-An essential feature of the glas system is that some applications may be *staged*, meaning that they read some command line arguments then return another.
-
- Application. 
+Application state is modeled in terms of declaring special objects in the application namespace. 
 
 
-
-This may be extended over time. Also, I'm still developing the type for namespaces. But the general idea is that specifying a module is enough to specify an application based on a few simple conventions.
-
-
-Some applications will be *staged* meaning that instead of directly representing the final application, they will read some command line arguments then return another application.
-
-
-
-
-
-An application program is expressed as an effectful procedure. This procedure receives a parameter representing a request. The primary transaction loop behavior is to repeatedly run this procedure in separate transactions with a 'step' requests. Steps generally return unit, but in general the type of the result may depend on the request. Aside from 'step' the runtime might use other methods for OS signals or self-diagnostics.
-
-Applications can issue requests to other applications. These requests represent synchronous interactions between applications. It is possible for a request or result to include channels for ongoing interactions. Temporal semantics can coordinate multiple ongoing interactions with an application. 
-
-To receive requests, an application must be discovered by the other application. This may involve registering with a shared service. Registration may include some metadata about what the application can do, and a callback context so the application knows where each call is coming from. The registration and discovery APIs should be designed with attention to compositionality, reactivity, and security.
-
-Applications have effectful access to state resources that persist between transactions. State resources obviously include variables, but more specialized forms such as queues can be supported when there is a good reason such as performance. State cannot hold any type that is ephemeral within a transaction, but it isn't a big problem to store references to state resources. Applications can interact asynchronously (over multiple transactions) through shared state. Many issues with shared state are mitigated in context of transactions, temporal semantics, and [robust references](https://en.wikipedia.org/wiki/Object-capability_model).
-
-*Note:* In context of ".g" modules, we run the 'main' method of the 'app' grammar.
 
 ## Effects API
 
 The runtime will extend the application namespace with a procedural effects API and provide an implicit parameter representing interaction with the runtime environment. In context of a ".g" module, I propose use of 'rte/' hierarchical namespace and 'env.rte' as the implicit parameter. The runtime environment parameter is left abstract, manipulated only via the provided effects API.  
-
-### Orthogonal Persistence
 
 
 ### Concurrency
@@ -111,6 +174,15 @@ Repetition and replication are equivalent for isolated transactions. If a transa
 * **fork(N)** - Response is non-deterministic fair choice of natural number between 1 and N. Does not fail, but `fork(0)` would diverge.
 
 Fair choice means that, given enough time, the runtime will eventually try any valid prefix of fork choices in the future (regardless of the past). This isn't a guarantee that races resolve fairly, only that fork choices aren't sticky. Race conditions should instead be resolved by application design, perhaps introducing some queues.
+
+### Time
+
+Transactions we can constrain a transaction to commit before or after a specified time. A proposed effects API:
+
+* **time.now** - Response is an estimated logical time of commit, as a TimeStamp value. 
+* **time.check(TimeStamp)** - Response is boolean representing whether `(time.now >= TimeStamp)`.
+
+Checking time is more *stable* than requesting a timestamp, and thus allows for waits. But observing `time.now` is can be useful outside the stable prefix of a transaction. TimeStamp might use the Windows NT format by default, i.e. an integer representing 100ns intervals since midnight, Jan 1, 1601 UTC.
 
 ### Search
 
@@ -123,20 +195,6 @@ The application might provide a heuristic function to the runtime via annotation
 
 *Note:* Search could be especially useful in context of staged applications, i.e. staged metaprogramming.
 
-### Time
-
-Transactions are logically instantaneous. The concept of 'timeout' or 'sleep' is incompatible. However, we can constrain a transaction to commit before or after a specified time. A proposed effects API:
-
-* **time:now** - Response is an estimated logical time of commit, as a TimeStamp value. 
-* **time:check:TimeStamp** - If 'time:now' is equal or greater to TimeStamp, responds with unit. Otherwise fails. 
-
-The 'time:check' API should be favored over 'time:now' for implementing waits. The imprecise, monotonic observation of time makes 'time:check' easier to optimize and stabilize for incremental computing. But 'time:now' can provide greater than precision. 
-
-Observing time may cause a transaction to be delayed a little such that it commits at the estimated time, or may cause a transaction to be aborted if computation runs much longer than estimated.
-
-TimeStamp values in this API use the Windows NT format: an integer representing 100ns intervals since midnight, Jan 1, 1601 UTC.
-
-*Note:* This time API is simplistic and insufficient for contexts involving distributed transactions, relativistic speeds, or science-fiction time travel. Applications intended for such contexts may require a more sophisticated time API.
 
 ### Logging
 

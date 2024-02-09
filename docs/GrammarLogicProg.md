@@ -1,16 +1,14 @@
-# Programming with Grammars and Logic
+# Procedural Programming with Grammars and Logic
 
-## Overview
+Grammar and logic programs have similar semantics. The 'direction' of evaluation is flexible, i.e. the same program can flexibly *accept* or *generate* values. Interactive computation is based on [logic unification](https://en.wikipedia.org/wiki/Unification_(computer_science)#Application:_unification_in_logic_programming) of shared variables, where each component program is responsible for accepting or generating different parts of the value.
 
-Grammar and logic programs have very similar semantics. The direction of evaluation is flexible, i.e. with the same program we can evaluate whether an input is accepted or generate values that would be accepted. It's just that grammars generate and accept 'values' (or 'sentences') while logic programs generate or accept 'propositions'. The two are easily unified: a guarded pattern (`Pattern when Guard`) in a grammar can model logic `Proposition :- Derivation`. (Similarly, logical negation via `Pattern unless Guard`.) 
+With logic programming we have `Proposition :- Derivation`. With grammar programming, the equivalent is possible via guarded patterns, i.e. `Pattern when Guard`. Similarly, logical negation might use `Pattern unless Guard`. Usually, variables are shared between pattern and guard or between proposition and derivation.
 
-Dataflow within a computation is based on [logic unification](https://en.wikipedia.org/wiki/Unification_(computer_science)#Application:_unification_in_logic_programming), i.e. a variable that appears twice in a pattern or proposition must have the same value in every location.
+A function can be modeled as a grammar or logic program that accepts and generates a set of `(args, result)` pairs, and ensures structurally or typefully that results are deterministic given args. In context of grammar and logic programming, we can evaluate functions non-deterministically backwards from results to args, or with partial args where any unspecified variable represents non-deterministic choice. 
 
-A function can be modeled as a grammar or logic that accepts or generates a set of `(args, result)` pairs, where no two pairs have the same first element. A simple procedural interaction could be represented as `(args, io, result)` where IO represents a request-response list, `[(Request1, Response1), (Request2, Response2), ...]`. The procedure outputs Requests while the environment returns Responses via logic unification. We can generalize to processes with multiple channels with [substructural types](https://en.wikipedia.org/wiki/Substructural_type_system) to limit each channel to a single writer.
+A simplistic procedural interaction might be modeled as an `(args, io, result)` triple, where IO represents a request-response list of form `[(Request1, Response1), (Request2, Response2), ...]`. In this case, the procedure provides requests and results while the caller provides args and responses. To model processes, we could support ad-hoc channels within args and results, leveraging [substructural types](https://en.wikipedia.org/wiki/Substructural_type_system) to ensure each channel only has one writer. We can introduce temporal semantics to support logical time sharing of channels between writers.
 
-The proposed language will support procedures and processes. By default, it is programmed procedurally, relying on an implicit 'env' argument to provide standard IO channels. Processes must control or fork 'env'. Procedures are deterministic up to input, but may interact with a non-deterministic environment. For example, a procedure cannot casually introduce a new logic-unification variable, but can potentially request one via IO channel depending on effects API. Applications will generally be expressed in a manner friendly to backtracking evaluation, see [transaction loop applications](GlasApps.md).
-
-Aside from grammar-logic semantics, the proposed language supports OO-like mixins and patches of namespaces. This allows users to easily extend grammars in context of mutually recursive definitions, e.g. add a new rule for parsing integers. The language also takes inspiration from grammars in expression of pattern matching, with an implicit pass-by-ref 'input' parameter when a procedure is used as a pattern. This supports incremental matching on the input, such as reading just the head of a list.
+The proposed language has a procedural programming style by default via implicit 'env' argument, but first-class channels and temporal semantics so we can model concurrent processes within a computation. Backtracking computation is pervasive, but not a bad fit for [transaction loop applications](GlasApps.md) because we can support hierarchical transactions. I assume programs are expressed in an [extensible namespace](ExtensibleNamespaces.md) as the basis for mutual recursion and flexible tuning of grammars.
 
 ## Brainstorming
 
@@ -25,50 +23,36 @@ I propose to build the grammar-logic entirely in terms of ordered choice, withou
 
 ### Factoring Conditionals
 
-The typical if-then-else or match-case syntax is awkward when multiple cases share a common prefix.
+We can support factoring of conditions as:
+
+        match Expr with
+        | C1 and
+            | C2 -> X
+            | C3 -> Y
+        | Z
+
+This effectively means:
 
         if C1 and C2 then X else
         if C1 and C3 then Y else
         Z
 
-This is also a challenge in many popular languages today. But this problem is exacerbated in context of ordered choice and backtracking. It's difficult to factor C1 in a way that avoids repetition and respects backtracking. 
+However, it allows us to compute C1 only once without committing to it.
 
-        if C1 then
-            if C2 then X else
-            if C2 then Y else
-            Z // oops, didn't backtrack C1
-        else
-            Z // oops, also repeated Z
+### Composition of Patterns
 
-        ...
+Ordered choice imposes an order - least to most specific - when defining patterns incrementally via override.
 
-        try
-            if C1 then X else
-            if C2 then Y else
-            fail
-        else
-            Z   // oops, might backtrack from X or Y
+        foo = Specialization -> Outcome
+            | prior foo
+
+If we try to override in another order, 
 
 
-These problems also appear in context of typical match-case syntax. I think I'll need a dedicated syntax for factoring conditionals. My first idea is to support subcases. Something like this:
+Unfortunately, I don't have a good idea for factoring out the `C2 -> X | C3 -> Y` subprogram into a separate function, other than to factor the conditions and results independently, or to limit such factoring to that Z position where it doesn't matter why we failed.
 
-        match arg with
-        | C1 and
-           | C2 -> X
-           | C3 -> Y
-        | _ -> Z
 
-This seems like it might be adequate for factoring most conditionals locally. My intuition is that it would generalize into a 'decision tree' structure under the hood. I can give it a try and see if I have new ideas.
 
-Factoring is still limited more than I'd prefer. It isn't clear how to refactor partial function `C2 -> X | C3 -> Y` into a separate method call without conflating failures in X or Y with failures in C2 or C3. It seems feasible to use failure modes to specially support this factoring, but that feels like a hack. At least for now, I propose to allow only the final choice to be factored into a method call (without the `->` separator). It doesn't matter why we fail if there is no next choice. This avoids any syntactic impression of a perfect factoring in cases where factoring isn't perfect.
-
-### Deterministic Functions
-
-Methods can represent deterministic procedures by default, introducing non-determinism via effects as needed. Alternatively, I could support arbitrary grammars, then use types to constrain certain operations. But I think it's more convenient to have determinism constructively at this layer.
-
-Non-deterministic computations will still be supported via effects or in contexts where we evaluate backwards. Mostly, this means programs cannot directly introduce unification variables or express unification. 
-
-Unification variables can be introduced indirectly via effects or used in abstract by channels (and other primitives). Abstraction does impose constraints on the language: if we do not have static type checking to prove at compile time that channels are correctly used as channels, the runtime must instead track dynamic types (to at least distinguish channels from data).
 
 ### Non-Deterministic Choice
 
@@ -76,61 +60,33 @@ Non-deterministic choice can be expressed and controlled as an effect. Fair non-
 
 An intriguing possibility in context of grammar-logic programming is to model non-deterministic choice by returning a logic unification variable. This would make the choice implicitly adapt to the program. However, it would be difficult to implement fair choice from an infinite set.
 
-### Extensible Namespaces
-
-See [Extensible Namespaces](ExtensibleNamespaces.md).0
-
 ### Channel Based Interactions
 
-My initial thought is to model interactions around channels. This gives me many features I want - compositionality, simplicity, scalability. Procedural interaction can be modeled via request-response channel. Although extensibility is limited due to linear ownership of channels, this can be mitigated by modeling a databus or other extensible architecture.
+Channels can be modeled as partial lists. The writer holds a cursor at the 'tail' of the list. The reader holds a cursor to the 'head'. To write a channel, we unify the tail variable with a pair including the next tail `T <- (Data, T')` then update the cursor. To read a channel, we do the opposite. A written channel may be 'closed' by unifying with the empty list, but we could generalize to moving the channel to another writer. A reader can detect a closed channel.
 
-Channels can be modeled as partial lists, with the writer holding a cursor at the 'tail' of the list, and the reader holding the 'head'. To write a channel, we unify the tail variable with a pair, where the second element is the new tail. Then we update the local cursor to the new tail, ensuring we only write each location once. A written channel may be 'closed' by unifying with the empty list. (Closing a channel can be implicit based on scope.)
-
-Channels aren't limited to moving data, they can also transfer channels. We can build useful patterns around this, modeling objects or remote functions or a TCP listener as a channel of channels. 
-
-However, in context of deterministic computation, channels are essentially linear types. If there are two writers, writes will conflict. And even reading a channel must be linear if the reader might receive a writable channel. This can be mitigated - we can use *temporal semantics* to deterministically merge asynchronous writes. Or we could support non-deterministic merge based on arrival-order with runtime support (see *reflective race conditions*). With the ability to merge asynchronous events, channels can model openly extensible systems, such as a databus or router.
-
-An inherent risk with channels is potential deadlock with multiple channels are waiting on each other in a cycle. This is mitigated by temporal semantics: if at least one channel in the cycle has latency, deadlock is broken. It can also be avoided via static analysis (perhaps [session types](https://en.wikipedia.org/wiki/Session_type)).
+We'll generally treat channels as linear types. But if we typefully constrain channels, or introduce some temporal semantics, they can be shared without interfering with deterministic computation. An inherent risk with channels is potential deadlock with multiple processes waiting on each other in a cycle.
 
 #### Temporal Semantics? Tentative.
 
-Temporal semantics support deterministic merge of asynchronous events. This significantly enhances compositionality and extensibility, e.g. we can model processes interacting through a databus or publish-subscribe system.
+Temporal semantics can support deterministic merge of asynchronous events by converting to events synchronized on logical time. 
 
-Temporal semantics can be implemented for channels by introducing time step messages. A process may wait for a time step, which implicitly writes a time step to every held output channel, and increments a counter var for every input channel. When a process reads a channel, if the next message is a 'time step' it will try to decrement the counter and remove that message. If the counter is already zero, read fails with a 'try again later' status, i.e. to require that the process wait a time step. Any number of messages may be delivered within a time step.
+Channels can carry time-step messages. Sequential time-steps can be implicitly compressed by the runtime, i.e. time-step^N. When a process 'waits', it removes pending time-steps from input channels (allowing for a negative balance) and writes time-steps to output channels. Reading a channel will fail with 'try again later' if the next message is time-step.
 
-Logical time steps are potentially aligned with fine-grained schedules in the real-world, such as nanoseconds. Thus, the system needs to optimize a few cases: compress sequential time-steps in the channel, and allow waiting on a set of input channels to model efficient polling. This feature can support programming of time-sensitive systems. Even with transaction loop applications, we could schedule output events relative to an idealized commit time.
-
-The cost of temporal semantics is complexity. It must be clear which channels are 'held' by a process.
-
-I feel this idea is worth exploring. Ideally, I should develop the language such that temporal semantics can be introduced later.
+This adds non-trivial complexity to our language, which must know which channels are 'owned' by a process when we 'wait'. This generally includes channels that are available on input channels within the current time-step. It isn't clear that the flexibility benefits are worth costs to locality.
 
 #### Reflective Race Conditions? Tentative. As Effect.
 
-A runtime can potentially merge events from multiple channels non-deterministically based on arrival order. Arrival order will vary based on under-the-hood features such as multi-processing, cache sizes, and processor preemption by the operating system. This is a potential alternative to temporal semantics, and is easier to implement efficiently. 
+A runtime can merge events non-deterministically based on arrival order. Arrival order would depend on the underlying implementation, thus this should be considered a form of reflection on the runtime. It can be supported as an effect.
 
-However, this allows for race conditions to influence observable program behavior. Race conditions due to arrival-order non-determinism are worse for reasoning and testing than most other forms of non-determinism because it's highly machine dependent. This easily results in difficult to reproduce "works on my machine" bugs.
-
-Predictability can be mitigated insofar as we control where race conditions are introduced. But I think I would favor temporal semantics for most potential use cases. AFAIK, there isn't a strong use case for combining the two.
-
-#### Bundling and Abstracting Channels
-
-Duplex channels can be modeled as a read-write pair of partial lists. We could model a dictionary or list of channels, perhaps mixed with data and other abstract structure such as pass-by-ref vars. To protect abstractions, pattern matching must discriminate at least the general type, such as data vs. channels.
-
-Our runtime would need to track which elements are channels or pass-by-refs in order to properly handle temporal semantics, automatic close upon scope exit, and so on. This could be implemented as keeping some parallel type information with every value, or perhaps adding annotations to values. Static type analysis can be favored where feasible.
-
-Assuming we develop this, mixed bundles of channels and data become the normal type for method call arguments, environments, and results or channel messages. Channels, and dictionaries or lists thereof, are effectively first-class, albeit limiting copy operations.
+Arrival-order non-determinism is among the worst flavors of non-determinism for reasoning because it's highly machine dependent. There is high risk of "works on my machine" bugs, i.e. bugs that cannot be reproduced on the test machine. Predictability can be mitigated insofar as we control where race conditions are observed, but temporal semantics might be a superior option.
 
 #### Channel-Based Objects and Functions
 
-An object can be modeled as a process that accepts a subchannel for each 'method call'. The object reference would be the channel that delivers the method calls. The separate subchannel per call ensures responses are properly routed back to the specific caller, in case the reference is shared. (An object reference might be shared via *Temporal Semantics* or *Reflective Race Conditions*.)
+An object can be modeled as a process that accepts a subchannel for each 'method call'. This subchannel would provide inputs for the request and route the response. If we know the process is stateless, we can optimize to evaluate requests in parallel.
 
 Functions can be modeled similarly as a *stateless* object. If the runtime knows the object is stateless, it can optimize method calls to evaluate in parallel, interactions may be forgotten because they don't affect any external state, and the channel may be freely copied because there is no need to track order of writes. Effectively, the channel serves as a first-class function (albeit with restrictions on how it is passed around or observed).
 
 Ideally, grammar methods and object methods via channels would have a consistent syntax and underlying semantics.
-
-#### Channels with Substructural Constraints
-
-If we want to pass-by-ref through a channel, we cannot copy the read end of that channel. If we want to freely copy a channel, we cannot pass any messages through that channel that are not themselves freely copyable. It seems useful to support this via dynamic types, perhaps adding flags when a connected read-write channel pair is constructed. Even better if issues are detected at compile time. 
 
 #### Pushback Operations
 
@@ -146,54 +102,15 @@ Pubsub has some challenges. If we read and write within the same time-step, it i
 
 *Note:* The glas data type does not directly support sets. Indirectly, we could encode values into bitstrings and model a set as a radix tree, or we could model a set as an ordered list. To support pubsub, I assume the language would abstract and accelerate sets. 
 
-### Speech Act Based Interactions? Defer.
-
-I once read about an interesting language proposal called [Elephant](https://www-formal.stanford.edu/jmc/elephant/elephant.html) by the creator of Lisp. In this language, interactions are based on speech acts. Various speech acts are distinguished, such as assertions, questions, answers, offers, acceptances, commitments, and promises. But essentially we have an IO semantics beyond mere structured exchange of data.
-
-I'm uncertain where I'd want to go with this. But it does remind me of the HTTP distinctions between GET, PUT, and POST operations, where some interactions can be systematically cached by intermediate proxies while others cannot. We could try to augment interactions or specific exchanges with promises of idempotence, commutativity, monotonicity, cacheability, etc.. OTOH, structured approaches to guarantee monotonicity or idempotence, such as pubsub sets or abstract CRDTs, might offer a more robust foundation than mere promises by programmers.
-
-### Transaction Loop Applications
-
-Grammar-logic programs are suitable for expressing [transaction loop applications](GlasApps.md).
-
-Integration tweaks relative to my earlier prog model:
-
-* Step state should be plain old data; no holding refs to prior steps or timeline. 
-* In effects API, use named refs only to introduce channels; robust ocap security.
-* Consider logic unification vars for *search* instead of (just) bools and ratios.
-* Overlay networks with distributed transactions can be modeled via stable prefix. 
-
-Overlay networks would be based on establishing channels between distributed processes within the stable prefix of a transaction. This would benefit from location-specific effects channels. Before we commit the transaction, all of these processes terminate and the channels will be closed; but in context of incremental computing, we'll rebuild those channels and processes, effectively representing long-lived channels and processes. 
-
 ### Procedural Applications
 
 If we can guarantee that certain contexts never backtrack, we can support more flexible APIs such as synchronous request-response. The disadvantage is that we'll very often be dealing explicitly with error values, undo, etc.. But it'd be nice to have the option. We can consider supporting this as a special run-mode if we develop a type or proof system that supports the guarantee.
-
-### Type Safety
-
-We can use type annotations to describe expected types of methods, including arguments, environment, protocols, and results. I would like to begin developing a type system relatively early, preferably with a lot more flexibility than most languages to only partially describe types.
-
-### Weighted Grammars and Search
-
-We could introduce annotations on methods that assign heuristic scores based on their inputs or results. The glas system could use these scores to guide non-deterministic search where fair choice is not required. 
 
 ### Flexible Evaluation Order
 
 Method calls in grammar-logic are opportunistic in terms of computation order, constrained only by dataflow. But we could support some performance and analysis hints representing programmer intentions, e.g. annotate subprograms as eager, parallel, or lazy.
 
 Lazy evaluation is a good fit for grammar-logic and functional programming, at least for pure functions. Effectful functions would effectively be eager until they're finished writing requests. However, I'd prefer to avoid lazy evaluation semantics: no lazy fixpoints ["tying the knot"](https://wiki.haskell.org/Tying_the_Knot), no divergence semantics. In general, computation should be opportunistic, i.e. anything that can be computed is computed, and any specific tactic is an optimization.
-
-### Extensible Syntax? Defer.
-
-The most reasonable approach involves compile-time eval, so our embedded languages can load local modules, log messages, and build subprograms with the full capabilities of the language module.
-
-Applying a macro or DSL would involve referencing a module-layer grammar definition. By default we'd call the 'main' method but we could permit the user to specify method. In any case, the grammar would be fully known at point of call, and it could be compiled and cached for reuse. The output from the macro might be an appropriate AST fragment, or potentially a function we can decompile into an AST. 
-
-The range of input to a DSL-like reader macro might be limited based on an assumption for common use of braces, brackets, parentheses, and indentation. That is, we should assume a compatible tokenizer and directly raise an error if the input is not fully parsed by the macro (i.e. if the pass-by-ref input returns anything other than unit).
-
-### Fine-Grained Staged Programming
-
-It might be useful to support 'static' annotations to indicate which expressions should be statically computable within the fully extended grammar. This may propagate to static parameters in some use cases. Ideally, we could also support types that describe static arguments and results.
 
 ### Method Calls
 
@@ -259,9 +176,9 @@ An important concern is how to return values from meta-patterns. A repeating pat
 
 ### Module Layer
 
-        g:(def:(app:gram:(...), MoreDefs),  MetaData)
+        g:(app:gram:(...), MoreDefs)
 
-A grammar-logic module will compile into a simple dictionary structure and ad-hoc metadata. The 'g' header will become useful when integrating multiple glas languages. A grammar-logic module that represents an application will define an 'app' grammar containing a 'main' method. 
+A grammar-logic module will compile into a simple dictionary structure. The 'g' header will become useful when integrating multiple glas languages. A grammar-logic module that represents an application will define an 'app' grammar containing a 'main' method. 
 
 I propose compiled definitions be represented by independent values. For example, in case of `grammar foo extends bar` we integrate the compiled value of bar within the compiled value of foo rather than 'foo' referring to 'bar' by name. This simplifies module-layer imports, exports, and local reasoning. But it limits overrides to lower and higher layers: methods in a grammar, or modules in a distribution.
 

@@ -43,7 +43,7 @@ To efficiently represent labeled data, non-branching paths are compactly encoded
 
 It is feasible to could further extend Node with specialized variants to support efficient binary data, list processing, records as structs instead of radix trees, etc.. The above offers a reasonable starting point, but the intention is that data in practice should be represented much more efficiently than the naive encoding of binary trees.
 
-Integers in glas systems are usually encoded as variable length bitstrings, msb to lsb, with negatives in one's complement:
+Integers in glas systems are encoded as variable length bitstrings, msb to lsb, with negatives in one's complement:
 
         Integer  Bitstring
          4       100
@@ -56,8 +56,6 @@ Integers in glas systems are usually encoded as variable length bitstrings, msb 
         -3        00
         -4       011
 
-Bytes and fixed-size words are instead encoded as bitstrings of exact size, e.g. 8 bits per byte, msb to lsb. For example, byte 4 would be '00000100'. 
-
 Other than bitstrings, sequential structure is usually encoded as a list. A list is represented as a binary tree where the left nodes are elements and the right nodes form the spine of the tree, terminating with a leaf node.
 
         type List a = (a * List a) | () 
@@ -67,51 +65,48 @@ Other than bitstrings, sequential structure is usually encoded as a list. A list
          2 /\
           3  ()  
 
-Direct representation of lists is inefficient for many use-cases, such as random access or double-ended queues. To enable lists to serve most roles, lists will often be represented using [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_%28data_structure%29). This involves extending the earlier 'Node' type with array and binary fragments and logical concatenation, then accelerating list operations to slice or append large lists.
+Binary data is represented as a list of small integers (0..255). Direct representation of lists is inefficient for many use-cases, such as random access or double-ended queues or binaries. To enable lists to serve most sequential data roles, lists will often be represented using [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_%28data_structure%29). This involves extending the earlier 'Node' type with array and compact binary fragments and logical concatenation, then providing built-in operators or accelerated functions to slice or append lists.
 
-To support larger-than-memory data, glas systems will also leverage content-addressed storage to offload volumes of data to disk. I call this pattern *Stowage*, and it will be heavily guided by program annotations. Stowage simplifies efficient memoization, and network communication in context of large data and structure-sharing update patterns. Stowage also helps separate the concerns of data size and persistence.
+To support larger-than-memory data, glas systems may leverage content-addressed storage to offload volumes of data to disk. I call this pattern *Stowage*. Stowage would generally be transparent, but guided by program annotations and potentially visible via reflection APIs. Stowage simplifies memoization, communication, and persistent storage of large structures.
 
 ## Applications and Programs
 
-This is rather involved (see [Glas Applications](GlasApps.md)). The general idea is that we define modules that define namespaces that describe second-class objects. The runtime adds effectful operations to the namespace, then integrates the application based on standard methods it defines, e.g. repeatedly evaluating a transactional 'step' method to represent background processing. The transaction loop has very nice systemic properties, albeit contingent on an optimizer.
+A program is a value with a known interpretation. An application is a program with a known integration. In this context, the relevant knowledge must be embedded in the glas command line interface executable. I'm still exploring various design aspects - see [glas applications](GlasApps.md). But the general design direction of glas application model is:
 
-To support this, we must also develop a data type that effectively represents the modules, namespaces, and procedures. The proposed type for normal ".g" modules is a simple record of definitions with a trivial header. The application should be defined under 'app'.
+* *Applications as objects.* Apps may declare state and define methods, and they provide interfaces for integration.
+* *Incremental definition.* Apps can be defined in terms of tweaks to existing apps. Can abstract tweaks as mixins.
+* *Transactional operation.* Transactions may involve many methods and apps. Many effects are deferred until commit.
+* *Transaction loops.* Repeating transactions *optimize* into incremental computing, reactivity, and concurrency.
+* *Live coding.* Application code can be maintained at runtime by leveraging transactions and ephemeral references.
+* *Distributed computing.* Applications can model and maintain robust, resilient, distributed network overlays.
 
-        g:(app:Namespace, MoreDefs)
+The first points take inspiration from [object-oriented programming](https://en.wikipedia.org/wiki/Object-oriented_programming), but first-class objects aren't implied. Any object references are *ephemeral* - scoped to a transaction - to simplify live coding and distributed computing. Transactional operation and distributed computing also have a significant effect on effects APIs and state models.
 
-[Representation of the namespace](ExtensibleNamespaces.md) is sophisticated, so I'm developing it in a dedicated document. This is based on lazy rewriting of prefixes of names. Modulo constraints that names are represented by prefix-unique bitstrings and can be precisely identified, the namespace structure is effectively independent from what is defined within the namespace.
-
-The main remaining question is what a program or procedure should look like. I'm experiencing a bit of analysis paralysis on this matter. Some interesting possibilities include the [interaction calculus](https://github.com/VictorTaelin/Interaction-Calculus) or [grammar logic programming](GrammarLogic.md). 
+I'm still exploring how to express methods. Procedural expression of behavior is an awkward fit for incremental computing of distributed transactions, e.g. requiring careful attention to reentrancy. This can be mitigated, but I'm exploring alternative paradigms. 
 
 ## Language Modules
 
-Language modules have a simple naming convention, e.g. global module language-xyz provides the compiler function for files with extension ".xyz". The language module must represent an application with a simple `Data -> Data` function with limited effects:
+Language modules have a simple naming convention, e.g. the global module language-xyz defines an application that provides a single-step `compile : Data -> Data` method. This method has limited access to *log* and *load* effects, ensuring a deterministic result that depends only on input data and module system state.  
 
-* *load:ModuleRef* - We can request the runtime to provide the compiled value from another module. This may fail, in which case reason for failure is implicitly reported via the log. Dependency graph must be acyclic (this is checked). ModuleRef can be:
+* *load(ModuleRef)* - We can request the runtime to provide the compiled value from another module. This may observably fail, e.g. if the requested module is not found or cannot be compiled. Cyclic dependencies between modules are forbidden and are treated as divergent. ModuleRef can be:
   * *global:String* - a global module, i.e. based on a configured search path
   * *local:String* - a local module, i.e. same folder as file being compiled
-* *log:Message* - We can write messages for the developer while we compile, e.g. to indicate progress, warnings, or errors. Returns unit. Messages should be dictionaries, not plain text, and the runtime might implicitly add some debug context to messages.
+* *log(Message)* - We can write messages for the developer while we compile, e.g. to indicate progress, warnings, or errors. Returns unit. Messages should be structured records to simplify extension, or plain old data.
 
-Languages benefit from associated tools, such as REPLs, linters, intellisense, decompilers, etc.. We will need to develop some conventions around this, perhaps association of global modules based on names like repl-xyz or exporting a cluster of functions from language-xyz.
+Languages benefit from many other associated tools such as REPLs, linters, intellisense, decompilers, etc.. I assume these would be defined as separate apps but might import or reuse code from the language module. 
 
 ## Automated Testing
 
-As a simple convention, modules whose names start with "test-" are treated as test programs. This includes local modules within a folder module, even if they don't contribute to the public result. We can develop tools to automatically compile and run tests and maintain a distribution health report. 
+As a simple convention, modules whose names start with "test-" are interpreted as test programs. This includes local modules within a folder that don't contribute to a public result. Tests can also be supported via compile-time evaluation of assertions (by the language module), but separation is more suitable for fuzz testing, long-running tests, and allowing tools to prioritize tests based on a known history of failures.
 
-A test program can be expressed as a `unit -> unit` pass/fail function with limited effects:
+A test application should define a single-step pass/fail 'run' method with limited effects. Something like:
 
-* *log* and *load* - same as language modules
-* *fork(N)* - return a non-deterministic choice of natural numbers in range 1..N.
+* *log* and *load* - same as behavior in language modules
+* *fork(N)* - non-deterministic choice of natural number less than N
 
-Use of *fork* supports fuzz testing and expressing multiple tests as a single program. To support multi-tests, a simple convention might be that the first several forks up to some quota are exhaustively tested. The quota can be adjusted via annotation. 
+Here 'fork' serves roles in fuzz testing and representing multiple tests with one module. Annotations could provide some extra guidance on priorities and quotas for tests. Test tools may allow users to provide patterns of fork choices to select tests or subsets thereof.
 
-Due to limited effects, testing an interactive application may involve simulating the environment (filesystem, network, user, etc.). Ideally we'll swiftly develop a reusable, tunable sandbox environments for testing. Of course, conventional integration testing is still feasible, but wouldn't be automated in the above sense.
-
-## Applications
-
-The [transaction loop](GlasApps.md) is the default application model for glas systems. This model has nice properties for live coding, reactive systems, extensibility, and scaling. It is also aligns well with [grammar-logic programming](GrammarLogicProg.md), which implicitly requires transaction-like backtracking of effects. But it does complicate performance. 
-
-Other useful application models include staged applications and binary extraction. These are roughly described with the [glas command line interface](GlasCLI.md).
+*Note:* Although a test application cannot directly interact with the environment (e.g. filesystem or network), it should be feasible to simulate and fuzz the environment.
 
 ## Performance
 
