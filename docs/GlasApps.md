@@ -4,7 +4,7 @@
 
 In glas systems, applications will be expressed as a [hierarchical namespace](ExtensibleNamespaces.md) that defines methods and declares state. This hierarchical, stateful namespace can effectively express a static composition of objects. Methods are evaluated within context of atomic, isolated transactions. 
 
-The application will provide *interfaces* that are recognized by the runtime. For example, the application may provide methods to support a graphical user interface or HTTP CGI service integration. Whether the runtime immediately renders the GUI might be configurable via environment variables or glas profile. Background processing is supported by providing a 'step' method, which is repeatedly called by the runtime, forming a *transaction loop* with many nice properties. 
+The application will provide *interfaces* that are recognized by the runtime. For example, the application may provide methods to support a graphical user interface or HTTP CGI service integration. Whether the runtime immediately renders the GUI might be configurable via environment variables or glas profile. Background processing is supported by providing a 'step' method, which is repeatedly called by the runtime, forming a *transaction loop* with many nice properties.
 
 Conversely, the application namespace may declare and describe abstract methods representing an *effects API*. The runtime should recognize and provide these methods based on name and description. Descriptions may include type annotations and version numbers; the runtime should raise an error if these requirements cannot be met. To simplify reasoning about security and sandboxing, the runtime will only provide shallow interfaces, e.g. under `io.method`, while the application explicitly binds and propagates effectful resources into subcomponents.
 
@@ -48,11 +48,9 @@ In general, there will be multiple instances of RPC interfaces in the environmen
 
 In context of asynchronous interactions, we must reference remote resources over the course of several transactions. This requires a stable means of identifying the remote resources. An obvious solution is to use a stable identifier for remote instances. An intriguing alternative is to extend our RPC discovery APIs to support stable, asynchronous sessions similar to TCP connections. Advantages of sessions are that they can be cleanly 'broken' and can carry status information or ad-hoc metadata. 
 
-There are security concerns that must be addressed. Security might be supported via a few standard methods on RPC interfaces indicating registries - i.e. where to publish, where to search, cryptographic access tokens, etc.. It is feasible to separate most of these details into runtime configuration (glas profile or environment vars) while instead indicating labeled groups within the apps.
-
 ## Ephemeral References
 
-An *ephemeral reference* is valid only within the current transaction. For my vision of glas systems, I propose that our APIs should favor ephemeral references, especially for anything that directly references the application namespace, such as otherwise first-class functions or objects. 
+Ephemeral values are valid only within the current transaction. For my vision of glas systems, I propose that APIs should favor ephemeral references especially for external resources.
 
 Leveraging ephemeral references:
 
@@ -64,35 +62,47 @@ The cost of repeatedly reconstructing the same ephemeral reference can be mitiga
 
 Anyhow, this is mostly an API design concern, albeit with a light touch of type system support. But it is related to many features I envision for glas systems.
 
+## Dynamic Objects
+
+Even without first-class objects, it is possible to model dynamic collections of objects in terms of indexed state. However, it is awkward to implement this indexing manually, especially in context of private state. To mitigate this, we could provide language support for indexed state, e.g. logically rewrite a namespace to an array type.
+
+With just a little more language support, we could abstract dispatch and where an object is represented within the namespace, allow for reference types based on common interfaces. This allows something similar to first-class objects, but this pattern requires *ephemeral references* to avoid interfering with my glas system design goals.
+
 ## Concurrency within Transactions? Defer.
 
-It is possible to express transactions in terms of actors model or another concurrency model. We mostly need a clear boundary where the transaction 'commits', e.g. after messages are processed and the system is settled, but this isn't a big problem. Support for concurrency allows for more flexible incremental computing (especially in context of distributed computation) and simplifies the runtime by moving most coordination to the program layer. 
+Transactions may be expressed in terms of concurrent subprocesses. Internal race conditions can reduce synchronization overheads within a transaction, improving performance of distribution and parallelism. But, unless concurrency is confluent, behavior becomes difficult to reason about and test - too many "works on my machine" bugs due to how race conditions interact with incremental computing and partial evaluation. What can be done?
 
-But many concurrency models, including actors model, introduce pervasive arrival-order non-determinism, aka race conditions. Unfortunately, arrival order tends to be inconsistent across machines and configurations, resulting in awkward "works on my machine" bugs, heisenbugs, testing that misses entire ranges of valid behavior just because it's improbable on the test system. This is contrary my design goals for glas systems!
+One viable solution is to model concurrency in terms of subprocesses that have a simple syntactic priority, e.g. if the 'leftmost' process can make progress, then it has priority. This could be combined with 'atomic' sections within the subprocesses. Compared to a deterministic round-robin scheduler, syntactic priority is a lot more stable, easier to statically analyze for parallel evaluation opportunities. When subprocesses terminate (or perhaps reach 'accept' states within a loop) we may commit.
 
-Deterministic (or confluent) concurrency models are a better fit for my vision. But most of these models seem awkward to integrate with RPC. For now, I propose to just use annotations to guide parallel evaluation of normal procedures, then we can later consider what would be necessary to parallelize a user-defined model of green threads.
+Anyhow, I think this might be worth exploring later, but short term we'll get most benefit from procedural transactions, and perhaps a few types and annotations to simplify parallel evaluation within a procedure.
 
 ## Mitigating Reentrancy
 
-Reentrant calls are a common source of bugs, e.g. when a subprogram manipulates state that the caller is also manipulating. However, reentrancy is difficult to fully avoid in context of remote procedure calls and first-class objects.
+Unexpected reentrant calls are a common source of bugs. In this case, a subprogram manipulates state that the larger program is already in the middle of processing, e.g. adding elements to a list that a program is iterating. Reentrancy is difficult to avoid in many cases. Fortunately, we can mitigate the problem by drawing attention, such that reentrancy is no longer 'unexpected'. 
 
-What we can do is detect patterns where reentrancy bugs are likely. We could perform a static analysis and warn programmers when reentrancy problems are likely, e.g. if a subprogram writes state between a read and write by the caller. Further, we could logically lock resources against reentrancy, perhaps expressed via annotations, then abort transactions that would violate the lock.
+With a little static analysis, and perhaps a few annotations describing assumptions, we can raise warnings or errors in case of reentrancy. In case of dynamic detection, the runtime can block transactions where assumptions are violated.
 
-Reentrancy can also be mitigated by many features that would support parallel or concurrent computation. We might choose to resolve reentrancy by allowing for a high level of concurrency, then solving this more generally at the concurrency layer.
+Programmers can develop design patterns to manage known reentrancy. Introducing an intermediate queue is sufficient in many cases.
 
 ## Regarding Location-Specific Resources
 
-Some resources are location specific, such as filesystem access or opening a TCP listen port. A few resources are even process instance specific, such as process ID, command line arguments, or the OS environment. When I contemplate mirroring of apps for partitioning tolerance, it isn't entirely clear to me how to express access to 'local' resources on many different partitions.
+Transaction loop applications can support graceful degradation and resilience in context of network partitioning. An application can be installed on multiple machines while configuring state to be mirrored. When the network is partitioned, operations that must communicate between partitions will fail, while those that can be evaluated locally to a partition can provide degraded service.
 
-To keep it simple, I propose to initially develop an effects API suitable for local applications, then later develop an effects API suitable for mirrored apps. We can develop adapters for expressing mirrored apps in terms of the local effects API. Eventually, if some API becomes a de-facto standard, we might directly support it from the glas runtime, recognizing which API to use based on annotations.
+However, to fully leverage this requires attention to the effects API. Relevantly, to ensure "the same" transaction is repeated at multiple locations, we'd need operations such as `file.open("foo.txt")` or `tcp.listen("192.168.1.10",8080)` to have the same 'meaning' on every mirror, i.e. opening the same file or listening on the same physical network card. This might be achieved by adding a parameter for which mirror is selected, e.g. a 'site' parameter, or implicit 'env' parameter containing a site field. 
 
-When we do mirror apps, declared state resources will tend to be 'owned' by one partition or another. In special cases, we might also allow for ownership to be partitioned dynamically based on indices. We might use annotations to guide ownership.
+My current intention is to defer this development effort. It is feasible to design effects APIs around local applications then later develop a library of macros or mixins to adapt a distributed application into a local application per installed mirror. Doing so would essentially move the issue from the language runtime to library layer and allows for greater flexibility in how this is approached. 
 
-## Securing RPC?
+## Authorization and Discovery of RPC
 
-Applications can certainly secure their own RPC methods, e.g. via access tokens or HMAC. To avoid authentication per operation, this might be separated into a method that performs authentication then returns ephemeral references representing fine-grained authority. 
+Instead of applications directly referencing each other, I propose for authorization and discovery of RPC services to be mediated through shared registries. 
 
-Alternatively, with runtime support we could annotate RPC methods with security policy, or potentially organize methods as `rpc.group.method` such that each group may have its own security policy. Ideally, a lot of the security details (registry locations, access tokens, etc.) can be separated into the runtime configuration. Keeping some security details separate from the application is useful to control communication, preventing backdoor access via tokens embedded in the app.
+Interfaces provided or discovered through a registry would generally not require further authorization or authentication. Instead, we provide more limited interfaces to less trusted registries, and the app should know whether an RPC method is accessing distrusted resources.
+
+A runtime configuration can describe multiple registries, each with URLs and access tokens. In the general case, some form of multiple inheritance on registries might be supported, i.e. such that publishing to one registry becomes publishing to many, or searching one registry becomes searching many. An application-specific or default configuration may then associate registries with abstract, labeled trust groups in the application, such as 'admin' or 'guest'. Applications declare a list of labels for each RPC interface, indicating where that interface is published or acquired.
+
+Where a trusted registry is infeasible, some RPC interfaces might include explicit security protocols. In these cases, *ephemeral references* would be convenient to represent authorized access, allowing authorization to be performed once during the stable prefix of a distributed transaction (instead of once per remote call).
+
+*Aside:* An intriguing possibility is distributed hashtable (DHT) based registries. This would avoid the central point of failure with modeling registries as an intermediate service, and would support a more resilient and partitioning tolerant network.
 
 ## Transactional User Models?
 
@@ -104,22 +114,31 @@ But I'm not convinced this is the right option for modeling user interaction in 
 
 ## Application State
 
-I propose to declare state in the namespace. This simplifies support for 'private' state, and simplifies the problem of how state is accessed by RPC callbacks. However, it does complicate how access to state is controlled in context of concurrent transactions.
+Applications will declare state in the namespace. This allows for state to be stable for live coding and orthogonal persistence, renderable in debug views or projectional editors, private in hierarchical application components, accessible to reentrant RPC. Each component within an application might have its own debug view methods.
 
-organization of 'private' state, but other options do exist: we could represent state
+The language can provide keywords (or little DSLs) for common state declarations. But to ensure state resources are open to extension and refinement, I propose state resources are effectively represented as hierarchical component namespaces. Even a simple variable field might involve compiler-provided 'get' and 'set' methods and a user-provided 'init'. To this, users might add some methods for annotations, transactional invariants, and debug views.
+
+Private state is implicit where state declared in a private namespace. However, in context of staged computing, this privacy is only weakly enforced. For example, it is feasible to develop component-layer macros that introduce methods supporting resets, checkpoints, mirroring, or indexed collections of *dynamic objects* that contain private state. Similarly, a runtime reflection API can also provide systematic access to an application's private state.
+
+In context of open systems and RPC, we should avoid direct reference to remote resources or abstractions per *ephemeral references*. The simplest solution is likely to restrict application state to 'plain old data', albeit structured glas data.
+
+Performance is always a concern. Some types might simplify optimization of glas systems. For example, queues can allow multiple writer transactions and a single reader transaction to evaluate in parallel without observing a read-write conflict. Further, they support congestion control because a runtime can heuristically de-prioritize transactions that would write to an overly filled queue. Other performance concerns include incremental computing and effective support for mirroring.
+
+A relevant question is what declared state types glas applications should support to balance performance and simplicity in context of live coding, orthogonal persistence, and open systems. An initial proposal:
+
+* variables - get/set, our normal state type. Alternatively, something closer to MVars where every variable has an implicit 'empty' option... but we could model that explicitly.
+* queues - read/write, fully ordered. A runtime can support *heuristic* pushback via deferring transactions that would write to an already 'full' queue.
+* bags (tuple spaces) - disordered, essentially a queue with implicit non-deterministic choice on read. Convenient for concurrent or distributed processing.
+* indexed collections thereof - An indexed collection of variables is essentially a key-value database. Operations on different indices won't conflict, and a runtime can dynamically distribute indexes between mirrors based on where things are used.
+
+We can do anything with variables, thus other types are motivated primarily for performance reasons. Support for queues, bags, and indexed structure covers the use cases I've contemplated. There is room for additional types, such as counters or CRDTs, but they can wait for a strong motivating use case.
+
+## Application Provided Interfaces
+
+This section describes some interfaces an application might be expected to provide.
 
 
-In addition to simple get/put state variables, we could model tuple spaces or bags, queues, counters, and other types. It is feasible to support user-defined models, but it is difficult to prove properties such as confluence or idempotence. So, I expect we'll rely on several built-in models, at least initially.
 
-Some useful state types:
-
-* Vars. 
-* Maps. The language could support a lightweight key-value database type.
-* MVars. A variable that optionally contains a value, perhaps represented by a var containing an option type. This can be useful to guard against reentrancy or to support concurrent operations.
-* Queues. Writers can write to one end of a queue, while readers read from the other end. A useful advantage is that parallel or concurrent writes can be deferred then merged later. In context of concurrent operations, we m
-* Bags or Sets. Unordered 
-
-## Ideas for Runtime Interfaces
 
 ### Background Processing
 

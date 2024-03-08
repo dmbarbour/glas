@@ -8,15 +8,12 @@ This document describes how to implement namespaces with a single-pass rewrite o
 
 ## Prefix Oriented Rewrites
 
-There are essentially three prefix-oriented rewrite operations:
+There are two basic prefix-oriented rewrite operations:
 
 * rename - rewrite a prefix for all methods AND update all links. 
 * move - rewrite a prefix, breaking links; supports overrides.
-* hide - rename prefix a fresh 'anonymous' namespace. Supports private defs.
 
-The scope of a rewrite is a namespace component. For example, we could rewrite a mixin to change which methods it overrides. Hierarchical namespaces are supported by *renaming* the empty prefix. An override can be represented by *moving* the original name, e.g. move 'foo' to '^foo', then redefining 'foo'. Private definitions can be supported by using a common prefix for private names (perhaps '~') then hiding that prefix. Import or export lists can be supported by renaming the empty prefix to '~', renaming every exported name back out of '~', then hiding '~'. 
-
-Aside from actually providing the definitions and detecting conflict risks, these few operations cover all manipulations we need on namespaces.
+The scope of a rewrite is a namespace component. For example, we could rewrite a mixin to change which methods it overrides. Hierarchical namespaces are supported by *renaming* the empty prefix. An override can be represented by *moving* the original name, e.g. move 'foo' to '^foo', then redefining 'foo'. 
 
 ## Single Pass Rewrites
 
@@ -26,13 +23,21 @@ It is feasible to compose these rewrites. For example, if a component from which
 
 Additionally, the pass will include a prefix for hiding names. This location will be partitioned in context of hierarchical components.
 
+## Private Definitions
+
+A language might indicate private symbols via special prefix such as '~'. Use of a standard prefix in this role is convenient because otherwise there is risk of shadowing public symbols. To keep it simple, the same language might forbid use of '~' within symbols except as a prefix character. To implement private definitions under these assumptions, the language compiler can systematically rename prefix '~' to 'fresh-prefix~', with 'fresh-prefix' uniquely allocated per inherited or component namespace.
+
+Stability of private definitions is desirable in context of declared state and live coding or orthogonal persistence, or debug views and reflection. Insofar as definitions are stable, we can bind state by name across multiple versions of code. Relevantly, if the language compiler is allocating a fresh privacy prefix based on incrementing a counter, it would be unstable to many insertions and deletions. The privacy prefix should instead be derived based on symbols or aliases used in code, preferably with sufficient programmer control to manually stabilize across manual name changes.
+
+Anyhow, this feature can be left mostly to the language definitions and conventions. No need for special support from the namespace model.
+
 ## Multiple Inheritance
 
-We can support namespaces deriving from multiple sources. However, there is a risk of ambiguity or conflict when the same name is inherited from two sources. To mitigate this, we can allow namespace operations to assert specific names are defined or not. In general, namespace components can indicate whether they expect to initially introduce or override a definition. If we try to introduce a definition that already exists, or override a definition that does not exist, we will raise an error for the programmer to resolve. This is adequate for a primary inheritance plus mixins or multiple inheritance of disjoint definitions.
+We can support namespaces deriving from multiple sources. However, there is a risk of ambiguity or conflict when the same name is inherited from two sources. To mitigate this, we might allow namespace definitions to indicate assumptions about whether certain prefixes (generally including full symbols) are already in use or not. We can easily detect whether such assumptions are violated without peering into definition details. 
 
-To further support *interfaces* I propose two additional rules. First is 'unify', which introduces the definition or verifies the existing definition is the same. The second is support for 'default' definitions, which can be overridden or introduced without conflict (but two defaults must unify). In general, we might have mixins inherit from interfaces to provide some extra context. When a namespace applies multiple mixins, we'll test whether they're intended for the same interface.
+To support interfaces, we might also allow for inheriting 'the same' definition from two sources as not being ambiguous, a limited unification semantics.
 
-This covers a few useful and common inheritance patterns while remaining simple to understand and implement.
+Anyhow, we can readily support interfaces, mixins, hierarchical components, and composition of dictionaries in terms of multiple inheritance. But users would either manage [diamond pattern inheritance](https://en.wikipedia.org/wiki/Multiple_inheritance#The_diamond_problem) manually or (more likely!) avoid it.
 
 ## Conflict Resolution
 
@@ -60,15 +65,23 @@ We could also support an import list variant:
 
 This illustrates that hierarchical composition can be concise and flexible depending on syntax. But I think the syntax proposed here could use further tweaking.
 
+## Conditionals? Language Layer
+
+Conditionals that may vary due to late binding, such as testing whether a given symbol is defined, too easily leads to inconsistency in context of extensions and late binding. But we can easily test whether a static namespace component has a property.
+
+        # can easily support:
+        if (A defines x,y) then B else C 
+
+        # cannot easily support:
+        if x,y is defined then B else C
+
+However, if we're testing only static properties, we can easily shift the test to the language layer, e.g. into keywords or macros that are evaluated at compile time. Further, the language layer has great flexibility regarding which properties are observable, not limited to testing whether a symbol is defined.
+
+The primary motive for conditional construction of namespaces is mostly to automate 'glue' code, e.g. automate construction of an adapter for hierarchical application components. This needs a lot of flexibility for the general case.
+
 ## Aliasing? Not at this layer.
 
-In many cases, we might want to reference the same resources from multiple names within the namespace. This is especially the case in context of state resources declared within the namespace. The tree-structured namespace becomes a directed acyclic graph.
-
-If we aren't concerned with multiple names, we can achieve something close enough via renames: add prefix 'foo.' to component, rename 'foo.io.' to 'io.'. This would mean we cannot access 'foo.io.' externally, i.e. the client would need to directly work with 'io.'. Additionally, we could easily support definition-layer redirection, i.e. define one method as delegating to another, or declare one state resource as a reference to another (or a component within another). Between these, I think there isn't a strong use case for aliasing at the namespace layer.
-
-And suppose we want to keep 'foo.io.' as mapping to 'io.' such that future extensions to 'foo.io.x' implicitly extend 'io.x' as well. In this case, a mixin that extends both 'foo.io.' and 'io.' would be very confusing. It is unclear which override should apply first. We'd probably need to add rules to check that overrides within a mixin refer to different methods. Programmers would generally need to be 'aware' of aliases when developing extensions, which isn't better than favoring rename or redirect.
-
-Finally, I find it convenient to understand names as 'points of change'. Rename and redirection isn't a problem for this, but aliasing and unification would mean extensions cannot independently change some names.
+For simplicity, different names are fundamentally different with respect to late binding. But languages may leverage renames and moves to 'merge' names when composing namespaces. Also, it is very easy to support and optimize delegation at the definitions layer.
 
 ## Annotations
 
@@ -109,3 +122,4 @@ A compiler might leverage this namespace to partition static context for perform
 ## Nominative Types
 
 Namespaces can support nominative types, i.e. where the name is included in the type. We could support name-indexed records, for example. In context of glas applications, we might insist that all nominative types are ephemeral. 
+

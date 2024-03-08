@@ -86,14 +86,16 @@ I'm still exploring how to express methods. Procedural expression of behavior is
 
 ## Language Modules
 
-Language modules have a simple naming convention, e.g. the global module language-xyz defines an application that provides a single-step `compile : Data -> Data` method. This method has limited access to *log* and *load* effects, ensuring a deterministic result that depends only on input data and module system state.  
+Language modules follow a simple naming convention: the global module 'language-xyz' is responsible for describing how to compile files with extension ".xyz". The compiler application provides `compile : SourceCode -> ModuleValue`, representing compilation as a single step. The compiler application has limited access to effects, such as loading data from the module system, and logging warning or errors messages:
 
-* *load(ModuleRef)* - We can request the runtime to provide the compiled value from another module. This may observably fail, e.g. if the requested module is not found or cannot be compiled. Cyclic dependencies between modules are forbidden and are treated as divergent. ModuleRef can be:
+* *load(ModuleRef)* - request the runtime to provide the compiled value from another module. ModuleRef:
   * *global:String* - a global module, i.e. based on a configured search path
   * *local:String* - a local module, i.e. same folder as file being compiled
-* *log(Message)* - We can write messages for the developer while we compile, e.g. to indicate progress, warnings, or errors. Returns unit. Messages should be structured records to simplify extension, or plain old data.
+* *log(Message)* - ad-hoc write messages mostly intended for the human developer
 
-Languages benefit from many other associated tools such as REPLs, linters, intellisense, decompilers, etc.. I assume these would be defined as separate apps but might import or reuse code from the language module. 
+In case of cyclic dependencies, load logically diverges (infinite loop), but in practice the glas system should recognize and report the problem to the developer. Load failures due to missing modules or modules that failed to compile without divergence may be observed during compilation via pass/fail, but the exact cause of error is not observed.
+
+Languages benefit from associated tools such as REPLs, linters, syntax highlighting, intellisense, decompilers, [language server protocol](https://en.wikipedia.org/wiki/Language_Server_Protocol), interactive tutorials, etc.. I assume these would be defined using separate apps that import or reuse code developed for language modules, perhaps with similar naming conventions.
 
 ## Automated Testing
 

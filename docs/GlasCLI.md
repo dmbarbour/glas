@@ -2,7 +2,7 @@
 
 The glas command line interface supports one primary operation:
 
-        glas --run ModuleRef -- Args
+        glas --run ModuleRef -- Args To App
 
 This is intended for use with a lightweight syntactic sugar.
 
@@ -10,33 +10,39 @@ This is intended for use with a lightweight syntactic sugar.
             # rewrites to
         glas --run glas-cli-opname -- a b c
 
-This feature combines nicely with *staged* applications. A staged application can browse the module system and select or construct another application based on given arguments. Effectively, user-defined operations become command line languages, consistent with user-defined file extensions in modules. 
+When this syntactic sugar is combined with *Staged Applications* (see below), we can effectively support user-defined command line languages.
 
-To better support command line languages, runtime configuration parameters (such as memory quotas or GC tuning) are not directly provided through command line arguments. Instead, such parameters may be provided via configuration, environment variables, or annotations. Indirectly, a staged application can arrange annotations on the returned application based on arguments.
-
-Aside from '--run' the glas command line interface may define other built-in operations. But the intention is that most logic should be represented in the glas module system and not the command line executable.
+To keep the command line clean, runtime configuration parameters (e.g. memory and GC tuning) are represented in a configuration file instead of on the command line. There are simple conventions to support options specific to an application or class of applications.
 
 ## ModuleRef
 
-A ModuleRef is a string that uniquely identifies a module. Initially, this may be a global module or a filename.  
+A ModuleRef is a string that uniquely identifies a module. Initially, this may be a global module or a file path.  
 
         global-module
         ./FilePath
 
-A FilePath is recognized by containing a directory separator (such as '/'). The glas command line interface will attempt to interpret any file or folder as a module, if requested. Otherwise, we'll search the configured distribution for a global module of the given name. Eventually, we might extend these options with URIs, but I think there isn't a strong use case.
+A FilePath is heuristically recognized by containing a directory separator (such as '/'). The glas command line interface will attempt to interpret any file or folder as a module, as requested. Otherwise, we'll search for a global module of the given name. 
 
 ## Configuration
 
-All relevant configuration information is centralized to a profile, a ".prof" file. The `GLAS_PROFILE` environment variable can select the active configuration. If unspecified, GLAS_PROFILE will be set to an OS-specific default such as `"~/.config/glas/default.prof"` in Linux or `"%AppData%\glas\default.prof"` in Windows.
+Most configuration information will be centralized to a ".prof" file. This file may be selected by the `GLAS_PROFILE` environment variable, but has an OS-specific default such as `"~/.config/glas/default.prof"` in Linux or `"%AppData%\glas\default.prof"` in Windows. I propose a lightweight [text tree syntax](TextTree.md) to express this profile. 
 
-Minimally, the active distribution must be configured. I propose to initially use the [text tree syntax](TextTree.md) to express a filesystem search path where each directory contains global modules as subfolders. Any local paths are relative to the profile. Later we might allow logically renaming modules, reference to DVCS repositories, and separate ".dist" files.
+A minimal configuration must specify a distribution. Initially, we'll support a simple filesystem search path, with local paths relative to the profile. Every global module must be represented as a subfolder within this path. In case of ambiguity, the first path 'wins'.
 
         dist 
             dir Directory1
             dir Directory2
             ...
 
-Aside from distribution, the profile will eventually support sections for logging, storage, app config, proxy compilers, content delivery networks, etc.. Ultimately, the profile is relatively ad-hoc: specific to the glas executable, subject to experimentation, deprecation, de-facto standardization. Users should receive a warning if a profile includes unrecognized or deprecated entries. 
+I intend to eventually support reference to remote repositories, multiple inheritance with separate ".dist" files, and [namespace operations](ExtensibleNamespaces.md).
+
+The profile will eventually support sections for logging, storage, app config, proxy compilers, content delivery networks, variables, etc.. Ultimately, the profile is relatively ad-hoc, specific to the glas executable and subject to deprecation and de-facto standardization. Users should receive a warning when a profile includes unrecognized or deprecated entries.
+
+### Application Specific Configuration
+
+Some runtime options such as GC tuning or logging might vary across apps. To support this, I propose to define subconfigurations within the profile. These are labeled arbitrarily, e.g. 'server', 'game', 'myapp.mydomain.com'. Applications may define a 'runtime-config' method which specifies a sequence of subconfigurations to apply. A default configuration is applied first.
+
+This allows apps to tune runtime configurations based on their role or a unique application name, without knowing too much about the details. Though, it is feasible to extend 'runtime-config' to also support details.
 
 ### Distribution Files? Defer.
 
@@ -48,43 +54,48 @@ Full support for distributions will be deferred at least until after glas CLI bo
 
         glas --run ModuleRef -- Args
 
-The glas executable first compiles the referenced module into a value. This value must be recognized as representing an application. Initially, the glas command line will only recognize the the type used in ".g" modules
-Recognized run modes include:
+The glas executable first compiles the referenced module into a value. This value must be recognized as representing an application. Initially, we'll recognize ".g" modules that define an 'app' namespace, or generally any module that compiles to `g:(app:Namespace, ...)`. A [namespace](ExtensibleNamespaces.md) is more sophisticated than a simple dictionary, allowing overrides, renames, and late binding.
 
-* *step* - transaction loop step function. See [glas apps](GlasApps.md).
-* *stage* - application has type `Args -> Application`.
-  * effects to build app are *log* and *load* (global) 
-  * arguments may be divided across stages using '--'.
-  * `glas --run staged-op -- stage one args -- stage two args`
-* *test* - application has a simple pass/fail `unit->unit` type
-  * effects are limited to *log*, *load*, and *fork(Nat)*
-  * fork is non-deterministic choice for fuzz testing
-  * might extend to allow `any->any` type like assertions
-* *text* - application function from `Args -> Binary`. 
-  * binary is written to standard output once computed
-  * limited access to *log* and *load* (global) effects
-  * motive is to simplify bootstrap of glas executable 
+The application namespace provides interfaces that will be called by the runtime. For example, background tasks are represented by a runtime repeatedly calling a transactional 'step' method. Other methods may be called to support RPC, HTTP, GUI, publish-subscribe, or OS events. Conversely, a runtime may bind or override names representing the application's access to the environment. See [Glas Applications](GlasApps.md) for details.
+
+The glas executable may support specialized application types such as staged applications or binary stream processing, influencing interfaces and integration. This might be indicated by declaring an abstract method such as 'run-mode-staged' or 'run-mode-bsp'.
+
+### Staged Applications
+
+Staged applications, indicated by 'run-mode-staged', support user-defined command line languages. 
+
+        glas --run StagedApp -- Description Of App -- Args To Returned App
+
+Staged applications essentially have the same interface as language modules, except input is the tokenized `["Description", "Of", "App"]` instead of a file binary. The compiled value must also have a type recognized as an application by 'glas --run'. The returned application is run with the list of arguments following an optional '--' separator. 
+
+### Binary Stream Processing Applications
+
+A binary stream processing application (BSP app), indicated by 'run-mode-bsp', will incrementally read from standard input and write to standard output. The main advantage of binary stream processing is that it's easily implemented and immediately useful, especially suitable for early development and bootstrap.
+
+I propose to express the BSP app as a transaction loop application with a restricted effects API - e.g. read, write, log, and load. To ensure deterministic behavior, 'read' will logically diverge (wait indefinitely) if buffered input data is insufficient. Writes are generally buffered until the current transactional step commits. With this model, it is trivial to adapt a BSP app to a normal glas app.
+
+BSP apps can support limited interaction such as a REPLs, especially if embedded in a suitable environment (e.g. with [ANSI escape codes](https://en.wikipedia.org/wiki/ANSI_escape_code) or [terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)). Of course, we may need to introduce configuration options to control features such as input echo and line buffering.
 
 ## Scripting
 
 Proposed operations:
 
-        glas --script(.Ext)* (ScriptFile) (Args)
-        glas --script(.Ext)*=(ScriptText) (Args)
+        glas --script.FileExt (ScriptFile) (Args)
 
-Usage context:
+FileExt may be anything we can use as a file extension, including multiple extensions. Intended usage context is a shebang script file within Linux:
 
         #!/usr/bin/glas --script.g
         program goes here
 
-This operation loads the script file, skips first line if it starts with shebang (#!), compiles remaining content based on specified extensions, then runs it as an application. Compilation ignores file extensions and location of the script file. Only global modules can be referenced. A variation with '--script.g=Text' can run a script without a separate script file.
+This operation loads the script file, skips first line if it starts with shebang (#!), compiles remaining content based on specified file extension, then runs the result as an application with the remaining arguments.
 
-In some cases, we might bind GLAS_PROFILE to the script instead of to the user. This can be supported indirectly via Linux 'env' command. Example:
+### Inline Scripting
 
-        #!/usr/bin/env -S GLAS_PROFILE=/etc/glas.prof glas --script.g
-        program goes here
+An obvious variation on the above is to embed the script text into the command line argument. Proposed operation:
 
-In this case, the script should require special group permissions to execute, aligned with dependencies of the profile.
+        glas --cmd.FileExt ScriptText -- Args
+
+This can be convenient in some cases. It enables users to favor familiar file-based languages without requiring a separate file. That said, most file-based languages are probably an awkward fit for inline scripting, and users might ultimately be better off developing and learning a suitable command-line language (via staged app).
 
 ## Other Operations
 
@@ -108,7 +119,7 @@ Using log messages for detailed warnings or errors.
 
 ## Bootstrap
 
-The bootstrap implementation of 'glas' might support only the *binary* run-mode for applications. This reduces need to implement a complete effects system up front. Assuming we can print a binary to standard output, the following can potentially work:
+The bootstrap implementation of 'glas' might support only run-mode-bsp. This reduces the need to reimplement a full runtime in multiple languages. We can bootstrap by writing the executable and redirecting to a file.
 
     # build
     /usr/bin/glas --run glas-binary > /tmp/glas
@@ -136,3 +147,5 @@ The executable should have minimum logic, but where should I focus initial atten
 * [Language Server Protocol](https://en.wikipedia.org/wiki/Language_Server_Protocol)
 * FUSE filesystem support
 * IDE projectional editors, programmable wikis
+* Web apps? (Compile to JavaScript or WebAssembly + DOM)
+* Notebook apps? (something oriented around reactive, live coding with graphics?)
