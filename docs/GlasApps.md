@@ -104,41 +104,40 @@ Where a trusted registry is infeasible, some RPC interfaces might include explic
 
 *Aside:* An intriguing possibility is distributed hashtable (DHT) based registries. This would avoid the central point of failure with modeling registries as an intermediate service, and would support a more resilient and partitioning tolerant network.
 
-## Transactional User Models?
+## Transactional User Models? Defer.
 
 We can render debug views of the runtime system, including aborted transactions. This includes opportunity to render debug views of a user agent, which is asked questions or to perform certain operations on behalf of the user. If a question cannot be answered based on what the user agent knows, or if the operation cannot be handled, it can be treated as a divergent computation and rendered as an aborted transaction. This allows the user to update the agent before the transaction can continue (in context of a transaction loop).
 
-This is a viable basis for user interfaces that enables users to akwardly participate within transactions. Some 'questions' may be graphical. There is an opportunity to script answers to cover a range of similar questions. There is a vague similarity to immediate-mode GUI.
+This is a viable basis for user interfaces that enables users to akwardly participate within transactions. Some 'questions' may be graphical. There is an opportunity to script answers to cover a range of similar questions. 
 
-But I'm not convinced this is the right option for modeling user interaction in most cases.
+I'm intrigued by the possibilities for rendering 'outcomes' of user choices without committing to them. But I'm not convinced this is the right option for modeling user interaction in most cases.
 
 ## Application State
 
-Applications will declare state in the namespace. This allows for state to be stable for live coding and orthogonal persistence, renderable in debug views or projectional editors, private in hierarchical application components, accessible to reentrant RPC. Each component within an application might have its own debug view methods.
+I propose to initially support only a few state types:
 
-The language can provide keywords (or little DSLs) for common state declarations. But to ensure state resources are open to extension and refinement, I propose state resources are effectively represented as hierarchical component namespaces. Even a simple variable field might involve compiler-provided 'get' and 'set' methods and a user-provided 'init'. To this, users might add some methods for annotations, transactional invariants, and debug views.
+* variables - get/set, our normal state type.
+* queues - read/write, fully ordered. Allows for a single reader and multiple writer transactions to operate in parallel. Allows for dataflow control via heuristic pushback, i.e. runtime can reject transactions that write to an already overly full queue.
+* bags (or tuple spaces) - read/write, disordered. Essentially a queue with non-deterministic choice on read. This allows for multiple concurrent readers and writers to evaluate in parallel, and supports partitioning tolerance insofar as readers in different partitions can continue processing writes from their own partitions. Does imply a non-deterministic choice effect, so might be restricted for some apps.
+* indexed collections thereof - operations on different indices don't conflict, and state for different indices can potentially be distributed for performance or partitioning tolerance. 
 
-Private state is implicit where state declared in a private namespace. However, in context of staged computing, this privacy is only weakly enforced. For example, it is feasible to develop component-layer macros that introduce methods supporting resets, checkpoints, mirroring, or indexed collections of *dynamic objects* that contain private state. Similarly, a runtime reflection API can also provide systematic access to an application's private state.
+We can model queues or indexing in terms of variables. If we introduce non-deterministic choice, we can also model bags. Thus, built-in support for specialized types is motivated mostly for performance reasons: improved parallelism via controlling read-write conflicts, better incremental computing and reactivity, etc.. 
 
-In context of open systems and RPC, we should avoid direct reference to remote resources or abstractions per *ephemeral references*. The simplest solution is likely to restrict application state to 'plain old data', albeit structured glas data.
+We might also insist that queues and bags cannot read their own writes within a transaction. This simplifies buffering of queues in distributed computations, and allows non-local non-deterministic choice for bags (i.e. logically we have some intermediate process permuting things between transaction attempts).
 
-Performance is always a concern. Some types might simplify optimization of glas systems. For example, queues can allow multiple writer transactions and a single reader transaction to evaluate in parallel without observing a read-write conflict. Further, they support congestion control because a runtime can heuristically de-prioritize transactions that would write to an overly filled queue. Other performance concerns include incremental computing and effective support for mirroring.
+*Note:* In context of live coding or orthogonal persistence, application state should be stable across minor edits to code. Stability can be supported via careful attention to how private names are handled to avoid a scenario where insertions or deletions easily rename things. Major edits must be managed explicitly by the programmer.
 
-A relevant question is what declared state types glas applications should support to balance performance and simplicity in context of live coding, orthogonal persistence, and open systems. An initial proposal:
+## Orthogonal Persistence
 
-* variables - get/set, our normal state type. Alternatively, something closer to MVars where every variable has an implicit 'empty' option... but we could model that explicitly.
-* queues - read/write, fully ordered. A runtime can support *heuristic* pushback via deferring transactions that would write to an already 'full' queue.
-* bags (tuple spaces) - disordered, essentially a queue with implicit non-deterministic choice on read. Convenient for concurrent or distributed processing.
-* indexed collections thereof - An indexed collection of variables is essentially a key-value database. Operations on different indices won't conflict, and a runtime can dynamically distribute indexes between mirrors based on where things are used.
+Applications in glas systems should support *orthogonal persistence*, meaning we can bind an application to external state resources. There is also a relationship to mirroring and partitioning tolerance, which essentially involve binding multiple instances of an application concurrently to the same external resources.
 
-We can do anything with variables, thus other types are motivated primarily for performance reasons. Support for queues, bags, and indexed structure covers the use cases I've contemplated. There is room for additional types, such as counters or CRDTs, but they can wait for a strong motivating use case.
+Orthogonal persistence won't be supported directly by the glas runtime, or at least not initially. (We might revisit after de-facto standards are developed.) Instead, we might implement orthogonal persistence via staged computing or runtime reflection. Either mechanism can provide controlled access to an application's private state, enabling an adapter to implement orthogonal persistence. 
+
+Indirectly, runtime accelerated support for [binary globs](GlasObject.md) and memoization (so we don't need to validate full glob binaries every time) would be very convenient when implementing orthogonal persistence above a filesystem or network storage.
 
 ## Application Provided Interfaces
 
 This section describes some interfaces an application might be expected to provide.
-
-
-
 
 ### Background Processing
 
@@ -195,15 +194,6 @@ restart
 ### Publish Subscribe
 
 A step function can maintain data dependencies in the background. But it might be more convenient for composition and optimization to make data dependencies and published data directly visible in the API. The runtime could ask for current subscriptions, automatically signal updates, etc..
-
-### Shared State
-
-Applications could directly share some state resources, e.g. we might share resources that are in the RPC section by automatically exposing all methods to manipulate that state.
-
-## Application State
-
-Application state is modeled in terms of declaring special objects in the application namespace. 
-
 
 
 ## Effects API
