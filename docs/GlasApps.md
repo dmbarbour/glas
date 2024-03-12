@@ -84,14 +84,6 @@ With a little static analysis, and perhaps a few annotations describing assumpti
 
 Programmers can develop design patterns to manage known reentrancy. Introducing an intermediate queue is sufficient in many cases.
 
-## Regarding Location-Specific Resources
-
-Transaction loop applications can support graceful degradation and resilience in context of network partitioning. An application can be installed on multiple machines while configuring state to be mirrored. When the network is partitioned, operations that must communicate between partitions will fail, while those that can be evaluated locally to a partition can provide degraded service.
-
-However, to fully leverage this requires attention to the effects API. Relevantly, to ensure "the same" transaction is repeated at multiple locations, we'd need operations such as `file.open("foo.txt")` or `tcp.listen("192.168.1.10",8080)` to have the same 'meaning' on every mirror, i.e. opening the same file or listening on the same physical network card. This might be achieved by adding a parameter for which mirror is selected, e.g. a 'site' parameter, or implicit 'env' parameter containing a site field. 
-
-My current intention is to defer this development effort. It is feasible to design effects APIs around local applications then later develop a library of macros or mixins to adapt a distributed application into a local application per installed mirror. Doing so would essentially move the issue from the language runtime to library layer and allows for greater flexibility in how this is approached. 
-
 ## Authorization and Discovery of RPC
 
 Instead of applications directly referencing each other, I propose for authorization and discovery of RPC services to be mediated through shared registries. 
@@ -118,7 +110,7 @@ I propose to initially support only a few state types:
 
 * variables - get/set, our normal state type.
 * queues - read/write, fully ordered. Allows for a single reader and multiple writer transactions to operate in parallel. Allows for dataflow control via heuristic pushback, i.e. runtime can reject transactions that write to an already overly full queue.
-* bags (or tuple spaces) - read/write, disordered. Essentially a queue with non-deterministic choice on read. This allows for multiple concurrent readers and writers to evaluate in parallel, and supports partitioning tolerance insofar as readers in different partitions can continue processing writes from their own partitions. Does imply a non-deterministic choice effect, so might be restricted for some apps.
+* bags (or tuple spaces) - read/write, disordered. Essentially a queue with non-deterministic choice on read. This allows for multiple concurrent readers and writers to evaluate in parallel, and supports partitioning tolerance insofar as readers in different partitions can continue processing writes from their own partitions. Does imply a non-deterministic choice effect, so might be (typefully?) restricted in some cases.
 * indexed collections thereof - operations on different indices don't conflict, and state for different indices can potentially be distributed for performance or partitioning tolerance. 
 
 We can model queues or indexing in terms of variables. If we introduce non-deterministic choice, we can also model bags. Thus, built-in support for specialized types is motivated mostly for performance reasons: improved parallelism via controlling read-write conflicts, better incremental computing and reactivity, etc.. 
@@ -127,13 +119,13 @@ We might also insist that queues and bags cannot read their own writes within a 
 
 *Note:* In context of live coding or orthogonal persistence, application state should be stable across minor edits to code. Stability can be supported via careful attention to how private names are handled to avoid a scenario where insertions or deletions easily rename things. Major edits must be managed explicitly by the programmer.
 
-## Orthogonal Persistence
+## Orthogonal Persistence and Mirroring
 
-Applications in glas systems should support *orthogonal persistence*, meaning we can bind an application to external state resources. There is also a relationship to mirroring and partitioning tolerance, which essentially involve binding multiple instances of an application concurrently to the same external resources.
+Application state is expressed by declaring abstract, hierarchical namespace components that provide an interface (such as get and set methods for variables) that are normally provided by the runtime. The underlying state resource is abstracted. We can leverage staged computing to bypass 'privacy' of stateful components. It is feasible to bind state to external resources as a basis for orthogonal persistence or mirroring of applications. 
 
-Orthogonal persistence won't be supported directly by the glas runtime, or at least not initially. (We might revisit after de-facto standards are developed.) Instead, we might implement orthogonal persistence via staged computing or runtime reflection. Either mechanism can provide controlled access to an application's private state, enabling an adapter to implement orthogonal persistence. 
+However, it is inconvenient to directly use filesystem or network APIs. In particular, it is awkward to work with content-addressed stowage, accelerated representations, and incremental communication at the application layer (see [glas object](GlasObject.md)). It is much more convenient for the runtime to provide access to a key-value database as a standard effects API. Exact storage for the database should be configurable.
 
-Indirectly, runtime accelerated support for [binary globs](GlasObject.md) and memoization (so we don't need to validate full glob binaries every time) would be very convenient when implementing orthogonal persistence above a filesystem or network storage.
+After support for a key-value database is implemented, it shouldn't be too much more difficult to configure a runtime to bind application state to the database in some simple, predictable manner. This would reduce need for staged metaprogramming. Persistence might be indicated via application-specific configuration option. Or if the key-value database is distributed, this would provide a basis for mirrored applications.
 
 ## Application Provided Interfaces
 

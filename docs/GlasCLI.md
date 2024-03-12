@@ -68,6 +68,8 @@ Staged applications, indicated by 'run-mode-staged', support user-defined comman
 
 Staged applications essentially have the same interface as language modules, except input is the tokenized `["Description", "Of", "App"]` instead of a file binary. The compiled value must also have a type recognized as an application by 'glas --run'. The returned application is run with the list of arguments following an optional '--' separator. 
 
+*Note:* In this case, 'load' might also be able to access configuration parameters from the runtime configuration, perhaps via `load(config:Var)`.
+
 ### Binary Stream Processing Applications
 
 A binary stream processing application (BSP app), indicated by 'run-mode-bsp', will incrementally read from standard input and write to standard output. The main advantage of binary stream processing is that it's easily implemented and immediately useful, especially suitable for early development and bootstrap.
