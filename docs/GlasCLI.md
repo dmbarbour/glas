@@ -40,15 +40,17 @@ The profile will eventually support sections for logging, storage, app config, p
 
 ### Application Specific Configuration
 
-Some runtime options such as GC tuning or logging might vary across apps. To support this, I propose to define subconfigurations within the profile. These are labeled arbitrarily, e.g. 'server', 'game', 'myapp.mydomain.com'. Applications may define a 'runtime-config' method which specifies a sequence of subconfigurations to apply. A default configuration is applied first.
+Runtime features such as GC tuning, logging, and persistence may vary between apps. 
 
-This allows apps to tune runtime configurations based on their role or a unique application name, without knowing too much about the details. Though, it is feasible to extend 'runtime-config' to also support details.
+To support this, the profile will define labeled subconfigurations. An application can define 'config.class' to return a simple priority list such as `["myapp.mydomain.com", "server"]`. The runtime would prioritize the subconfiguration labeled 'myapp.mydomain.com' if it is defined, falling back to 'server' and then (implicitly) 'default'. 
+
+Selecting a configuration class is adequate for most use cases, but in some cases it's more convenient for the application to provide some details. To support this, we might eventually introduce 'config.gc', 'config.log', and other ad-hoc configuration attributes. These options may be developed as needed, subject to de-facto standardization. But everything should first be configurable via profile.
 
 ### Distribution Files? Defer.
 
-In context of glas, a distribution represents a set of named global modules that are maintained and versioned together. It is convenient to express large distributions in terms of inheriting from community or company distributions, adding popular patches and local overrides or new definitions. To support this pattern, distributions should support multiple inheritance and reference to DVCS repositories.
+In context of glas, a distribution represents a set of named global modules that are maintained and versioned together. It is convenient to express large distributions in terms of inheriting from community or company distributions, adding popular patches and local overrides or new definitions. To support this pattern, distributions should support multiple inheritance and reference to ".dist" files in remote DVCS repositories.
 
-Full support for distributions will be deferred at least until after glas CLI bootstrap is completed.
+However, this is complicated and I'm not in a hurry. Full support for distributions can be deferred until after glas CLI bootstrap is completed.
 
 ## Running Applications
 

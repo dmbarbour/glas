@@ -1,12 +1,12 @@
 # Glas Applications
 
-## Applications as Objects
+## Applications as Transactional Objects
 
-In glas systems, applications will be expressed as a [hierarchical namespace](ExtensibleNamespaces.md) that defines methods and declares state. This hierarchical, stateful namespace can effectively express a static composition of objects. Methods are evaluated within context of atomic, isolated transactions. 
+Instead of a 'main' procedure, the application loop is modeled by repeatedly calling a transactional 'step' method. This has many nice properties - see *Transaction Loops* below. In addition to that 'step' method, applications define other interfaces to support OS events, remote procedure calls (RPC), HTTP integration, debug views, and other ad-hoc features.
 
-The application will provide *interfaces* that are recognized by the runtime. For example, the application may provide methods to support a graphical user interface or HTTP CGI service integration. Whether the runtime immediately renders the GUI might be configurable via environment variables or glas profile. Background processing is supported by providing a 'step' method, which is repeatedly called by the runtime, forming a *transaction loop* with many nice properties.
+Application methods are always called in context of a transaction. Transactions simplify reasoning about failure, interruption, live coding, and open systems. With some lightweight naming conventions, applications might declare *transactional invariants*, predicates to be checked before committing a transaction. Distributed transactions are implicit in case of remote procedure calls, enabling robust interaction between applications.
 
-Conversely, the application namespace may declare and describe abstract methods representing an *effects API*. The runtime should recognize and provide these methods based on name and description. Descriptions may include type annotations and version numbers; the runtime should raise an error if these requirements cannot be met. To simplify reasoning about security and sandboxing, the runtime will only provide shallow interfaces, e.g. under `io.method`, while the application explicitly binds and propagates effectful resources into subcomponents.
+A subset of application methods are left abstract, to be provided by the runtime. These methods implement an application's *effects API*, supporting access to state and interaction with the host environment. This assumes an [extensible namespace model](ExtensibleNamespaces.md) to support abstract methods and late binding of definitions. Access to application state is ultimately provided effectfully. 
 
 ## Transaction Loops
 
@@ -36,21 +36,25 @@ In the transaction loop application model, systems are modeled by an open set of
 
 Transaction loops are very nice in theory, but the gap between idea and implementation is intimidating. Developing a 'sufficiently smart' optimizer, or a language that can simplify the relevant optimizations, will be the biggest challenge for transaction loop application model.
 
+## Application State
+
+Application state is ultimately bound to the host environment. Specifically, the glas runtime provides an effects API for a key-value database, and application state is mapped to this database. However, glas programming languages will help automate this mapping. In practice, programmers declare variables in the application namespace then the language compiler maps variables to unique, stable keys in the database.
+
+This binding provides an effective basis for orthogonal persistence and distribution. By default, perhaps only keys for variables declared under `io.shm.` are backed by a shared database, subject to runtime configuration. A database is potentially mirrored or distributed. Specialized types such as queues or bags can improve parallelism and partitioning tolerance.
+
+Of course, orthogonal persistence also requires attention to initialization, schema migration, and other aspects. Similarly, effective distribution requires attention to locality of effects and graceful degradation under partitioning. Binding application state to the environment is only one aspect.
+
 ## Transactional Remote Procedure Calls
 
-I propose remote procedure calls (RPC) within transactions as a primary basis for interaction between applications. Without RPC, applications can only interact asynchronously via standard mailbox per app or TCP sockets. With RPC, applications can model their own ad-hoc mailboxes by providing a suitable interface, and also can support many synchronous interactions. A transaction may involve multiple calls to multiple applications. 
+I propose remote procedure calls (RPC) with distributed transactions as a primary basis for interaction between applications. This isn't the only option: applications could interact asynchronously via shared state or network APIs. But RPC is a lot more convenient and can extend the features of *Transaction Loops* to distributed operations.
 
-Ideally, support for RPC should be consistent with *Applications as Objects*. An application might provide multiple variant RPC interfaces expressed as hierarchical component namespaces, perhaps indicated via naming convention (e.g. `rpc.instance.method`). State resources would implicitly publish associated accessor methods. Conversely, the application might declare RPC interfaces that should be provided by the runtime (perhaps as `io.rpc.api.method`). We shouldn't need first-class functions or objects for any of this.
+An application might provide multiple variant RPC interfaces expressed as hierarchical component namespaces, perhaps indicated via naming convention (e.g. `rpc.instance.method`). State resources would implicitly publish associated accessor methods. Conversely, the application might declare RPC interfaces that should be provided by the runtime (perhaps as `io.rpc.api.method`). We shouldn't need first-class functions or objects for any of this.
 
-There are known challenges for this integration. Let's consider them here.
-
-In general, there will be multiple instances of RPC interfaces in the environment. Multiple apps may publish the same interface. A single app may masquerade as several apps. Of course, there could also be zero instances, and the set may vary over time due to the nature of open systems. In general, RPC methods require an extra parameter to indicate which instance is called. RPC interfaces may also need some standard methods to support system discovery.
-
-In context of asynchronous interactions, we must reference remote resources over the course of several transactions. This requires a stable means of identifying the remote resources. An obvious solution is to use a stable identifier for remote instances. An intriguing alternative is to extend our RPC discovery APIs to support stable, asynchronous sessions similar to TCP connections. Advantages of sessions are that they can be cleanly 'broken' and can carry status information or ad-hoc metadata. 
+Multiple applications can easily publish the same interfaces, or a single application might publish more than one instance fo an interface. Every RPC call might take a reference parameter for which instance is called. Discovery of RPC instances might be supported via intermediate *registry*. Each RPC interface is published to or accessed through abstract registries, indicated by name and subject to runtime configuration. Registry names might represent fine-grained security roles or groups, i.e. such that some RPC methods are private to the 'user' while others are public.
 
 ## Ephemeral References
 
-Ephemeral values are valid only within the current transaction. For my vision of glas systems, I propose that APIs should favor ephemeral references especially for external resources.
+Abstract values are called *ephemeral* if they are valid only within the current transaction. For my vision of glas systems, I propose that APIs should favor ephemeral references to external resources. Although ephemeral values cannot be stored, they are subject to incremental computing and caching.
 
 Leveraging ephemeral references:
 
@@ -58,15 +62,13 @@ Leveraging ephemeral references:
 * Users can broadly assume that ephemeral references are connected and authorized for duration of the transaction, whereas persistent references (such as URLs) require an explicit connection step, returning an ephemeral reference. This simplifies reasoning about connectivity and security, and provides a clear boundary for redirection or revocation.
 * APIs can be designed to encourage or force applications to continuously discover available resources instead of one-off discovery. For example, return a list of ephemeral references instead of a list of URLs. Continuous discovery and integration of resources simplifies orthorgonal persistence, partitioning tolerance, and adaptivity of open systems.
 
-The cost of repeatedly reconstructing the same ephemeral reference can be mitigated by incremental computing, i.e. keep this step in the stable prefix of a repeating transaction. The under-the-hood representation of ephemeral references should be compatible with incremental computing. One viable representation is indices into a transaction-specific table.
-
-Anyhow, this is mostly an API design concern, albeit with a light touch of type system support. But it is related to many features I envision for glas systems.
+To support incremental computing, the actual representation of ephemeral references might involve indices into a transaction-specific table.
 
 ## Dynamic Objects
 
-Even without first-class objects, it is possible to model dynamic collections of objects in terms of indexed state. However, it is awkward to implement this indexing manually, especially in context of private state. To mitigate this, we could provide language support for indexed state, e.g. logically rewrite a namespace to an array type.
+Binding application state to an external key-value database is inconvenient for highly dynamic applications, but there are solutions involving indexed state and allocation of keys. The main issue is that this can be awkward to implement manually. Language support might be required, e.g. to rewrite an application namespace to support multiple instances.
 
-With just a little more language support, we could abstract dispatch and where an object is represented within the namespace, allow for reference types based on common interfaces. This allows something similar to first-class objects, but this pattern requires *ephemeral references* to avoid interfering with my glas system design goals.
+With a little more language support, we could further abstract dispatch and where an object is represented within a namespace. This would give us something very close to first-class objects, and should involve *ephemeral references*. 
 
 ## Concurrency within Transactions? Defer.
 
@@ -103,29 +105,6 @@ We can render debug views of the runtime system, including aborted transactions.
 This is a viable basis for user interfaces that enables users to akwardly participate within transactions. Some 'questions' may be graphical. There is an opportunity to script answers to cover a range of similar questions. 
 
 I'm intrigued by the possibilities for rendering 'outcomes' of user choices without committing to them. But I'm not convinced this is the right option for modeling user interaction in most cases.
-
-## Application State
-
-I propose to initially support only a few state types:
-
-* variables - get/set, our normal state type.
-* queues - read/write, fully ordered. Allows for a single reader and multiple writer transactions to operate in parallel. Allows for dataflow control via heuristic pushback, i.e. runtime can reject transactions that write to an already overly full queue.
-* bags (or tuple spaces) - read/write, disordered. Essentially a queue with non-deterministic choice on read. This allows for multiple concurrent readers and writers to evaluate in parallel, and supports partitioning tolerance insofar as readers in different partitions can continue processing writes from their own partitions. Does imply a non-deterministic choice effect, so might be (typefully?) restricted in some cases.
-* indexed collections thereof - operations on different indices don't conflict, and state for different indices can potentially be distributed for performance or partitioning tolerance. 
-
-We can model queues or indexing in terms of variables. If we introduce non-deterministic choice, we can also model bags. Thus, built-in support for specialized types is motivated mostly for performance reasons: improved parallelism via controlling read-write conflicts, better incremental computing and reactivity, etc.. 
-
-We might also insist that queues and bags cannot read their own writes within a transaction. This simplifies buffering of queues in distributed computations, and allows non-local non-deterministic choice for bags (i.e. logically we have some intermediate process permuting things between transaction attempts).
-
-*Note:* In context of live coding or orthogonal persistence, application state should be stable across minor edits to code. Stability can be supported via careful attention to how private names are handled to avoid a scenario where insertions or deletions easily rename things. Major edits must be managed explicitly by the programmer.
-
-## Orthogonal Persistence and Mirroring
-
-Application state is expressed by declaring abstract, hierarchical namespace components that provide an interface (such as get and set methods for variables) that are normally provided by the runtime. The underlying state resource is abstracted. We can leverage staged computing to bypass 'privacy' of stateful components. It is feasible to bind state to external resources as a basis for orthogonal persistence or mirroring of applications. 
-
-However, it is inconvenient to directly use filesystem or network APIs. In particular, it is awkward to work with content-addressed stowage, accelerated representations, and incremental communication at the application layer (see [glas object](GlasObject.md)). It is much more convenient for the runtime to provide access to a key-value database as a standard effects API. Exact storage for the database should be configurable.
-
-After support for a key-value database is implemented, it shouldn't be too much more difficult to configure a runtime to bind application state to the database in some simple, predictable manner. This would reduce need for staged metaprogramming. Persistence might be indicated via application-specific configuration option. Or if the key-value database is distributed, this would provide a basis for mirrored applications.
 
 ## Application Provided Interfaces
 
