@@ -31,6 +31,17 @@ Stability of private definitions is desirable in context of declared state and l
 
 Anyhow, this feature can be left mostly to the language definitions and conventions. No need for special support from the namespace model.
 
+## Final or Frozen Definitions?
+
+I'm not too interested in 'final' definitions that cannot be updated by the client. Public names in the namespace are points of change. But, indirectly, I think we could support something similar to final definitions via assertions. 
+
+It is feasible to 'freeze' names via something like:
+
+        rename foo to ~foo  (to prevent changes)
+        define foo to ~foo  (for future clients)
+
+This would prevent future changes to 'foo' from affecting existing clients of 'foo' within the subprogram. 
+
 ## Multiple Inheritance
 
 We can support namespaces deriving from multiple sources. However, there is a risk of ambiguity or conflict when the same name is inherited from two sources. To mitigate this, we might allow namespace definitions to indicate assumptions about whether certain prefixes (generally including full symbols) are already in use or not. We can easily detect whether such assumptions are violated without peering into definition details. 

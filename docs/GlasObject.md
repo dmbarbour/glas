@@ -79,22 +79,26 @@ See *Encoding Finger Tree Ropes* for a pattern to leverage concat effectively. O
 
 ### External References
 
-Glas Object supports internal references within a glob file, and external references between glob files.
+External references are primarily for references between globs.
 
-* *external ref* - header (0x02) followed by a value. This value must be contextually recognized as referencing another value. The reference is logically substituted by the referent.
+* *external ref* - header (0x02) followed by a reference value. A reference value must be recognized as representing another value in context. We can logically substitute the external reference with the referenced value.
 
-I know of at least two relevant 'contexts' for external references: content-addressed storage for stowage and content-delivery networks, and the glas module system in the likely event users begin using ".glob" file extension as a module type..
-
-References in context of content-addressed storage:
+Reference values in context of content-addressed storage:
 * *glob:SecureHash* - reference to content-addressed glob. SecureHash is usually a 64-byte binary representing the SHA3-512 of an external binary. 
 * *bin:SecureHash* - reference to content-addressed binary data. Same SecureHash as for globs, but the referent is loaded as a binary instead of parsed as a glob.
 
-References in context of glas module system:
+External references generalize as a *contextual extension* mechanism for glas object. For example, we could use external references to support globs in context of the module system, or globs in context of streaming incremental data:
+
+Reference values in context of glas module system:
 * *local:ModuleName* - value of local module
 * *global:ModuleName* - value of global module
-* *eval:prog:(do:Program, ...)* - Program must have arity 0--1 and may use 'log' and 'load' effects. This supports procedural generation, static assertions, and handling of 'load' failure.
+* *eval:Program* - a program to be interpreted by the language module compiler, limited to 'log' and 'load' effects.
 
-Content-addressed storage should not use full eval due to denial-of-service risks, but can still leverage *Accessors* and *Templates* for flexible sharing.
+Reference values in context of streaming incremental data:
+* *var:Nat* - value to be provided later in stream, integer may be recycled after provision
+* *glob* or *bin* - content-addressed storage via associated content distribution network (CDN)
+
+External references are the easiest extension hook for glas object. Experimental runtime-specific extensions might be introduced as reference values, eventually become de-facto standard extensions, then even later be standardized as a one-byte header if there is sufficient motivation.
 
 ### Internal References 
 
@@ -135,7 +139,7 @@ In normal form, varnats use the smallest number of bytes to encode a value. It i
 
 ## Summary of Node Headers
 
-        0x00        Void (never used)
+        0x00        (never used)
         0x01        Annotation
         0x02        External Ref
 
@@ -150,7 +154,7 @@ In normal form, varnats use the smallest number of bytes to encode a value. It i
         0x60-0x7F   Stem-Branch and Branch (0x68)
         0x80-0x9F   Index Path and Internal Ref (0x88)
 
-        PROPOSED EXTENSIONS (see below):
+        PROPOSED TEMPLATE EXTENSION (see below):
 
         0x03        Var
         0x04        App
@@ -217,21 +221,23 @@ It is feasible to extend glas object with some instructions to perform some simp
 
 Whether this is worthwhile in practice would depend on whether glas systems favor the structured view of the matrix, and how much of a hassle converting to binary for serialization and stowage proves to be in practice. No need to bother if we just directly use the binary view as inputs to accelerators and storage in program state.
 
-### Partial Data and Templates (Proposed Extension)
+### Unordered Data Types (Eventual Extensions)
+
+Support for sets, bags, and graphs have potential to be widely useful. However, this should wait until we have runtime acceleration for the same features. 
+
+### Templates (Proposed Extension)
 
 Glas Object is readily extended to model partial data by introducing labeled variables within data. This is useful insofar as it enables sharing of templates - stable tree roots with variable leaf elements. Viable extension:
 
 * *var* - header (0x03) . (varnat) - represents a variable or unknown, labeled by a natural number.
 * *app* - header (0x04) . (template offset) . (varnat K) . (array of args) - substitute sequentially labeled variables (var K, var K+1, etc.) with corresponding arguments from array. 
 
-This isn't a full lambda calculus, i.e. the parameters to 'app' cannot be deferred or abstracted contextually. Evaluation is local. Termination is guaranteed. The resulting 'app' could feasibly be indexed as a value with just a little extra context.
-
-But I'm not convinced this feature is useful in practice. The added complexity isn't trivial. A runtime would need significant hints for when and where to use templates. Aside from contrived circumstances, I suspect it will be difficult to achieve significant benefits.
+This isn't a full lambda calculus. Relevantly, the template parameter is not abstracted. Evaluation is local, and termination is guaranteed. It is feasible to lazily or incrementally index data under application. However, I'm not convinced that this feature is worth the complexity tradeoff. 
 
 ### LSM-Tree Extensions (Unlikely)
 
 Currently glob doesn't offer a way to express: this tree, except with some insertions or deletions. Such a feature wouldn't be worth much within a glob, but (like path accessors) it could be useful at external reference boundaries, supporting [log-structured merge (LSM) trees](https://en.wikipedia.org/wiki/Log-structured_merge-tree) at the glob layer.
 
-This is not difficult to support. But it significantly increases cost and complexity of reads, and also it's much less useful than the current approach (i.e. path accessors) if programs tend to build values in small steps (instead of inserting large bitstrings). Further, if users truly require LSM-tree performance, they can model one directly (i.e. pair base tree with a diff, stow the base tree).
+This is not difficult to support. But it significantly increases cost and complexity of reads, and it's difficult to leverage in contexts where programs operate on shallow data instead of deep path accessors. Further, if users require LSM-tree performance and don't require that it's observably a flat tree, they can model the LSM tree explicitly.
 
-I'll elide this feature for now. It might be worth revisiting in the future depending on use.
+I'll elide this feature for now. It might be worth revisiting in the future, but we can first try it as an external reference extension first.

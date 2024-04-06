@@ -65,9 +65,11 @@ Other than bitstrings, sequential structure is usually encoded as a list. A list
          2 /\
           3  ()  
 
-Binary data is represented as a list of small integers (0..255). Direct representation of lists is inefficient for many use-cases, such as random access or double-ended queues or binaries. To enable lists to serve most sequential data roles, lists will often be represented using [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_%28data_structure%29). This involves extending the earlier 'Node' type with array and compact binary fragments and logical concatenation, then providing built-in operators or accelerated functions to slice or append lists.
+Binary data is represented as a list of small integers (0..255). Direct representation of lists is inefficient for many use-cases, such as random access or double-ended queues or binaries. To enable lists to serve most sequential data roles, lists will often be represented using [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_%28data_structure%29). This involves extending the earlier 'Node' type with logical concatenation and array or binary fragments, then relying on accelerated operations to slice, append, and index lists.
 
-To support larger-than-memory data, glas systems may leverage content-addressed storage to offload volumes of data to disk. I call this pattern *Stowage*. Stowage would generally be transparent, but guided by program annotations and potentially visible via reflection APIs. Stowage simplifies memoization, communication, and persistent storage of large structures.
+To support unordered data types - such as finite sets, bags, or graphs - we must define a canonical representation as a binary tree. For example, a finite set can be modeled as a trie where every bitstring is a prefix-unique encoding of a binary tree. It doesn't need to be an efficient canonical representation because we'll avoid constructing this representation at runtime, instead relying on accelerated operations to construct or query the set and typeful abstraction to resist accidents.
+
+To support larger-than-memory data, glas systems may leverage content-addressed storage to offload volumes of data to disk. I call this pattern *Stowage*. Stowage would generally be transparent, but guided by program annotations and potentially visible via reflection APIs. Stowage simplifies memoization, communication, and persistent storage of large structures. The proposed representation is [glas object (glob)](GlasObject.md) binaries. 
 
 ## Applications and Programs
 
