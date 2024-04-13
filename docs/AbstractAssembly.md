@@ -4,25 +4,26 @@ Assume programs are defined in an [extensible namespace](ExtensibleNamespaces.md
 
 This document proposes a one-size-fits-all intermediate language. Candidate structure: 
 
-        type AST  = Type Expr*
-        and  Expr = Name | Data | AST
+        type AST  = Constructor Expr*
+        and  Expr = Name | Data | ( AST )
 
-This probably feels familiar to Lisp or Scheme programmers. I'll probably tweak this to also support keyword arguments. Anyhow, of greater concern is how we represent AST node Type. There are effectively two relevant options:
+When compiling methods, the compiler will represent abstract AST nodes as function calls to abstract AST constructors such as 'ast.addi' or 'ast.cond'. These methods are eventually provided by the runtime or a later-stage compiler. The AST node type will usually remain abstract.
 
-* Type is glas data, probably a symbol or string. 
-* Type is a name, an abstract constructor, subject to access control, overrides, and renames through the namespace layer.
+A programmer may restrict or override AST constructors available to a subprogram. It is feasible to construct AST nodes programmatically to support staged metaprogramming or dynamic eval. It is possible to implement adapters to alternative ASTs. However, many optimizations must be deferred.
 
-I propose to represent AST node type as a name. The user-defined language compiler will produce definitions referring to 'ast.addi' and 'ast.cond' and similar. Or perhaps '%addi' and '%cond' to save a few bytes and discourage direct use of these names in the user syntax. 
+This structure probably feels familiar to Lisp or Scheme programmers. It is simple and sufficient. This does require restricting the 'type' of AST constructors, i.e. they are limited to positional parameters of just a few types, the return type must also be an AST node, and side-effects may be restricted. But the benefit is simplified representation.
 
-This use of names provides many benefits. A later-stage compiler can directly perform local error analysis, peephole optimizations, and cache compilation as the AST nodes are constructed. Metaprogramming is more accessible. Users can define adapter layers for software components or DSLs that target alternative intermediate languages. The namespace can be leveraged to control a subprogram's access to troublesome operations, such as a non-deterministic 'ast.amb'.
+*Aside:* If a large AST node would be copied many times, this can be mitigated by structure sharing or by separating that AST node into a private constructor. In any case, it isn't significant problem.
 
-The cost of this design is that many optimizations are not accessible to incremental compilation, and we might need to typecheck user-defined AST constructors to control use of side-effects, and glas languages will need to handle threading of 'ast' methods into hierarchical application components. 
+## Staged Arguments
 
-## AST args vs Function args
+I use 'ast.cond' as an example of a higher-order AST node. Its arguments are ASTs representing the condition and contingent behavior. When called, the return value is an AST that represents the composite conditional expression. In contrast, the second function parameter might be referenced as `(ast.arg 2)`. 
 
-I've used 'ast.cond' type as an example of a higher-order operation. Its arguments are ASTs, and when called as a function it returns an AST that composes its arguments to abstractly represent a conditional behavior. This is an entirely different layer from using `(ast.arg 2)` to refer to the second argument of a function call at runtime. 
+Essentially, arguments to AST operators represent static parameters, while dynamic parameters are always represented via AST nodes that reference the environment. Boundaries blur a bit in context of dynamic eval, but this stage separation should still be kept in mind.
 
-Essentially, any arguments to AST operators are static similar to macro or template arguments. These arguments are provided by a compiler. We can use static AST nodes to reference runtime arguments. This can get a little confusing in context of dynamic eval, but each AST node is staged.
+## Data Arguments
+
+It is feasible to represent data by constructing a program that will reconstruct that data. However, it's much more convenient to just support data arguments. The latter integrates nicely with content addressed storage and access to 'data' modules.
 
 ## Metaprogramming
 
@@ -64,15 +65,9 @@ The primary feature of a namespace is that definitions are late bound. Although 
 
 ## Notes on Adapters
 
-Assume a subprogram is written in a DSL with a specialized AST, such as a language for regular expressions or matrix manipulations. This must be adapted to the host language.
+Assume a subprogram is written in a DSL with a specialized AST, such as a language for regular expressions or matrix manipulations. This must be adapted to the host language. 
 
-To support intermediate optimizations, e.g. to optimize a sequence of matrix multiplications based on matrix sizes, or to merge common prefixes for regular expressions, we must first introduce an intermediate representation of the DSL AST then compile this to the host AST later.
+A direct solution can translate every individual operation in the DSL to a series of operations in the host language. However, this will miss out on potential optimizations, such as reordering the sequence of matrix multiplications based on matrix sizes, or merging common prefixes for regular expressions. 
 
-The extra step of compiling to the host AST seems awkward to express manually. It is feasible to add some indirection when calling methods of the component DSL, add the optimization pass as a static eval at the call site. 
-
-To systematically wrap every method with an optimization may benefit from a namespace-layer operation.
-
-## Embedded Data
-
-Most intermediate languages for glas systems should include nodes that take glas data and (if needed) validate and translate it for use in the intermediate language. The ability to directly represent data in the AST simplifies integration with content addressed storage and data modules (simple compared to using AST nodes to construct data).
+If we want to maximize opportunities for optimization, we'll need to construct the full DSL program before adapting it to the client. This would require an extra step. We could manually override each method to apply the final optimization. With some language support, it might be feasible to apply the same override to every method in a namespace or interface.
 
