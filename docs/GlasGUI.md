@@ -33,13 +33,15 @@ A proposed application gui interface:
 
         gui : UserAgent -> ()
 
-Here, UserAgent is an abstract, ephemeral RPC object. As an RPC object, this should be subject to code distribution: in case of networked operation, some code fragments from the user may evaluate on the server and vice versa to reduce network overheads. The UserAgent provides methods to access information about the display environment, to read and modify user state, and to render text, graphics, and other media. *Note:* A URL or query string would be modeled as user state. 
+Here, UserAgent is an abstract, ephemeral RPC object that provides methods to render content. This allows for partial rendering even in case of a failed transaction. In addition to rendering, the UserAgent provides access user state and information about the display environment (window size, support for multi-media, etc.). A URL or query string would be modeled as user state. The application gui may discriminate on which interfaces UserAgent implements.
 
-An application can discriminate on which interfaces the UserAgent implements, and on observed user state. This allows for both extensions and restrictions. Different UserAgent APIs can support different use cases and contexts.
+One motive for this design is to support fine-grained code distribution. In case of networked operations, fragments of 'gui' might evaluate user-side, and parts of 'UserAgent' might evaluate application side, using fine-grained calls to subprograms.
 
 ## Rendering Temporal Media
 
-It is semantically awkward to directly 'play' a sound within a transaction loop, especially in context of aborted transactions. But indirectly, we could 'render' a sound spatially (e.g. as a graph), 'play' a sound graph via tooling (to help the user understand it), and allow the application to manipulate tools through a UserAgent. This separation would allow users to access the sound before commit and within the stable prefix of a transaction loop.
+It is semantically awkward to directly ask a UserAgent to 'play' music or other temporal media in context of repeating or aborted transactions. However, we could ask the UserAgent to 'render' a sound graph. Similarly, we could render a video as a deck of cards or list of frames, or just a box with an initial image and a play button. 
+
+Indirectly, the video could be associated with some user state or tooling that indicates whether the video is playing, and that state could potentially be manipulated through the UserAgent. 
 
 ## Forked GUI
 

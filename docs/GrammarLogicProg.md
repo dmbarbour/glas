@@ -1,8 +1,10 @@
 # Procedural Programming with Grammars and Logic
 
-Grammar and logic programs have similar semantics. The 'direction' of evaluation is flexible, i.e. the same program can flexibly *accept* or *generate* values. Interactive computation is based on [logic unification](https://en.wikipedia.org/wiki/Unification_(computer_science)#Application:_unification_in_logic_programming) of shared variables, where each component program is responsible for accepting or generating different parts of the value.
+Grammar and logic programs have similar semantics. 
 
-With logic programming we have `Proposition :- Derivation`. With grammar programming, the equivalent is possible via guarded patterns, i.e. `Pattern when Guard`. Similarly, logical negation might use `Pattern unless Guard`. Usually, variables are shared between pattern and guard or between proposition and derivation.
+The 'direction' of evaluation is flexible, i.e. the same program can flexibly *accept* or *generate* values. Interactive computation is based on [logic unification](https://en.wikipedia.org/wiki/Unification_(computer_science)#Application:_unification_in_logic_programming) of shared variables, where each component program is responsible for accepting or generating different parts of the value.
+
+With logic programming we have `Proposition :- Derivation`. With grammar programming, the equivalent is possible via guarded patterns, i.e. `Pattern when Guard`. Similarly, logical negation might use `Pattern unless Guard`. Variables can be shared between proposition and derivation, or between pattern and guard.
 
 A function can be modeled as a grammar or logic program that accepts and generates a set of `(args, result)` pairs, and ensures structurally or typefully that results are deterministic given args. In context of grammar and logic programming, we can evaluate functions non-deterministically backwards from results to args, or with partial args where any unspecified variable represents non-deterministic choice. 
 
@@ -46,13 +48,7 @@ Ordered choice imposes an order - least to most specific - when defining pattern
         foo = Specialization -> Outcome
             | prior foo
 
-If we try to override in another order, 
-
-
-Unfortunately, I don't have a good idea for factoring out the `C2 -> X | C3 -> Y` subprogram into a separate function, other than to factor the conditions and results independently, or to limit such factoring to that Z position where it doesn't matter why we failed.
-
-
-
+It might be feasible to support multi-method like overrides if we can identify which patterns are more 'specific'. This might require reifying the pattern match construct. Unfortunately, I don't have a good idea for this composition at present. 
 
 ### Non-Deterministic Choice
 
@@ -197,5 +193,15 @@ Definitions within a grammar-logic module would include grammars of various form
 The module layer compiles grammars to an AST or intermediate language. A lot of processing is still needed: partial evaluation, verification of assertions, analysis of types, translation to machine code and accelerated representations, compression of similar definitions, and so on. Ideally, all of these steps are 'incremental' in context of persistent memoization tables, such that a change to a source file rarely requires rebuilding an entire application. But how do we design for incremental compilation?
 
 Identifying 'cliques' - subsets of mutually recursive definitions - is likely an important part of incremental compilation. Additionally, we might need to rely on secure-hash content addressing instead of allocation of anonymous namespaces. 
+
+### Procedural and Multi-Process Programming
+
+I propose to develop a procedural sublanguage that compiles into a state machine for use within a transaction loop. This allows for more comfortable use of filesystem and network APIs, in particular for synchronous request-response interactions outside of a transaction.
+
+With a few tweaks and conventions, this might extend to multi-process programs, using 'fork' to choose between subprocesses performing different subtasks or threads.
+
+### Avoid Primitives?
+
+It is feasible to model all language primitives as binding various names from the namespace. This requires support for higher-order program expression. It might be feasible to express this as a combinatory logic, without naming parameters or explicitly describing the environment.
 
 

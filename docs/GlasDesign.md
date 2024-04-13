@@ -43,6 +43,8 @@ To efficiently represent labeled data, non-branching paths are compactly encoded
 
 It is feasible to could further extend Node with specialized variants to support efficient binary data, list processing, records as structs instead of radix trees, etc.. The above offers a reasonable starting point, but the intention is that data in practice should be represented much more efficiently than the naive encoding of binary trees.
 
+### Integers
+
 Integers in glas systems are encoded as variable length bitstrings, msb to lsb, with negatives in one's complement:
 
         Integer  Bitstring
@@ -56,7 +58,9 @@ Integers in glas systems are encoded as variable length bitstrings, msb to lsb, 
         -3        00
         -4       011
 
-Other than bitstrings, sequential structure is usually encoded as a list. A list is represented as a binary tree where the left nodes are elements and the right nodes form the spine of the tree, terminating with a leaf node.
+### Lists        
+
+Sequential structure is usually encoded as a list. A list is represented as a binary tree where the left nodes are elements and the right nodes form the spine of the tree, terminating with a leaf node.
 
         type List a = (a * List a) | () 
 
@@ -65,11 +69,15 @@ Other than bitstrings, sequential structure is usually encoded as a list. A list
          2 /\
           3  ()  
 
-Binary data is represented as a list of small integers (0..255). Direct representation of lists is inefficient for many use-cases, such as random access or double-ended queues or binaries. To enable lists to serve most sequential data roles, lists will often be represented using [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_%28data_structure%29). This involves extending the earlier 'Node' type with logical concatenation and array or binary fragments, then relying on accelerated operations to slice, append, and index lists.
+Direct representation of lists is inefficient for many use-cases, such as random access or double-ended queues or binaries. Binary data is represented as a list of small integers (0..255). To enable lists to serve most sequential data roles, lists will often be represented using [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_%28data_structure%29). This involves extending the earlier 'Node' type with logical concatenation and array or binary fragments. Then we rely on a few built-ins or accelerated functions to slice, append, and index lists.
+
+### Unordered Collections
 
 To support unordered data types - such as finite sets, bags, or graphs - we must define a canonical representation as a binary tree. For example, a finite set can be modeled as a trie where every bitstring is a prefix-unique encoding of a binary tree. It doesn't need to be an efficient canonical representation because we'll avoid constructing this representation at runtime, instead relying on accelerated operations to construct or query the set and typeful abstraction to resist accidents.
 
-To support larger-than-memory data, glas systems may leverage content-addressed storage to offload volumes of data to disk. I call this pattern *Stowage*. Stowage would generally be transparent, but guided by program annotations and potentially visible via reflection APIs. Stowage simplifies memoization, communication, and persistent storage of large structures. The proposed representation is [glas object (glob)](GlasObject.md) binaries. 
+### Large Values
+
+To support larger-than-memory data, glas systems may leverage content-addressed storage to offload subtrees to disk. This optimization is transparent to most functions, but can be guided by program annotations and is potentially visible through a reflection API. Content-addressed references simplify memoization, communication, and persistent storage of large structures. The proposed representation is [glas object (glob)](GlasObject.md) binaries. 
 
 ## Applications and Programs
 
@@ -88,14 +96,17 @@ I'm still exploring how to express methods. Procedural expression of behavior is
 
 ## Language Modules
 
-Language modules follow a simple naming convention: the global module 'language-xyz' is responsible for describing how to compile files with extension ".xyz". The compiler application provides `compile : SourceCode -> ModuleValue`, representing compilation as a single step. The compiler application has limited access to effects, such as loading data from the module system, and logging warning or errors messages:
+Language modules follow a simple naming convention: the global module 'language-xyz' is responsible for describing how to compile files with extension ".xyz". The compiler application provides `compile : SourceCode -> ModuleValue`, representing compilation as a single transactional step. 
 
-* *load(ModuleRef)* - request the runtime to provide the compiled value from another module. ModuleRef:
-  * *global:String* - a global module, i.e. based on a configured search path
-  * *local:String* - a local module, i.e. same folder as file being compiled
-* *log(Message)* - ad-hoc write messages mostly intended for the human developer
+To ensure a deterministic, reproducible outcome and support predictable refactoring, the compiler has limited access to effects. Available effects:
 
-In case of cyclic dependencies, load logically diverges (infinite loop), but in practice the glas system should recognize and report the problem to the developer. Load failures due to missing modules or modules that failed to compile without divergence may be observed during compilation via pass/fail, but the exact cause of error is not observed.
+* load compiled module values from module system
+* log outputs for a human observer
+
+Modules dependencies must be acyclic. In case of dependency cycle, load diverges and an error is reported. Load will also diverge if a remote module cannot be downloaded. In most other cases, we can deterministically observe load failures.
+
+
+
 
 Languages benefit from associated tools such as REPLs, linters, syntax highlighting, intellisense, decompilers, [language server protocol](https://en.wikipedia.org/wiki/Language_Server_Protocol), interactive tutorials, etc.. I assume these would be defined using separate apps that import or reuse code developed for language modules, perhaps with similar naming conventions.
 

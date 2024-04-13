@@ -12,31 +12,35 @@ I propose to centralize runtime provided interfaces under hierarchical namespace
 
 ## Transaction Loops
 
-In the transaction loop application model, systems are modeled by an open set of atomic, isolated, repeating transactions operating in an environment. This has many nice systemic properties, contingent on a sufficiently powerful optimizer:
+In the transaction loop application model, systems are modeled by an open set of atomic, isolated, repeating transactions operating in an environment. This has many nice systemic properties, contingent on applications are expressed and a sufficiently powerful optimizer:
 
 * *Parallelism.* Multiple transactions can be opportunistically evaluated in parallel. A subset of transactions (those with no read-write conflicts) can be committed in parallel. In context of repeating transactions, the system can heuristically schedule transactions to avoid conflicts. Programmers can also mitigate conflict, e.g. by introducing intermediate queues. *Note:* Depending on language, there may be opportunities for parallelism within transactions, too.
 
-* *Concurrency.* Intriguingly, repetition and replication are equivalent for isolated transactions. A transaction that makes a fair non-deterministic binary choice can be modeled as a pair of transactions that each deterministically select a different choice. If there is no conflict, they can both commit. Thus, leveraging a simple 'fork' effect, a single transaction loop can represent the entire open, dynamic set of transactions, each performing a different subtask.
+* *Concurrency.* Repetition and replication are equivalent for isolated transactions. A transaction that makes a fair non-deterministic binary choice can be modeled as a pair of transactions that each deterministically select a different choice. These transactions can evaluate in parallel. 
 
-* *Reactivity.* The system can recognize obviously unproductive transactions, such as failed transactions or those that repeatedly write the same values to variables. Instead of warming the CPU with unproductive recomputation, the system can arrange to wait for relevant changes before rescheduling.
+* *Incremental Computing.* A repeated transaction will often repeat many computations. Instead of recomputing everything, we can cache a stable prefix and only recompute from the point where inputs change. Combined with *concurrency*, a stable non-deterministic choice effectively becomes a separate thead.
 
-* *Incremental Computing.* We don't need to recompute every transaction from the start. When a transaction starts with a stable prefix, the system can heuristically cache the partially evaluated transaction. This cached computation can serve as a checkpoint for further evaluation. This combines nicely with concurrency when a non-deterministic choice is stable.
-
-* *Consistency.* It isn't difficult to express transactional invariants as assertions that must pass before a transaction is committed. Any transaction that would break these invariants can instead be aborted.
+* *Reactivity.* The system can recognize obviously unproductive transactions, such as repeating an aborted transaction, a read-only transaction, or a transaction that will write the same values to the same variables. Instead of warming the CPU, the system can set triggers and wait for a relevant change. Reactive applications can be designed to leverage this optimization.
 
 * *Live Coding.* Transaction loops provide a natural opportunity to update code between transactions. Further, they provide an opportunity to test proposed code changes within a transaction, without committing to anything. However, language and IDE support are necessary to provide a smooth transition, especially in case of schema update.
 
 * *Persistent.* Application state can be transparently backed by a persistent filesystem or network resources, allowing for the application to maintain stable behavior over multiple power cycles. Of course, this isn't perfectly transparent; the application must ultimately be designed to handle long 'sleeps'. 
 
-* *Distributed.* Intriguingly, running multiple instances of the same transaction loop is idempotent. If we run the same transaction loop on multiple remote nodes, they'll continue to provide degraded service when the network is partitioned, then recover resiliently when connectivity is restored. To support this, application state might be backed by a distributed database with a few partitioning tolerance features such as mirroring or buffering. Distributed transactions would be used minimally, only as needed.
+* *Consistent.* Transactions simplify the problem of enforcing consistency. Assumptions about application or system state can be checked before we commit to a transaction that might break them. Checks may be evaluated using a hierarchical transaction that we later abort. 
 
-* *Interactive.* An application can potentially participate in multiple transaction loops. The application's main loop is represented by a 'step' method, but other loops may be implicit via RPC or GUI bindings.  The different loops will interact asynchronously through application state.
+* *Distributed.* Repetition and replication are equivalent for isolated transactions. We can semi-transparently mirror a transaction loop application across multiple nodes, leveraging a distributed database and pubsub RPC. In case of network disruption, each mirror can provide degraded service using only resources within its own partition, then recover resiliently when connectivity is restored. 
 
-* *Real-time.* A transaction can observe current time and abort if the transaction runs too early. In context of a repeating transaction, this effectively models 'wait' for a timestamp. A runtime could easily optimize this wait. Intriguingly, it is feasible to evaluate such transactions ahead of time and hold them ready to commit when the time comes. Full *hard* real-time would require some guarantees about scheduling and how much work is performed, but transaction loops support *soft* real-time very easily.
+* *Congestion Control.* A system can heuristically adjust frequency of transactions that read and write buffers (such as queues or bags) based on how full or empty are the buffers. This would help balance asynchronous producer-consumer interactions. I wouldn't recommend depending entirely on heuristics, but this can easily supplement more explicit controls.
 
-* *Search.* Operating within transactions makes it easier to explore multiple possibilities without committing to anything, e.g. adjusting tuning or calibration variables. This could feasibly be leveraged in combination with RPC to support distributed constraint systems.
+* *Interaction.* Applications can interact within a distributed transaction, perhaps based on remote procedure calls (RPC). In addition to the 'step' method for background processing, RPC calls may also be repeated, extending the benefits of transaction loops across application boundaries.
 
-There are also some known weaknesses for this model. The biggest one, IMO, is that many difficult optimizations are needed for transaction loops to perform competitively with conventional application models. Another is that conventional multi-step procedural operations will be awkwardly expressed as state machines to run over multiple transactions.
+* *Real-time.* A transaction can abort if it runs too early. A repeating transaction can abort repeatedly, waiting on the clock. This is easily optimized for incremental computing and reactivity. Further, the system can easily precompute the transaction for a future time, and hold it ready to commit. Assuming adequate control of scheduling and resource use, this can support real-time systems.
+
+* *Auto-tune.* An application may read some parameters representing external tuning or calibration. A system could automatically adjust these parameters to improve a fitness heuristic. With transactions, it is feasible to observe how fitness is influenced by proposed parameters without committing to anything. In context of a transaction loop, tuning may easily continue as the application runs.
+
+* *Loop Fusion.* In some cases it is possible to optimize a repeating sequence of transactions further than the individual transactions. With JIT, such optimizations potentially cross application boundaries. Can be guided by fused transaction invariants, e.g. 'fusion queues' must be empty only upon final commit. 
+
+To fully leverage transaction loops requires many non-trivial optimizations. However, even without those optimizations, it is feasible to compile procedures or multi-process programs into state machines for evaluation across multiple transactional steps. This can be efficient with just a little caching and acceleration, and provides a robust semantics for how procedures interact in a concurrent system.
 
 ## Ephemeral Types
 
@@ -72,13 +76,13 @@ Code distribution, caching, parallelism, and stowage should be guided by annotat
 
 ## Application State
 
-Standard glas applications will provide access to a key-value database. Because state is a common requirement, glas languages should provide syntax to conveniently bind state to the external database. For example, we might declare variables within hierarchical application components. Depending on convention and configuration, different volumes of the database might be shared, persistent, or even distributed and mirrored, similar to memory-mapped IO. 
+The glas runtime will provide a hierarchical key-value database for application state. A programming language for glas systems should make it easy to bind state to variables and hierarchical software components. Compared to conventional programming languages, there is more emphasis on stable, static allocation of state because it simplifies orthogonal persistence, schema updates, and live coding.
 
-Specialized data types, such as counters, queues, and bags, can potentially enhance performance and partitioning tolerance. For example, we can still write to a queue even if we're in a separate partition from the reader, whereas in general writing to a remote variable should be blocked.
+A runtime configuration will usually describe at least one persistent database that is shared between glas applications by a single user, or perhaps shared between a few mutually trusted users. A configured database could be distributed, with built-in support for mirroring. Additionally, the runtime provides an in-memory database whose lifespan is limited to the OS process. An application can choose between binding state to an in-memory or configured database.
 
-Database keys are abstract and ephemeral. The runtime provides initial key and hierarchical constructors. Persistent references such as URLs must be translated to ephemeral keys before use. This provides a robust opportunity to handle disruption, redirection, authorization, and revocation in context of live coding and open systems.
+Specialized data types, such as queues, and bags, can potentially enhance performance and partitioning tolerance. For example, we can still write to a queue even if we're in a separate partition from the reader, whereas in general writing to a remote variable should be blocked.
 
-*Note:* This state model supports semi-transparent persistence and distribution. Applications designed for persistence or distribution can transparently run as short-lived or local. But any such design would requires careful attention to initialization, schema migration, and network partitioning tolerance.
+Database keys are abstract and ephemeral. Initial keys refer to the configured or in-memory databases. Hierarchical structure is based on providing a key constructor such as `path(dbKey, "foo")`. Persistent references such as URLs must be translated to ephemeral keys before use.
 
 ### Indexed Collections   
 
@@ -93,29 +97,17 @@ Proposal:
         let *foo[].index = foo[].select index in 
           foo[].inst.method(args)
 
-Here `foo[]` is a namespace, `*foo[].index` identifies an implicit parameter, `foo[].select` provides an opportunity to verify or virtualize the given index, and `.inst` distinguishes instance-level methods from collection-level. Index type is not restricted to integers or plain old data, though we'll eventually need to construct database keys based on the index.
+Here `foo[]` is a namespace, `*foo[].index` is an implicit parameter, `foo[].select` can verify or virtualize the provided index, and `.inst` distinguishes instance-level methods from collection-level. The index type is not restricted to integers or plain old data, though we'll eventually need to construct database keys based on the index. 
 
-Implicit parameters are convenient for more than indexing. I assume implicit identifiers are abstract, ephemeral, and unforgeable similar to database keys. This simplifies reasoning about who can access an implicit and optimization of implicits in context of RPC.
+Implicit parameters are convenient for more than indexing. I assume implicit identifiers are abstract, ephemeral, and unforgeable similar to database keys. This simplifies reasoning about who can access an implicit and optimization of implicits in context of RPC. I might adjust syntax around implicit parameters to support abstraction. 
+
+*Note:* Unfortunately, this design is incompatible with my earlier ideas about expressing transaction invariants as assertions in the namespace. I'll need to reconsider one side or the other.
 
 ### Cached Computations
 
-Manual cache management is notoriously awkward and error-prone. It also introduces unnecessary risk of read-write conflicts in context of parallel evaluation of transactions. It should be avoided.
+Manual cache management is notoriously awkward and error-prone. It's too easy to miss a cache invalidation. In context of transaction loops, cache state can very easily result in read-write conflicts. 
 
-It is feasible to annotate stable, read-only computations (with plain old data parameters) for implicit caching. With careful design, computation can be structured such that recomputing cache after a change will reuse previous work. We might also ask the runtime to maintain the cache automatically, such that it's ready for use. 
-
-Effective support for cached computations and incremental indexing would greatly simplify modeling a relational database or language-integrated query. It also has interesting interaction with RPC, allowing the RPC registry to double as a publish-subscribe service. 
-
-### Ephemeral State
-
-We can consider a few relevant life spans for state resources:
-
-* shared, persistent state - available between process instances
-* application process state - survives until OS process is killed
-* ephemeral state - lasts for duration of the current transaction
-
-A key-value database API can easily support these few lifespans. Ephemeral state can be logically modeled as persistent or process state that is implicitly reset between transactions. Ephemeral state gives us transaction-local variables, analogous to thread-local variables in other languages. 
-
-Potential use cases for ephemeral state include modeling ad-hoc transaction invariants or integration with per-fork debug views. It is also feasible to model implicit parameters or results, but this is not recommended due to awkward interaction with reentrancy and exceptions.
+Instead, we could annotate some read-only computations for implicit caching. This moves cache invalidation to the compiler and allows conflict detection to be cache aware. It also integrates nicely with RPC and code distribution, enabling RPC to double as publish-subscribe via 'publishing' cached computations.
 
 ### Shared State
 
@@ -123,7 +115,7 @@ Shared state is useful for asynchronous interactions between applications, e.g. 
 
 Many weaknesses of shared state are mitigated between transactions, specialized data types like queues, and structured data with content-addressed stowage so we can efficiently work with large values. Fine-grained access control might be supported via introducing access tokens into key construction. Regardless, this should be more robust and convenient than filesystem or shared memory.
 
-In some cases, we could try shared state via an intermediate RPC service. 
+In some cases, we could try shared state via an intermediate RPC service.
 
 ## Application Provided Interfaces
 
@@ -181,22 +173,59 @@ To fully develop a [Glas GUI](GlasGUI.md), we will need a mature glas system tha
 
 GUI interfaces in hierarchical application components can be convenient for composition, debug views, and live coding. 
 
+### Consistency Support
+
+        built-in-test   : unit -> unit | fail
+
+Applications can provide a simple built-in-test for self-diagnostic and consistency checks. These checks may implicitly be run before committing to any transaction that might cause a diagnostic to fail. Alternatively, depending on configuration, the check might run infrequently or on demand. 
+
 ## Effects API
 
 The application may declare some abstract methods to be provided by the runtime. To simplify hierarchical composition of applications, effects might be centralized under the 'io' namespace. If the runtime does not recognize a declared method, and that method is used within the app, the runtime should raise an error.
 
 ### State
 
-Access a key-value database and some initial state elements.
+I propose a hierarchical key-value database with support for three data types: var, queue, and bag.
+
+* *var* - Holds a single value. Default value is zero, also representing empty list or dict, represented by the single node binary tree. In case of network partitioning, one partition 'owns' the var and may read and write normally, while others may read the value most recently cached in their partition (with some checks for cache consistency). 
+* *queue* - FIFO ordered reads and writes, allows for multiple writers and a single reader in parallel. In case of network partitioning, only one partition can 'read' the queue, but writes in other partitions can be buffered. Supports heuristic congestion control: the scheduler can reduce priority of transactions that write to a full queue.
+* *bag* - aka multi-set, unordered reads and writes, allows for multiple writers and readers in parallel. In case of network partitioning, each partition may continue to read its own writes, and things can migrate after reconnect. Supports heuristic congestion control like queues. A compiler can potentially optimize pattern matching after read into search, allowing a bag to serve as a tuple space.
+
+In some contexts, access to bags may have a 
 
 
-### Concurrency
+Assuming optimization of pattern match after read, this can serve as a tuple space.
 
-Repetition and replication are equivalent for isolated transactions. If a transaction loop involves a fair non-deterministic choice, we can implement this by replicating the transaction to try every choice. Multiple choices can commit concurrently if there is no read-write conflict, otherwise we have a race condition. When a choice is part of the stable incremental computing prefix for a repeating transaction, these replicas also become stable, effectively representing a multi-threaded application.
 
-* **fork(N)** - Response is non-deterministic fair choice of natural number between 1 and N. Does not fail. `fork(0)` would diverge.
 
-Fair choice means that, given enough time, the runtime will eventually try any valid prefix of fork choices in the future (regardless of the past). This isn't a guarantee that races resolve fairly, only that fork choices aren't sticky. Race conditions should instead be resolved by application design, perhaps introducing some queues.
+
+
+
+
+Efficient key construction needs some attention. In general, we'll have some static path fragments mixed with occasional dynamic elements to handle collections. If we have something like `x.y.z[index].a.b.c` then it would be ideal if both the `x.y.z[]` and `.a.b.c` can be partially evaluated. 
+
+        key(key(key(var, "a"), "b"), "c") # doesn't partially evaluate easily
+         # but we might be able to inline constructors and rewrite?
+
+
+A key-value database with abstract, ephemeral keys constructed based on other keys and plain old data. Distinctions between persistent storage, process storage, and transaction-local storage.
+
+We can consider extending the database with a few more types. Counters are potentially a good option. 
+
+
+*Note:* After reading data, we'll often immediately test whether it matches some pattern before continuing. It is feasible to provide APIs that integrate matching, but that severely complicates the API. What I hope to do instead is optimize database access based on continuation passing style and peeking at the subsequent code.
+
+### Fair Non-Deterministic Choice
+
+Proposed API:
+
+        sys.fork(N) # returns fair choice of natural number between 1 and N.
+
+This is intended for use in context of a stable transaction loop prefix, where fair choice optimizes to concurrent transactions. If the transaction is unstable at point of request, this can be replaced by a fair search algorithm that seeks a result leading to successful commit. 
+
+Note that 'fair' in this context means that, given unlimited opportunities, the system guarantees that you'll eventually attempt any particular sequence of fork choices. There is no implication of random or uniform choice.
+
+*Aside:* Reading from a bag also supports fair choice.
 
 ### Time
 
@@ -429,10 +458,11 @@ This would probably be sufficient for most use-cases, but we could add some mech
 
 ## Rejected Ideas
 
-### Channels API
+### Ephemeral State
 
-Channels are a great fit for transactions in a distributed system. Channels support multiple writers and a single reader in parallel. They are partitioning tolerant, allowing writes to buffer within each partition. But there is a problem: if we have a dedicated channels API, it's unclear who 'owns' a channel, who is responsible for security and cleanup, etc..
+We can model ephemeral state as a region of the database that is implicitly reset at the start of each transaction. Ephemeral state avoids read-write conflicts by effectively being write-only. Ephemeral state can be useful as an awkward implementation of implicit parameters, for access from debug views, and assertion of transaction invariants. 
 
-Instead, we should model channels within a database and make them accessible via RPC. For asynchronous interaction, we can model a channel-server app that can operate independently of the applications that read and write channels. This results in a more ad-hoc API but ensures responsibilities are clear.
+This idea proved problematic for composition. In some cases, a composite application must manually perform resets of component state. It can be difficult to track exactly which components are reset. And we certainly lose most of the debugging and assertion benefits.
 
-Variations on the idea - dedicated APIs for mailboxes, tuple spaces, etc. - are rejected for similar reasons.
+I instead favor implicit pass-by-ref parameters where possible, assuming language support. Where we do need ephemeral state, we can model resets explicitly, which avoids some composition issues.
+
