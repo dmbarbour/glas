@@ -1,10 +1,21 @@
 # Extensible Namespaces
 
-Namespaces are a very useful layer between modules and functions. Modules can define and compose namespace fragments in terms of inheritance, mixins, and interfaces. Namespaces are especially convenient for defining mutually recursive functions. Extensible namespaces support tweaking or tuning of large programs, and static higher-order programming. Hierarchical namespaces we can precisely manage access to names, providing a lightweight basis for secure composition.
+This document describes a set of [abstract assembly](AbstractAssembly.md) constructors for namespaces. 
 
-In glas systems, I propose to express [applications](GlasApps.md) as partial namespaces. This allows applications to be viewed as objects, and for the runtime to provide some definitions that can potentially be partially evaluated by an optimizer.
+The proposed namespace model will support recursive definitions, access control, renames and overrides, declarations and late binding of definitions, hierarchical namespaces and software components, and flexible mixins and abstraction of namespaces. All definitions within the namespace are also represented via abstract assembly, albeit with different AST constructors.
 
-This document describes how to implement namespaces with a single-pass rewrite of names. I assume names are represented by prefix-unique bitstrings (such as null-terminated UTF-8). We'll support multiple inheritance, mixins, interfaces, private definitions, hierarchical namespaces, annotations, assertions, renames, and overrides. This is more or less independent of the definition type, modulo that it must be possible to precisely identify all names used within a definition.
+Relating to glas systems:
+
+* an application is a namespace where names represent program behavior, such as the start, step, and stop methods for the application life cycle
+* a glas program module is a non-recursive namespace where every name represents an application or part of one, such as reusable components or mixin
+* to simplify integration, the main application defined in a program module is named 'app', e.g. in case of `glas --run ModuleName` by the [CLI](GlasCLI.md)
+
+Performance is a significant concern. Namespaces can grow very large and will often have a lot of redundant structure. It should be feasible to process only the subset of names we actually need to run the application and ignore the remainder. Thus, this document also pays attention to indexing and lazy evaluation.
+
+
+
+
+
 
 ## Prefix Oriented Rewrites
 
@@ -33,6 +44,10 @@ We can compose namespaces, rewriting as we do so. However, there is an ambiguity
 
 With conflict detection, avoidance, and manual resolution, we can support mixin inheritance, and we can merge dictionaries that define different words. But it would be too much manual editing to directly merge dictionaries that share a lot of words. Instead, users would tend to favor hierarchical namespaces or explicit import lists.
 
+## Non-Recursive Namespaces
+
+
+
 ## Annotations
 
 Similar to private definitions, annotations can be supported via naming conventions. For example, to annotate method 'foo' we might define 'foo?type' and 'foo?doc'. The language compiler should be annotation aware. 
@@ -40,6 +55,10 @@ Similar to private definitions, annotations can be supported via naming conventi
 ## Nominative Types
 
 It is feasible to support limited reflection from the language into the namespace. This may include access to names as abstract values or abstract types. However, it would probably be best to treat names as ephemeral types.
+
+## Metaprogramming
+
+It is feasible to 'map' an operation to every definition in a namespace. Moreover, it is feasible to do so lazily or as part of the single-pass rewrite. The main issue is how we would represent the operation when representing the namespace. I'd prefer to avoid defining a complicated language for this role!
 
 ## Design Goals
 
@@ -51,10 +70,19 @@ It is feasible to support limited reflection from the language into the namespac
 * Namespace semantics can be expressed as local rewrite rules.
 * Namespace semantics are efficient and guarantee termination.
 * Efficiently discover which symbols are defined or declared.
+* Effective support for metaprogramming.
+
+## Abstract Assembly
+
+I propose a one-size-fits-all [abstract assembly](AbstractAssembly.md) for defining application methods. Further, we can use the same assembly - but with different AST constructors - to represent construction of the namespaces. 
+
+This would simplify meta-namespaces, where every definition is a namespace. This also simplifies metaprogramming, which might effectively reduce to adding a prefix to every definition.
+
+## Meta-Namespaces
+
+A glas module could compile into a 'dict' of namespaces. Alternatively, we could potentially compile it to a meta-namespace, a namespace where the definitions are namespaces. The latter would be interesting insofar as it allows users to abstract and compose dependencies more flexibly. Though, there is signficant risk of confusion.
 
 ## Thoughts
-
-I assume a glas module compiles to a dictionary of independent namespaces, perhaps `(foo:ns:(...), bar:ns:(...), app:ns:(...))`. However, these compiled namespace values do not reference each other by name. If we write `namespace foo extends bar`, the compiler can directly copy the compiled representation of bar into the compiled representation of foo. Optionally, the compiler could rewrite and optimize the composition a little.
 
 I'll need to control scope of renames. For example, if we rename an override method in a mixin, it should override the new method on its eventual target rather than renaming anything within its target. But a mixin must also perform renames as part of expressing the override. 
 

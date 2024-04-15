@@ -8,7 +8,7 @@ The glas system starts with a command line tool 'glas'. This tool has built-in k
 
 ## Modules and Syntax Extension
 
-Modules are represented by files and folders. Every valid module compiles to a glas value (see *Data*). Modules may have any value type, subject to user-defined compilation functions. Those same compilation functions might check the types of values that are imported, but in some cases we might import data or integrate modules of multiple types.
+Modules are represented by files and folders. Every valid module compiles to a glas value (see *Data*). Program modules usually compile to a value that represents a [namespace](ExtensibleNamespaces.md), but data modules are also useful.
 
 A file is compiled based on its file extensions. To process a file named "foo.ext", the glas command line will first compile a global module named language-ext, which must define a compilation function, then apply this compilation function to the file binary. Composition of file extensions is supported. A gzip-compressed JSON file with a macro preprocessor might use file extension ".json.m4.gz". In this case, we apply language-gz, then language-m4, then language-json. Conversely, if file extensions are elided, the compiled value is simply the file binary. To bootstrap this system, a compiler for ".g" files is built-in (see *Programs*).
 
@@ -96,44 +96,43 @@ I'm still exploring how to express methods. Procedural expression of behavior is
 
 ## Language Modules
 
-Language modules follow a simple naming convention: the global module 'language-xyz' is responsible for describing how to compile files with extension ".xyz". The compiler application provides `compile : SourceCode -> ModuleValue`, representing compilation as a single transactional step. 
+Language modules follow a simple naming convention: the global module 'language-xyz' must describe how to compile files with extension ".xyz". This module should define application 'app' that defines `compile : SourceCode -> ModuleValue`, performing compilation as a single transactional step. 
 
 To ensure a deterministic, reproducible outcome and support predictable refactoring, the compiler has limited access to effects. Available effects:
 
 * load compiled module values from module system
-* log outputs for a human observer
+  * *f:String* - local file or folder, extensions elided
+  * *g:String* - global module name, via runtime config
+* log output for a human observer
 
-Modules dependencies must be acyclic. In case of dependency cycle, load diverges and an error is reported. Load will also diverge if a remote module cannot be downloaded. In most other cases, we can deterministically observe load failures.
+Loading a module may fail if the module isn't defined or if compilation of it fails. The exact reason for error might be logged but wouldn't be visible to the compiler. Dependency cycles or a failed download instead cause load to logically diverge. 
 
-
-
-
-Languages benefit from associated tools such as REPLs, linters, syntax highlighting, intellisense, decompilers, [language server protocol](https://en.wikipedia.org/wiki/Language_Server_Protocol), interactive tutorials, etc.. I assume these would be defined using separate apps that import or reuse code developed for language modules, perhaps with similar naming conventions.
+We might eventually develop naming conventions to support REPLs, linters, syntax highlighting support, intellisense, decompilers, [language server protocol](https://en.wikipedia.org/wiki/Language_Server_Protocol), interactive tutorials, etc.. However, it might prove more convenient to separate these into separate modules, e.g. 'langrepl-xyz'. 
 
 ## Automated Testing
 
-As a simple convention, modules whose names start with "test-" are interpreted as test programs. This includes local modules within a folder that don't contribute to a public result. Tests can also be supported via compile-time evaluation of assertions (by the language module), but separation is more suitable for fuzz testing, long-running tests, and allowing tools to prioritize tests based on a known history of failures.
+As a simple convention, local modules whose names start with "test-" will be interpreted as tests. Tests may be compiled and evaluated even when they aren't required by a folder's 'public' definition. It is feasible to run all tests in a distribution as a health check.
 
-A test application should define a single-step pass/fail 'run' method with limited effects. Something like:
+The test module should define an application 'app' that defines a 'run' method. Tests have limited access to effects:
 
-* *log* and *load* - same as behavior in language modules
-* *fork(N)* - non-deterministic choice of natural number less than N
+* log and load - same as language modules
+* fork - non-deterministic choice to support fuzz testing or multiple tests
 
-Here 'fork' serves roles in fuzz testing and representing multiple tests with one module. Annotations could provide some extra guidance on priorities and quotas for tests. Test tools may allow users to provide patterns of fork choices to select tests or subsets thereof.
+The idea is that we're searching for failing tests. Based on analysis and feedback, a sufficiently smart test system might focus on some forks and mostly ignore others.
 
-*Note:* Although a test application cannot directly interact with the environment (e.g. filesystem or network), it should be feasible to simulate and fuzz the environment.
+*Note:* Of course, our applications may also include tests, such as the built-in-tests for consistency.
 
 ## Performance
 
 ### Acceleration
 
-Acceleration is an optimization pattern where we annotate a subprogram to be replaced by a more efficient or scalable implementation known to the interpreter or compiler. This may also involve use of specialized representations. For example, if we accelerate list-append, the runtime might use append of finger-tree ropes. Acceleration effectively extends a language with new performance primitives without extending semantics, which is convenient for a minimalist language.
+If a function is giving us poor performance, it is feasible to replace that function with a compiler built-in or hardware. However, it is useful to maintain the reference definition for analysis, debugging, and because it allows us we can treat this replacement as an 'optimization' instead of a semantic extension to the language.
 
-As a more sophisticated use case, our function might 'accelerate' evaluation of code on an abstract CPU or GPGPU. This code would support a memory-safe, deterministic, portable subset of programs. The accelerator would translate it for evaluation on the actual CPU or GPGPU. Ideally, the code is provided as a static parameter, allowing compile-time translation. This technique can extend glas systems to many problem domains while avoiding FFI.
+Acceleration can influence under-the-hood representations of data. For example, large lists and binaries might be encoded as finger-tree ropes to support efficient slices, concatenation, and indexing. In these cases, it may be useful to treat the data as abstract to avoid accidental conversion between representations.
 
-To resist silent performance degradation, the runtime or compiler should report an error where requested acceleration is unrecognized or unsupported. But we can support additional annotations to suppress this error or reduce it to a warning for certain functions.
+It is feasible to accelerate simulation of an abstract CPU or GPGPU. This simulation would be restricted to a memory-safe subset of behaviors, perhaps checking the code before 'running' it. An accelerated implementation would compile the code argument for a physical CPU or GPGPU target. When the code argument is static, this compilation can be performed ahead of time.
 
-*Note:* Accelerators should be verified to match the subprogram they replace, where possible. Fuzz testing could be automated.
+To resist silent performance degradation, annotations requesting an unrecognized or unsupported accelerator should be reported at compile time. We can indicate 'optional' acceleration in the annotation. Ideally, accelerators will also be verified through automatic testing. 
 
 ### Stowage
 
