@@ -8,13 +8,15 @@ The glas system starts with a command line tool 'glas'. This tool has built-in k
 
 ## Modules and Syntax Extension
 
-Modules are represented by files and folders. Every valid module compiles to a glas value (see *Data*). Program modules usually compile to a value that represents a [namespace](ExtensibleNamespaces.md), but data modules are also useful.
+Modules are represented by files and folders. Every valid module compiles to a glas value (see *Data*). In many cases, these values represent *Programs and Applications*. But data modules are also useful! Programs may reference module values as constants. 
 
-A file is compiled based on its file extensions. To process a file named "foo.ext", the glas command line will first compile a global module named language-ext, which must define a compilation function, then apply this compilation function to the file binary. Composition of file extensions is supported. A gzip-compressed JSON file with a macro preprocessor might use file extension ".json.m4.gz". In this case, we apply language-gz, then language-m4, then language-json. Conversely, if file extensions are elided, the compiled value is simply the file binary. To bootstrap this system, a compiler for ".g" files is built-in (see *Programs*).
+A file is compiled based on its file extensions. To process a file named "foo.ext", the glas command line will first compile a global module named language-ext, which must define a compilation function, then apply this compilation function to the file binary. To bootstrap this system, a compiler for ".g" files is built in, and we first compile language-g if possible.
 
-A folder must contain a 'public' module, represented by a file. The compiled value of a folder is the compiled value of its public module. A folder behaves as a boundary for dependencies: compilation functions only reference the public value of a folder, thus other files and subfolders are effectively private. A folder also serves as a container for local modules, test programs, and utility content such as a readme, license, or manifest.
+File extensions may be composed. For example, "example.json.m4.gz" would essentially apply a pipeline of three compilers: language-gz then language-m4 then language-json. This might decompress the file binary, apply a text macro preprocessor, then parse the result as JSON. Conversely, if file extensions are elided, the compiled value is simply the file binary. 
 
-Global modules are represented by folders, and are organized into *distributions*. In context of glas systems, a distribution is a set of global modules that are versioned and maintained together, and can be defined in terms of inheritance from other distributions. The glas command line interface supports configuration of the distribution.
+A folder is compiled to the value of its contained "public" file of any extension. Folders serve as dependency boundaries: there is no access to arbitrary files within subfolders or the parent directory. Folders may contain local modules, test programs, and auxilliary content such as a readme, license, or a cryptographically signed manifest.
+
+Global modules are represented by folders. The namespace of global modules is subject to configuration, and may compose community and company distributions, referencing the network in addition to the filesystem. 
 
 ## Data
 
@@ -79,20 +81,22 @@ To support unordered data types - such as finite sets, bags, or graphs - we must
 
 To support larger-than-memory data, glas systems may leverage content-addressed storage to offload subtrees to disk. This optimization is transparent to most functions, but can be guided by program annotations and is potentially visible through a reflection API. Content-addressed references simplify memoization, communication, and persistent storage of large structures. The proposed representation is [glas object (glob)](GlasObject.md) binaries. 
 
-## Applications and Programs
+## Programs and Applications
 
-A program is a value with a known interpretation. An application is a program with a known integration. In this context, the relevant knowledge must be embedded in the glas command line interface executable. I'm still exploring various design aspects - see [glas applications](GlasApps.md). But the general design direction of glas application model is:
+A program is a value with a known interpretation. An application is a program with a known integration. Although a system can support many application and program models, we must standardize at least one to bootstrap the glas system and serve as a foundation. In this role, glas specifies the ".g" language.
 
-* *Applications as objects.* Apps may declare state and define methods, and they provide interfaces for integration.
-* *Incremental definition.* Apps can be defined in terms of tweaks to existing apps. Can abstract tweaks as mixins.
-* *Transactional operation.* Transactions may involve many methods and apps. Many effects are deferred until commit.
-* *Transaction loops.* Repeating transactions *optimize* into incremental computing, reactivity, and concurrency.
-* *Live coding.* Application code can be maintained at runtime by leveraging transactions and ephemeral references.
-* *Distributed computing.* Applications can model and maintain robust, resilient, distributed network overlays.
+A valid ".g" file will compile to `g:(Dict of (Namespace of Method))`. The dictionary defines a collection of [namespaces, interfaces, and mixins](ExtensibleNamespaces.md). An application module defines the 'app' namespace, which implements interfaces recognized by the runtime such as the 'step' method for background processing or 'http' to receive HTTP requests. Effect methods are installed by the runtime as an implicit mixin. See [Glas Apps](GlasApps.md).
 
-The first points take inspiration from [object-oriented programming](https://en.wikipedia.org/wiki/Object-oriented_programming), but first-class objects aren't implied. Any object references are *ephemeral* - scoped to a transaction - to simplify live coding and distributed computing. Transactional operation and distributed computing also have a significant effect on effects APIs and state models.
+Methods are compiled to a Lisp-like [abstract assembly](AbstractAssembly.md). A proposed set of AST constructors for this intermediate language is developed below. 
 
-I'm still exploring how to express methods. Procedural expression of behavior is an awkward fit for incremental computing of distributed transactions, e.g. requiring careful attention to reentrancy. This can be mitigated, but I'm exploring alternative paradigms. 
+### Control Flow
+
+### Program Environment
+
+### Data Manipulation
+
+### Annotations
+
 
 ## Language Modules
 

@@ -1,12 +1,10 @@
 # Extensible Namespaces
 
-This document describes AST constructors for namespaces, intended for encoding namespaces in [abstract assembly](AbstractAssembly.md). 
+This document describes an AST for a purely functional expression of an extensible namespace model that supports defining names, renames and overrides, declarations and late binding of definitions, recursive definitions and graph structures, access control, hierarchical names and component structure, multiple inheritance and mixins, and higher order templates.
 
-The proposed namespace model supports defining names, renames and overrides, declarations and late binding of definitions, recursive definitions and graph structures, access control, hierarchical names and component structure, multiple inheritance and mixins. Definitions also use *abstract assembly*, albeit with different AST constructors.
+This namespace model assumes definitions are represented in [abstract assembly](AbstractAssembly.md), which offers additional benefits for metaprogramming and extensibility. 
 
-In context of glas systems, a program module compiles to a namespace of application components, and an application component is a namespace of methods. Thus, we have at least two layers of namespaces with different AST types. Arguably, runtime configuration of the global module distribution is a third namespace layer, albeit more restrictive.
-
-Performance is a significant concern. I expect namespaces to grow very large and contain many redundant definitions. Thus, careful attention is needed towards indexing, lazy evaluation, and caching.
+Performance is also a significant concern. I expect namespaces to grow very large and contain many redundant definitions tucked away in private namespaces. Thus, careful attention is needed towards indexing, lazy evaluation, and caching.
 
 ## Prefix Oriented Rewrites
 
@@ -15,7 +13,9 @@ There are two basic prefix-oriented rewrite operations:
 * rename - rewrite a prefix for all methods AND update all links. 
 * move - rewrite a prefix, breaking links; supports overrides.
 
-The scope of a rewrite is a namespace component. For example, we could rewrite a mixin to change which methods it overrides. Hierarchical namespaces are supported by *renaming* the empty prefix. An override can be represented by *moving* the original name, e.g. move 'foo' to '^foo', then redefining 'foo'. With some conventions for private definitions, we can also hide names or support export lists.
+Many other features such as overrides and private definitions can be expressed in terms of renames, moves, and a few conventions.
+
+The scope of a rewrite is a namespace component. For example, we could rewrite a mixin to change which methods it overrides without actually modifying the namespace to which the mixin is later applied.
 
 ## Single Pass Rewrites
 
@@ -25,13 +25,33 @@ It is feasible to compose these rewrites. For example, if a component from which
 
 ## Private Definitions
 
-As a convention, I propose private symbols start with '~'. This resists accidental shadowing of public names. Later, when composing namespaces, we can rewrite prefix '~' from each composed namespace to avoid collisions between private names. With just a little syntactic support, this generated prefix can be stable to simplify orthogonal persistence, live coding, and debugging.
+As a convention, I propose private symbols start with '~'. This resists accidental shadowing of public names. Later, when composing namespaces, we can rewrite prefix '~' from each composed namespace to avoid collisions between private names. By default, the syntax might not permit access to private names of subcomponents. 
 
-A potential issue is that we'll end up with many 'copies' of private definitions. An optimizer can potentially mitigate this by performing a compression pass on namespaces.
+This form of privacy is weak, being based on conventions and syntactic control. In glas systems, syntactic control can be bypassed via user-defined syntax, so it's better to immediately provide an explicit bypass that is easy to detect via search or linter.
+
+Where true privacy is required, the namespace can easily restrict which names are visible to hierarchical application components. Controlling access to names is essentially a form of [object capability security](https://en.wikipedia.org/wiki/Object-capability_model). But leveraging this might require architecting an application such that hierarchical components are externally wired together by sharing of names. 
+
+*Note:* Other than controlling names, we could look into homomorphic encryption or zero-knowledge proofs. But such things are far outside the scope of the namespace model.
+
+## Overrides
+
+When we override a definition, we *move* the original definition then redefine it.
+
+A potential question is to where the original definition is moved. We could introduce a convention of moving 'foo => foo^'. With this, we might also first rename 'foo^ => foo^^', such that we maintain a complete chain of older instances of 'foo' locally in the namespace (instead of moving them into private spaces). Similar to private definitions, the syntax might strongly discourage direct use of 'foo^^'.
+
+Of course, if we don't actually use the prior version in the override, we might instead delete the history.
 
 ## Multiple Inheritance
 
-We can compose namespaces. However, there is an ambiguity risk when the same name is inherited from two sources. The proposed namespace model will help users represent assumptions so they can detect issues at compile time and resolve them manually, e.g. by moving or renaming a conflicting method. This does not solve [the diamond problem](https://en.wikipedia.org/wiki/Multiple_inheritance#The_diamond_problem), but it's sufficient to support mixins, import and export control, and inheritance of multiple non-overlapping dictionaries.
+There is an ambiguity risk when the same name is inherited from two sources. The proposed namespace model doesn't have a sophisticated solution to resolve ambiguity, but it does include a few annotations to help check user assumptions about which names are defined. In particular, this does not solve [the diamond problem](https://en.wikipedia.org/wiki/Multiple_inheritance#The_diamond_problem), but the namespace can support import and export control, mixins, and composition of non-overlapping dictionaries.
+
+## Interfaces
+
+I assume the same interface will be defined many times, i.e. defining type annotations and documentation for declared methods. We'll want to check that it truly is the same interface by comparing definitions. To support this, we'll also allow some overlap when inheriting from multiple sources, but under a constraint that the same definition is inherited.
+
+This design restricts interfaces: they cannot contain any 'private' definitions, because those would be rewritten differently per instance. Override of interface methods would also be limited if the prior definition is in the private namespace.
+
+I think interfaces would be useful even with these restrictions.
 
 ## Annotations
 

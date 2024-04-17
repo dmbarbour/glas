@@ -71,7 +71,7 @@ In glas systems, lists are conventionally encoded in a binary tree as a right-sp
 However, direct representation of lists is inefficient for many use-cases. Thus, glas runtimes support specialized representations for lists: binaries, arrays, and [finger-tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_(data_structure)). To protect performance, glas object also offers specialized list nodes:
 
 * *array* - header (0x0A) . (length - 1) . (array of offsets); represents a list of values of given length. Offsets are varnats all relative to the end of the array, denormalized to the same width. Width is determined by looking at the first varnat.
-* *binary* - header (0x0B) . (length - 1) . (bytes); represents a list of bytes. Each byte represents an 8-bit stem-leaf bitstring, msb to lsb.
+* *binary* - header (0x0B) . (length - 1) . (bytes); represents a list of bytes. Each byte represents a small positive integer, 0..255.
 * *concat* - header (0x0C) . (offset to right value) . (left list); represents logical concatenation, substituting left list terminal with given right value (usually another list).
 * *drop* and *take* - see *Accessors*, support sharing slices of a list 
 
