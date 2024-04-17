@@ -79,7 +79,7 @@ See *Encoding Finger Tree Ropes* for a pattern to leverage concat effectively. O
 
 ### External References
 
-External references are primarily for references between globs.
+External references are primarily intended for references between globs.
 
 * *external ref* - header (0x02) followed by a reference value. A reference value must be recognized as representing another value in context. We can logically substitute the external reference with the referenced value.
 
@@ -87,24 +87,15 @@ Reference values in context of content-addressed storage:
 * *glob:SecureHash* - reference to content-addressed glob. SecureHash is usually a 64-byte binary representing the SHA3-512 of an external binary. 
 * *bin:SecureHash* - reference to content-addressed binary data. Same SecureHash as for globs, but the referent is loaded as a binary instead of parsed as a glob.
 
-External references generalize as a *contextual extension* mechanism for glas object. For example, we could use external references to support globs in context of the module system, or globs in context of streaming incremental data:
+External references generalize as a *contextual extension* mechanism for glas object. For example, in context of a module system, we might use *local:ModuleName* and *global:ModuleName* instead of content-addressed *glob* and *bin* references. In context of streaming data or templates, we might introduce *var:Nat* to represent data that will arrive later in the stream or perhaps upon demand. 
 
-Reference values in context of glas module system:
-* *local:ModuleName* - value of local module
-* *global:ModuleName* - value of global module
-* *eval:Program* - a program to be interpreted by the language module compiler, limited to 'log' and 'load' effects.
-
-Reference values in context of streaming incremental data:
-* *var:Nat* - value to be provided later in stream, integer may be recycled after provision
-* *glob* or *bin* - content-addressed storage via associated content distribution network (CDN)
-
-External references are the easiest extension hook for glas object. Experimental runtime-specific extensions might be introduced as reference values, eventually become de-facto standard extensions, then even later be standardized as a one-byte header if there is sufficient motivation.
+*Note:* Establishing and maintaining the context is rarely free. Effective support for external references may involve access tokens for a [CDN](https://en.wikipedia.org/wiki/Content_delivery_network), protocols for content negotiation (analogous to HTTP Accept header), reference validation overheads, and so on. 
 
 ### Internal References 
 
 We can forward reference within a glob file. 
 
-* *internal ref* - header (0x88) . (offset); This is just the *path accessor* with an empty path, i.e. a whole-value accessor.
+* *internal ref* - header (0x88) . (offset); i.e. the whole-value *accessor*.
 
 Internal references are mostly useful to improve structure sharing or compression of data. Also useful for the *Glob Headers* pattern, where a glob binary starts with an internal ref.
 
@@ -125,6 +116,18 @@ Support for ad-hoc comments within Glas Object.
 * *annotation* - header (0x01) . (offset to data) . (metadata); the metadata may be an arbitrary value.
 
 In practice, annotations at the glas object layer are written by a runtime when it's storing data then read by the runtime when it's loading data. Potential use cases include hints for accelerated runtime representations and tracking dataflow while debugging. User programs can potentially access these annotations via runtime reflection APIs. However, it's usually wiser to model annotations in the data layer if possible.
+
+### Accelerated Representations
+
+We can extend *external references* to support logical representations of data. In this case, the reference contains all the information we need, but not in canonical form. For example, an unboxed floating point matrix might be represented as:
+
+        (0x02) . matrix:(dim:[200,300], type:f32, data:Binary)
+
+When translated to canonical form, this might translate to a list of lists of 32-bit bitstrings. But a runtime could potentially use the unboxed representation directly. 
+
+We can potentially introduce many more variants to support graphs, sets, etc.. And even matrices might benefit from logical transposition, lazy multiplication, etc.. This complicates content negotiation and the runtime. If parties fail to agree to an accelerated representation, they can still construct the canonical representation and add *annotations* they know to read the data back as a matrix. Of course, if conversion is very expensive, the transaction might be aborted on quota constraints.
+
+Eventually, as accelerated representations achieve status as de-facto standards, we can contemplate assigning dedicated headers in Glas Object to save a few bytes.
 
 ## Varnats, Lengths, and Offsets
 
@@ -153,11 +156,6 @@ In normal form, varnats use the smallest number of bytes to encode a value. It i
         0x40-0x5F   Stem Nodes (and Nop - 0x48)
         0x60-0x7F   Stem-Branch and Branch (0x68)
         0x80-0x9F   Index Path and Internal Ref (0x88)
-
-        PROPOSED TEMPLATE EXTENSION (see below):
-
-        0x03        Var
-        0x04        App
 
         CURRENTLY UNUSED:
         0x05-0x09
@@ -201,43 +199,13 @@ As a simple convention, a glob binary that starts with an internal reference (0x
 
 A header can be considered an annotation for the glob binary as a whole. Potential use cases include adding provenance metadata, glob extension or version information, or entropy for a convergence secret.
 
+### Data Validation
+
+Validation of glob binaries can be expensive in context of very large data or accelerated representations. Nonetheless, it should be performed before we commit potentially invalid data into a database. That's our last good opportunity to abort a transaction without risk of long-term corruption.
+
+To mitigate validation overheads, a runtime might implicitly trust hashes it learns about from a trusted database or CDN. This trust would be expressed in the runtime configuration. Additionally, we can leverage glob headers or annotations to include proof hints or cryptographic signatures. Proof hints can reduce the cost to re-validate, while signatures might indicate a party you trust already performed the validation.
+
 ### Deduplication and Convergence Secret
 
 It is possible for a glas system to 'compress' data by generating the same glob binaries, with the same secure hash. This is mostly a good thing, but there are subtle attacks and side-channels. These attacks can be greatly mitigated via controlled introduction of entropy, e.g. [Tahoe's convergence secret](https://tahoe-lafs.readthedocs.io/en/latest/convergence-secret.html).
 
-### Shared Dictionary
-
-Build a dictionary of useful values then share and reference as needed (via external refs and accessor nodes). In some cases, this can greatly improve compression while avoiding any explicit stateful communication context. 
-
-## Potential Future Extensions
-
-Many ideas won't be worthwhile without enough end-to-end support from compilers and runtimes. I'll defer them until we have a better idea of what is needed and whether the benefits are worth the complications.
-
-### Unboxed Structures (Tentative)
-
-To represent unboxed vectors or matrices, glas systems can use an explicit unboxed view such as `matrix:(type:float64,rows:32, cols:48, data:Binary)` or a structured view involving a list of lists of numbers. Either way, accelerators can manipulate the matrix efficiently. However, glas object will (currently) serialize the structured view inefficiently.
-
-It is feasible to extend glas object with some instructions to perform some simple operations on lists - i.e. to chunkify the list, to reinterpret binaries as bitstrings, perhaps even to apply a template to every element of a list.
-
-Whether this is worthwhile in practice would depend on whether glas systems favor the structured view of the matrix, and how much of a hassle converting to binary for serialization and stowage proves to be in practice. No need to bother if we just directly use the binary view as inputs to accelerators and storage in program state.
-
-### Unordered Data Types (Eventual Extensions)
-
-Support for sets, bags, and graphs have potential to be widely useful. However, this should wait until we have runtime acceleration for the same features. 
-
-### Templates (Proposed Extension)
-
-Glas Object is readily extended to model partial data by introducing labeled variables within data. This is useful insofar as it enables sharing of templates - stable tree roots with variable leaf elements. Viable extension:
-
-* *var* - header (0x03) . (varnat) - represents a variable or unknown, labeled by a natural number.
-* *app* - header (0x04) . (template offset) . (varnat K) . (array of args) - substitute sequentially labeled variables (var K, var K+1, etc.) with corresponding arguments from array. 
-
-This isn't a full lambda calculus. Relevantly, the template parameter is not abstracted. Evaluation is local, and termination is guaranteed. It is feasible to lazily or incrementally index data under application. However, I'm not convinced that this feature is worth the complexity tradeoff. 
-
-### LSM-Tree Extensions (Unlikely)
-
-Currently glob doesn't offer a way to express: this tree, except with some insertions or deletions. Such a feature wouldn't be worth much within a glob, but (like path accessors) it could be useful at external reference boundaries, supporting [log-structured merge (LSM) trees](https://en.wikipedia.org/wiki/Log-structured_merge-tree) at the glob layer.
-
-This is not difficult to support. But it significantly increases cost and complexity of reads, and it's difficult to leverage in contexts where programs operate on shallow data instead of deep path accessors. Further, if users require LSM-tree performance and don't require that it's observably a flat tree, they can model the LSM tree explicitly.
-
-I'll elide this feature for now. It might be worth revisiting in the future, but we can first try it as an external reference extension first.
