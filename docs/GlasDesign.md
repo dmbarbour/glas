@@ -8,9 +8,9 @@ The glas system starts with a command line tool 'glas'. This tool has built-in k
 
 ## Modules and Syntax Extension
 
-Modules are represented by files and folders. Every valid module compiles to a glas value (see *Data*). In many cases, these values represent *Programs and Applications*. But data modules are also useful! Programs may reference module values as constants. 
+Modules are represented by files and folders. Every valid module compiles to a glas value (see *Data*). In many cases, these values represent *Programs and Applications*. But data modules are also useful! They can be referenced as constants.
 
-A file is compiled based on its file extensions. To process a file named "foo.ext", the glas command line will first compile a global module named language-ext, which must define a compilation function, then apply this compilation function to the file binary. To bootstrap this system, a compiler for ".g" files is built in, and we first compile language-g if possible.
+A file is compiled based on its file extensions. To process a file named "foo.ext", the glas command line will first compile a global module named language-ext, which must define a compilation function, then apply this compilation function to the file binary. To bootstrap this system, a compiler for ".g" files is built-in and we first compile language-g if possible.
 
 File extensions may be composed. For example, "example.json.m4.gz" would essentially apply a pipeline of three compilers: language-gz then language-m4 then language-json. This might decompress the file binary, apply a text macro preprocessor, then parse the result as JSON. Conversely, if file extensions are elided, the compiled value is simply the file binary. 
 
@@ -25,9 +25,11 @@ Glas represents data using finite, immutable binary trees. Trees can directly re
         type Tree = ((1 + Tree) * (1 + Tree))   
             a binary tree is pair of optional binary trees
 
-A binary tree can easily represent a pair `(a, b)` or either type `(Left a | Right b)`. However, glas systems favor labeled data because labels are more meaningful and extensible. Labels are encoded into a *path* through a tree, favoring null-terminated UTF-8. For example, label 'data' would be encoded into the path `01100100 01100001 01110100 01100001 00000000` where '0' and '1' respectively represent following the left or right branch. A record such as `(height:180, weight:200)` may have many such paths with shared prefixes, forming a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). A variant would have exactly one label.
+A binary tree can easily represent a pair `(a, b)` or either type `(Left a | Right b)`. 
 
-To efficiently represent labeled data, non-branching paths are compactly encoded by the glas runtime system or [glas object serialization format](GlasObject.md). A viable runtime representation is closer to:
+However, glas systems favor labeled data because labels are more meaningful and extensible. Labels are encoded into a *path* through a tree, favoring null-terminated UTF-8. For example, label 'data' would be encoded into the path `01100100 01100001 01110100 01100001 00000000` where '0' and '1' respectively represent following the left or right branch. A record such as `(height:180, weight:200)` may have many such paths with shared prefixes, forming a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). A variant would have exactly one label.
+
+To efficiently represent labeled data, non-branching paths must be compactly encoded. A viable runtime representation is closer to:
 
         type Tree = (Stem * Node)       // as a struct
         type Stem = uint64              // encoding 0..63 bits
@@ -60,7 +62,7 @@ Integers in glas systems are encoded as variable length bitstrings, msb to lsb, 
         -3        00
         -4       011
 
-### Lists        
+### Lists, Arrays, Queues, Binaries
 
 Sequential structure is usually encoded as a list. A list is represented as a binary tree where the left nodes are elements and the right nodes form the spine of the tree, terminating with a leaf node.
 
@@ -71,23 +73,35 @@ Sequential structure is usually encoded as a list. A list is represented as a bi
          2 /\
           3  ()  
 
-Direct representation of lists is inefficient for many use-cases, such as random access or double-ended queues or binaries. Binary data is represented as a list of small integers (0..255). To enable lists to serve most sequential data roles, lists will often be represented using [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_%28data_structure%29). This involves extending the earlier 'Node' type with logical concatenation and array or binary fragments. Then we rely on a few built-ins or accelerated functions to slice, append, and index lists.
+Direct representation of lists is inefficient for many use-cases, such as random access arrays, double-ended queues, or binaries. To enable lists to serve many sequential data roles, lists are often represented using [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_%28data_structure%29) under-the-hood. This involves extending the 'Node' type described earlier with logical concatenation and array or binary fragments.
 
-### Unordered Collections
+Binaries receive special treatment because they are a popular data representation for filesystems and networks. Within glas systems, a binary is canonically represented as a list of small integers (0..255), but the finger-tree rope might allocate binary fragments of many kilobytes or megabytes. Program annotations can provide guidance, e.g. ask a runtime to 'flatten' a binary to control chunk size.
 
-To support unordered data types - such as finite sets, bags, or graphs - we must define a canonical representation as a binary tree. For example, a finite set can be modeled as a trie where every bitstring is a prefix-unique encoding of a binary tree. It doesn't need to be an efficient canonical representation because we'll avoid constructing this representation at runtime, instead relying on accelerated operations to construct or query the set and typeful abstraction to resist accidents.
+This idea generalizes to *Accelerated Representations*.
+
+### Accelerated Representations
+
+Beyond representing lists as a finger-tree ropes, we can generalize to unordered data types such as graphs, sets, and bags, or unboxed types such as floating point vectors and matrices. 
+
+In all cases, we first define a canonical representation as a binary tree. A set might be represented as a sorted list. For unlabeled graphs, we might refer to [graph canonization](https://en.wikipedia.org/wiki/Graph_canonization). A matrix might involve a list of lists. But the runtime is free to use a more efficient structure under-the-hood. 
+
+To leverage the accelerated representation requires accelerated or built-in functions. Abstract data types can resist accidental conversion between representations. 
+
+*Note:* Accelerated representations can often be retained when implicitly serializing data. For example, the glas application database or RPC can efficiently support graphs, sets, and unboxed matrices. To do the same with explicit serialization requires use of runtime reflection APIs.
 
 ### Large Values
 
-To support larger-than-memory data, glas systems may leverage content-addressed storage to offload subtrees to disk. This optimization is transparent to most functions, but can be guided by program annotations and is potentially visible through a reflection API. Content-addressed references simplify memoization, communication, and persistent storage of large structures. The proposed representation is [glas object (glob)](GlasObject.md) binaries. 
+To support larger-than-memory data, glas systems may leverage content-addressed storage to offload subtrees to disk. This optimization is transparent to most functions, but can be guided by program annotations and is potentially visible through a reflection API. Content-addressed references simplify memoization, communication, and persistent storage of large structures. The proposed representation is [Glas Object (glob)](GlasObject.md) binaries. 
 
 ## Programs and Applications
 
-A program is a value with a known interpretation. An application is a program with a known integration. Although a system can support many application and program models, we must standardize at least one to bootstrap the glas system and serve as a foundation. In this role, glas specifies the ".g" language.
+A program is a value with a known interpretation. An application is a program with a known integration. The glas system specifies the ".g" language to bootstrap the system and serve as a foundation. However, many other models may eventually be supported through the module system.
 
-A valid ".g" file will compile to `g:(Dict of (Namespace of Method))`. The dictionary defines a collection of [namespaces, interfaces, and mixins](ExtensibleNamespaces.md). An application module defines the 'app' namespace, which implements interfaces recognized by the runtime such as the 'step' method for background processing or 'http' to receive HTTP requests. Effect methods are installed by the runtime as an implicit mixin. See [Glas Apps](GlasApps.md).
+A valid ".g" file will compile to `g:(Dict of (Namespace of Method))`. The dictionary is a record of [namespaces, interfaces, and mixins](ExtensibleNamespaces.md). An application module defines namespace 'app', which implements interfaces recognized by the runtime, such as 'step' for background loops. An application may declare abstract methods to access the filesystem, network, or other external resources, to be provided by the runtime. See [Glas Apps](GlasApps.md).
 
-Methods are compiled to a Lisp-like [abstract assembly](AbstractAssembly.md). A proposed set of AST constructors for this intermediate language is developed below. 
+Despite some OOP influences, the ".g" language is more procedural in nature, with some inspiration from [grammars and logic](GrammarAndLogicProgramming.md).
+
+Methods are compiled to a Lisp-like [abstract assembly](AbstractAssembly.md). A proposed set of AST constructors is developed below. 
 
 ### Control Flow
 

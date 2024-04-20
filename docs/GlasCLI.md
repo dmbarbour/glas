@@ -52,6 +52,10 @@ In context of glas, a distribution represents a set of named global modules that
 
 However, this is complicated and I'm not in a hurry. Full support for distributions can be deferred until after glas CLI bootstrap is completed.
 
+### Reload Config
+
+A runtime could follow OS conventions and automatically reload configuration and sources based on OS signal, such as SIGHUP. Additionally, this might be available through runtime reflection, including the reflective HTTP interface.
+
 ## Running Applications
 
         glas --run ModuleRef -- Args
@@ -139,7 +143,19 @@ The target architecture could be provided as an argument or by defining a 'targe
 
 *Note:* It is feasible to support early bootstrap via intermediate ".c" file or similar, to leverage a mature optimizing compiler. But I hope to eventually express all optimizations within the glas module system!
 
-## Early Applications
+## Misc
+
+### RPC Registry Configuration
+
+The simplest registry might be configured as a remote service (URL and access tokens), shared database, or distributed hashtable. We also need composite registries, and support for filtering and editing 'tags' for both publish and subscribe.
+
+### Database Configuration
+
+At least one database should be configured to support persistent data. We might initially use LMDB or RocksDB, which would require configuring a filesystem location. 
+
+Eventually, we might also want to support distributed databases. And it might be useful to compose databases flexibly, e.g. based on logical mounting or overlay of key-value databases. However, I think such features very low priority until the distant future. 
+
+### Early Applications
 
 The executable should have minimum logic, but where should I focus initial attention for user-defined apps?
 
@@ -153,3 +169,6 @@ The executable should have minimum logic, but where should I focus initial atten
 * IDE projectional editors, programmable wikis
 * Web apps? (Compile to JavaScript or WebAssembly + DOM)
 * Notebook apps? (something oriented around reactive, live coding with graphics?)
+
+
+

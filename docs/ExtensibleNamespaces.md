@@ -1,8 +1,38 @@
 # Extensible Namespaces
 
-This document describes an AST for a purely functional expression of an extensible namespace model that supports defining names, renames and overrides, declarations and late binding of definitions, recursive definitions and graph structures, access control, hierarchical names and component structure, multiple inheritance and mixins, and higher order templates.
+A namespace is essentially a dictionary with late binding of definitions, allowing for extension and recursion. The model described in this document supports multiple inheritance, mixins, hierarchical components, and robust access control to names. However, support for 'new' or first-class objects is not implied. 
 
-This namespace model assumes definitions are represented in [abstract assembly](AbstractAssembly.md), which offers additional benefits for metaprogramming and extensibility. 
+A few namespace operations require touching definitions, e.g. to rewrite names or to support metaprogramming. This document assumes [abstract assembly](AbstractAssembly.md), but other definition types can be adapted. 
+
+## Overview of Operations
+
+Names are prefix unique, thus we don't need separate operations for prefixes vs names. But I use Prefix vs Name to distinguish the expected use case.
+
+* *annotation header* - `ns:(op:Op, Annotations)` - applies behavior under 'op' if defined, otherwise identity. All other content is annotations, to support tooling. The 'ns' header is often required at the root node to double as a variant header.
+* *sequence* - `do:(List of Op)` - applies each operation in the list to the namespace, head to tail.
+
+* *define* - `df:(List of (Name, Def))` - define some words.
+* *remove* - `rm:(List of Prefix)` - delete all definitions under every prefix in list
+
+* *rename* - `rn:(List of (Prefix, Prefix))` - 
+* *move*  - `mv:(List of (Prefix, Prefix))` - 
+* *translate* - `tl:(rn:(List of (Prefix, Prefix)), in:NS)` - modifies the names to which NS is applied.
+
+* *branch* - `br:(c:Op, t:Op, f:Op)` - run operation 'c'. If that succeeds, run operation 't', otherwise undo 'c' and run operation 'f'. 
+* *require* - `rq:(List of Prefix)`
+* *deny* - `dn:(List of Prefix)`
+
+* *map* - modify definition of everything in a target namespace by applying an operation to the AST.
+* *copy* - create a definition in the dest namespace for every definition in the source namespace, defined by an operation on the same name in the source namespace.
+
+
+*Thought:* Do I need a variant of 'translate' for 'move'? This would affect everything except definitions in the translated namespace. I think this would be awkward to apply. Let's just hold off on this until I see a use case.
+
+
+
+
+
+## Performance Concerns
 
 Performance is also a significant concern. I expect namespaces to grow very large and contain many redundant definitions tucked away in private namespaces. Thus, careful attention is needed towards indexing, lazy evaluation, and caching.
 
@@ -62,6 +92,10 @@ Annotations about names might be represented within the namespace, e.g. to annot
 ## Nominative Types
 
 It is feasible to support limited reflection from the language into the namespace. This may include access to names as abstract values or abstract types. However, it would probably be best to treat names as ephemeral types.
+
+## Implicit Parameters and Algebraic Effects
+
+Although an implicit parameter or algebraic effect is provided on the data stack, we can control access through the namespace. Among other benefits, this should simplify interaction between implicits and RPC. However, scope still needs attention. 
 
 ## Namespace Level Metaprogramming
 

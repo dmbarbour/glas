@@ -1,65 +1,71 @@
 # Graphical User Interface for Glas
 
-In a glas system, dedicated GUI API should systematically take advantage of transactions, the transaction loop, content-addressed storage, and automatic code distribution. I would also like to support HTTP-like features, e.g. support for concurrent users, multiple views, navigation, history, a back button. 
+It is feasible to support a conventional GUI interface, but that isn't a good fit for my vision of glas systems. My big idea is *users participate in transactions*. 
 
-## Transactional GUI
+## Transactional User Interaction
 
-The big idea is for human users to participate in transactions and transaction loops. Consider a few potential modes of participation:
+It isn't easy for human users to participate in transactions! The biggest problems are that humans are slow to respond, slow transactions are disrupted by background events, disrupted transactions are repeated, and humans also don't like repeating themselves. 
 
-* *read-only views* - Users observe a system without modifying it. This can be modeled by a transaction that we abort after rendering some output to the user. The transaction itself doesn't need to be read-only: it can be useful to 'view' outcomes of an action. Read-only views might further distinguish snapshots (like HTTP GET) and live views (via transaction loop).
-* *approved action* - Starting with a read-only view for an effectful transaction, we could add a submit button to commit. To avoid surprises, the GUI might also present a summary of relevant changes for approval upon submit. This would from stability heuristics.
-* *live interaction* - User behavior is continuously published through the GUI and implicitly committed when possible. The user receives continuous feedback from the application. Aborted transactions are still rendered, but they might be presented differently to clarify that they were aborted.
+To solve this, we introduce a user agent to handle fast response and repetition. But the user must be provided tools to see what the user agent sees and control how the user agent responds on their behalf. 
 
-It is feasible to mix modes or choose between them procedurally.
+This involves *reflection* on the user agent, together with manipulation of user variables. Reflection allows users to observe aborted transactions. This provides a basis for read-only views or to withhold approval until the user has time to understand the information on display. User variables might be rendered as knobs, sliders, toggles, and text boxes.
 
-Humans cannot directly participate in transaction loops. Instead, users will manipulate an agent to participate on their behalf with attention to transaction internals. This manipulation is stateful, usually focused on variables but it might generalize to live coding. Variables might be presented graphically as knobs, sliders, toggles, buttons, text boxes, and other conventional GUI elements.
+Some possible modes for user participation:
 
-## GUI Integration
+* *read-only* - The user agent continuously or infrequently renders the GUI then aborts.
+* *live action* - The user agent continuously renders the GUI and commits when possible.
+* *approved action* - The transaction is aborted unless the user explicitly submits. The GUI system tracks user observations and presents a summary of relevant changes for approval in proximity to a submit button. 
 
-Potential use cases:
+The *approved action* mode gives users the most stake in each transaction. Approving a summary of relevant changes even simulates a read-write conflict analysis. However, it's slow and deliberate, not suitable for every context. The *live action* mode is close to [immediate mode GUI](https://en.wikipedia.org/wiki/Immediate_mode_GUI), while the *read-only* mode is suitable for maintaining user awareness.
 
-* *main app GUI* - runtime renders any application that implements 'gui'
-* *remote GUI* - published RPC objects may define 'gui' for remote access
-* *debug GUI* - app components may define 'gui' for live coding or debugging
-* *web-app GUI* - compile feature-restricted 'gui' to a web application
+In context of *live action* mode, we may need to buffer or latch user inputs. For example, pushing a button sets a 'button-pushed' variable to 'true' until it is read and reset. The button would continue to render in a depressed state while 'button-pushed' remains true.
 
-In general, rendering a GUI is stateful. It interacts with state on the user agent's end. For the main app GUI, user state would belong to the runtime. It can potentially be accessed through the reflection API, or perhaps via the database API if `sys.refl.gui.state` returns a database key.
+## Proposed API
 
-The GUI transaction should not be used for background processing. It will often be running as a read-only view, and even *live interactive* GUI may run infrequently or with reduced priority if the application doesn't have user focus.
-
-## Proposed Interface
-
-A proposed application gui interface:
+The proposed API:
 
         gui : UserAgent -> ()
 
-Here, UserAgent is an abstract, ephemeral RPC object that provides methods to render content. This allows for partial rendering even in case of a failed transaction. In addition to rendering, the UserAgent provides access user state and information about the display environment (window size, support for multi-media, etc.). A URL or query string would be modeled as user state. The application gui may discriminate on which interfaces UserAgent implements.
+The 'gui' method calls back to the user both to render data and to ask for information including navigation variables, window sizes, feature support, preferences, etc. relevant to constructing a view. The application may write user variables, too, though this might be presented to the user as a recommendation. 
 
-One motive for this design is to support fine-grained code distribution. In case of networked operations, fragments of 'gui' might evaluate user-side, and parts of 'UserAgent' might evaluate application side, using fine-grained calls to subprograms.
+Under premise of user participation in transactions, we render aborted transactions. Further, we leverage aborted transactions as a basis for 'read-only' GUI views. Exactly what is rendered is left to the user agent, i.e. access to failed hierarchical transactions might only be visible in a debug view. We can render what-if scenarios by performing some other operations before rendering the GUI in an aborted transaction. 
+
+*Aside:* The proposed API also aims to localize input validation and avoid construction or parsing of large intermediate values. The user agent can directly operate on its internal abstract scene graph.
+
+### Integration
+
+We can potentially find the 'gui' in many locations: the application toplevel, hierarchical application components, or RPC objects published to the registry.
+
+When defined at the application toplevel, the GUI might be directly rendered by the runtime, i.e. the runtime provides a built-in user agent. The application can potentially manipulate user agent state and configuration options through a system API. 
+
+When defined in application components, the GUI would only be accessible in context of live coding or debug views. However, these interface would also be convenient for hierarchical composition of the toplevel application GUI.
+
+When defined on RPC objects, we can easily browse through the available objects and render them. Or we could compose those objects into another application's GUI, similar to normal application components.
+
+### GUI to Web Application Adapter
+
+We can UserAgent interface that supports only a subset of features easily implemented on the web application stack. We can leverage XMLHttpRequest to model transactions between a browser and an application. And it is difficult, but not impossible, to compile some part of the 'gui' method into JavaScript that runs on the browser. Further, we could specialize the JavaScript based on stable navigation variables, including URL.
+
+I think this would be a very effective option for integrating GUI. But actually developing the compiler won't be trivial. 
 
 ## Rendering Temporal Media
 
-It is semantically awkward to directly ask a UserAgent to 'play' music or other temporal media in context of repeating or aborted transactions. However, we could ask the UserAgent to 'render' a sound graph. Similarly, we could render a video as a deck of cards or list of frames, or just a box with an initial image and a play button. 
+An application may ask a user agent to 'render' a video for user consumption. 
 
-Indirectly, the video could be associated with some user state or tooling that indicates whether the video is playing, and that state could potentially be manipulated through the UserAgent. 
+Returning to the big idea of user participation in transactions, the user should have the tools to comprehend this video before committing to anything. Such tools certainly include the option to 'play' the video. But users could also speed it up, slow it down, run in reverse, run a short segment in a loop, jump around, search based on images or contained dialog, and so on.
 
-## Forked GUI
+The application could modify user variables to begin playing the application on behalf of the user. However, like any other manipulation of user variables, this might be presented to the user as a recommendation.
 
-An application might make some non-deterministic choices while rendering the GUI. We might present this to the user as multiple windows.
+Intriguingly, temporal media could be downloaded and buffered as needed via the content addressed storage layer. 
 
-An interesting case is when we fork in the *approved action* modality. We might want to commit only the branch we selected. This might involve saving the fork path and providing means to replay it when the transaction is retried.
+## Concurrent GUI
 
-## Multi-User GUI
+The *transaction loop* supports an optimization where fair non-deterministic choice within an isolated transaction can be replaced by replicating the transaction and taking both choices. Further, both transactions may commit if there are no read-write conflicts.
 
-Although multi-user transactions are feasible (with some extra setup), they're a little restrictive - every user has veto power. A better way to model a multi-user GUI is to introduce an intermediate application that serves as a shared room and supports arbitrary collaboration models such as voting, approval tracking, or granting control. 
+This also applies for rendering a GUI. Each fork might render into a separate GUI window, effectively presenting multiple applications. However, in context of *approved action* we would need to restrict approval to a specific stable fork.
 
-## User Agent API for OS Apps
+Intriguingly, there is another possibility: let the user-agent influence non-deterministic choice, locking down or browsing possible outcomes. This can be understood as a form of user participation in transactions: abort and ignore transactions that aren't on the user's desired path.
 
-## User Agent API for Web Apps
+## Multi-User Transactions
 
-## User Agent API for Console Apps?
-
-It is feasible to develop a user agent API that is suitable for running a GUI in console, leveraging ANSI escape codes and perhaps some terminal graphics extensions (like [kitty](https://sw.kovidgoyal.net/kitty/graphics-protocol/)). 
-
-Not sure this is worth pursuing, though. Maybe as an adapter for console IO.
-
+The API directly supports multi-user systems where each user holds GUI connections. However, to let multiple users participate in a shared transaction requires some indirection. For example, we can model a shared virtual room that implements a multi-user agent and coordination protocols, such as handoff or voting.

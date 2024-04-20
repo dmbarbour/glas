@@ -1,92 +1,93 @@
 # Glas Applications
 
-## Applications as Transactional Objects
+## Overview
 
-A glas application is expressed as an abstract class or mixin. The application declares abstract methods to be provided by the runtime and implements concrete methods for system integration. 
+A glas application is expressed as a namespace with some abstract methods.
 
-Application methods are always called in context of an atomic, isolated transaction. Transactions simplify reasoning about progress, failure, interruption, live coding, and open systems. Consistency can be weakly enforced by defining *transaction invariant assertions* that are checked before commit. In general, transactions may be distributed, involving method calls across multiple applications, e.g. via RPC.
+Instead of a long-running 'main' loop, an application defines a 'step' methods that is repeatedly clled by the runtime to represent background processing. The application may also implement interfaces to handle HTTP requests, serve remote procedure calls, or support user interaction.
 
-Instead of a 'main' procedure, an application typically defines 'start', 'step', and 'stop' methods. After start, 'step' is called repeatedly in separate transactions. With a few optimizations, this can express reactive and concurrent systems (see *Transaction Loops*). An application may provide interfaces to handle HTTP or RPC requests between steps. 
+Instead of a global namespace, the application declares abstract methods to access the filesystem, network, and other external resources. Additionally, we'll use an [abstract assembly](AbstractAssembly.md) such that even compiler primitives are abstract methods. To resist name collisions and simplify access control, these abstract methods are organized under just a few prefixes (proposed 'sys.' for runtime, '%' for abstract assembly). 
 
-I propose to centralize runtime provided interfaces under hierarchical namespace 'sys'. This resists name conflicts and simplifies routing, sharing, and sandboxing access to effects in case of hierarchical composition. However, not all methods under 'sys' need to be runtime provided, e.g. defaults are permitted, type annotations might be checked by the runtime, and there may be special cases where the system wraps a user-provided method.
+Instead of containing state, state is logically mapped to an external key-value database. The program syntax and compiler is designed help automate and optimize this mapping. Some regions of this database are in-memory for performance, but others may be bound to an external database via configuration.
+
+Application methods are implicitly called in context of atomic, isolated transactions. Consistency and durability are left respectively to the application and external database. Transactions simplify reasoning and allow code to focus on the 'happy path' where everything is going well. The repeating 'step' transaction allows for reactivity, concurrency, and distribution as optimizations; see *Transaction Loops*.
+
+This represents a significant divergence from conventional design, but there are also many familiar elements.
 
 ## Transaction Loops
 
-In the transaction loop application model, systems are modeled by an open set of atomic, isolated, repeating transactions operating in an environment. This has many nice systemic properties, contingent on applications are expressed and a sufficiently powerful optimizer:
+When an atomic, isolated transaction is predictably repeated, we can apply many useful optimizations and support some interesting features.
 
-* *Parallelism.* Multiple transactions can be opportunistically evaluated in parallel. A subset of transactions (those with no read-write conflicts) can be committed in parallel. In context of repeating transactions, the system can heuristically schedule transactions to avoid conflicts. Programmers can also mitigate conflict, e.g. by introducing intermediate queues. *Note:* Depending on language, there may be opportunities for parallelism within transactions, too.
+* *Incremental.* Instead of recomputing everything from the start of the transaction, we can cache a 'stable prefix' and recompute from where inputs change. We would need to track inputs regardless for read-write conflict analysis.
 
-* *Concurrency.* Repetition and replication are equivalent for isolated transactions. A transaction that makes a fair non-deterministic binary choice can be modeled as a pair of transactions that each deterministically select a different choice. These transactions can evaluate in parallel. 
+* *Reactive.* No need to repeat an obviously unproductive transaction. A compiler could instead attach some hooks to wait for relevant changes before retrying. Obviously unproductive transactions include those that would abort or would repeatedly write the same data into the same variables.
 
-* *Incremental Computing.* A repeated transaction will often repeat many computations. Instead of recomputing everything, we can cache a stable prefix and only recompute from the point where inputs change. Combined with *concurrency*, a stable non-deterministic choice effectively becomes a separate thead.
+* *Concurrent.* To isolated transactions there is no observable distinction between repetition and replication. If a transaction includes a non-deterministic choice, we can replicate the transaction and evaluate both choices in parallel. Assuming there is no read-write conflict, we can commit both. If the choice is within the stable prefix for incremental computing, each replica effectively become a separate thread.
 
-* *Reactivity.* The system can recognize obviously unproductive transactions, such as repeating an aborted transaction, a read-only transaction, or a transaction that will write the same values to the same variables. Instead of warming the CPU, the system can set triggers and wait for a relevant change. Reactive applications can be designed to leverage this optimization.
+* *Live Coding.* A repeating transaction is easily modified between transactions. Further, it is feasible to evaluate a proposed update in the live system and detect obvious transition errors before committing to anything.
 
-* *Live Coding.* Transaction loops provide a natural opportunity to update code between transactions. Further, they provide an opportunity to test proposed code changes within a transaction, without committing to anything. However, language and IDE support are necessary to provide a smooth transition, especially in case of schema update.
+* *Distribution.* Assume we replicate a repeating transaction across multiple nodes, leveraging a distributed database for application state. While the network is connected, this replication doesn't affect formal behavior. While the network is disrupted, the application can continue to provide degraded service in each partition containing a replica. The system can recover resiliently when connectivity is restored. 
 
-* *Persistent.* Application state can be transparently backed by a persistent filesystem or network resources, allowing for the application to maintain stable behavior over multiple power cycles. Of course, this isn't perfectly transparent; the application must ultimately be designed to handle long 'sleeps'. 
+* *Congestion Control.* The system can heuristically tune relative frequency of repeating transactions to control buffer sizes. For example, transactions that would write to a buffer can speed up when the buffer is running low and slow down when the buffer is running high, and vice versa for readers. This is easily combined with more explicit control.
 
-* *Consistent.* Transactions simplify the problem of enforcing consistency. Assumptions about application or system state can be checked before we commit to a transaction that might break them. Checks may be evaluated using a hierarchical transaction that we later abort. 
+* *Real-time.* A repeating transaction can wait on a clock by simply aborting when it notices the time is not right. This combines nicely with *reactivity* for scheduling future actions. Intriguingly, the system can precompute the transaction slightly ahead of time, hold it ready to commit, and block any transactions that would result in a read-write conflict. This can form a robust basis for real-time systems.
 
-* *Distributed.* Repetition and replication are equivalent for isolated transactions. We can semi-transparently mirror a transaction loop application across multiple nodes, leveraging a distributed database and pubsub RPC. In case of network disruption, each mirror can provide degraded service using only resources within its own partition, then recover resiliently when connectivity is restored. 
+* *Auto-tune.* A system control loop may read some tuning parameters. An external agent might heuristically adjust tuning parameters based on feedback. A transaction loop makes this pattern more robust and flexible because we can potentially test a proposed adjustment without committing to it. Changes that would obviously lead to worse outcomes can be aborted.
 
-* *Congestion Control.* A system can heuristically adjust frequency of transactions that read and write buffers (such as queues or bags) based on how full or empty are the buffers. This would help balance asynchronous producer-consumer interactions. I wouldn't recommend depending entirely on heuristics, but this can easily supplement more explicit controls.
+* *Loop Fusion.* The system is free to merge smaller transactions into a larger transaction. This can be performed for performance reasons where the fused transaction improves stability or allows some new optimizations. It could also be used for debugging, e.g. to obtain a view immediately after specific transactions and control commit.
 
-* *Interaction.* Applications can interact within a distributed transaction, perhaps based on remote procedure calls (RPC). In addition to the 'step' method for background processing, RPC calls may also be repeated, extending the benefits of transaction loops across application boundaries.
-
-* *Real-time.* A transaction can abort if it runs too early. A repeating transaction can abort repeatedly, waiting on the clock. This is easily optimized for incremental computing and reactivity. Further, the system can easily precompute the transaction for a future time, and hold it ready to commit. Assuming adequate control of scheduling and resource use, this can support real-time systems.
-
-* *Auto-tune.* An application may read some parameters representing external tuning or calibration. A system could automatically adjust these parameters to improve a fitness heuristic. With transactions, it is feasible to observe how fitness is influenced by proposed parameters without committing to anything. In context of a transaction loop, tuning may easily continue as the application runs.
-
-* *Loop Fusion.* In some cases it is possible to optimize a repeating sequence of transactions further than the individual transactions. With JIT, such optimizations potentially cross application boundaries. Can be guided by fused transaction invariants, e.g. 'fusion queues' must be empty only upon final commit. 
-
-To fully leverage transaction loops requires many non-trivial optimizations. However, even without those optimizations, it is feasible to compile procedures or multi-process programs into state machines for evaluation across multiple transactional steps. This can be efficient with just a little caching and acceleration, and provides a robust semantics for how procedures interact in a concurrent system.
+These optimizations are non-trivial and won't immediately be available for glas systems. Short term, we might be limited to single-threaded event loops or state machines. 
 
 ## Ephemeral Types
 
-Abstract types are 'ephemeral' if restricted to the current transaction. To support my vision for glas systems, I propose that essentially all reference-like types should be ephemeral including database keys, first-class objects or functions, and nominative types declared in the application namespace.
+A very useful concept for transactions is that some abstract types are 'ephemeral', restricted to use within the current transaction. Ephemeral types cannot be stored into persistent state, but they may be 'stable' in context of incremental computing and subject to caching in a *transaction loop*.
 
-Ephemeral types can simplify reasoning about live coding, authorization and revocation, discovery in open systems, interaction between systems with different life cycles or intermittent connectivity. The cost of ephemeral types can be mitigated via partial evaluation and incremental computing, e.g. in context of a *transaction loop*.
+Most abstract types should be ephemeral in glas systems, including nominative types, first class functions, database keys. The motive is to simplify live coding and persistence, discovery and disruption, authorization and revocation. One exception to this rule is abstraction to protect performance of *accelerated representations*, such as graphs, sets, and unboxed matrices.
 
-When serialized, ephemeral types could be concretely represented as indices into transaction-specific tables. They can be protected against forgery in open systems via cryptographically random allocation or HMAC.
+When serialized, ephemeral types might be concretely represented as indices into transaction-specific tables, perhaps protected via HMAC. 
+
+Beyond ephemeral types, we might benefit from other temporal scopes:
+
+* Process lifespan - applicable to 'in-memory' database region, file handles, TCP connections, GUI windows, and so on. Effectively ephemeral to any remote process.
+* Method call lifespan - useful for local variable references or representing closures on the call stack. Similar use cases as the Rust borrow checker.
+
+Ephemeral types can feasibly be tracked and checked at runtime, but static analysis is preferable.
 
 ## Transactional Remote Procedure Calls
 
-A distributed transaction may involve remote procedure calls (RPC) to multiple applications. This works well with the *transaction loop* application model, i.e. an RPC call within a loop can still exhibit features such as incemental computing, reactivity, and concurrency via choice. 
+Applications may be able to publish and subscribe to RPC 'objects' through a configurable registry. An application may send and receive multiple remote calls within a distributed transaction. The distributed transaction protocol should ideally support the *transaction loop* optimizations described earlier, such as incremental computing, reactivity, replication on non-deterministic choice, and loop fusion.
 
-An application will publish and discover RPC 'objects' through a configurable registry. A basic registry might be represented via remote service (URL and access tokens), distributed hash table, or shared database. But in practice, we'll want many fine-grained registries to support access control and integration between communities. A composite registry can filter and rewrite RPC objects as they are published to or discovered in component registries. This effectively represents a routing table. RPC objects may include ad-hoc 'tags' to guide routing.
+Publishing RPC objects might be expressed as defining a hierarchical component `rpc.foo.(Method*)`. Subscribing to an RPC interface might conversely be expressed as declaring `sys.rpc.bar.(AbstractMethod*)`.  In case of missing or ambiguous remote object, the transaction may simply diverge. But we could also support collections both directions, i.e. `rpc.foo[]` and `sys.rpc.bar[]`, with `sys.rpc.bar[].keys` listing available instances.
 
-To support interaction, the RPC system should support RPC objects as parameters or results. These objects will implicitly have *ephemeral type*, valid only within the current transaction.
-
-*Note:* Unexpected reentrancy is a common source of bugs. Reentrancy is difficult to avoid, especially in context of open system RPC. But we could annotate assumptions to support static or dynamic checks, reject transactions that violate assumptions.
+The configured registry is generally a composite with varying trust levels. Published RPC objects or subscribed interfaces will include tags for routing and filtering. For example, we might define `.tag.access.trusted` on a published RPC object to ensure it's only published to trusted registries, or add it to a subscribed RPC object to only search trusted registries. Tags can also identify specific services or topics. Tags might be represented by abstract methods.
 
 ### Optimizations
 
-Instead of always performing a remote call, we might distribute some code. This code can handle some calls locally and preprocess arguments to reduce serialization overheads. Most issues with code distribution can be mitigated by aborting transactions and maintaining the option for a remote call. 
+When publishing an RPC object, we could also publish some code for each method to support fully or partially local evaluation and reduce network traffic. Conversely, when calling a remote method, the caller could include some code representing the next few steps in the continuation, which would support pipelining of multiple remote calls.
 
-A stable, read-only `unit -> Data` operation can be cached and mirrored on remote nodes to support low-latency access. Instead of a full distributed transaction, we can track coarse per-node version metadata for a lightweight consistency check. If this optimization is applied predictably, RPC can double as a publish-subscribe protocol.
+When an RPC method refers to a cacheable computation, we can potentially mirror that cache to support low-latency access between nodes. This allows RPC registry to fully serve the role as a publish-subscribe system.
 
-The system can evaluate some procedural operations in parallel, but RPC resists static analysis. Transactions simplify this: if an ordering accident occurs, we can abort and retry. This requires tracking metadata, such as logical time, to efficiently detect ordering accidents and resist repeating the accident on retry. 
-
-RPC can transparently integrate the glas stowage system (content-addressed references for large values) and [content delivery networks (CDNs)](https://en.wikipedia.org/wiki/Content_delivery_network). This can reduce network overheads in many cases, e.g. in context of persistent data structures, large videos, or distributing entire libraries of code.
-
-Code distribution, caching, parallelism, and stowage should be guided by annotations. Use of CDNs should be configurable. 
-
-*Note:* The RPC system and distributed transaction model must also be designed to also support *transaction loop* optimizations such as incremental computing, reactivity, and replication on 'fork'.
+Large values might be delivered via proxy [CDN](https://en.wikipedia.org/wiki/Content_delivery_network) instead of communicated directly, leveraging content-addressed references. This can reduce network burdens in context of persistent data structures, large videos, or libraries of code.
 
 ## Application State
 
-The glas runtime will provide a hierarchical key-value database for application state. A programming language for glas systems should make it easy to bind state to variables and hierarchical software components. Compared to conventional programming languages, there is more emphasis on stable, static allocation of state because it simplifies orthogonal persistence, schema updates, and live coding.
+The runtime implements a key-value database API with both shared persistent and private in-memory data. The persistent database is configured externally and may include distributed databases. The database should implicitly support transactions, accelerated representations, and content-addressed storage for large values.
 
-A runtime configuration will usually describe at least one persistent database that is shared between glas applications by a single user, or perhaps shared between a few mutually trusted users. A configured database could be distributed, with built-in support for mirroring. Additionally, the runtime provides an in-memory database whose lifespan is limited to the OS process. An application can choose between binding state to an in-memory or configured database.
+Database keys integrate logic for persistence and access control. A basic key might be constructed as `sys.db.key(oldKey, sys.db.dir("foo"))`, while an in-memory key might use. `sys.db.key(fooKey, sys.db.memdir("bar"))`. We might understand `sys.db.memdir` as constructing an index value with the process lifespan (see *ephemeral types*). Regarding access control, it is feasible to design a directory structures involving hash preimages or zero-knowledge proofs. 
 
-Specialized data types, such as queues, and bags, can potentially enhance performance and partitioning tolerance. For example, we can still write to a queue even if we're in a separate partition from the reader, whereas in general writing to a remote variable should be blocked.
+Supported data types should include variables, queues, and bags. These are simple to implement and have convenient behavior in context of concurrency, distribution, and network partitioning:
 
-Database keys are abstract and ephemeral. Initial keys refer to the configured or in-memory databases. Hierarchical structure is based on providing a key constructor such as `path(dbKey, "foo")`. Persistent references such as URLs must be translated to ephemeral keys before use.
+* variables are read-write in one partition, cached read-only on others
+* queues are read-write in one partition, buffered write-only on others
+* bags are read-write on all partitions, rearranging items if connected
 
-### Indexed Collections   
+We can slowly contemplate extensions for [CRDTs](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) and other specialized types. 
 
-Indexed collections can be supported at language layer with some dedicated syntax. 
+Anyhow, the programming language should automate most mapping from declared data variables to database keys and data access methods. Key construction should be heavily optimized, e.g. a static in-memory key might reduce to a cached pointer under-the-hood.
+
+### Indexed Collections
+
+An application can dynamically allocate keys within the key-value database. With a little syntactic support, these keys could map to a collection of components in the namespace.
 
 Proposal:
 
@@ -94,28 +95,24 @@ Proposal:
 
           # rewrites to something like
 
-        let *foo[].index = foo[].select index in 
+        with *foo[].index = foo[].select index do
           foo[].inst.method(args)
 
-Here `foo[]` is a namespace, `*foo[].index` is an implicit parameter, `foo[].select` can verify or virtualize the provided index, and `.inst` distinguishes instance-level methods from collection-level. The index type is not restricted to integers or plain old data, though we'll eventually need to construct database keys based on the index. 
-
-Implicit parameters are convenient for more than indexing. I assume implicit identifiers are abstract, ephemeral, and unforgeable similar to database keys. This simplifies reasoning about who can access an implicit and optimization of implicits in context of RPC. I might adjust syntax around implicit parameters to support abstraction. 
-
-*Note:* Unfortunately, this design is incompatible with my earlier ideas about expressing transaction invariants as assertions in the namespace. I'll need to reconsider one side or the other.
+The idea here is to supply an index as an *implicit* argument to the instance method. Might need to return to this after I have a clear model for implicits. Anyhow, the index will later be used to dynamically construct a database key. 
 
 ### Cached Computations
 
-Manual cache management is notoriously awkward and error-prone. It's too easy to miss a cache invalidation. In context of transaction loops, cache state can very easily result in read-write conflicts. 
+Caching should not be manually implemented using state. Instead, it should be supported by the compiler and guided by annotations. This significantly reduces risk of cache management errors, separates cache management from read-write conflict analysis between transactions, and would be fully compatible with *ephemeral types*.
 
-Instead, we could annotate some read-only computations for implicit caching. This moves cache invalidation to the compiler and allows conflict detection to be cache aware. It also integrates nicely with RPC and code distribution, enabling RPC to double as publish-subscribe via 'publishing' cached computations.
+Intriguingly, in context of RPC registries and code distribution, automatic caching allows the RPC registry to double as a complete publish-subscribe system.
 
 ### Shared State
 
-Shared state is useful for asynchronous interactions between applications, e.g. we could write to a queue when the reader isn't even running. 
+Shared state is a convenient basis for asynchronous interaction between applications. Most weaknesses of shared state are mitigigated between transactions, integration with content-addressed storage and accelerated representations, specialized data types (queues and bags), and the transaction loop optimizations (incremental computing, reactivity).
 
-Many weaknesses of shared state are mitigated between transactions, specialized data types like queues, and structured data with content-addressed stowage so we can efficiently work with large values. Fine-grained access control might be supported via introducing access tokens into key construction. Regardless, this should be more robust and convenient than filesystem or shared memory.
+Partial sharing is feasible with database-level access control. For example, we could model a 'mailbox' as a bag that requires different access tokens for read and write. This is an idea to explore later.
 
-In some cases, we could try shared state via an intermediate RPC service.
+However, if we need trusted logic managing shared state, it's better to introduce an intermediate service that all parties can talk to via transactional RPC.
 
 ## Application Provided Interfaces
 
@@ -133,45 +130,19 @@ The runtime configuration can also list application interfaces the runtime is ex
 
 ### RPC Interfaces
 
-I propose to directly represent RPC objects and interfaces in the application namespace, with implicit publish-subscribe of RPC through an externally configured registry. 
-
-To publish a calculator service, we might define `rpc.mycalc`. To subscribe to calculator services, we might declare an indexed collection of abstract interfaces via `sys.rpc.calculator[]`, then call `sys.rpc.calculator[].keys` to return a list of valid indices. For symmetry, we might also support publishing collections and subscribing to singletons. In those cases, we would define `keys` on publish, and would raise error in case of ambiguity or absence of a singleton.
-
-For an interface to match an object, the object must define every method declared in the interface unless the interface defines a default for that method. Further, the RPC system may recognize type annotations and automatically verify compatibility.
-
-Published objects and subscribed interfaces may define and declare trivial 'tag' methods to support routing. A configured composite registry can route `tag.access.trusted` and `tag.access.public` to different sub-registries. We could filter on ad-hoc topics, e.g. `tag.topic.cat-pics`. Tags might include domain names or GUIDs to simplify singleton subscriptions, e.g. `tag.service.com.example.foo`. This set of tags is rewritten as the RPC object is routed.
-
+I detailed these earlier.
+ 
 ### HTTP Interface
 
-Applications can define an HTTP interface to support simple requests such as GET and POST. Each request is handled in a separate transaction. Multi-transaction operations can be awkwardly expressed using redirects. To support long polling, a pending HTTP request is implicitly retried until commit or timeout.
+Applications could define a `http : Request -> Response` method. When defined at the toplevel, the runtime might implicitly support HTTP requests on the same port configured for RPC. When implemented on application components, this method can serve as a flexible interface for interactive debug views. I essentially propose `http` instead of `toString()`. 
 
-Proposed interface:
+The 'Request' and 'Response' are abstract, perhaps via `sys.http.*` methods, allowing the runtime to parse and cache inputs, correctly compute HTTP headers (such as 'Content-Length' and 'Vary'), and guarantee a valid response in context of HTTP pipelining. If the transaction aborts, it will be retried several times until a configurable timeout; this can be leveraged for long polling. 
 
-        # abstract Request and Response
-        http : Request -> Response
-
-        # accessors and constructors provided by runtime
-        sys.http.request.parse : Binary -> Request | fail
-        sys.http.request.text : Request -> Binary
-        sys.http.request.method : Request -> Symbol # (:GET, :POST, etc.)
-        sys.http.request.path : Request -> List of Text
-        ...
-        sys.http.response.parse : Binary -> Response | fail
-        sys.http.response.text : Response -> Binary
-        sys.http.response.basic : (code:StatusCode, type:ContentType, body:Text) -> Response
-        etc.
-
-Abstraction of Request and Response is intended to reduce repetitive parsing, localize validation, simplify routing and pipelining, and enable automatic construction of some response headers such as 'Content-Length' or 'Vary'. The methods listed above are for illustrative purposes and might not make the final cut.
-
-HTTP is easy to implement and immediately useful. It can be leveraged as the initial basis for GUI, and it offers more flexible user interaction than console IO. HTTP interfaces in hierarchical application components are also convenient for composition, debugging, and live coding.
-
-*Note:* It is feasible to share a TCP port for both RPC and HTTP. It might be useful for the runtime to intercept an HTTP path (perhaps `/sys`) to simplify integration between transactions, RPC, and web-apps.
+By convention, users might route path `/sys` to `sys.refl.http`, allowing the runtime to provide a built-in web-based debugger, or hooks for an external debugger.
 
 ### Graphical User Interface? Defer.
 
-To fully develop a [Glas GUI](GlasGUI.md), we will need a mature glas system that implements several transaction loop optimizations and RPC optimizations. Meanwhile, applications can provide GUI via the conventional HTTP stack (HTML, DOM, JS, CSS). 
-
-GUI interfaces in hierarchical application components can be convenient for composition, debug views, and live coding. 
+To fully develop a [Glas GUI](GlasGUI.md), we will need a mature glas system that implements several transaction loop optimizations and RPC optimizations. Short term, applications can provide GUI via HTTP.
 
 ### Consistency Support
 
@@ -413,6 +384,10 @@ A port is a fixed-width 16-bit number. An addr is a fixed-width 32-bit or 128-bi
 ### Reflection
 
 Reflection can weaken atomicity or isolation of transactions, violate component privacy, and provide a vector for covert communication. It is easily abused. However, it can be useful to support debugging, profiling, runtime extensions, and other features. 
+
+* reload config
+* reload source
+* 
 
 #### Background Eval
 

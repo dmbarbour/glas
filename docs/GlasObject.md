@@ -68,7 +68,7 @@ In glas systems, lists are conventionally encoded in a binary tree as a right-sp
             d /\     
              e  ()
 
-However, direct representation of lists is inefficient for many use-cases. Thus, glas runtimes support specialized representations for lists: binaries, arrays, and [finger-tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_(data_structure)). To protect performance, glas object also offers specialized list nodes:
+However, direct representation of lists is inefficient for many use-cases. Thus, glas runtimes support specialized representations for lists: binaries, arrays, and [finger-tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_(data_structure)). To protect performance, Glas Object also offers specialized list nodes:
 
 * *array* - header (0x0A) . (length - 1) . (array of offsets); represents a list of values of given length. Offsets are varnats all relative to the end of the array, denormalized to the same width. Width is determined by looking at the first varnat.
 * *binary* - header (0x0B) . (length - 1) . (bytes); represents a list of bytes. Each byte represents a small positive integer, 0..255.
@@ -87,7 +87,7 @@ Reference values in context of content-addressed storage:
 * *glob:SecureHash* - reference to content-addressed glob. SecureHash is usually a 64-byte binary representing the SHA3-512 of an external binary. 
 * *bin:SecureHash* - reference to content-addressed binary data. Same SecureHash as for globs, but the referent is loaded as a binary instead of parsed as a glob.
 
-External references generalize as a *contextual extension* mechanism for glas object. For example, in context of a module system, we might use *local:ModuleName* and *global:ModuleName* instead of content-addressed *glob* and *bin* references. In context of streaming data or templates, we might introduce *var:Nat* to represent data that will arrive later in the stream or perhaps upon demand. 
+External references generalize as a *contextual extension* mechanism for Glas Object. For example, in context of a module system, we might use *local:ModuleName* and *global:ModuleName* instead of content-addressed *glob* and *bin* references. In context of streaming data or templates, we might introduce *var:Nat* to represent data that will arrive later in the stream or perhaps upon demand. 
 
 *Note:* Establishing and maintaining the context is rarely free. Effective support for external references may involve access tokens for a [CDN](https://en.wikipedia.org/wiki/Content_delivery_network), protocols for content negotiation (analogous to HTTP Accept header), reference validation overheads, and so on. 
 
