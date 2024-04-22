@@ -48,6 +48,10 @@ We can UserAgent interface that supports only a subset of features easily implem
 
 I think this would be a very effective option for integrating GUI. But actually developing the compiler won't be trivial. 
 
+## Navigation and History
+
+Some applications may read 'navigation' variables similar to URLs or query strings. These are just normal user variables, except that by annotating them as navigation variables we can effectively inform the user agent to track them for purpose of history, backtracking, or opening multiple tabs or windows.
+
 ## Rendering Temporal Media
 
 An application may ask a user agent to 'render' a video for user consumption. 
@@ -58,13 +62,11 @@ The application could modify user variables to begin playing the application on 
 
 Intriguingly, temporal media could be downloaded and buffered as needed via the content addressed storage layer. 
 
-## Concurrent GUI
+## Multi-Window GUI
 
-The *transaction loop* supports an optimization where fair non-deterministic choice within an isolated transaction can be replaced by replicating the transaction and taking both choices. Further, both transactions may commit if there are no read-write conflicts.
+For an isolated transaction, repetition is equivalent to replication. We can leverage this to render multiple independent windows from a single 'gui' request. But choices made by a remote application are not always visible to the user agent. It might not be distinguishible from things changing over time. Further, user attention should influence the decision. It is better to ask the user agent for which window to render, offering a stable list of choices.
 
-This also applies for rendering a GUI. Each fork might render into a separate GUI window, effectively presenting multiple applications. However, in context of *approved action* we would need to restrict approval to a specific stable fork.
-
-Intriguingly, there is another possibility: let the user-agent influence non-deterministic choice, locking down or browsing possible outcomes. This can be understood as a form of user participation in transactions: abort and ignore transactions that aren't on the user's desired path.
+Ideally, 'fork' is essentially an algebraic effect across RPC boundaries. Providing influence over fork is useful for performance, scheduling, and system testing. This would mitigate the issue of stabilizing and influencing choice by a remote application. Even so, explicit choice by the user agent would allow for more meaningful participation by the user.
 
 ## Multi-User Transactions
 

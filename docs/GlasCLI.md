@@ -34,7 +34,7 @@ A minimal configuration must specify a distribution. Initially, we'll support a 
             dir Directory2
             ...
 
-I intend to eventually support reference to remote repositories, multiple inheritance with separate ".dist" files, and [namespace operations](ExtensibleNamespaces.md).
+I intend to eventually support reference to remote repositories, multiple inheritance with separate ".dist" files, and [namespace operations](GlasProgNamespaces.md).
 
 The profile will eventually support sections for logging, storage, app config, proxy compilers, content delivery networks, variables, etc.. Ultimately, the profile is relatively ad-hoc, specific to the glas executable and subject to deprecation and de-facto standardization. Users should receive a warning when a profile includes unrecognized or deprecated entries.
 
@@ -60,11 +60,9 @@ A runtime could follow OS conventions and automatically reload configuration and
 
         glas --run ModuleRef -- Args
 
-The glas executable first compiles the referenced module into a value. This value must be recognized as representing an application. Initially, we'll recognize ".g" modules that define an 'app' namespace, or generally any module that compiles to `g:(app:Namespace, ...)`. A [namespace](ExtensibleNamespaces.md) is more sophisticated than a simple dictionary, allowing overrides, renames, and late binding.
+The glas executable first compiles the referenced module into a value. This value must be recognized as representing an application. Initially, we'll recognize ".g" modules that define an 'app' namespace or modules that compile to an equivalent representation. This namespace must implement interfaces recognized by the runtime for integration; see [glas application](GlasApps.md).
 
-The application namespace provides interfaces that will be called by the runtime. For example, background tasks are represented by a runtime repeatedly calling a transactional 'step' method. Other methods may be called to support RPC, HTTP, GUI, publish-subscribe, or OS events. Conversely, a runtime may bind or override names representing the application's access to the environment. See [Glas Applications](GlasApps.md) for details.
-
-The glas executable may support specialized application types such as staged applications or binary stream processing, influencing interfaces and integration. This might be indicated by declaring an abstract method such as 'run-mode-staged' or 'run-mode-bsp'.
+In addition to conventional apps, some special run modes may be recognized and run differently, perhaps based on whether a 'run-mode-staged' or 'run-mode-bsp' method is defined.
 
 ### Staged Applications
 
@@ -78,11 +76,9 @@ Staged applications essentially have the same interface as language modules, exc
 
 ### Binary Stream Processing Applications
 
-A binary stream processing application (BSP app), indicated by 'run-mode-bsp', will incrementally read from standard input and write to standard output. The main advantage of binary stream processing is that it's easily implemented and immediately useful, especially suitable for early development and bootstrap.
+A binary stream processing application (BSP app), indicated by 'run-mode-bsp', will incrementally read from standard input and write to standard output, plus access to language module effects (log and load). The advantage of BSP is that it's trivially implemented, immediately useful, suitable for early development and bootstrap. 
 
-I propose to express the BSP app as a transaction loop application with a restricted effects API - e.g. read, write, log, and load. To ensure deterministic behavior, 'read' will logically diverge (wait indefinitely) if buffered input data is insufficient. Writes are generally buffered until the current transactional step commits. With this model, it is trivial to adapt a BSP app to a normal glas app.
-
-BSP apps can support limited interaction such as a REPLs, especially if embedded in a suitable environment (e.g. with [ANSI escape codes](https://en.wikipedia.org/wiki/ANSI_escape_code) or [terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)). Of course, we may need to introduce configuration options to control features such as input echo and line buffering.
+We can leverage it to extract binaries from the module system or to implement REPLs. If we're feeling clever, we can try [ANSI escape codes](https://en.wikipedia.org/wiki/ANSI_escape_code) or a [terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/).
 
 ## Scripting
 
