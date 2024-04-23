@@ -60,7 +60,7 @@ A runtime could follow OS conventions and automatically reload configuration and
 
         glas --run ModuleRef -- Args
 
-The glas executable first compiles the referenced module into a value. This value must be recognized as representing an application. Initially, we'll only recognize ".g" modules that define a namespace of methods, or modules in user-defined languages that compile to the same representation. This namespace must implement interfaces recognized by the runtime for integration; see [glas application](GlasApps.md).
+The glas executable first compiles the referenced module into a value. This value must be recognized as representing an application. Initially, we'll only recognize ".g" modules and those that compile to an equivalent representation. This namespace must implement interfaces recognized by the runtime for integration; see [glas application](GlasApps.md).
 
 In addition to conventional apps, some special run modes may be recognized and run differently, perhaps based on whether a 'run-mode-staged' or 'run-mode-bsp' method is defined.
 
