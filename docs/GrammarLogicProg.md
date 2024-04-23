@@ -1,5 +1,9 @@
 # Procedural Programming with Grammars and Logic
 
+My goal for this document is to 'reinvent' procedural programming under constraints grammars and logic, such that we can run procedures both forwards and backwards. I assume support for hierarchical transactions as a basis for backtracking effects.
+
+##
+
 Grammar and logic programs have similar semantics. 
 
 The 'direction' of evaluation is flexible, i.e. the same program can flexibly *accept* or *generate* values. Interactive computation is based on [logic unification](https://en.wikipedia.org/wiki/Unification_(computer_science)#Application:_unification_in_logic_programming) of shared variables, where each component program is responsible for accepting or generating different parts of the value.

@@ -25,9 +25,9 @@ Glas represents data using finite, immutable binary trees. Trees can directly re
         type Tree = ((1 + Tree) * (1 + Tree))   
             a binary tree is pair of optional binary trees
 
-A binary tree can easily represent a pair `(a, b)` or either type `(Left a | Right b)`. 
+A binary tree can easily represent a pair `(a, b)`, either type `(Left a | Right b)`, or unit `()`. 
 
-However, glas systems favor labeled data because labels are more meaningful and extensible. Labels are encoded into a *path* through a tree, favoring null-terminated UTF-8. For example, label 'data' would be encoded into the path `01100100 01100001 01110100 01100001 00000000` where '0' and '1' respectively represent following the left or right branch. A record such as `(height:180, weight:200)` may have many such paths with shared prefixes, forming a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). A variant would have exactly one label.
+However, glas systems favor labeled data because labels are more meaningful and extensible. Labels are encoded into a *path* through a tree, favoring null-terminated UTF-8. For example, label 'data' would be encoded into the path `01100100 01100001 01110100 01100001 00000000` where '0' and '1' respectively represent following the left or right branch. A record such as `(height:180, weight:200)` may have two such paths with shared prefixes, forming a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). A variant would have exactly one label.
 
 To efficiently represent labeled data, non-branching paths must be compactly encoded. A viable runtime representation is closer to:
 
@@ -45,7 +45,7 @@ To efficiently represent labeled data, non-branching paths must be compactly enc
             abc10..0     3 bits
             abcde..1    63 bits
 
-It is feasible to could further extend Node with specialized variants to support efficient binary data, list processing, records as structs instead of radix trees, etc.. The above offers a reasonable starting point, but the intention is that data in practice should be represented much more efficiently than the naive encoding of binary trees.
+It is feasible to could further extend Node with specialized representations for common data structures (see *Accelerated Representations* below). But the idea is that anything can be represented as a binary tree, and binary trees conveniently support indexed structure without introducing 'offsets' or 'pointers'. 
 
 ### Integers
 
@@ -77,17 +77,15 @@ Direct representation of lists is inefficient for many use-cases, such as random
 
 Binaries receive special treatment because they are a popular data representation for filesystems and networks. Within glas systems, a binary is canonically represented as a list of small integers (0..255), but the finger-tree rope might allocate binary fragments of many kilobytes or megabytes. Program annotations can provide guidance, e.g. ask a runtime to 'flatten' a binary to control chunk size.
 
-This idea generalizes to *Accelerated Representations*.
-
 ### Accelerated Representations
 
-Beyond representing lists as a finger-tree ropes, we can generalize to unordered data types such as graphs, sets, and bags, or unboxed types such as floating point vectors and matrices. 
+We can generalize the idea of representing lists as finger-tree ropes to support for unboxed floating point matrices, unordered data types (e.g. sets, graphs), or even virtual machine states (with registers, memory, etc.).
 
-In all cases, we first define a canonical representation as a binary tree. A set might be represented as a sorted list. For unlabeled graphs, we might refer to [graph canonization](https://en.wikipedia.org/wiki/Graph_canonization). A matrix might involve a list of lists. But the runtime is free to use a more efficient structure under-the-hood. 
+In each case, we first define a canonical representation as a binary tree. For example, a matrix could be a list of lists. A set can be represented by an ordered list. An unlabeled graph might refer to [graph canonization](https://en.wikipedia.org/wiki/Graph_canonization). A VM state might use a simple record.
 
-To leverage the accelerated representation requires accelerated or built-in functions. Abstract data types can resist accidental conversion between representations. 
+However, constructing, validating, manipulating, and maintaining the canonical representation is expensive and error-prone. Instead, the runtime provides specialized under-the-hood representations, and users manipulate that representation indirectly through built-in or accelerated functions. Use of abstract data types can guard against accidental conversion to the canonical representation.
 
-*Note:* Accelerated representations can often be retained when implicitly serializing data. For example, the glas application database or RPC can efficiently support graphs, sets, and unboxed matrices. To do the same with explicit serialization requires use of runtime reflection APIs.
+The runtime can maintain accelerated representations even when serializing data for RPC communication or a key-value database. In case of [glas object](GlasObject.md), this leverages the external reference type. Use of runtime reflection APIs may allow programs to observe actual under-the-hood representations.
 
 ### Large Values
 
@@ -97,9 +95,7 @@ To support larger-than-memory data, glas systems may leverage content-addressed 
 
 A program is a value with a known interpretation. An application is a program with a known integration. The glas system specifies the ".g" language to bootstrap the system and serve as a foundation. However, many other models may eventually be supported through the module system.
 
-A valid ".g" file will compile to `g:(Dict of (Namespace of Method))`. The dictionary is a record of [namespaces, interfaces, and mixins](GlasProgNamespaces.md). An application namespace implements interfaces recognized by the runtime, and may declare abstract methods to be implemented by the runtime; see [glas applications](GlasApps.md). Despite OOP influences, the ".g" language is procedural in nature, with some inspiration from [grammars and logic](GrammarAndLogicProgramming.md).
-
-Methods are compiled to a Lisp-like [abstract assembly](AbstractAssembly.md). The proposed set of AST constructors is developed below.
+A valid ".g" file will compile to `g:(Namespace of Method)`, using an expressive [namespace model](GlasProgNamespaces.md) with support for mixins to define runtime recognized methods and abstract over runtime-provided effectful methods (see [glas applications](GlasApps.md)). Individual methods are defined using an [abstract assembly](AbstractAssembly.md). A proposed set of primitive AST constructors is developed below.
 
 ### Control Flow
 
@@ -112,7 +108,7 @@ Methods are compiled to a Lisp-like [abstract assembly](AbstractAssembly.md). Th
 
 ## Language Modules
 
-Language modules follow a simple naming convention: the global module 'language-xyz' must describe how to compile files with extension ".xyz". This module should define application 'app' that defines `compile : SourceCode -> ModuleValue`, performing compilation as a single transactional step. 
+Language modules follow a simple naming convention: the global module 'language-xyz' must describe how to compile files with extension ".xyz". This module should define a method `compile : SourceCode -> ModuleValue`, performing compilation as a single transactional step. SourceCode is usually a binary, but not always in case of composition of file extensions.
 
 To ensure a deterministic, reproducible outcome and support predictable refactoring, the compiler has limited access to effects. Available effects:
 
@@ -129,14 +125,12 @@ We might eventually develop naming conventions to support REPLs, linters, syntax
 
 As a simple convention, local modules whose names start with "test-" will be interpreted as tests. Tests may be compiled and evaluated even when they aren't required by a folder's 'public' definition. It is feasible to run all tests in a distribution as a health check.
 
-The test module should define an application 'app' that defines a 'run' method. Tests have limited access to effects:
+A test module should define any number of methods under `test.*` for evaluation. This is the same interface used for application built-in tests. However, a test module has relatively limited access to effects to guarantee tests are reproducible.
 
 * log and load - same as language modules
-* fork - non-deterministic choice to support fuzz testing or multiple tests
+* fork - non-deterministic choice to support fuzz testing
 
-The idea is that we're searching for failing tests. Based on analysis and feedback, a sufficiently smart test system might focus on some forks and mostly ignore others.
-
-*Note:* Of course, our applications may also include tests, such as the built-in-tests for consistency.
+Use of 'fork' allows for one test to represent many tests, but it also allows for endless testing. Thus, how much testing is actually performed will depend on quotas and heuristics. A smart test system can potentially choose forks leading to edge cases.
 
 ## Performance
 

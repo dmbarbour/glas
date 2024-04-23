@@ -2,17 +2,11 @@
 
 ## Overview
 
-A glas application is expressed as a namespace with some abstract methods.
+Instead of a 'main' procedure, a glas application should define a 'step' methods that is repeatedly called in a *transaction loop*. The application can also define other interfaces recognized by the runtime, e.g. to accept 'http' requests or to receive remote procedure calls. Like 'step', all application methods are implicitly called within transactions.
 
-Instead of a long-running 'main' loop, an application defines a 'step' methods that is repeatedly clled by the runtime to represent background processing. The application may also implement interfaces to handle HTTP requests, serve remote procedure calls, or support user interaction.
+A front-end compiler, such as language-g for ".g" files, will compile methods to an intermediate [abstract assembly](AbstractAssembly.md). The [namespace model](GlasProgNamespaces.md) allows developers to control subprogram access to specific operators or effects.
 
-Instead of a global namespace, the application declares abstract methods to access the filesystem, network, and other external resources. Additionally, we'll use an [abstract assembly](AbstractAssembly.md) such that even compiler primitives are abstract methods. To resist name collisions and simplify access control, these abstract methods are organized under just a few prefixes (proposed 'sys.' for runtime, '%' for abstract assembly). 
-
-Instead of containing state, state is logically mapped to an external key-value database. The program syntax and compiler is designed help automate and optimize this mapping. Some regions of this database are in-memory for performance, but others may be bound to an external database via configuration.
-
-Application methods are implicitly called in context of atomic, isolated transactions. Consistency and durability are left respectively to the application and external database. Transactions simplify reasoning and allow code to focus on the 'happy path' where everything is going well. The repeating 'step' transaction allows for reactivity, concurrency, and distribution as optimizations; see *Transaction Loops*.
-
-This represents a significant divergence from conventional design, but there are also many familiar elements.
+Application state is mapped to an 'external' key-value database. Data accessed through plain-old-data keys is persistent, but in-memory or ephemeral data is also supported by including abstract data types in construction of the key. The front-end syntax should automate mapping in common use-cases.
 
 ## Transaction Loops
 
@@ -146,9 +140,9 @@ To fully develop a [Glas GUI](GlasGUI.md), we will need a mature glas system tha
 
 ### Consistency Support
 
-        built-in-test   : unit -> unit | fail
+Any method defined under `test.*` might implicitly be understood as a test method, with the method name contributing to error reports. We might support testing periodically, on-demand testing, application-triggered via reflection API, or per transaction. Test outcomes can feasibly be cached to avoid unnecessary recomputation. Any side-effects from testing can be aborted.
 
-Applications can provide a simple built-in-test for self-diagnostic and consistency checks. These checks may implicitly be run before committing to any transaction that might cause a diagnostic to fail. Alternatively, depending on configuration, the check might run infrequently or on demand. 
+Per transaction tests provide a very effective basis for consistency. Of course, programmers are free to also include ad-hoc consistency checks within each transaction.
 
 ## Effects API
 
