@@ -37,7 +37,9 @@ Static evaluation can easily be guided by annotations and independent of semanti
 
 Effective support for static eval should enhance metaprogramming with abstract assembly. Ideally, we should be able to abstract over 'const' arguments to methods when constructing AST nodes. 
 
-## Concrete Assembly?
+## Concrete Assembly? No.
 
-In `App = (0b1:Name, List of Arg)` I leave the '0b1' header on the name parameter for extensibility. This allows for concrete assembly or even use of another App to form the AST constructor. That said, I have no immediate use case for such extensions.
+Abstract assembly insists on a Name argument in the App constructor field, but I left the '0b1' header so we can parse this as `type App = (Arg, List of Arg)`. This supports reuse as a concrete assembly, where the constructor argument is represented by data but we still need precise analysis of names.
+
+That said, I don't see any strong use case for introducing concrete constructors into the abstract assembly. Even assuming we discover one, we can use `(%app Arg Args)` or a more precise abstract primitive constructor per use case. 
 
