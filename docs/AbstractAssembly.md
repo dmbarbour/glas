@@ -39,7 +39,6 @@ Effective support for static eval should enhance metaprogramming with abstract a
 
 ## Concrete Assembly? No.
 
-Abstract assembly insists on a Name argument in the App constructor field, but I left the '0b1' header so we can parse this as `type App = (Arg, List of Arg)`. This supports reuse as a concrete assembly, where the constructor argument is represented by data but we still need precise analysis of names.
+Abstract assembly insists on a Name argument in the App constructor field, but I left the '0b1' header so we can parse this as `type App = (Arg, List of Arg)`. This supports reuse as a concrete assembly, where the constructor argument is represented by data. It also allows use of App in constructor position, which might be interpreted as an inline user-defined constructor.
 
-That said, I don't see any strong use case for introducing concrete constructors into the abstract assembly. Even assuming we discover one, we can use `(%app Arg Args)` or a more precise abstract primitive constructor per use case. 
-
+That said, I don't see any strong use case for introducing concrete or inline user-defined constructors into the abstract assembly. Even assuming we discover one, we can use `(%app Arg Args)` or a more precise abstract primitive constructor per use case. 
