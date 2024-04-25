@@ -110,7 +110,7 @@ Methods are defined using an [abstract assembly](AbstractAssembly.md). A propose
 
 ## Language Modules
 
-Language modules follow a simple naming convention: the global module 'language-xyz' must describe how to compile files with extension ".xyz". This module should define a method `compile : SourceCode -> ModuleValue`, performing compilation as a single transactional step. SourceCode is usually a binary, but not always in case of composition of file extensions.
+Language modules follow a simple naming convention: the global module 'language-xyz' must describe how to compile files with extension ".xyz". This module should define an application that defines method `compile : SourceCode -> ModuleValue`, performing compilation as a single transactional step. SourceCode is usually a binary, but not always in case of composition of file extensions.
 
 To ensure a deterministic, reproducible outcome and support predictable refactoring, the compiler has limited access to effects. Available effects:
 
@@ -127,7 +127,7 @@ We might eventually develop naming conventions to support REPLs, linters, syntax
 
 As a simple convention, local modules whose names start with "test-" will be interpreted as tests. Tests may be compiled and evaluated even when they aren't required by a folder's 'public' definition. It is feasible to run all tests in a distribution as a health check.
 
-A test module should define any number of methods under `test.*` for evaluation. This is the same interface used for application built-in tests. However, a test module has relatively limited access to effects to guarantee tests are reproducible.
+A test module should define an application containing any number of methods under `test.*` for evaluation. This is the same interface used for application built-in tests. However, a test module has relatively limited access to effects to guarantee tests are reproducible.
 
 * log and load - same as language modules
 * fork - non-deterministic choice to support fuzz testing

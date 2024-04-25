@@ -3,46 +3,81 @@
 
 A namespace is essentially a dictionary with late binding of definitions, allowing for extension and recursion. The model described in this document supports multiple inheritance, mixins, hierarchical components, and robust access control to names. However, support for 'new' or first-class objects is not implied. 
 
-I assume [abstract assembly](AbstractAssembly.md) or similar for definitions. It must be easy to precisely identify and rewrite names within definitions.
+This document assumes definitions are expressed using [abstract assembly](AbstractAssembly.md) or a concrete variant, but it can be adapted to any type where names are easily rewritten.
 
 ## Proposed AST
 
         type NSOp 
-            = ns:(List of NSOp)             # namespace
-            | mx:(List of NSOp)             # mixin (sequential compositon)
-            | df:(List of (Name, Def))      # define
-            | dc:(List of Name)             # declare
-            | rq:(List of Name)             # require
-            | rj:(List of Prefix)           # reject
+            = ns:NSOp                       # namespace             
+            | mx:(List of NSOp)             # mixin
+            | df:(Set of (Name, Def))       # define
             | rn:(List of (Prefix, Prefix)) # rename
             | mv:(List of (Prefix, Prefix)) # move
-            | rm:(List of Prefix)           # remove (delete)
-            | ap:(List of Op)               # apply (map, wrap, adapt)
+            | rm:(Set of Prefix)            # remove (delete)
+            | tl:(NSOp, List of (Prefix, Prefix)) # translate
 
         type Name   = Binary                # must be prefix unique
         type Prefix = Binary                # empty up to full name
-        type Def    = abstract assembly     # (usually!)
-        type Op     = abstract assembly     # curried `AST -> AST`
+        type Set    = List                  # commutative & idempotent 
+        type Def    = abstract assembly     # define 
 
-Behaviors:
+This expresses a namespace as a sequence of operations to modify an initially empty namespace. Overview of Behavior:
 
-* *namespace* (ns) - apply sequence of operations to a *fresh, initially empty* namespace, logically reducing to a final set of definitions (df). Apply as definitions.
-* *mixin* (mx) - apply sequence of operations to the tacit namespace.  This represents sequential composition; 'mx' lists may be flattened into 'mx' or 'ns' lists. 
-* *definitions* (df) - add new definitions to tacit namespace. Potential errors:
-  * *ambiguity error* - name already defined AND definition structurally different
-  * *prefix conflict* - detect violation of prefix uniqueness of names
-* *rename* (rn) - modify names by prefix, also applies to definitions. 
-* *move* (mv) - modify names by prefix, does not touch definitions. Mostly used for overrides.
-* *remove* (rm) - erase all definitions under prefixes from tacit namespace. 
-* *apply* (ap) - (tentative!) apply sequence of ops to all definitions in tacit namespace. 
+* *namespace* (ns) - apply NSOps sequentially to an initially empty namespace, evaluating to definitions (df). Apply those definitions. 
+* *mixin* (mx) - apply a sequence of NSOp. This allows us to compose primitive operations into a cohesive behavior. 
+* *definitions* (df) - union definitions into tacit namespace. It's an error if a name has two definitions, but it's okay to assign the same definition twice.
+* *rename* (rn) - a prefix to prefix rewrite on names in the tacit namespace
+* *move* (mv) - move definitions without modifying them, useful for overrides.
+* *remove* (rm) - undefine words in the tacit namespace, useful for overrides.
+* *translate* (tl) - modifies where a mixin is applied. Translate can serve a similar role as parameters in mixins, e.g. rewrite 'dst. => foo.' before applying mixin.
 
-Annotations (no observable behavior in valid system):
+### Rewrite Semantics
 
-* *declare* (dc) - expect future definition of names, influences require and reject
-* *require* (rq) - error if name isn't defined or declared in tacit namespace
-* *reject* (rj) - error if prefix contains definition or declaration in tacit namespace
+We can define NSOp based on a rewrite semantics. All rewrites are bidirectional, but are written in the direction of simplifying things.
 
-I currently don't have a use case for ad-hoc user-defined annotations on NSOp. Instead, most such annotations are represented in the final namespace (e.g. `foo#type`) or within definitions. 
+    mx:[Op] => Op                                     # singleton mx
+    mx:(A ++ (mx:Ops, B)) => mx:(A ++ (Ops ++ B))     # flatten mx
+    ns:df:Defs => df:Defs                             # namespace eval
+    ns:mx:(rn:Any, Ops) => ns:mx:Ops                  # rename on empty ns
+    ns:mx:(rm:Any, Ops) => ns:mx:Ops                  # remove on empty ns
+    ns:mx:(mv:Any, Ops) => ns:mx:Ops                  # move on empty ns
+    ns:mx:(tl:(Op, RN), Ops) =>                       # translate final
+      ns:mx:(Op, (rn:RN, Ops))  
+
+    ns:mx:[] => df:[]                                 # empty ns
+    df:[] => mx:[]                                    # empty df
+    rm:[] => mx:[]                                    # no-op rm
+    rn:[] => mx:[]                                    # no-op rn
+    mv:[] => mx:[]                                    # no-op mv
+    tl:(mx:[], Any)                                   # translate empty
+    tl:(Op, []) => Op                                 # no-op tl
+
+    # in context of mx
+      # shorthand 'A B C' = 'mx:(LHS++[A,B,C]++RHS)'
+
+      # basic joins
+      df:A df:B => df:(union(A,B))                    # join defs
+      rm:A rm:B => rm:(union(A,B))                    # join removes
+      rn:A rn:B => rn:(A++B)                          # join renames
+      mv:A mv:B => mv:(A++B)                          # join moves
+
+      # manipulate definitions
+
+
+
+    (++)                              # list concatenation
+    union                             # set union 
+
+
+            = ns:NSOp                       # namespace             
+            | mx:(List of NSOp)             # mixin
+            | df:(Set of (Name, Def))       # define
+            | rn:(List of (Prefix, Prefix)) # rename
+            | mv:(List of (Prefix, Prefix)) # move
+            | rm:(Set of Prefix)            # remove (delete)
+            | tl:(NSOp, List of (Prefix, Prefix)) # translate
+
+
 
 ## Performance Concerns
 
@@ -60,7 +95,9 @@ As a convention, I propose private symbols start with '~'. This resists accident
 
 The syntax can prevent accidental reference to private symbols. However, syntactic protection is weak and easily bypassed in glas systems, where user-defined syntax is supported. Better to provide a bypass that is easily discovered by search or linter.
 
-Where robust privacy is required, we can rely on the namespace to control access to names. This involves defining hierarchical components and restricting which names are forwarded or wired to other components. The namespace is designed to make this pattern [ocap secure](https://en.wikipedia.org/wiki/Object-capability_model). 
+Where robust privacy is required, we can rely on the namespace to control access to names. This involves defining hierarchical components and restricting which names are forwarded into subcomponents components. Forwarding into subcomponents can be expressed via whole prefix rename (e.g. `'foo.sys.' => 'sys.'`) or via mixin that renames or delegates individual definitions (e.g. `mix xyzzy with 'dst.'=>'foo.'`). The 
+
+The namespace is designed to make this pattern [ocap secure](https://en.wikipedia.org/wiki/Object-capability_model). 
 
 Abstract types, implicit parameters, and algebraic effects can also be tied to the namespace to inherit namespace-layer security. 
 
@@ -78,3 +115,11 @@ Further, the rule that there is no ambiguity if two definitions are the same is 
 
 We can tie abstract, ephemeral types to the namespace. We're limited to *ephemeral* (per transaction) types if we assume live coding, otherwise we can treat the namespace as having the same lifespan as the OS process. I think it would be especially useful to tie implicit parameters and algebraic effects to the namespace, such that we can easily reason about access and interaction with RPC.
 
+
+## Future Extensions
+
+### Operations to Modify Definitions? Tentative.
+
+It is feasible to introduce namespace operators to modify definitions in bulk. For example, we could introduce 'apply' - `ap:(List of Function)` - that applies a sequence of functions to every definition in the tacit namespace. A potential use-case is sandboxing of abstract assembly. 
+
+However, it is unclear that this wouldn't be better handled at another layer, such as designing the front-end compiler and primitive AST constructors to include hooks for effective sandboxing. I've decided to defer this until I have a clear use-case where the alternatives are clearly lacking.

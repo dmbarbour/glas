@@ -10,14 +10,6 @@ Desiderata:
 * abstraction over data values and configs
 * lightweight guarantee of termination
 
-It seems feasible to leverage [namespaces](GlasProgNamespaces.md) as an intermediate representation for the final dictionary. Each item in the namespace could be a text, list, or dict. A system could provide some data as a mixin to compute the final configuration. A namespace does risk accidental expression of dependency cycles, but those should be easy to detect.
-
-## Namespace or Library of Namespaces?
-
-The toplevel of a configuration could either be 'within' a namespace, or it could be a library of namespaces. 
-
-
-
-We could place the configuration namespace at the toplevel of a file, such that 'importing' a file is equivalent inheritance (ns) or even directly to applying a mixin (mx). Alternatively, we can 
+It seems feasible to leverage [namespaces](GlasProgNamespaces.md) as an intermediate representation for a final dictionary. Each name in the namespace could represent a text, list, or dict. Expressions could be very limited, perhaps allowing filters and relational joins but avoiding general loops. The system can express some data used in computing the configuration as a mixin.
 
 
