@@ -140,11 +140,11 @@ Use of 'fork' allows for one test to represent many tests, but it also allows fo
 
 If a function is giving us poor performance, it is feasible to replace that function with a compiler built-in or hardware. However, it is useful to maintain the reference definition for analysis, debugging, and because it allows us we can treat this replacement as an 'optimization' instead of a semantic extension to the language.
 
-Acceleration can influence under-the-hood representations of data. For example, large lists and binaries might be encoded as finger-tree ropes to support efficient slices, concatenation, and indexing. In these cases, it may be useful to treat the data as abstract to avoid accidental conversion between representations.
+It is feasible to accelerate an abstract CPU or GPGPU. This simulation would be restricted to a memory-safe subset of behaviors, perhaps checking the code before 'running' it. Assuming the code argument is static, checks and further compilation could be performed ahead of time, targeting an actual CPU or GPGPU. 
 
-It is feasible to accelerate simulation of an abstract CPU or GPGPU. This simulation would be restricted to a memory-safe subset of behaviors, perhaps checking the code before 'running' it. An accelerated implementation would compile the code argument for a physical CPU or GPGPU target. When the code argument is static, this compilation can be performed ahead of time.
+Acceleration may influence under-the-hood representations of data. For example, large lists and binaries might be encoded as finger-tree ropes to support efficient slices, concatenation, and indexing. The system can specialize abstract machine state to enable efficient multi-step operations. It is useful to treat *accelerated representations* as abstract to avoid accidental conversions.
 
-To resist silent performance degradation, annotations requesting an unrecognized or unsupported accelerator should be reported at compile time. We can indicate 'optional' acceleration in the annotation. Ideally, accelerators will also be verified through automatic testing. 
+To resist silent performance degradation, annotations requesting unrecognized or unsupported acceleration should be reported at compile time. Of course, we can support 'optional' acceleration as a flag in the annotation. Ideally, accelerators will also be verified through automatic testing. 
 
 ### Stowage
 

@@ -37,6 +37,12 @@ Static evaluation can easily be guided by annotations and independent of semanti
 
 Effective support for static eval should enhance metaprogramming with abstract assembly. Ideally, we should be able to abstract over 'const' arguments to methods when constructing AST nodes. 
 
+## AST Layer Effects? Tentative.
+
+With abstract assembly, we could push some effects to the AST layer without losing namespace based access control. This is tempting for higher-order effects, e.g. `%amb` for non-deterministic choice of statements, where we want close integration with the syntax, type system, and optimizer.
+
+However, I currently favor procedural effects even where it's a little awkward. For example, instead of `%amb`, we use `sys.fork` returns an integer that we then use in a conditional expression. It would take a very strong use case for me to favor AST layer effects.
+
 ## Concrete Assembly? No.
 
 Abstract assembly insists on a Name argument in the App constructor field, but I left the '0b1' header so we can parse this as `type App = (Arg, List of Arg)`. This supports reuse as a concrete assembly, where the constructor argument is represented by data. It also allows use of App in constructor position, which might be interpreted as an inline user-defined constructor.

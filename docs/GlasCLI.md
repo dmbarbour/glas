@@ -147,9 +147,9 @@ The simplest registry might be configured as a remote service (URL and access to
 
 ### Database Configuration
 
-At least one database should be configured to support persistent data. We might initially use LMDB or RocksDB, which would require configuring a filesystem location. 
+At least one database should be configured to support persistent data. We might initially use LMDB or RocksDB, which would require configuring a filesystem location. Eventually, we might also want to support distributed databases with special handling of vars, queues, bags, etc..
 
-Eventually, we might also want to support distributed databases. And it might be useful to compose databases flexibly, e.g. based on logical mounting or overlay of key-value databases. However, I think such features very low priority until the distant future. 
+*Note:* I've rejected the idea of 'mounting' databases as a basis for sharing because it complicates reasoning. Instead, we should focus on databases that are 'natively' distributed, and support access control to keys. 
 
 ### Early Applications
 

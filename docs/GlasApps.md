@@ -2,11 +2,13 @@
 
 ## Overview
 
-Instead of a 'main' procedure, a glas application should define a 'step' methods that is repeatedly called in a *transaction loop*. The application can also define other interfaces recognized by the runtime, e.g. to accept 'http' requests or to receive remote procedure calls. Like 'step', all application methods are implicitly called within transactions.
+A glas application is similar to an abstract OOP class. A [namespace](GlasProgNamespaces.md) may be expressed in terms of multiple inheritance. This namespace should implement interfaces recognized by the runtime, such as 'step' to model background processing. Access to effects, such as filesystem or network APIs, is represented by abstract methods to be provided by the runtime.
 
-A front-end compiler, such as language-g for ".g" files, will compile methods to an intermediate [abstract assembly](AbstractAssembly.md). The [namespace model](GlasProgNamespaces.md) allows developers to control subprogram access to specific operators or effects.
+Application methods are transactional. Instead of a long-running 'main' loop, a transactional 'step' method is called repeatedly by the runtime. This allows interesting *transaction loop* features and optimizations between isolated transactions and non-deterministic choice. Other methods might handle HTTP requests, service remote procedure calls, or support a graphical user interface.
 
-Application state is mapped to an 'external' key-value database. Data accessed through plain-old-data keys is persistent, but in-memory or ephemeral data is also supported by including abstract data types in construction of the key. The front-end syntax should automate mapping in common use-cases.
+The transactional context does unfortunately complicate 'direct style' interaction with non-transactional systems. For example, programmers should not send a request via TCP and expect a response in the same transaction because the request is usually buffered until the transaction commits. This can be mitigated by language design: state machines can model multi-step processes.
+
+Application state is logically mapped to a key-value database. Construction of keys is non-trivial, providing a basis for lifespan and access control. For example, keys constructed in terms of plain old data are persistent by default, but keys containing an abstract reference to the OS process or an open file can be safely represented in-memory. The front-end language should simplify efficiently mapping of application state to the database.
 
 ## Transaction Loops
 
@@ -32,20 +34,19 @@ When an atomic, isolated transaction is predictably repeated, we can apply many 
 
 These optimizations are non-trivial and won't immediately be available for glas systems. Short term, we might be limited to single-threaded event loops or state machines. 
 
-## Ephemeral Types
+## Abstract Types and Lifespans
 
-A very useful concept for transactions is that some abstract types are 'ephemeral', restricted to use within the current transaction. Ephemeral types cannot be stored into persistent state, but they may be 'stable' in context of incremental computing and subject to caching in a *transaction loop*.
+Consider a few broad lifespans for data:
 
-Most abstract types should be ephemeral in glas systems, including nominative types, first class functions, database keys. The motive is to simplify live coding and persistence, discovery and disruption, authorization and revocation. One exception to this rule is abstraction to protect performance of *accelerated representations*, such as graphs, sets, and unboxed matrices.
+* *persistent* - plain old data or abstract *accelerated representations* (e.g. for sets, graphs, or unboxed matrices). Persistent data can be stored persistently and shared between apps.
+* *runtime* - includes abstract reference to open file handles, network sockets, or the OS process. Runtime data is stored in memory between transactions within a single OS process.  
+* *ephemeral* - bound to the current transaction or even to a frame on the call stack. Although ephemeral types cannot be stored between transactions, they may be 'stable' in context of incremental computing or memoization. 
 
-When serialized, ephemeral types might be concretely represented as indices into transaction-specific tables, perhaps protected via HMAC. 
+In glas systems, many abstract types are ephemeral including first-class functions or objects, nominative types, and database keys. This is intended to simplify live coding, remote procedure calls, and access control and revocation. Of course, programmers can always model scripts as persistent data.
 
-Beyond ephemeral types, we might benefit from other temporal scopes:
+When serialized (e.g. in context of remote procedure calls) abstract ephemeral and runtime types may be represented concretely as external reference indices into transaction-specific tables, and protected against forgery or reuse by including a transaction-local HMAC or access token.
 
-* Process lifespan - applicable to 'in-memory' database region, file handles, TCP connections, GUI windows, and so on. Effectively ephemeral to any remote process.
-* Method call lifespan - useful for local variable references or representing closures on the call stack. Similar use cases as the Rust borrow checker.
-
-Ephemeral types can feasibly be tracked and checked at runtime, but static analysis is preferable.
+*Aside:* Note that lifespan is independent of computation time. For example, an optimizer can propagate ephemeral constants at compile-time, caching the result.
 
 ## Transactional Remote Procedure Calls
 
@@ -67,7 +68,9 @@ Large values might be delivered via proxy [CDN](https://en.wikipedia.org/wiki/Co
 
 The runtime implements a key-value database API with both shared persistent and private in-memory data. The persistent database is configured externally and may include distributed databases. The database should implicitly support transactions, accelerated representations, and content-addressed storage for large values.
 
-Database keys integrate logic for persistence and access control. A basic key might be constructed as `sys.db.key(oldKey, sys.db.dir("foo"))`, while an in-memory key might use. `sys.db.key(fooKey, sys.db.memdir("bar"))`. We might understand `sys.db.memdir` as constructing an index value with the process lifespan (see *ephemeral types*). Regarding access control, it is feasible to design a directory structures involving hash preimages or zero-knowledge proofs. 
+Database keys integrate logic for persistence and access control. A basic key might be constructed as `sys.db.key(oldKey, sys.db.dir("foo"))`, while an in-memory key might use `sys.db.key(fooKey, sys.db.rtdir("bar"))`. We can understand `sys.db.rtdir` as constructing an index scoped to the runtime OS process lifespan (see *abstract types and lifespans*). Other constructors could accept an open file reference, modeling a temporary region.
+
+Regarding access control, it is feasible to model 'secure' directory structures involving HMAC bearer tokens or other cryptographic access tokens. Also, some keys may restrict read access or write access to data. But I don't intend to focus on this opportunity until much later.
 
 Supported data types should include variables, queues, and bags. These are simple to implement and have convenient behavior in context of concurrency, distribution, and network partitioning:
 
@@ -75,58 +78,67 @@ Supported data types should include variables, queues, and bags. These are simpl
 * queues are read-write in one partition, buffered write-only on others
 * bags are read-write on all partitions, rearranging items if connected
 
-We can slowly contemplate extensions for [CRDTs](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) and other specialized types. 
+I am contemplating extensions for [CRDTs](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) and other specialized types.
 
 Anyhow, the programming language should automate most mapping from declared data variables to database keys and data access methods. Key construction should be heavily optimized, e.g. a static in-memory key might reduce to a cached pointer under-the-hood.
 
 ### Indexed Collections
 
-An application can dynamically allocate keys within the key-value database. With a little syntactic support, these keys could map to a collection of components in the namespace.
+An application can dynamically map data to the key-value database. The challenge is to make this convenient and efficient. I propose syntax `foo[index].method(args)`, modeling homogeneous collections in the hierarchical application namespace. This should correspond to a singleton object except that 'index' is used in construction of database keys.
 
-Proposal:
+Under-the-hood, 'index' might be assigned to an *implicit parameter* (see below) that is then used in dynamic construction of keys. The syntax `foo[index].method(args)` might desugar to something like `with *foo[].cursor = foo[].select index do foo[].inst.method(args)`, where `foo[].cursor` is defined as an implicit parameter. Here `foo[].select` allows for ad-hoc processing of the given index (such as bounds checks) to occur only once.
 
-        foo[index].method(args)
-
-          # rewrites to something like
-
-        with *foo[].index = foo[].select index do
-          foo[].inst.method(args)
-
-The idea here is to supply an index as an *implicit* argument to the instance method. Might need to return to this after I have a clear model for implicits. Anyhow, the index will later be used to dynamically construct a database key. 
+To maximize performance, we might introduce a dedicated constructor for database keys that indirect through another variable, i.e. `sys.db.refdir(&foo[].cursor)`. This allows the reference node to be treated as a constant for purpose of partial evaluation.
 
 ### Cached Computations
 
-Caching should not be manually implemented using state. Instead, it should be supported by the compiler and guided by annotations. This significantly reduces risk of cache management errors, separates cache management from read-write conflict analysis between transactions, and would be fully compatible with *ephemeral types*.
-
-Intriguingly, in context of RPC registries and code distribution, automatic caching allows the RPC registry to double as a complete publish-subscribe system.
+Manual caching using application state is error prone, likely to interfere with conflict analysis, and incompatible with ephemeral types. Instead, caching should be guided by annotations and implemented by the compiler.
 
 ### Shared State
 
-Shared state is a convenient basis for asynchronous interaction between applications. Most weaknesses of shared state are mitigigated between transactions, integration with content-addressed storage and accelerated representations, specialized data types (queues and bags), and the transaction loop optimizations (incremental computing, reactivity).
+Applications may use shared, persistent state in the configured database for asynchronous interaction between applications. Many potential problems with shared state are mitigated by transactions, incremental computing, reactivity, and lifespan types. With just a little access control, queues or bags would model effective mailboxes.
 
-Partial sharing is feasible with database-level access control. For example, we could model a 'mailbox' as a bag that requires different access tokens for read and write. This is an idea to explore later.
+We can feasibly extend the database to support a few more common yet simple patterns, such as databuses for many-to-many communications. However, insofar as we need to protect ad-hoc invariants, we should hide state behind an RPC API.
 
-However, if we need trusted logic managing shared state, it's better to introduce an intermediate service that all parties can talk to via transactional RPC.
+### Nominative Types
 
-## Application Provided Interfaces
+It is feasible to integrate names into abstract types. However, in context of live coding, the application namespace is ephemeral, and should be restricted to ephemeral types. In general, we'll also want abstract types with the runtime lifespan.
 
-### Basic Life Cycle
+Database keys can serve as an alternative source of names. We can introduce an abstract dictionary type indexed by database keys. Intriguingly, this implicitly supports [weak references](https://en.wikipedia.org/wiki/Weak_reference), e.g. if a dbKey included an open file reference in the directory structure. Ephemeral dictionaries can also be supported, using names from the application namespace in the directory structure.
 
-The runtime will first evaluate `start()` if defined. Then we repeatedly evaluate `step()` in a background loop while handling RPC or HTTP both within and between steps. A completed application process may halt voluntarily via the effects API, e.g. call `sys.app.halt()` then commit. 
+## Implicit Parameters and Algebraic Effects
 
-The `stop()` method supports graceful shutdown. If defined, it would be called by the runtime upon receiving SIGTERM in Linux or WM_CLOSE in Windows. After stop, the application should only receive further `step()` calls until it voluntarily halts or is forcibly killed by an annoyed admin.
 
-### Runtime Configuration
 
-In context of [Glas CLI](GlasCLI.md), the glas profile centralizes most configuration information. Applications may define `config.class` to select a subconfiguration by name, i.e. returning a priority list of names. Where apps need more local control, we can introduce additional methods under `config`. I expect this interface will be very ad-hoc.
+## Automatic Testing and Consistency
 
-The runtime configuration can also list application interfaces the runtime is expected to recognize. This allows the runtime to raise an error if an application defines an interface that the runtime should recognize but does not.
+Methods defined under `test.*` are implicitly understood as test methods. Taking advantage of the transactional context, a runtime will evaluate test methods to the point they would return, then abort to control side-effects. A test that would not return is a failed test.
 
-### RPC Interfaces
+Tests represent transactional invariants, propositions that should hold true. By default, a runtime should evaluate tests just before committing any transaction. If any test fails, the transaction is aborted to protect consistency. 
 
-I detailed these earlier.
- 
-### HTTP Interface
+However, continuous testing can be very expensive. Costs can mitigated by incremental computing and reactivity, or controlled via configuration, annotation, quotas, and runtime reflection. Some tests might be configured to run infrequently rather than per transaction.
+
+## Application Life Cycle
+
+The runtime will call `start()` as the first effectful operation, retrying until it commits successfully. This supports initialization. Then it will call `step()` repeatedly in separate transactions, modeling the background loop. If undefined, start or step are treated as no-ops.
+
+Between steps the application may handle HTTP requests, GUI interactions, OS signals, and RPC. This involves implementing runtime-recognized interfaces and is contingent on configuration.
+
+The application may voluntarily halt by calling (and committing) `sys.halt()`. This asks the runtime to make the current transaction the final one. Otherwise, the application runs until killed by (or together with) the OS.
+
+## Runtime Configuration
+
+I'm still developing the [configuration model](GlasConfigLang.md). But we want the application to have an opportunity to contribute to some configuration decisions. The question is how this participation should be expressed.
+
+Ideas:
+
+* Application defines ad-hoc configuration variables `config.*`, perhaps limited to text. These are imported into the user configuration, e.g. by overriding the `app` component. The configuration language supports simple comparisons and compositions of texts.
+* Application defines `config.class` as a list of strings, and we either select the first matching subconfiguration or mixin all those in the list that are defined. This is relatively coarse grained but doesn't require conditional expressions in the configuration language.
+
+At the moment, I lean towards the mixin idea.
+
+
+## HTTP Interface
 
 Applications could define a `http : Request -> Response` method. When defined at the toplevel, the runtime might implicitly support HTTP requests on the same port configured for RPC. When implemented on application components, this method can serve as a flexible interface for interactive debug views. I essentially propose `http` instead of `toString()`. 
 
@@ -134,15 +146,9 @@ The 'Request' and 'Response' are abstract, perhaps via `sys.http.*` methods, all
 
 By convention, users might route path `/sys` to `sys.refl.http`, allowing the runtime to provide a built-in web-based debugger, or hooks for an external debugger.
 
-### Graphical User Interface? Defer.
+## Graphical User Interface? Defer.
 
 To fully develop a [Glas GUI](GlasGUI.md), we will need a mature glas system that implements several transaction loop optimizations and RPC optimizations. Short term, applications can provide GUI via HTTP.
-
-### Consistency Support
-
-Any method defined under `test.*` might implicitly be understood as a test method, with the method name contributing to error reports. We might support testing periodically, on-demand testing, application-triggered via reflection API, or per transaction. Test outcomes can feasibly be cached to avoid unnecessary recomputation. Any side-effects from testing can be aborted.
-
-Per transaction tests provide a very effective basis for consistency. Of course, programmers are free to also include ad-hoc consistency checks within each transaction.
 
 ## Effects API
 
