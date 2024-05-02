@@ -8,102 +8,122 @@ This document assumes definitions are expressed using [abstract assembly](Abstra
 ## Proposed AST
 
         type NSOp 
-              = mx:(List of NSOp)                   # mixin (sequence)
+              = mx:(List of NSOp)                   # mixin 
               | ns:NSOp                             # namespace
               | df:(Map of Name to Def)             # definitions
-              | rn:(Map of Prefix to Prefix)        # rename
-              | mv:(Map of Prefix to Prefix)        # move
-              | rm:(Map of Prefix to unit)          # remove
-              | tl:(NSOp, Map of Prefix to Prefix)  # translate
+              | rw:(Map of Prefix to Prefix)        # rewrite defs
+              | mv:(Map of Prefix to Prefix)        # move defs
+              | rm:(Map of Prefix to unit)          # remove defs
+              | at:(Prefix, NSOp)                   # targeted op
 
         type Name = Binary                          # assumed prefix unique
         type Prefix = Binary                        # empty up to full Name
-        type Map = specialized trie                 # see below!
+        type Map = specialized trie                 # essential! see below!
+        type Opt T = List of T, max length one      # keeping it simple
 
-## Overview
+* mixin (mx) - apply a sequence of operations to the tacit namespace
+* namespace (ns) - evaluate NSOp (usually mx) in context of empty namespace, evaluating to definitions (df). This could be evaluated eagerly at AST construction time, so this operation is mostly about deferring costs and lazy evaluation.
+* definitions (df) - add definitions to tacit namespace. It's an error if a name has two different definitions, but it's okay to assign the same definition many times.
+* rewrite (rw) - modify names within definitions in tacit namespace, based on longest matching prefix  
+* move (mv) - move definitions in tacit namespace, based on longest matching prefix
+* remove (rm) - remove definitions in tacit namespace, essentially a move to `/dev/null`.
+* targeted op (at) - modify an NSOp (usually mx) to operate on a different prefix. 
 
-A mixin (mx) applies a sequence of operations (NSOp) to a tacit namespace. Basic operations include introducing definitions (df) and renaming (rn), moving (mv), and removing (mv) definitions. The translate (tl) and namespace (ns) operations are somewhat more sophisticated.
 
-To 'override' a definition can be expressed as a short sequence of basic operations: rename `foo^ => foo^^` to open a space, move `foo => foo^`, then define `foo` with reference to `foo^`. Alternatively, we could remove `foo` if we don't reference the prior definition. The programming language syntax should concisely capture common patterns including override, shadowing, private definitions, and hierarchical composition.
+## Common Usage Patterns
 
-The translate operator (tl) is an adverb, modifying an NSOp to apply to a different context. This is the basis for abstraction and reuse of mixins. For example, we could define a reusable mixin in terms of 'src.' and 'dst.' prefixes, then translate those to the actual target. The common case is to translate the empty prefix to apply a mixin to a hierarchical component. 
-
-The namespace operator (ns) represents a set of definitions (df) programmatically as an operation (NSOp, usually mx) on an initially empty namespace. To apply 'ns', evaluate to 'df' then apply that. The namespace operator allows a little laziness. 
-
-## Composing Renames for Performance
-
-The `rn:(Map of Prefix to Prefix)` operation represents an atomic set of renames. Atomicity is mostly relevant for cyclic renames, i.e. we could rename `{ foo => bar, bar => baz, baz => foo }` in a single step. To perform a rename, for each name, we'll find the longest matching prefix in the map and apply the rewrite. For example, if our rename map is `{ f => xy, foo => z }` then we'd rewrite names `four => xyor` and `foobar => zbar`. 
-
-It is feasible to compose these rewrites. For example, `{ bar => fo }` followed by `{ f => xy, foo => z }` can compose to `{ bar => xyo, baro => z, f => xy, foo => z }`. 
-
-Essentially, we must handle every prefix that `fo` might participate in, which is why we introduce two rules: `bar => xyo` and `baro => z`. In the general case, this will multiply the number of rules, which is expensive. But, in practice, renames on partial names will almost always be aligned with the hierarchical namespace, e.g. `foo.` and `bar.`, and such renames would rarely multiply.
-
-The benefit of composing renames, then, is that we can reduce the number of times we walk definitions. Whether this is a big deal depends on whether the definitions are big. We could also compose moves, but the benefit is negligible.
+* A basic 'rename' involves both 'mv' and 'rw' operations with the same Map.
+* To 'override' `foo`, we rename prefix `foo^ => foo^^` to open space, move `foo => foo^` so we can access the prior (aka 'super') definition, then define `foo` with optional reference to `foo^`. Alternatively, we could remove then redefine `foo` if we don't need the old version.
+* To 'shadow' `foo`, we rename prefix `foo^ => foo^^` to open space, *rename* `foo => foo^` so existing references to `foo` are preserved, then define `foo` with optional reference to `foo^`. 
+* To model 'private' definitions, we prefix private definitions with '~', then we systematically rename '~' in context of inheritance. The syntax doesn't need to provide direct access to '~'.
+* To treat mixins as functions, we can introduce some conventions for naming a mixin's parameters and results as hierarchical components that can be provided and extracted with sufficient syntactic sugar. 
+* To model hierarchical composition, add a prefix to everything (via 'at') then provide any missing dependencies via rename or delegation. This is object capability secure, i.e. the hierarchical component cannot access anything that is not provided to it.
 
 ## Specialized Map Type
 
 I propose to encode the map as a trie (a tree where paths encode a bitstring), expanding the binary Name or Prefix to a prefix-unique trie key in a simple way:
 
         toTrieKey (Byte, Bytes) = 0b1:(toOctet Byte):(toTrieKey Bytes)
-        toTrieKey ()            = 0b0  
+        toTrieKey ()            = 0b0
 
-In case of rename (rn), move (mv), or translate (tl) we leverage this structure to efficiently determine the longest matching prefix that is substituted by a rename. For definitions (df) the map is more convenient than a 'dict' for iteration and detection of prefix uniqueness errors. For removes (rm) the extra structure of the map isn't directly useful, but consistency is convenient.
+The value is not modified, and simply follows the trie key. We can easily find the longest matching prefix for any given name. 
+
+## Composition of Move and Rewrite
+
+The maps in 'mv' and 'rw' represent atomic sets of rewrites. This atomicity is mostly relevant for cyclic renames, i.e. we could rename `{ foo => bar, bar => baz, baz => foo }` in a single step to avoid name collisions. This does imply we cannot casually separate operations into smaller steps.
+
+However, it is feasible to compose sequential rewrites and moves. For example, `{ bar => fo }` followed by `{ f => xy, foo => z }` can compose to `{ bar => xyo, baro => z, f => xy, foo => z }`. In this case, we must handle the case where 'fo' has a longer matching suffix 'foo', resulting in us adding a special rule for 'baro'. In practice, increasing the number of rules should be rare due to alignment of rewrites with hierarchical application structure.
+
+The main motive for this composition is performance: we can reduce the number of times we walk definitions. This is most relevant when definitions are very large, or when there are very many definitions. However, it isn't strictly necessary. 
 
 ## Prefix Unique Names
 
-This AST assumes names are prefix unique, meaning no name is a prefix of another name. Prefix uniqueness is trivial to achieve in practice: the front-end compiler can simply reserve byte to terminate names, typically the NULL byte, and disallow use of this byte within names. 
+This AST assumes names are prefix unique, meaning no name is a prefix of another name. Prefix uniqueness is trivial to achieve in practice, e.g. the front-end compiler can add a suffix (such as the NULL character) to defined names
 
-This assumption simplifies the namespace AST because the prefix-oriented operations can also be applied to specific names. We can detect prefix uniqueness violations when merging definitions (df), or when applying any prefix operation (rn, rm, mv, tl with prefix longer than a name).
+This assumption simplifies the namespace AST because the prefix-oriented operations can also be applied to specific names. We can detect prefix uniqueness violations when merging definitions (df), or when applying any prefix operation (rw, rm, mv, tl with prefix longer than a name).
 
 ## Unambiguous Definitions and Multiple Inheritance
 
-To help detect accidental name collisions in context of multiple inheritance, we'll treat it as an ambiguity error when a name is assigned two or more different definitions. To override, the prior definition must first be explicitly moved or removed. To shadow a definition, the prior definition must first be renamed. 
+To detect accidental name collisions in context of moves, renames, and multiple inheritance, we'll treat it as an ambiguity error when a name is assigned two or more different definitions. To override, the prior definition must first be explicitly moved or removed. To shadow a word, the prior definition must be renamed. 
 
-However, it is unambiguous if the same definition is assigned to a name many times. And redundant expression can be leveraged as a lightweight verification that an interface has the same 'meaning' to all participants. In this case the 'meaning' would be encoded as documentation and type annotations.
+However, it is unambiguous if the same definition is assigned to a name many times. And we can leverage redundant expression as a lightweight verification of interfaces, i.e. that multiple components sharing an interface have the same expectations based on matching documentation or type annotations.
 
-To simplify local reasoning, the programming language should syntactically distinguish defining, overriding, and shadowing names based on keywords. Make programmer assumptions explicit.
+*Note:* I think it's best if the programming language explicitly represents user expectations, i.e. whether we are introducing, overriding, or shadowing a definition.
 
 ## Rewrite Semantics
 
-We can define NSOp based on a rewrite semantics. All rewrites are bidirectional, but are written in the direction of simplifying things.
+We can define NSOp based on a rewrite semantics. All rewrites are bidirectional, but are written in a direction that leads to a complete evaluation of a namespace.
 
-    mx:[Op] => Op                                     # singleton mx
     mx:(A ++ (mx:Ops, B)) => mx:(A ++ (Ops ++ B))     # flatten mx
-    ns:df:Defs => df:Defs                             # namespace eval
-    ns:mx:(rn:Any, Ops) => ns:mx:Ops                  # rename on empty ns
-    ns:mx:(rm:Any, Ops) => ns:mx:Ops                  # remove on empty ns
-    ns:mx:(mv:Any, Ops) => ns:mx:Ops                  # move on empty ns
+    mx:[Op] => Op                                     # singleton mx
 
-    ns:mx:[] => mx:[]                                 # empty ns
+    ns:mx:(rw:_, Ops) => ns:mx:Ops                    # rewrite on empty
+    ns:mx:(rm:_, Ops) => ns:mx:Ops                    # remove on empty
+    ns:mx:(mv:_, Ops) => ns:mx:Ops                    # move on empty
+    ns:df:Defs => df:Defs                             # eval ns
+
     df:[] => mx:[]                                    # empty df
+    ns:mx:[] => mx:[]                                 # empty ns
     rm:[] => mx:[]                                    # no-op rm
-    rn:[] => mx:[]                                    # no-op rn
+    rw:[] => mx:[]                                    # no-op rw
     mv:[] => mx:[]                                    # no-op mv
     tl:(Op, []) => Op                                 # no-op tl
-    tl:(mx:[], Any)                                   # translate empty
 
     # translations
     tl:(mx:(Op, Ops), RN) =>                          # distribute tl
       mx:[tl:(Op, RN), tl:(mx:Ops, RN)]
-    tl:(df:Defs, RN) => ns:mx:[df:Defs, rn:RN]        # translate df
-    tl:(ns:Op, RN) => ns:mx:[Op, rn:RN]               # translate ns
-    tl:(rn:RN, Any) => rn:RN
+    tl:(mx:[], Any) => mx:[]                          # completed tl
+
+    tl:(df:Defs, RN) => ns:mx:[df:Defs, rw:RN]        # translate df
+    tl:(ns:Op, RN) => ns:mx:[Op, rw:RN]               # translate ns
+    tl:(rw:RN, RN') => rw:(meeRN
     tl:(mv:MV, Any) => mv:MV
     tl:(rm:RM, Any) => rm:RM
 
     # in context of mx
       # shorthand 'A B C' = 'mx:(LHS++[A,B,C]++RHS)'
 
+      # namespace partial eval
+      ns:(Ops ++ [df:Defs]) => ns:Ops df:Defs
+      ns:(Ops ++ [ns:Ops']) => ns:Ops ns:Ops'
+
+      # commutativity of definitions
+      ns:Ops ns:Ops'   => ns:Ops'  ns:Ops
+      ns:Defs
+      df:Defs df:Defs' => df:Defs' df:Defs
+
+
+
       # basic joins
       df:A df:B => df:(union(A,B))                    # join defs
       rm:A rm:B => rm:(union(A,B))                    # join removes
-      rn:A rn:B => rn:(A++B)                          # join renames
+      rw:A rw:B => rw:(A++B)                          # join renames
       mv:A mv:B => mv:(A++B)                          # join moves
 
       # manipulate definitions
-      df:Defs rn:Renames =>  rn:Renames df:(apply Renames to Defs)
-      df:Defs rm:Removes =>  rn:Removes df:(apply Removes to Defs)
-      df:Defs mv:Moves   =>  rn:Moves   df:(apply Moves to Defs)
+      df:Defs rw:Renames =>  rw:Renames df:(apply Renames to Defs)
+      df:Defs rm:Removes =>  rw:Removes df:(apply Removes to Defs)
+      df:Defs mv:Moves   =>  rw:Moves   df:(apply Moves to Defs)
       
 
 
@@ -114,7 +134,7 @@ We can define NSOp based on a rewrite semantics. All rewrites are bidirectional,
             = ns:NSOp                       # namespace             
             | mx:(List of NSOp)             # mixin
             | df:(Set of (Name, Def))       # define
-            | rn:(List of (Prefix, Prefix)) # rename
+            | rw:(List of (Prefix, Prefix)) # rename
             | mv:(List of (Prefix, Prefix)) # move
             | rm:(Set of Prefix)            # remove (delete)
             | tl:(NSOp, List of (Prefix, Prefix)) # translate
@@ -144,3 +164,10 @@ I hesitate to introduce this feature because I lack a clear use case. It is pote
 
 We could introduce some operators that are the equivalent of ifdef/ifndef. This might be useful for expressing default definitions. However, I'm not inclined to support this because it complicates reasoning about what's in the namespace, and would also complicate optimizations such as composing renames.
 
+### General Translation
+
+I originally wanted `tl:(NSOp, Map of Prefix to Prefix)` but this doesn't generalize nicely. For example, with translation `{ '' => 'scratch.', 'src.' => 'foo.', 'dst.' => 'bar.' }` consider move `sr => xy`. When translated, this would rewrite `scratch.srx => scratch.xyx` and `foo.abc => scratch.xyc.abc` (maybe?). It's troublesome and confusing.
+
+It might be feasible if I can restrict the translation model a great deal. Perhaps we could ensure reversibility, and perform a rewrite in each direction. But this could be implemented directly by a front-end compiler.
+
+For now, we'll need to see how far we can get without translation. We might need to limit how we use mixins, but this might not be a problem in practice.

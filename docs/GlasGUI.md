@@ -62,12 +62,34 @@ The application could modify user variables to begin playing the application on 
 
 Intriguingly, temporal media could be downloaded and buffered as needed via the content addressed storage layer. 
 
-## Multi-Window GUI
+## Mitigating Glitches
 
-For an isolated transaction, repetition is equivalent to replication. We can leverage this to render multiple independent windows from a single 'gui' request. But choices made by a remote application are not always visible to the user agent. It might not be distinguishible from things changing over time. Further, user attention should influence the decision. It is better to ask the user agent for which window to render, offering a stable list of choices.
+If users observe all transactions in which a user agent participates, they will certainly observe many transactions that are ultimately aborted due to concurrent read-write conflicts. A subset of these may exhibit 'glitches' where rendered values are inconsistent.
 
-Ideally, 'fork' is essentially an algebraic effect across RPC boundaries. Providing influence over fork is useful for performance, scheduling, and system testing. This would mitigate the issue of stabilizing and influencing choice by a remote application. Even so, explicit choice by the user agent would allow for more meaningful participation by the user.
+The GUI system can easily skip rendering of transactions that might be inconsistent, but there is a potential cost to frame-rate depending on level of concurrent interference. To mitigate glitches without reducing frame rates may require support from applications or the glas runtime system. Some possibilities:
+
+* redesign apps to reduce conflict: use more queues!
+* systematic support for 'snapshots' of system state
+* precise conflict analysis to distinguish 'glitches'
+
+In practice, I expect most glitches will be subtle and short-lived. Users often won't even notice. Where users do notice, it will often be easy to solve the problem at the app layer. Snapshots would further reduce the barrier.
+
+An adjacent issue is that asynchronous interactions may appear glitchy due to time and transactions between user action and feedback. One viable solution is to manage user expectations in the GUI, e.g. report the status of prior requests, make it clear when a user action is still being processed. Alternatively, if it doesn't introduce too much contention, we could make user actions more direct and synchronous. 
+
+## Multi-Frame GUI
+
+For an isolated transaction, repetition is equivalent to replication. A fair non-deterministic choice can be replicated to take both routes. We can leverage this to render multiple independent frames or windows from a single 'gui' request. 
+
+However, it would be best to make this choice visible to the user agent, such that the GUI system can stabilize and render specific choices based on user attention. This implies we can influence non-deterministic choice through the transaction layer, somewhat similar to an algebraic effect.
+
+Ideally, for *approved action* mode, the user can explore possible outcomes based on feedback, and control which choice is committed in the end. That is, the user also participates in non-deterministic transactions.
 
 ## Multi-User Transactions
 
-The API directly supports multi-user systems where each user holds GUI connections. However, to let multiple users participate in a shared transaction requires some indirection. For example, we can model a shared virtual room that implements a multi-user agent and coordination protocols, such as handoff or voting.
+The API directly supports multi-user systems where each user holds independent GUI connections. A multi-user aware application can coordinate multiple users. This should be sufficient for most use cases. No need to share a *transaction* between users.
+
+But if ever we invent a scenario where a multi-user transaction makes sense, how would we implement it? 
+
+Well, if multiple users shared a room, we could implement a 'multi-user agent' to allow multiple users to share a transaction. It doesn't need to be a physical room: users could share a virtual room. Each user could have independent GUI connections to the shared virtual room, allowing transactional observation and operation of the shared multi-user agent, which ultimately interacts with the remote application.
+
+A virtual room could also support coordination and handoff protocols to share a single-user GUI connection between users. This would roughly correspond to desktop sharing.
