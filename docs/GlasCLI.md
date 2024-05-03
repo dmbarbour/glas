@@ -34,7 +34,7 @@ A minimal configuration must specify a distribution. Initially, we'll support a 
             dir Directory2
             ...
 
-I intend to eventually support reference to remote repositories, multiple inheritance with separate ".dist" files, and [namespace operations](GlasProgNamespaces.md).
+I intend to eventually support reference to remote repositories, multiple inheritance with separate ".dist" files, and [namespace operations](GlasNamespaces.md).
 
 The profile will eventually support sections for logging, storage, app config, proxy compilers, content delivery networks, variables, etc.. Ultimately, the profile is relatively ad-hoc, specific to the glas executable and subject to deprecation and de-facto standardization. Users should receive a warning when a profile includes unrecognized or deprecated entries.
 

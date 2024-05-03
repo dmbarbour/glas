@@ -1,6 +1,6 @@
 # Abstract Assembly
 
-The big idea for abstract assembly is that a front-end compiler expresses an intermediate-language in terms of abstract methods within the same [namespace](GlasProgNamespaces.md) as user-defined methods. This subjects compiled definitions to namespace-layer access control, extension, and override. The proposed representation is reminiscent of Lisp or Scheme:
+The big idea for abstract assembly is that a front-end compiler expresses an intermediate-language in terms of abstract methods within the same [namespace](GlasNamespaces.md) as user-defined methods. This subjects compiled definitions to namespace-layer access control, extension, and override. The proposed representation is reminiscent of Lisp or Scheme:
 
         type App = (0b1:Name, List of Arg)
         type Arg = 0b0:Data

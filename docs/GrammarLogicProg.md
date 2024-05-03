@@ -14,7 +14,7 @@ A function can be modeled as a grammar or logic program that accepts and generat
 
 A simplistic procedural interaction might be modeled as an `(args, io, result)` triple, where IO represents a request-response list of form `[(Request1, Response1), (Request2, Response2), ...]`. In this case, the procedure provides requests and results while the caller provides args and responses. To model processes, we could support ad-hoc channels within args and results, leveraging [substructural types](https://en.wikipedia.org/wiki/Substructural_type_system) to ensure each channel only has one writer. We can introduce temporal semantics to support logical time sharing of channels between writers.
 
-The proposed language has a procedural programming style by default via implicit 'env' argument, but first-class channels and temporal semantics so we can model concurrent processes within a computation. Backtracking computation is pervasive, but not a bad fit for [transaction loop applications](GlasApps.md) because we can support hierarchical transactions. I assume programs are expressed in an [extensible namespace](GlasProgNamespaces.md) as the basis for mutual recursion and flexible tuning of grammars.
+The proposed language has a procedural programming style by default via implicit 'env' argument, but first-class channels and temporal semantics so we can model concurrent processes within a computation. Backtracking computation is pervasive, but not a bad fit for [transaction loop applications](GlasApps.md) because we can support hierarchical transactions. I assume programs are expressed in an [extensible namespace](GlasNamespaces.md) as the basis for mutual recursion and flexible tuning of grammars.
 
 ## Brainstorming
 

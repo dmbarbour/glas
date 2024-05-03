@@ -95,7 +95,7 @@ To support larger-than-memory data, glas systems may leverage content-addressed 
 
 A program is a value with a known interpretation. An application is a program with a known integration. The glas system specifies the ".g" language to bootstrap the system and serve as a foundation. However, many other models may eventually be supported through the module system.
 
-A valid ".g" file will compile to `g:(Dict of (Namespace of Method))`. An application module should define namespace 'app' that implements interfaces recognized by the runtime, such as 'start', 'step', and 'http' (see [glas applications](GlasApps.md)). Library modules don't need to define 'app', instead defining reusable [components, interfaces, and mixins](GlasProgNamespaces.md). 
+A valid ".g" file will compile to `g:(Dict of (Namespace of Method))`. An application module should define namespace 'app' that implements interfaces recognized by the runtime, such as 'start', 'step', and 'http' (see [glas applications](GlasApps.md)). Library modules don't need to define 'app', instead defining reusable [components, interfaces, and mixins](GlasNamespaces.md). 
 
 Methods are defined using an [abstract assembly](AbstractAssembly.md). A proposed set of primitive AST constructors is developed below.
 
