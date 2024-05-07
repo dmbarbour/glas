@@ -46,7 +46,7 @@ I propose to encode the map as a trie, expanding the binary key to a prefix-uniq
         toTrieKey (Byte, Bytes) = 0b1:(toOctet Byte):(toTrieKey Bytes)
         toTrieKey ()            = 0b00
 
-The `toOctet` method will expand small integers to eight bits with a zeroes prefix, e.g. byte 5 as an octet is `0b00000101`. I reserve the key terminating in `0b01` for future extensions, e.g. if we later want to keep an element count in the tree. The value directly follows the trie key, similar to how we encode dictionaries in glas.  
+The `toOctet` method will expand small integers to eight bits with a zeroes prefix, e.g. byte 5 as an octet is `0b00000101`. I reserve the key terminating in `0b01` for future extensions, such as compression of repeating sequences in a name, or keeping some metadata within the tree. The value follows the trie key, similar to how we encode dictionaries in glas.  
 
 ## Prefix Unique Names
 
@@ -185,19 +185,39 @@ Where robust privacy is required, we should instead rely on the namespace to con
 
 Nominative data types, implicit parameters, and algebraic effects may also be tied to the namespace, providing an effective basis to control access.
 
+## Annotations and Associated Definitions
+
+For each user-defined method, there might be several 'slots' defined in the namespace - e.g. representing declared types, the function code, and perhaps even a macro for invoking that code (to unify methods and macros, similar to fexprs). This is left entirely to the language design.
 
 ## Tentative Extensions
 
 ### Mapping over Definitions
 
-It is feasible to introduce bulk operations for modifying definitions. An initial proposal:
+Currently, our only operation that touches definitions is link (ln). But it might be useful to introduce another operation to support integration between abstract assembly languages. An initial proposal:
 
         ap:(NSOp, DefOp)    # apply
 
-This operator would apply a function on definitions (DefOp) to every definition introduced by NSOp. In context of abstract assembly, this might concretely be implemented as mapping `\Def -> (DefOp ++ [Def])`, essentially treating DefOp as a curried AST node.
+This would apply function DefOp to every definition in NSOp. DefOp could be expressed as a name of a function that we'll apply to each definition. Or perhaps itself as abstract assembly that will wrap the definition (i.e. `DefOp ++ [Def]`).
 
-I hesitate to introduce this feature because I lack a clear use case. It is potentially useful for sandboxing in context of overriding abstract assembly. But it could be subtly inadequate and awkward, or it may prove preferable to integrate sandboxing hooks when designing the abstract assembly.
+I hesitate to introduce this feature because I currently lack a clear use case. I'm uncertain whether the proposal will prove inadequate or irrelevant. Perhaps we'll instead prefer to design our abstract assembly with built-in hooks for sandboxing and adaptation.
 
 ### Conditional Definitions
 
-We could introduce some operators that are the equivalent of ifdef/ifndef. This might be useful for expressing default definitions. However, I'm not inclined to support this because it complicates reasoning about what's in the namespace, and would also complicate optimizations such as composing renames.
+We could introduce some operators that are the equivalent of ifdef/ifndef. This would be useful for defining default behavior. However, I hesitate because this complicates reasoning about the namespace and partial evaluation of namespaces. There are also other decent approaches to 'default' definitions, such as leveraging associated definitions.
+
+## Lists
+
+It is feasible to model lists in the namespace. For example, we could model lists as namespace components that define 'head' and 'tail'. Then access to to the third element would be `.tail.tail.head`. This essentially encodes a unary representation of the numeric index into the name. We could easily reduce this to one byte per element:
+
+        h     first element
+        th    second element
+        tth   third element
+        ...
+
+One motive for this is that we can 'append' two lists by adding a sufficient 'ttt..t' prefix to one of the two lists then merging into the same namespace. Further, a runtime can easily introduce compression of a repeating 'ttt..t' prefix to something like `(t)^{42}` under the hood. Alternatively, we could explicitly extend the map type to support lists, leveraging that reserved `0b01` key suffix.
+
+However, to effectively use lists we'll also need namespace operators to append lists, to map mixins to every element of a list, fold over lists, and so on. It won't be convenient to access or override elements of the list based on offsets because offsets would often be unstable, so I'd want to focus on collective operations. 
+
+Developing such namespace operators seems feasible, but it isn't clear to me that the potential use cases would justify the added complexity. Maybe it would be worthwhile for a configuration language? But I think in most cases we could 'chain' definitions instead of composing the namespace directly. 
+
+

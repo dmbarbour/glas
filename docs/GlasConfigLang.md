@@ -5,11 +5,20 @@ I want a lightweight syntax for configuration of glas systems. Earlier, I develo
 Desiderata:
 
 * avoids punctuation and escape characters
-* supports text, list, and dict data types
-* support inheritance, overrides, mixins
-* abstraction over data values and configs
+* supports structured data for configuration
+* allows participation from app and runtime
+* inheritance, overrides, mixins, abstraction
 * lightweight guarantee of termination
 
-It seems feasible to leverage [namespaces](GlasNamespaces.md) as an intermediate representation for a final dictionary. Each name in the namespace could represent a text, list, or dict. Expressions could be very limited, perhaps allowing filters and relational joins but avoiding general loops. The system can express some data used in computing the configuration as a mixin.
+It seems feasible to leverage [namespaces](GlasNamespaces.md) as an intermediate representation for a final dictionary. A few conventions around the namespace itself could provide the structure we need while individual names may evaluate to text data based on a simple computation language. 
+
+The computation language could include:
+
+* composing texts and including named values within a text
+* access to names, i.e. 'nameof(name)' would expand to the name's text representation after all renames and translations are applied. 
+* simple conditions or ternary expressions, i.e. 'if name is "foo"'
+* simple loops over regions in the namespace (key-value with a 'key' split?)
+* simple loops over elements in a text? we could support line-oriented, tab-oriented, etc.
+* simple arithmetic on texts that represent decimal numbers.
 
 

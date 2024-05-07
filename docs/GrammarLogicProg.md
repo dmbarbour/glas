@@ -1,20 +1,19 @@
-# Procedural Programming with Grammars and Logic
+# General Purpose Programming with Grammars and Logic
 
-My goal for this document is to 'reinvent' procedural programming under constraints grammars and logic, such that we can run procedures both forwards and backwards. I assume support for hierarchical transactions as a basis for backtracking effects.
+My goal for this document is to general purpose programming in context of grammars and logic, such that we can 'run' programs both forwards and backwards (as both recognizers and generator). I assume support for hierarchical transactions as a basis for backtracking with side-effects.
 
-##
+## Overview
 
-Grammar and logic programs have similar semantics. 
-
-The 'direction' of evaluation is flexible, i.e. the same program can flexibly *accept* or *generate* values. Interactive computation is based on [logic unification](https://en.wikipedia.org/wiki/Unification_(computer_science)#Application:_unification_in_logic_programming) of shared variables, where each component program is responsible for accepting or generating different parts of the value.
+Grammar and logic programs have similar semantics. The 'direction' of evaluation is flexible, i.e. the same program can flexibly *recognize* (accept) or *generate* values. Interactive computation is based on [logic unification](https://en.wikipedia.org/wiki/Unification_(computer_science)#Application:_unification_in_logic_programming) between components in a system, where each component is responsible for recognizing and generating different parts of a shared value.
 
 With logic programming we have `Proposition :- Derivation`. With grammar programming, the equivalent is possible via guarded patterns, i.e. `Pattern when Guard`. Similarly, logical negation might use `Pattern unless Guard`. Variables can be shared between proposition and derivation, or between pattern and guard.
 
-A function can be modeled as a grammar or logic program that accepts and generates a set of `(args, result)` pairs, and ensures structurally or typefully that results are deterministic given args. In context of grammar and logic programming, we can evaluate functions non-deterministically backwards from results to args, or with partial args where any unspecified variable represents non-deterministic choice. 
+A function can be modeled as a grammar or logic program that recognizes and generates a set of `(args, result)` pairs, and ensures structurally or typefully that results are deterministic given args. In context of grammar and logic programming, we can evaluate functions non-deterministically backwards from results to args, or with partial args where any unspecified variable represents non-deterministic choice. 
 
 A simplistic procedural interaction might be modeled as an `(args, io, result)` triple, where IO represents a request-response list of form `[(Request1, Response1), (Request2, Response2), ...]`. In this case, the procedure provides requests and results while the caller provides args and responses. To model processes, we could support ad-hoc channels within args and results, leveraging [substructural types](https://en.wikipedia.org/wiki/Substructural_type_system) to ensure each channel only has one writer. We can introduce temporal semantics to support logical time sharing of channels between writers.
 
 The proposed language has a procedural programming style by default via implicit 'env' argument, but first-class channels and temporal semantics so we can model concurrent processes within a computation. Backtracking computation is pervasive, but not a bad fit for [transaction loop applications](GlasApps.md) because we can support hierarchical transactions. I assume programs are expressed in an [extensible namespace](GlasNamespaces.md) as the basis for mutual recursion and flexible tuning of grammars.
+
 
 ## Brainstorming
 

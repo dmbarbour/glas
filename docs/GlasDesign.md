@@ -95,9 +95,9 @@ To support larger-than-memory data, glas systems may leverage content-addressed 
 
 A program is a value with a known interpretation. An application is a program with a known integration. The glas system specifies the ".g" language to bootstrap the system and serve as a foundation. However, many other models may eventually be supported through the module system.
 
-A valid ".g" file will compile to `g:(Dict of (Namespace of Method))`. An application module should define namespace 'app' that implements interfaces recognized by the runtime, such as 'start', 'step', and 'http' (see [glas applications](GlasApps.md)). Library modules don't need to define 'app', instead defining reusable [components, interfaces, and mixins](GlasNamespaces.md). 
+A valid ".g" file will compile to a `g:(Dict of (Namespace of AbstractAssembly))`. An application module should define namespace 'app' that implements interfaces recognized by the runtime, such as 'start', 'step', and 'http' methods (see [glas applications](GlasApps.md)). Library modules instead define [components and mixins](GlasNamespaces.md) for multiple-inheritance based reuse between apps. Methods are compiled to an extensible intermediate language, an [abstract assembly](AbstractAssembly.md), that will be further interpreted or compiled by the glas system. 
 
-Methods are defined using an [abstract assembly](AbstractAssembly.md). A proposed set of primitive AST constructors is developed below.
+A proposed set of abstract assembly constructors is developed below.
 
 ### Control Flow
 
@@ -140,11 +140,19 @@ Use of 'fork' allows for one test to represent many tests, but it also allows fo
 
 If a function is giving us poor performance, it is feasible to replace that function with a compiler built-in or hardware. However, it is useful to maintain the reference definition for analysis, debugging, and because it allows us we can treat this replacement as an 'optimization' instead of a semantic extension to the language.
 
-It is feasible to accelerate an abstract CPU or GPGPU. This simulation would be restricted to a memory-safe subset of behaviors, perhaps checking the code before 'running' it. Assuming the code argument is static, checks and further compilation could be performed ahead of time, targeting an actual CPU or GPGPU. 
+It is feasible to accelerate simulation of an abstract CPU or GPGPU, running on actual hardware. This simulation must be restricted to a memory-safe subset of behaviors, though this could be achieved through proof-carrying code and static analysis. When the code argument is static, checks could be performed ahead of time.
 
 Acceleration may influence under-the-hood representations of data. For example, large lists and binaries might be encoded as finger-tree ropes to support efficient slices, concatenation, and indexing. The system can specialize abstract machine state to enable efficient multi-step operations. It is useful to treat *accelerated representations* as abstract to avoid accidental conversions.
 
 To resist silent performance degradation, annotations requesting unrecognized or unsupported acceleration should be reported at compile time. Of course, we can support 'optional' acceleration as a flag in the annotation. Ideally, accelerators will also be verified through automatic testing. 
+
+### Laziness and Parallelism
+
+If we can prove a subcomputation is 'pure' calculation and will terminate in some reasonable period, we can transparently make that computation lazy or evaluate it in parallel. This allows users to set up expensive computations for evaluation in the background. 
+
+In context of transactions, we can commit while computation is ongoing. A future transaction can later wait on the result to become observable. In general, we can chain further lazy and parallel operations, and it is feasible to observe partial results without waiting on the full thing. I think this would provide an effective basis for pipelining between transactions.
+
+In a distributed computation, lazy data might be serialized as an external reference, to be provided later or upon demand. This reference could include a secure hash of the computation to be performed to better fit with memoization and content distribution.
 
 ### Stowage
 
