@@ -15,10 +15,13 @@ It seems feasible to leverage [namespaces](GlasNamespaces.md) as an intermediate
 The computation language could include:
 
 * composing texts and including named values within a text
-* access to names, i.e. 'nameof(name)' would expand to the name's text representation after all renames and translations are applied. 
-* simple conditions or ternary expressions, i.e. 'if name is "foo"'
-* simple loops over regions in the namespace (key-value with a 'key' split?)
-* simple loops over elements in a text? we could support line-oriented, tab-oriented, etc.
-* simple arithmetic on texts that represent decimal numbers.
+* 'nameof(name)' expands to a name's text representation (after rename)
+* distinguish whether a name is a text, a number, a dict, or undefined
+* simple conditional expressions
+* possible arithmetic on texts that represent decimal numbers. 
+* uncertain: support for lists, looping over lists, list names in namespace
 
+A runtime system and application could contribute some ad-hoc variables prior to computing some parts of the configuration, but not for others.
+
+I think this is quite doable. 
 

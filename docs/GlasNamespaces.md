@@ -28,7 +28,9 @@ This document assumes definitions are expressed using [abstract assembly](Abstra
 * link (ln) - modify names within definitions in tacit namespace, based on longest matching prefix  
 * move (mv) - move definitions in tacit namespace, based on longest matching prefix
 * remove (rm) - remove definitions in tacit namespace, essentially a move to `/dev/null`.
-* translate (tl) - modify an NSOp (often mx) to operate on a different prefix. 
+* translate (tl) - rewrite names in an operation before it is applied; useful for abstracting mixins.
+
+There are several tentative extensions described later.
 
 ## Common Usage Patterns
 
@@ -191,33 +193,51 @@ For each user-defined method, there might be several 'slots' defined in the name
 
 ## Tentative Extensions
 
+### Copy Operation
+
+It is feasible to introduce a copy (cp) operator analogous to the namespace (ns) operator:
+
+        cp:NSOp     # copy then manipulate tacit namespace
+
+In this case, we would apply the given NSOp to a *copy* of the tacit namespace, then merge the final definitions. If the operation does nothing, the copied definitions would unify with themselves. Often, the operation will rename or move the copied namespace to a fresh Prefix.
+
+However, I lack a clear use case for copy. Instead, we develop a library of resuable namespace components and mixins at the glas module layer. Reuse of components is effectively 'copy' at an earlier stage. Before I introduce copy, I should seek non-contrived scenarios where reuse is awkward.
+
 ### Mapping over Definitions
 
 Currently, our only operation that touches definitions is link (ln). But it might be useful to introduce another operation to support integration between abstract assembly languages. An initial proposal:
 
-        ap:(NSOp, DefOp)    # apply
+        ap:DefOp    # apply
 
-This would apply function DefOp to every definition in NSOp. DefOp could be expressed as a name of a function that we'll apply to each definition. Or perhaps itself as abstract assembly that will wrap the definition (i.e. `DefOp ++ [Def]`).
+This would apply function DefOp to every definition in the tacit namespace. We might also (or instead) want a variation similar to 'tl' that is scoped to an NSOp. DefOp could be expressed as a name of a function that we'll apply to each definition. Or perhaps itself as abstract assembly that will wrap the definition (i.e. `DefOp ++ [Def]`).
 
-I hesitate to introduce this feature because I currently lack a clear use case. I'm uncertain whether the proposal will prove inadequate or irrelevant. Perhaps we'll instead prefer to design our abstract assembly with built-in hooks for sandboxing and adaptation.
+I currently lack a clear use case. The feature is potentially relevant for sandboxing of abstract assembly. But there are ways to support sandboxing that don't rely on this, such as designing the AST to include appropriate hooks.
 
 ### Conditional Definitions
 
-We could introduce some operators that are the equivalent of ifdef/ifndef. This would be useful for defining default behavior. However, I hesitate because this complicates reasoning about the namespace and partial evaluation of namespaces. There are also other decent approaches to 'default' definitions, such as leveraging associated definitions.
+It isn't difficult to introduce or implement operators for conditional expression of namespaces. For example, we could introduce:
 
-## Lists
+        de:(List of Prefix)         # def exists
+        dn:(List of Prefix)         # def not-exists
+        br:(NSOp, (NSOp, NSOp))     # branch
 
-It is feasible to model lists in the namespace. For example, we could model lists as namespace components that define 'head' and 'tail'. Then access to to the third element would be `.tail.tail.head`. This essentially encodes a unary representation of the numeric index into the name. We could easily reduce this to one byte per element:
+In this case, `br:(TryOp, (ThenOp, ElseOp))` should have a try-then-else behavior. We first evaluate `TryOp`. If that doesn't fail, we evaluate `ThenOp`, otherwise we backtrack and evaluate `ElseOp`. The 'de' operation would fail if the tacit namespace does not contain a definition under every given Prefix. The 'dn' operation would fail if the tacit namespace contains a definition under any given Prefix. The 'df' operation would fail if it results in an ambiguous definition.
 
-        h     first element
-        th    second element
-        tth   third element
-        ...
+Although we can easily support conditional expressions, I'd vastly prefer to avoid them. I feel they significantly complicate reasoning about the namespace. Without conditions, introduction of definitions is effectively unordered, i.e. we don't need to consider where an abstract method is defined. Conditions add a lot of ordering constraints. 
 
-One motive for this is that we can 'append' two lists by adding a sufficient 'ttt..t' prefix to one of the two lists then merging into the same namespace. Further, a runtime can easily introduce compression of a repeating 'ttt..t' prefix to something like `(t)^{42}` under the hood. Alternatively, we could explicitly extend the map type to support lists, leveraging that reserved `0b01` key suffix.
+*Aside:* Even without conditional expression at the namespace layer, it is entirely feasible to support 'ifdef' at the definition layer. This can provide a simple basis for default definitions, for example. 
 
-However, to effectively use lists we'll also need namespace operators to append lists, to map mixins to every element of a list, fold over lists, and so on. It won't be convenient to access or override elements of the list based on offsets because offsets would often be unstable, so I'd want to focus on collective operations. 
+### Annotated Operations
 
-Developing such namespace operators seems feasible, but it isn't clear to me that the potential use cases would justify the added complexity. Maybe it would be worthwhile for a configuration language? But I think in most cases we could 'chain' definitions instead of composing the namespace directly. 
+We could support ad-hoc annotations on an NSOp (e.g. `an:(NSOp, Annotation)`). But the use case seems relatively weak. The simplicity and guaranteed termination of namespace computation reduces need for tooling. One potentially useful thing I can do with annotations is hint at memoization, but I believe simple heuristics would serve as well.
 
+Unless I find a stronger use-case, I think I'll skip annotations at this layer. We can still represent annotations using naming conventions (associated definitions, such as type annotations) and dedicated abstract assembly nodes.
+
+### Lists
+
+We could model lists as namespace components that define 'head' and 'tail', where 'tail' is either empty or another list. Access to to the third element in the list would be `.tail.tail.head`. This allows us to continue using our prefix-oriented operations, e.g. we can 'append' two lists by adding a sufficient `(.tail)^N` prefix to all elements of one list before merging definitions. For performance, we might compress long sequences of `.tail` in names.
+
+However, list offsets are unstable compared to symbolic names. It isn't very useful to reference the 'third' element in context of potential insertions or deletions. To effectively leverage lists, we'll need namespace operators that know about lists and manipulate them collectively, e.g. to map or fold over lists, and to append lists without knowing their lengths. Each element would also need a stable name for binding application state to a database.
+
+It isn't clear to me that the potential benefit from lists is worth the added complexity to leverage them effectively. At least for now, I'll not make any special effort to support lists. 
 

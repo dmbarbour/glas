@@ -12,13 +12,23 @@ This involves *reflection* on the user agent, together with manipulation of user
 
 Some possible modes for user participation:
 
-* *read-only* - The user agent continuously or infrequently renders the GUI then aborts.
+* *read-only view* - The user agent continuously or infrequently renders the GUI then aborts.
 * *live action* - The user agent continuously renders the GUI and commits when possible.
 * *approved action* - The transaction is aborted unless the user explicitly submits. The GUI system tracks user observations and presents a summary of relevant changes for approval in proximity to a submit button. 
 
-The *approved action* mode gives users the most stake in each transaction. Approving a summary of relevant changes even simulates a read-write conflict analysis. However, it's slow and deliberate, not suitable for every context. The *live action* mode is close to [immediate mode GUI](https://en.wikipedia.org/wiki/Immediate_mode_GUI), while the *read-only* mode is suitable for maintaining user awareness.
+The *approved action* mode gives users the most stake in each transaction. Approving a summary of relevant changes even simulates a read-write conflict analysis. However, it's slow and deliberate, not suitable for every context. The *live action* mode is close to [immediate mode GUI](https://en.wikipedia.org/wiki/Immediate_mode_GUI), while the *read-only view* is suitable for maintaining user awareness.
 
 In context of *live action* mode, we may need to buffer or latch user inputs. For example, pushing a button sets a 'button-pushed' variable to 'true' until it is read and reset. The button would continue to render in a depressed state while 'button-pushed' remains true.
+
+### Mitigating Glitches
+
+If users observe all transactions in which a user agent participates, they will certainly observe some transactions that are ultimately aborted due to concurrent read-write conflicts. A subset of these may exhibit 'glitches' where rendered values are inconsistent (e.g. due to reading cached values from multiple remote systems). 
+
+A transactional GUI system can easily skip rendering of transactions that might be inconsistent, but there is a small cost to latency (to wait for consistency checks) and a small to large cost to frame-rate (because skipping bad 'frames' due to inconistency) depending on level of concurrent interference. This can be mitigated through app design (buffers and queues, history for views) or runtime support (rendering older snapshots for read-only views, precise conflict analysis).
+
+Alternatively, we can modify applications to reduce severity of known glitches. This would be closer to convention with non-transactional GUI today.
+
+An adjacent issue is that *asynchronous* interactions - where feedback is not logically 'instantaneous' within a transaction - may appear to be glitchy if presented as synchronous to the user. In this case, I think the problem is more about managing user expectations (e.g. report actual status of pending requests) or meeting them (e.g. use RPC to complete actions synchronously in GUI transaction).
 
 ## Proposed API
 
@@ -26,70 +36,50 @@ The proposed API:
 
         gui : UserAgent -> ()
 
-The 'gui' method calls back to the user both to render data and to ask for information including navigation variables, window sizes, feature support, preferences, etc. relevant to constructing a view. The application may write user variables, too, though this might be presented to the user as a recommendation. 
+The 'gui' method calls back to the user both to render data and to ask for information including navigation variables, window sizes, feature support, preferences, etc. relevant to constructing a view. The application may write user agent variables, too, but this might be presented to the user as a recommendation.
 
-Under premise of user participation in transactions, we render aborted transactions. Further, we leverage aborted transactions as a basis for 'read-only' GUI views. Exactly what is rendered is left to the user agent, i.e. access to failed hierarchical transactions might only be visible in a debug view. We can render what-if scenarios by performing some other operations before rendering the GUI in an aborted transaction. 
+Under premise of user participation in transactions, we render aborted transactions. Further, we leverage aborted transactions as a basis for read-only views. Exactly what is rendered is left to the user agent, i.e. access to failed hierarchical transactions might only be visible in a debug view. We can render what-if scenarios by performing some other operations before rendering the GUI in an aborted transaction. 
 
 *Aside:* The proposed API also aims to localize input validation and avoid construction or parsing of large intermediate values. The user agent can directly operate on its internal abstract scene graph.
 
 ### Integration
 
-We can potentially find the 'gui' in many locations: the application toplevel, hierarchical application components, or RPC objects published to the registry.
+Implementation of the 'gui' interface is not limited to the toplevel application object. It could be implemented on arbitrary application components - perhaps even individual variables - to support live coding and debugging. We could also define 'gui' for RPC objects published to the registry.
 
-When defined at the application toplevel, the GUI might be directly rendered by the runtime, i.e. the runtime provides a built-in user agent. The application can potentially manipulate user agent state and configuration options through a system API. 
+By default, we might render the toplevel application 'gui' using a runtime integrated user agent. In this case, ad-hoc access to that user agent should also be accessible through the runtime reflection API (perhaps `sys.refl.gui`). 
 
-When defined in application components, the GUI would only be accessible in context of live coding or debug views. However, these interface would also be convenient for hierarchical composition of the toplevel application GUI.
+### Web Applications
 
-When defined on RPC objects, we can easily browse through the available objects and render them. Or we could compose those objects into another application's GUI, similar to normal application components.
+Users might route `/sys` requests to `sys.refl.http`, a runtime-provided HTTP interface. This interface is intended for administration and debugging, but a runtime could also provide the application GUI through this interface, e.g. `/sys/gui/NavVars`, leveraging JavaScript, DOM, CSS, and XMLHttpRequest. The URL suffix and some cookies could be abstracted as navigation vars. In general, multiple HTTP requests will participate in each GUI transaction.
 
-### GUI to Web Application Adapter
+The initial page and JavaScript 'continuation' could be partially evaluated and 'compiled'. Stable navigation variables can be represented in the URL to maximize partial evaluation. This should be related to compiling fragments of RPC methods to run on the caller.
 
-We can UserAgent interface that supports only a subset of features easily implemented on the web application stack. We can leverage XMLHttpRequest to model transactions between a browser and an application. And it is difficult, but not impossible, to compile some part of the 'gui' method into JavaScript that runs on the browser. Further, we could specialize the JavaScript based on stable navigation variables, including URL.
+## Navigation Variables
 
-I think this would be a very effective option for integrating GUI. But actually developing the compiler won't be trivial. 
+We can generalize from URLs and query strings to a concept of fine-grained 'navigation variables'. Navigation variables let us avoid parsing, can be observed in arbitrary order, and let applications hint at or recommend opportunities for exploration. Like URLs, navigation variables can be kept in history for backtracking, or users could open multiple views concurrently.
 
-## Navigation and History
+## Rendering Temporal Media and Large Objects
 
-Some applications may read 'navigation' variables similar to URLs or query strings. These are just normal user variables, except that by annotating them as navigation variables we can effectively inform the user agent to track them for purpose of history, backtracking, or opening multiple tabs or windows.
+An application may ask a user agent to 'render' a video for user consumption. As a participant in the transaction, a user should have the tools to comprehend this video before committing to anything. 
 
-## Rendering Temporal Media
+One of the best ways to understand a video is to play it. Of course, other very useful tools would include the ability to search it (find people or particular objects), read dialogues, present video frames side by side, apply filters, slow motion, fast forward, reverse, etc.. Ideally, the GUI system provides a whole gamut of tools that can be applied to any video.
 
-An application may ask a user agent to 'render' a video for user consumption. 
+The same idea should apply to any large 'object' presented to the user within a transaction. For example, if the user agent is asked to render an entire 'database' as a value the user should have suitable tools to browse, query, and graph database values to obtain some comprehension of them. Rendering of very large objects is feasible between content-addressed references and content distribution networks.
 
-Returning to the big idea of user participation in transactions, the user should have the tools to comprehend this video before committing to anything. Such tools certainly include the option to 'play' the video. But users could also speed it up, slow it down, run in reverse, run a short segment in a loop, jump around, search based on images or contained dialog, and so on.
+Ideally, user agents are extensible such that, if they lack the necessary tools, users can easily download the tools they need. We could develop some conventions for recommending certain tools to understand a large object. Further, an application can also support users in understanding large objects.
 
-The application could modify user variables to begin playing the application on behalf of the user. However, like any other manipulation of user variables, this might be presented to the user as a recommendation.
+## Non-deterministic Choice and GUI
 
-Intriguingly, temporal media could be downloaded and buffered as needed via the content addressed storage layer. 
+For isolated transactions, repetition is equivalent to replication. Fair non-deterministic choice can be replicated to evaluate both forks in parallel. Assuming the transactions do not have a read-write conflict, they can both commit. This optimization is leveraged for task-based concurrency of transaction loops.
 
-## Mitigating Glitches
+This will impact GUI. If an application makes a non-deterministic choice, it will potentially affect what is rendered to the user. Assuming the user agent is aware of the choice, this could be rendered using multiple frames (tabs, windows, etc.) or more adventurously rendered as an overlay or branching conversation. 
 
-If users observe all transactions in which a user agent participates, they will certainly observe many transactions that are ultimately aborted due to concurrent read-write conflicts. A subset of these may exhibit 'glitches' where rendered values are inconsistent.
+Ideally, the user should have some control over the non-deterministic choice. This allows a *read-only view* to focus on frames that receive user attention, and *approved action* to efficiently approve a specific branch instead of waiting for it to cycle around. 
 
-The GUI system can easily skip rendering of transactions that might be inconsistent, but there is a potential cost to frame-rate depending on level of concurrent interference. To mitigate glitches without reducing frame rates may require support from applications or the glas runtime system. Some possibilities:
-
-* redesign apps to reduce conflict: use more queues!
-* systematic support for 'snapshots' of system state
-* precise conflict analysis to distinguish 'glitches'
-
-In practice, I expect most glitches will be subtle and short-lived. Users often won't even notice. Where users do notice, it will often be easy to solve the problem at the app layer. Snapshots would further reduce the barrier.
-
-An adjacent issue is that asynchronous interactions may appear glitchy due to time and transactions between user action and feedback. One viable solution is to manage user expectations in the GUI, e.g. report the status of prior requests, make it clear when a user action is still being processed. Alternatively, if it doesn't introduce too much contention, we could make user actions more direct and synchronous. 
-
-## Multi-Frame GUI
-
-For an isolated transaction, repetition is equivalent to replication. A fair non-deterministic choice can be replicated to take both routes. We can leverage this to render multiple independent frames or windows from a single 'gui' request. 
-
-However, it would be best to make this choice visible to the user agent, such that the GUI system can stabilize and render specific choices based on user attention. This implies we can influence non-deterministic choice through the transaction layer, somewhat similar to an algebraic effect.
-
-Ideally, for *approved action* mode, the user can explore possible outcomes based on feedback, and control which choice is committed in the end. That is, the user also participates in non-deterministic transactions.
+This can be understood as a form of participation: users can ignore and abort forks that aren't of interest to them, or explore the options in a controlled manner instead of randomly. Control over non-deterministic choice must be integrated with both the runtime and distributed transactions. Fortunately, this is a feature we'll also want for many other reasons: scheduling transactions, debugging, loop fusion, etc.. 
 
 ## Multi-User Transactions
 
-The API directly supports multi-user systems where each user holds independent GUI connections. A multi-user aware application can coordinate multiple users. This should be sufficient for most use cases. No need to share a *transaction* between users.
+The API directly supports multi-user systems where each user is performing independent transactions. That should be sufficient for most use cases. However, what if we want a 'multi-user transaction' in the sense of multiple users participating in one transaction?
 
-But if ever we invent a scenario where a multi-user transaction makes sense, how would we implement it? 
-
-Well, if multiple users shared a room, we could implement a 'multi-user agent' to allow multiple users to share a transaction. It doesn't need to be a physical room: users could share a virtual room. Each user could have independent GUI connections to the shared virtual room, allowing transactional observation and operation of the shared multi-user agent, which ultimately interacts with the remote application.
-
-A virtual room could also support coordination and handoff protocols to share a single-user GUI connection between users. This would roughly correspond to desktop sharing.
+To support a multi-user transaction, we could model a 'multi-user agent'. If the users do not share a physical room, the multi-user agent could be placed into a virtual room created for the task. If the application is not multi-user aware, we could use a normal user agent and the virtual room could instead implement handoff protocols. 

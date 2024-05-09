@@ -108,8 +108,6 @@ Database keys can serve as an alternative source of names. We can introduce an a
 
 ## Implicit Parameters and Algebraic Effects
 
-
-
 ## Automatic Testing and Consistency
 
 Methods defined under `test.*` are implicitly understood as test methods. Taking advantage of the transactional context, a runtime will evaluate test methods to the point they would return, then abort to control side-effects. A test that would not return is a failed test.
@@ -137,14 +135,13 @@ Ideas:
 
 At the moment, I lean towards the mixin idea.
 
-
 ## HTTP Interface
 
-Applications could define a `http : Request -> Response` method. When defined at the toplevel, the runtime might implicitly support HTTP requests on the same port configured for RPC. When implemented on application components, this method can serve as a flexible interface for interactive debug views. I essentially propose `http` instead of `toString()`. 
+Applications could define a `http : Request -> Response` method. The 'Request' and 'Response' are abstract data types provided by the runtime. The `sys.http.*` methods will help the application efficiently parse and process requests and correctly construct responses.
 
-The 'Request' and 'Response' are abstract, perhaps via `sys.http.*` methods, allowing the runtime to parse and cache inputs, correctly compute HTTP headers (such as 'Content-Length' and 'Vary'), and guarantee a valid response in context of HTTP pipelining. If the transaction aborts, it will be retried several times until a configurable timeout; this can be leveraged for long polling. 
+When defined at the toplevel, the runtime may implicitly accept HTTP requests on the same port configured for RPC (it's easy to distinguish HTTP requests). But we can also have 'http' interfaces on hierarchical application components or RPC objects. As a special case, a runtime might provide its own web service for debugging, administration, etc. as `sys.refl.http`. By convention, users might route `/sys` to `sys.refl.http`. 
 
-By convention, users might route path `/sys` to `sys.refl.http`, allowing the runtime to provide a built-in web-based debugger, or hooks for an external debugger.
+Initially, each HTTP request is evaluated as a separate transaction. If the transaction aborts, the request is implicitly retried many times until configurable timeout. This supports long polling and integrates nicely with transaction loop reactivity. We may eventually extend runtimes to support multi-request transactions (leveraging HTTP headers) or web sockets. 
 
 ## Graphical User Interface? Defer.
 
