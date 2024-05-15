@@ -108,114 +108,69 @@ Database keys can serve as an alternative source of names. We can introduce an a
 
 ## Implicit Parameters and Algebraic Effects
 
+Implicit parameters can be modeled as a special case of algebraic effects or vice versa (with function passing). I propose to tie implicits to the namespace. This resists accidental name capture or conflict, allows for private or capability secure implicits, and simplifies interaction between implicits and remote procedure calls.
+
+In the initial glas language, function passing will likely be one way, i.e. a procedure can pass a method to a subprocedure but not vice versa. This is convenient for closures over stack variables and avoiding heap allocations. Algebraic effects can be understood as one-way function passing.
+
 ## Automatic Testing and Consistency
 
-Methods defined under `test.*` are implicitly understood as test methods. Taking advantage of the transactional context, a runtime will evaluate test methods to the point they would return, then abort to control side-effects. A test that would not return is a failed test.
+Methods defined under `test.*` are implicitly understood as test methods. If testing is not disabled, the runtime might automatically evaluate tests just before committing to each transaction, i.e. after start, each step, http events, and so on. Tests would be evaluated in a hierarchical transaction so most side-effects can be aborted. 
 
-Tests represent transactional invariants, propositions that should hold true. By default, a runtime should evaluate tests just before committing any transaction. If any test fails, the transaction is aborted to protect consistency. 
+If tests fail, the transaction can be aborted. This allows tests to protect ad-hoc invariants of the application and let programmers control consistency.
 
-However, continuous testing can be very expensive. Costs can mitigated by incremental computing and reactivity, or controlled via configuration, annotation, quotas, and runtime reflection. Some tests might be configured to run infrequently rather than per transaction.
+Of course, tests inevitably incur performance overheads. A runtime can potentially apply incremental computing and reactivity features of transaction loops to minimize rework. Alternatively, configurations can reduce testing, trading confidence for performance. Even infrequent tests could help track system health.
 
-## Application Life Cycle
+## Primary Life Cycle
 
-The runtime will call `start()` as the first effectful operation, retrying until it commits successfully. This supports initialization. Then it will call `step()` repeatedly in separate transactions, modeling the background loop. If undefined, start or step are treated as no-ops.
+The runtime first calls `start()`, repeating only if it fails to commit, then repeatedly calls `step()` in separate transactions. This allows for some one-time initialization and the main application loop. To support graceful shutdown, the runtime may also call `stop()` to signal that the application should halt after an OS event such as SIGTERM or WM_CLOSE. 
 
-Between steps the application may handle HTTP requests, GUI interactions, OS signals, and RPC. This involves implementing runtime-recognized interfaces and is contingent on configuration.
-
-The application may voluntarily halt by calling (and committing) `sys.halt()`. This asks the runtime to make the current transaction the final one. Otherwise, the application runs until killed by (or together with) the OS.
-
-## Runtime Configuration
-
-I'm still developing the [configuration model](GlasConfigLang.md). But we want the application to have an opportunity to contribute to some configuration decisions. The question is how this participation should be expressed.
-
-Ideas:
-
-* Application defines ad-hoc configuration variables `config.*`, perhaps limited to text. These are imported into the user configuration, e.g. by overriding the `app` component. The configuration language supports simple comparisons and compositions of texts.
-* Application defines `config.class` as a list of strings, and we either select the first matching subconfiguration or mixin all those in the list that are defined. This is relatively coarse grained but doesn't require conditional expressions in the configuration language.
-
-At the moment, I lean towards the mixin idea.
+An application may voluntarily halt by calling and committing `sys.halt()`. This asks the runtime to make the current transaction the final one. 
 
 ## HTTP Interface
 
-Applications could define a `http : Request -> Response` method. The 'Request' and 'Response' are abstract data types provided by the runtime. The `sys.http.*` methods will help the application efficiently parse and process requests and correctly construct responses.
+Applications may define a `http : Request -> Response` method. The toplevel 'http' method may implicitly be bound to the same network port used to receive RPC requests. The runtime may validate requests before the application sees them, and validate responses before passing them to the caller. An 'http' interface on subcomponents can used in routing, composition, or to provide a debug interface. 
 
-When defined at the toplevel, the runtime may implicitly accept HTTP requests on the same port configured for RPC (it's easy to distinguish HTTP requests). But we can also have 'http' interfaces on hierarchical application components or RPC objects. As a special case, a runtime might provide its own web service for debugging, administration, etc. as `sys.refl.http`. By convention, users might route `/sys` to `sys.refl.http`. 
+To simplify integration, the Request and Response types are binaries per the HTTP specification, albeit without support for pipelining or chunking. However, for performance, users will usually process requests and incrementally construct responses through `sys.http.*` methods, leveraging *accelerated representations* under the hood. HTTP pipelining may be transparently handled by the runtime.
 
-Initially, each HTTP request is evaluated as a separate transaction. If the transaction aborts, the request is implicitly retried many times until configurable timeout. This supports long polling and integrates nicely with transaction loop reactivity. We may eventually extend runtimes to support multi-request transactions (leveraging HTTP headers) or web sockets. 
+Initially, each HTTP request is evaluated in a separate transaction. If the HTTP request aborts, it is implicitly retried until it commits or a configurable timeout is reached. This supports long polling and leverages the incremental computing and reactivity of transaction loops. Eventually, we might develop custom HTTP headers to compose multiple requests into a larger transaction.
+
+As a convention, applications might route `/sys` to a runtime provided `sys.refl.http`. This could provide access to logging, testing, profiling, debugging, and similar features via browser.
 
 ## Graphical User Interface? Defer.
 
-To fully develop a [Glas GUI](GlasGUI.md), we will need a mature glas system that implements several transaction loop optimizations and RPC optimizations. Short term, applications can provide GUI via HTTP.
+The big idea for [glas GUI](GlasGUI.md) is that users participate in transactions through reflection on a user agent. That is, users can see data and queries presented to the user agent, and adjust how the agent responds to queries on their behalf. This combines nicely with live coding, but in conventional cases the response to a query can be modeled as a variable bound to a toggle, text-box, or slider.
 
-## Effects API
+Anyhow, this will be difficult to implement efficiently before the glas system matures, and is adequately substituted by HTTP interface in the short term. So, I don't plan to develop GUI until later.
 
-The application may declare some abstract methods to be provided by the runtime. To simplify hierarchical composition of applications, effects might be centralized under the 'io' namespace. If the runtime does not recognize a declared method, and that method is used within the app, the runtime should raise an error.
+## Non-Deterministic Choice
 
-### State
-
-I propose a hierarchical key-value database with support for three data types: var, queue, and bag.
-
-* *var* - Holds a single value. Default value is zero, also representing empty list or dict, represented by the single node binary tree. In case of network partitioning, one partition 'owns' the var and may read and write normally, while others may read the value most recently cached in their partition (with some checks for cache consistency). 
-* *queue* - FIFO ordered reads and writes, allows for multiple writers and a single reader in parallel. In case of network partitioning, only one partition can 'read' the queue, but writes in other partitions can be buffered. Supports heuristic congestion control: the scheduler can reduce priority of transactions that write to a full queue.
-* *bag* - aka multi-set, unordered reads and writes, allows for multiple writers and readers in parallel. In case of network partitioning, each partition may continue to read its own writes, and things can migrate after reconnect. Supports heuristic congestion control like queues. A compiler can potentially optimize pattern matching after read into search, allowing a bag to serve as a tuple space.
-
-In some contexts, access to bags may have a 
-
-
-Assuming optimization of pattern match after read, this can serve as a tuple space.
-
-
-
-
-
-
-
-Efficient key construction needs some attention. In general, we'll have some static path fragments mixed with occasional dynamic elements to handle collections. If we have something like `x.y.z[index].a.b.c` then it would be ideal if both the `x.y.z[]` and `.a.b.c` can be partially evaluated. 
-
-        key(key(key(var, "a"), "b"), "c") # doesn't partially evaluate easily
-         # but we might be able to inline constructors and rewrite?
-
-
-A key-value database with abstract, ephemeral keys constructed based on other keys and plain old data. Distinctions between persistent storage, process storage, and transaction-local storage.
-
-We can consider extending the database with a few more types. Counters are potentially a good option. 
-
-
-*Note:* After reading data, we'll often immediately test whether it matches some pattern before continuing. It is feasible to provide APIs that integrate matching, but that severely complicates the API. What I hope to do instead is optimize database access based on continuation passing style and peeking at the subsequent code.
-
-### Fair Non-Deterministic Choice
+In context of a transaction loop, fair non-deterministic choice serves as a foundation for task-based concurrency. The idea is that if the choice is part of the stable prefix for a transaction, we can replicate the transaction to take each choice and evaluate in parallel. Further, where choice isn't stable, we can effectively 'search' for a choice that results in successful commit.
 
 Proposed API:
 
-        sys.fork(N) # returns fair choice of natural number between 1 and N.
+* `sys.fork(N)` - blindly but fairly chooses and returns a natural number less than N. (Diverges as type error if N is not a positive natural number.)
 
-This is intended for use in context of a stable transaction loop prefix, where fair choice optimizes to concurrent transactions. If the transaction is unstable at point of request, this can be replaced by a fair search algorithm that seeks a result leading to successful commit. 
+Fair choice isn't random. Rather, given sufficient opportunities, we'll eventually try everything. Naturally, fairness is weakened insofar as a committed choice constrains future opportunities. More generally, 'fair' choice will also be subject to external reflection and influence to support conflict avoidance in scheduling, replay for automated testing or debugging, or user attention in a GUI. The sequence of choices might be modeled as an implicit parameter to a transaction. 
 
-Note that 'fair' in this context means that, given unlimited opportunities, the system guarantees that you'll eventually attempt any particular sequence of fork choices. There is no implication of random or uniform choice.
+*Note:* Reading from a 'bag' would implicitly involve `sys.fork()`. 
 
-*Aside:* Reading from a bag also supports fair choice.
+*Thought:* Do I need a separate API for acquiring cryptographically random data?
 
-### Time
+## Time
 
-Transactions we can constrain a transaction to commit before or after a specified time. A proposed effects API:
+Transactions may observe time and abort if time isn't right. In context of a transaction loop, this can be leveraged to model timeouts or waiting on the clock. To support incremental computing, we add a variant API:
 
-* **time.now** - Response is an estimated logical time of commit, as a TimeStamp value. 
-* **time.check(TimeStamp)** - Response is boolean representing whether `(time.now >= TimeStamp)`.
+* `sys.time.now()` - Returns a TimeStamp representing a best estimate of current time as a number of 100 nanosecond intervals since Jan 1, 1601 UTC (aka Windows NT time format, albeit not limited to 64 bits). Multiple queries to the clock should return the same value within a transaction. A runtime may adjust for estimated time of commit.
+* `sys.time.check(TimeStamp)` - Observes `sys.time.now() >= TimeStamp`. Use of 'check' should be preferred in context of incremental computing or reactivity because it makes it very easy for the runtime to set precise trigger events on the clock, and can also avoid read-write conflicts. It is feasible to compute the transaction slightly ahead of time and have it ready to commit at the indicated time.
 
-Checking time is more *stable* than requesting a timestamp, and thus allows for waits. But observing `time.now` is can be useful outside the stable prefix of a transaction. TimeStamp might use the Windows NT format by default, i.e. an integer representing 100ns intervals since midnight, Jan 1, 1601 UTC.
+In context of RPC, each process may have its own local estimate of current time, but ideally we'd use something like NTP or PTP to gradually synchronize clocks.
 
-### Search?
+This API does not cover one common conventional use case for time APIs: profiling. Profiling is instead handled as a form of runtime reflection in context of transactions.
 
-In this case, the only effect is to ask the runtime for some specialized environment variables.  The runtime can heuristically adjust the variables over time and attempt to stabilize them. Potential API:
+## Profiling
 
-* **tune:bool:Var** - Response is a boolean represented as a one-bit word, `0b0` or `0b1`. 
-* **tune:ratio:Var** - Response is a rational number between 0 and 1 (inclusive), represented as an `(A,B)` pair of natural numbers.
 
-The application might provide a heuristic function to the runtime via annotations. The alternative is to add more effects for output a fitness score. 
-
-*Note:* Search could be especially useful in context of staged applications, i.e. staged metaprogramming.
-
-### Logging
+## Logging
 
 Logging is a convenient approach to debugging. We can easily support a logging effect. Alternatively, we could introduce logging as a program annotation, accessible via reflection. But it's convenient to introduce as an effect because it allows for flexible handling.
 
@@ -227,15 +182,8 @@ Initially, log messages will simply write to standard error. Messages may be col
 
 *Note:* It is feasible to push logging into the debug layer, e.g. with a 'trace' annotation on a log function. Ideally we'd abstract logging effects.
 
-### Random Data
 
-Non-deterministic 'fork' is not random because a scheduler can heuristically search for choices that lead to success. Similarly, 'random' is not necessarily non-deterministic. These two ideas must be distinguished. A viable API:
-
-* **random:N** - response is cryptographically random binary of N bytes.
-
-The implementation of random must backtrack on failure, such that we aren't implicitly searching for a successful string of random bits. It is possible to use a separate 'random' source per stable thread (i.e. per fork path) to further stabilize the system. Performance should be good, e.g. users are free to directly use random for simulating dice.
-
-### Shared Database
+## Shared Database
 
 Transaction loop applications constrain the effects API. Transactions easily support buffered interactions, such as reading and writing channels or mailboxes. However, they hinder synchronous request-response interactions with external services. If a remote service supports distributed transactions, or if we can reasonably assume a request is read-only and cacheable (like HTTP GET), then we could issue a request within the transaction. Otherwise, the request will be scheduled for delivery after we commit, and the response is deferred to a future transaction.
 
@@ -263,25 +211,17 @@ Abstraction can be enforced through type systems, address translation tables, or
 
 I propose to start with a simple key-value database API, a few initial abstract keys (e.g. app home, user home, global shared), and a filesystem-based derivation rule for new keys. This would be enough for most apps while leaving room for performance and security extensions. 
 
-### Standardized Mailbox or Databus or Tuple Space
+## Standardized Mailbox or Databus or Tuple Space
 
 Support for a lightweight mailbox style event systems would greatly simplify integration of an application with OS signals, HTTP services, and inter-app communication within glas systems. This could potentially build on the db API, or it could be a separate effect.
 
 One challenge is that we need each subprogram to filter for relevant events. This might involve abstraction of keys that apply simple filters, rather than applying a filter to every access.
 
-### Application Integation
-
-* `sys.app.args` - Access CLI arguments.
-* `sys.app.halt` - 
-
-
-
-### Configuration Variables
+## Configuration Variables
 
 Instead of configuration files, it would be convenient to support configuration as a database feature. Perhaps one shared between application and runtime. This would allow configurations to be edited through runtime layer HTTP services, for example.
 
-
-### Environment Variables
+## Environment Variables
 
 A simple API for access to OS environment variables, such as GLAS_PATH, or extended environment variables from the runtime.
 
@@ -290,7 +230,7 @@ A simple API for access to OS environment variables, such as GLAS_PATH, or exten
 
 Glas applications won't update environment variables. However, it is possible to simulate the environment for a subprogram via effects handlers. 
 
-### Filesystem
+## Filesystem
 
 Filesystems are ubiquitous, universally awkwardly, and usually do not support transactions. Safe filesystem operations will need to be partitioned across multiple transactions to represent points of concurrent interference. However, we can provide some 'unsafe' filesystem APIs that assume non-interference and are considerably more convenient. 
 
@@ -333,11 +273,11 @@ Proposed API:
 
 It is feasible to extend directory operations with option to 'watch' a directory for updates.
 
-### Database Integration?
+## Database Integration?
 
 It might be worthwhile to explicitly support some external transactional databases. It would allow us to mitigate a lot of issues associated with filesystem operations. However, this is not a high priority, and might be achievable via *background eval*.
 
-### Network APIs
+## Network APIs
 
 Network APIs have some implicit buffering that aligns well with transactional operations. However, the common request-response pattern must be awkwardly separated into two transactions. 
 
@@ -378,17 +318,21 @@ A port is a fixed-width 16-bit number. An addr is a fixed-width 32-bit or 128-bi
 *Aside:* No support for unix sockets at the moment, but could be introduced if needed.
 
 
-### Reflection
-
-Reflection can weaken atomicity or isolation of transactions, violate component privacy, and provide a vector for covert communication. It is easily abused. However, it can be useful to support debugging, profiling, runtime extensions, and other features. 
+## Live Coding
 
 * reload config
 * reload source
-* 
+* SIGHUP?
 
-#### Background Eval
+## Background Requests
 
-A runtime can provide `sys.refl.bgeval(MethodName, Args)` to pause the calling transaction, evaluate `MethodName(Args)` in a separate transaction (logically prior to the calling transaction), then continue the calling transaction with the returned value. If the background operation fails, it is implicitly retried until it succeeds or the caller is aborted.
+
+
+Background evaluation can be understood as a use of reflection that weakens isolation of transactions. The idea is that we can evaluate a transaction, fail, but someone else can determine that we failed because we were missing some data that could have been cached prior to the transaction. 
+
+A runtime can provide `sys.refl.bgeval(MethodName, Args)` to pause the calling transaction, evaluate `MethodName(Args)` in a separate transaction (logically *prior* to the calling transaction), then continue the calling transaction with the returned value. The Args type can be restricted to plain old data.
+
+If the background operation fails, it is implicitly retried until it succeeds or the caller is aborted.
 
 Use cases: 
 
@@ -427,14 +371,4 @@ This would probably be sufficient for most use-cases, but we could add some mech
 * Browse the application namespace. Call arbitrary methods.
 * Browse application database. Modify state directly.
 * Potential source mapping, map methods to relevant sources.
-
-## Rejected Ideas
-
-### Ephemeral State
-
-We can model ephemeral state as a region of the database that is implicitly reset at the start of each transaction. Ephemeral state avoids read-write conflicts by effectively being write-only. Ephemeral state can be useful as an awkward implementation of implicit parameters, for access from debug views, and assertion of transaction invariants. 
-
-This idea proved problematic for composition. In some cases, a composite application must manually perform resets of component state. It can be difficult to track exactly which components are reset. And we certainly lose most of the debugging and assertion benefits.
-
-I instead favor implicit pass-by-ref parameters where possible, assuming language support. Where we do need ephemeral state, we can model resets explicitly, which avoids some composition issues.
 

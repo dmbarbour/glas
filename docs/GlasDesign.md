@@ -8,11 +8,11 @@ The glas system starts with a command line tool 'glas'. This tool has built-in k
 
 ## Modules and Syntax Extension
 
-Modules are represented by files and folders. Every valid module compiles to a glas value (see *Data*). In many cases, these values represent *Programs and Applications*. But data modules are also useful! They can be referenced as constants.
+Modules are represented by files and folders. Every valid module compiles to a glas value (see *Data*). In most cases these values represent *Programs and Applications*, but data modules are also useful and can be referenced as constants.
 
-A file is compiled based on its file extensions. To process a file named "foo.ext", the glas command line will first compile a global module named language-ext, which must define a compilation function, then apply this compilation function to the file binary. To bootstrap this system, a compiler for ".g" files is built-in and we first compile language-g if possible.
+A file is compiled based on its file extensions. To process a file named "foo.ext", the glas command line will first compile a global module named lang-ext, which must define a compilation function, then apply this compilation function to the file binary. To bootstrap this system, a compiler for ".g" files is built-in and we first compile lang-g if possible.
 
-File extensions may be composed. For example, "example.json.m4.gz" would essentially apply a pipeline of three compilers: language-gz then language-m4 then language-json. This might decompress the file binary, apply a text macro preprocessor, then parse the result as JSON. Conversely, if file extensions are elided, the compiled value is simply the file binary. 
+File extensions may be composed. For example, "example.json.m4.gz" would essentially apply a pipeline of three compilers: lang-gz then lang-m4 then lang-json. This might decompress the file binary, apply a text macro preprocessor, then parse the result as JSON. Conversely, if file extensions are elided, the compiled value is simply the file binary. 
 
 A folder is compiled to the value of its contained "public" file of any extension. Folders serve as dependency boundaries: there is no access to arbitrary files within subfolders or the parent directory. Folders may contain local modules, test programs, and auxilliary content such as a readme, license, or a cryptographically signed manifest.
 
@@ -79,7 +79,7 @@ Binaries receive special treatment because they are a popular data representatio
 
 ### Accelerated Representations
 
-We can generalize the idea of representing lists as finger-tree ropes to support for unboxed floating point matrices, unordered data types (e.g. sets, graphs), or even virtual machine states (with registers, memory, etc.).
+We can generalize the idea of representing lists as finger-tree ropes to support for unboxed floating point matrices, unordered data types (e.g. sets, unlabeled graphs), or even virtual machine states (with registers, memory, etc.).
 
 In each case, we first define a canonical representation as a binary tree. For example, a matrix could be a list of lists. A set can be represented by an ordered list. An unlabeled graph might refer to [graph canonization](https://en.wikipedia.org/wiki/Graph_canonization). A VM state might use a simple record.
 
@@ -93,96 +93,61 @@ To support larger-than-memory data, glas systems may leverage content-addressed 
 
 ## Programs and Applications
 
-A program is a value with a known interpretation. An application is a program with a known integration. The glas system specifies the ".g" language to bootstrap the system and serve as a foundation. However, many other models may eventually be supported through the module system.
-
-A valid ".g" file will compile to a `g:(Dict of (Namespace of AbstractAssembly))`. An application module should define namespace 'app' that implements interfaces recognized by the runtime, such as 'start', 'step', and 'http' methods (see [glas applications](GlasApps.md)). Library modules instead define [components and mixins](GlasNamespaces.md) for multiple-inheritance based reuse between apps. Methods are compiled to an extensible intermediate language, an [abstract assembly](AbstractAssembly.md), that will be further interpreted or compiled by the glas system. 
-
-A proposed set of abstract assembly constructors is developed below.
-
-### Control Flow
-
-### Program Environment
-
-### Data Manipulation
-
-### Annotations
-
+A program is a value with a known interpretation. An application is a program with a known integration. The glas system specifies the [glas language](GlasLang.md) with the ".g" file extension, and a non-conventional [glas application](GlasApps.md) model. However, glas is very extensible through language modules, staging, and acceleration and is not limited to these initial models.
 
 ## Language Modules
 
-Language modules follow a simple naming convention: the global module 'language-xyz' must describe how to compile files with extension ".xyz". This module should define an application that defines method `compile : SourceCode -> ModuleValue`, performing compilation as a single transactional step. SourceCode is usually a binary, but not always in case of composition of file extensions.
+As a simple naming convention, global module 'lang-xyz' should detail how to compile files with extension ".xyz". This detail should be represented as an 'app' namespace definining `compile : SourceCode -> ModuleValue` with limited effects. Source code is *usually* a binary, but composition of file extensions allows for structured source. Compilation must succeed in a single step. 
 
-To ensure a deterministic, reproducible outcome and support predictable refactoring, the compiler has limited access to effects. Available effects:
+Effects are restricted to ensure deterministic, reproducible outcomes and to simplify integration of the compiler function into other contexts. The compiler is limited to loading modules and logging messages. When loading modules, dependency cycles or a failed download may cause compilation to logically diverge and report an error.
 
-* load compiled module values from module system
-  * *f:String* - local file or folder, extensions elided
-  * *g:String* - global module name, via runtime config
-* log output for a human observer
-
-Loading a module may fail if the module isn't defined or if compilation of it fails. The exact reason for error might be logged but wouldn't be visible to the compiler. Dependency cycles or a failed download instead cause load to logically diverge. 
-
-We might eventually develop naming conventions to support REPLs, linters, syntax highlighting support, intellisense, decompilers, [language server protocol](https://en.wikipedia.org/wiki/Language_Server_Protocol), interactive tutorials, etc.. However, it might prove more convenient to separate these into separate modules, e.g. 'langrepl-xyz'. 
+I hope to eventually support many 'associated' language tools by naming conventions in the module system, such as support for REPL, linters, syntax highlighting, [language server protocol](https://en.wikipedia.org/wiki/Language_Server_Protocol), interactive tutorials, etc.. However, these could be defined in separate modules, e.g. 'repl-xyz'. 
 
 ## Automated Testing
 
-As a simple convention, local modules whose names start with "test-" will be interpreted as tests. Tests may be compiled and evaluated even when they aren't required by a folder's 'public' definition. It is feasible to run all tests in a distribution as a health check.
+As a simple naming convention, local modules whose names start with "test-" will be interpreted as tests. Tests can automatically be compiled and evaluated as part of building the owning module. The glas system can automatically maintain a 'system health' report based on which tests are passing, which are failing, and test coverage at the scope of a distribution.
 
-A test module should define an application containing any number of methods under `test.*` for evaluation. This is the same interface used for application built-in tests. However, a test module has relatively limited access to effects to guarantee tests are reproducible.
+Each test module may define multiple test methods as `test.*`. This has the same interface as application built-in tests. However, a test module has limited access to effects to guarantee tests are reproducible. Effects includes language module effects and 'fork' for non-deterministic choice and fuzz testing.
 
-* log and load - same as language modules
-* fork - non-deterministic choice to support fuzz testing
-
-Use of 'fork' allows for one test to represent many tests, but it also allows for endless testing. Thus, how much testing is actually performed will depend on quotas and heuristics. A smart test system can potentially choose forks leading to edge cases.
+In case of fuzz testing with 'fork', how much testing should be performed will depend on quotas and heuristics. But a smarter test system can remember which tests are performed, focus on regression tests, and leverage fork to focus on edge cases and improve test coverage. 
 
 ## Performance
 
 ### Acceleration
 
-If a function is giving us poor performance, it is feasible to replace that function with a compiler built-in or hardware. However, it is useful to maintain the reference definition for analysis, debugging, and because it allows us we can treat this replacement as an 'optimization' instead of a semantic extension to the language.
+If a function is giving us poor performance, it is feasible to replace that function with a compiler built-in or hardware. To resist silent performance degradation, this replacement should be explicit, guided by annotations. Usefully, this can be understood as an optimization instead of a semantic extension.
 
-It is feasible to accelerate simulation of an abstract CPU or GPGPU, running on actual hardware. This simulation must be restricted to a memory-safe subset of behaviors, though this could be achieved through proof-carrying code and static analysis. When the code argument is static, checks could be performed ahead of time.
+It is feasible to accelerate simulation of an abstract CPU or GPGPU, running on actual hardware. This simulation must be restricted to a memory-safe subset of behaviors, though this could be achieved through proof-carrying code and static analysis. When the code argument is static, much work can be performed ahead of time.
 
-Acceleration may influence under-the-hood representations of data. For example, large lists and binaries might be encoded as finger-tree ropes to support efficient slices, concatenation, and indexing. The system can specialize abstract machine state to enable efficient multi-step operations. It is useful to treat *accelerated representations* as abstract to avoid accidental conversions.
-
-To resist silent performance degradation, annotations requesting unrecognized or unsupported acceleration should be reported at compile time. Of course, we can support 'optional' acceleration as a flag in the annotation. Ideally, accelerators will also be verified through automatic testing. 
+Acceleration influences under-the-hood representations of data. I describe representation of lists as finger-tree ropes and *accelerated representations* more generally under *Data*. Accelerated programs or built-in functions are necessary to take full advantage of accelerated representations.
 
 ### Laziness and Parallelism
 
-If we can prove a subcomputation is 'pure' calculation and will terminate in some reasonable period, we can transparently make that computation lazy or evaluate it in parallel. This allows users to set up expensive computations for evaluation in the background. 
+Insofar as we can prove subcomputations are 'pure' calculations and will terminate in some reasonable period, we can transparently make that computation lazy or evaluate it in parallel. This allows users to set up expensive computations for evaluation in the background. 
 
 In context of transactions, we can commit while computation is ongoing. A future transaction can later wait on the result to become observable. In general, we can chain further lazy and parallel operations, and it is feasible to observe partial results without waiting on the full thing. I think this would provide an effective basis for pipelining between transactions.
 
 In a distributed computation, lazy data might be serialized as an external reference, to be provided later or upon demand. This reference could include a secure hash of the computation to be performed to better fit with memoization and content distribution.
 
-### Stowage
+### Content Addressed Data
 
-Glas systems will use content-addressed storage (addressed by secure hash) to manage larger-than-memory data. Stowage can be viewed as a variation on virtual memory paging, i.e. large subtrees can be heuristically moved to and from local memory to a higher-latency. Content addressing simplifies compression, memoization, incremental computing, and content delivery networks. In context of glas systems, stowage would be almost invisible modulo runtime reflection and use of annotations to guide stowage.
+Glas systems will leverage content-addressed storage (addressed by secure hash) to manage larger-than-memory data in context of orthogonal persistence and distributed evaluation. This might roughly be viewed as a variation on virtual memory paging, but it's simplified by immutability and hierarchical structure.
+
+In a distributed system, content addressed data allows for incremental communication of large data structures, especially in case of structure sharing. Further, a [content distribution network (CDN)](https://en.wikipedia.org/wiki/Content_delivery_network) can mitigate costs of repeatedly communicating large values.
+
+Use of content addressing should be semi-transparent: guided by annotations, invisible except via controllable reflection APIs. 
 
 ### Memoization
 
-It should be feasible to annotate at least purely functional subprograms for memoization. This can be implemented by storing a lookup table mapping inputs to outputs. Persistent or even shared (via trusted proxy) memoization tables are feasible. Stowage simplifies memoization with very large inputs and outputs.
+Any computation that could run lazily or in parallel can potentially be memoized. Persistent memoization would be especially relevant for incremental compilation of the module system. Content addressing can support memoization by reducing the cost to compare persistent values.
 
-*Note:* Memoization on lists requires special attention to leverage the tree structure under the hood. Generically, we could feasibly accelerate conversion of lists to something like [prolly trees](https://docs.dolthub.com/architecture/storage-engine/prolly-tree) for stable chunking, then memoize map-reduce on the tree.
-
-### Content Distribution
-
-Networked glas systems can potentially support [content distribution networks (CDNs)](https://en.wikipedia.org/wiki/Content_delivery_network) to improve network performance in context of *Stowage*. Content on an untrusted network could be encrypted and decrypted based on the configuration and hashes.
-
-### Compression Pass
-
-When compiling glas programs, a useful optimization pass is to identify common subprograms and translate those to reusable function calls. This pass may be guided by annotations and is not necessarily aligned with user defined functions. Usefully, compression may occur after partial evaluation and other specialization passes. 
-
-## Reflection
-
-A runtime can directly provide a reflection API as part of the application effects API. This would enable an application to review its resource consumption, performance profile, or debug outputs then adjust behavior appropriately. With sufficient runtime support, an application might also be able to update application code at runtime, e.g. requesting reload from source to support live coding.
-
-Additionally, a runtime could support annotations that provide limited access to a reflection API, e.g. the 'refl' annotation described earlier. This would also be capable of debug outputs and performance tuning. But annotations must not directly affect formal behavior of a program. At most, annotations could halt a problematic program early or provide useful hooks for the effectful reflection API.
+Memoization is most easily applied to tree structures, where we can compute some monoidal value for each tree node based on the value in each child. Unfortunately, it does not easily apply to lists because the underlying finger-tree structure is not visible. This can be mitigated by applying some other stable chunking system to the list, cf. [prolly trees](https://docs.dolthub.com/architecture/storage-engine/prolly-tree).
 
 ## Thoughts
 
 ### Type Checking
 
-The initial language will support annotations, and may develop a dedicated syntax for type annotations. I hope to eventually include typecheck tools that are applied automatically. But it's a low priority for now.
+Type annotations can be included in the application namespace and perhaps also within program definitions. Ideally, we can immediately begin to perform some checks on programmer assumptions and expectations based on these types. However, I hope for types to be 'partial' in the sense that we can leave them partially unspecified and incrementally refine them. Types with holes in them.
 
 ### Useful Languages
 
@@ -206,7 +171,7 @@ Incremental compilation over large databases is feasible via memoization or part
 
 ### Extensible IDEs
 
-Glas uses a pattern of naming modules to extend the glas system, e.g. 'language-ext' or 'glas-cli-opname'. This pattern hasn't exhausted its usefulness. It can be leveraged for projectional editors, internal wikis, module system browsers, and other features of an integrated development environment. I'd like to pursue this further.
+Glas uses a pattern of naming modules to extend the glas system, e.g. 'lang-ext' or 'glas-cli-opname'. This pattern hasn't exhausted its usefulness. It can be leveraged for projectional editors, internal wikis, module system browsers, and other features of an integrated development environment. I'd like to pursue this further.
 
 ### Program Search
 

@@ -1,6 +1,6 @@
 # Abstract Assembly
 
-The big idea for abstract assembly is that a front-end compiler expresses an intermediate-language in terms of abstract methods within the same [namespace](GlasNamespaces.md) as user-defined methods. This subjects compiled definitions to namespace-layer access control, extension, and override. The proposed representation is reminiscent of Lisp or Scheme:
+The big idea for abstract assembly is that a front-end compiler expresses an intermediate-language in terms of abstract methods within the same [namespace](GlasNamespaces.md) as user-defined methods. This subjects compiled definitions to namespace-layer access control, extension, adaptation, and override. The proposed representation is reminiscent of Lisp or Scheme:
 
         type App = (0b1:Name, List of Arg)
         type Arg = 0b0:Data
@@ -29,22 +29,24 @@ The intermediate language can define a primitive '%eval' operator, or a runtime 
 
 The main challenge with 'eval' is interaction with a type system, i.e. ensuring the AST has behavior that is compatible in context. Safe eval might require tracking type information in the intermediate language, and perhaps restricting the types of expressions we may evaluate.
 
-*Note:* Intriguingly, if '%eval' proves to be unused in the application, a late-stage compiler could drop expensive JIT support. 
+*Note:* Intriguingly, if '%eval' proves to be unused in the application, or to be used only with constant program arguments, a late-stage compiler could drop expensive JIT support. 
 
 ## Static Eval
 
-Static evaluation can easily be guided by annotations and independent of semantics. Alternatively, the intermediate language could support '%static-if' to make static evaluation explicit. The main difference regards staging. With annotations, we're limited to effects where it doesn't matter when they evaluate. With explicit static eval, we can explicitly support compile-time effects.
+Static evaluation can easily be guided by annotations and independent of semantics. Alternatively, the intermediate language could support '%static-if' and '%ifdef' to make static evaluation explicit. The main difference regards staging. With annotations, we're limited to effects where it doesn't matter when they evaluate. With explicit static eval, we can explicitly support compile-time effects.
 
 Effective support for static eval should enhance metaprogramming with abstract assembly. Ideally, we should be able to abstract over 'const' arguments to methods when constructing AST nodes. 
 
-## AST Layer Effects? Tentative.
+## Effects API? Tentative.
 
-With abstract assembly, we could push some effects to the AST layer without losing namespace based access control. This is tempting for higher-order effects, e.g. `%amb` for non-deterministic choice of statements, where we want close integration with the syntax, type system, and optimizer.
+I intend to also use the namespace to control effects. My initial proposal is to use the 'sys.' namespace component for effects, but I could easily use '%' and conflate effects with the abstract assembly layer, e.g. use `%amb` instead of `sys.fork`, `%trace` instead of `sys.log`, or `%file.open` instead of `sys.file.open`. 
 
-However, I currently favor procedural effects even where it's a little awkward. For example, instead of `%amb`, we use `sys.fork` returns an integer that we then use in a conditional expression. It would take a very strong use case for me to favor AST layer effects.
+I think this would simplify syntactic integration, e.g. `A | B | C` could be expressed easily as `%amb` at the AST layer. And our front-end compiler wouldn't need special rules for 'sys', only for a few single character prefixes such as '%' and '~'. 
+
+Anyhow, this is beyond the scope of abstract assembly. I can leave it to [glas lang](GlasLang.md) and [glas apps](GlasApps.md).
 
 ## Concrete Assembly? No.
 
-Abstract assembly insists on a Name argument in the App constructor field, but I left the '0b1' header so we can parse this as `type App = (Arg, List of Arg)`. This supports reuse as a concrete assembly, where the constructor argument is represented by data. It also allows use of App in constructor position, which might be interpreted as an inline user-defined constructor.
+The proposed representation is easily extended to let the AST constructor be `0b0:Data` instead of just `0b1:Name`. This allows for constructors to be concrete symbols or integers, or even bytecodes. 
 
-That said, I don't see any strong use case for introducing concrete or inline user-defined constructors into the abstract assembly. Even assuming we discover one, we can use `(%app Arg Args)` or a more precise abstract primitive constructor per use case. 
+However, there is almost no benefit in favoring concrete constructors. It might allow a few eager optimizations, but many optimizations would need to be repeated after function inlining regardless, and function inlining must wait for the final namespace. For a negligible opportunity, we'd sacrifice many *systemic* benefits of abstract assembly. This seems most unwise.

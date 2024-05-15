@@ -1,6 +1,13 @@
 # Initial Language for Glas
 
-This document describes the ".g" language for glas systems. 
+## Outcome
+
+A ".g" file should compile to `g:(Struct of (Namespace of AbstractAssembly))`. In this context, a dict is a simple trie of `(symbol:Value, ...)` with no direct reference between symbols. A [namespace](GlasNamespaces.md) is a more sophisticated 
+
+ containing [abstract assembly](AbstractAssembly.md) definitions. This compiles 
+To simplify extensibility, dictionary definitions are initially limited to 'ns' and 'mx' headers, and the 'g' header can help integrate ".g" modules into other languages.
+
+
 
 ## Desiderata
 
@@ -14,11 +21,11 @@ I would like to support *units* on numbers in some sensible way. Phantom types? 
 
 . Some lightweight DSLs might be supported in terms of compile-time p of data that represents subprograms. Of course, the glas system fully supports user-defined syntax (by defining language modules), 
 
-, including true front-end extensions by defining language-g. 
+, including true front-end extensions by defining lang-g. 
 
 
  The glas system also supports staging via 
-although ".g" syntax is not directly extensible (indirectly, users could extend language-g or de
+although ".g" syntax is not directly extensible (indirectly, users could extend lang-g or de
 
 Some lightweight DSLs may be feasible based on this (i.e. a macro could parse a const value representing a program)., though glas also allows users to define other file extensions with ad-hoc syntax.
 
@@ -27,6 +34,8 @@ Ideally, the ".g" language should also support lightweight user-defined DSLs. Ho
 I hope to also support lightweight DSLs based on macros. 
 
 ## Macros For All
+
+##
 
 
 

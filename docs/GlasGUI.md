@@ -6,7 +6,7 @@ It is feasible to support a conventional GUI interface, but that isn't a good fi
 
 It isn't easy for human users to participate in transactions! The biggest problems are that humans are slow to respond, slow transactions are disrupted by background events, disrupted transactions are repeated, and humans also don't like repeating themselves. 
 
-To solve this, we introduce a user agent to handle fast response and repetition. But the user must be provided tools to see what the user agent sees and control how the user agent responds on their behalf. 
+To solve this, we introduce a user agent to handle fast response and repetition. But the user must be provided tools to see what the user agent sees, such as data and queries, and control how the user agent responds to queries on the user's behalf. 
 
 This involves *reflection* on the user agent, together with manipulation of user variables. Reflection allows users to observe aborted transactions. This provides a basis for read-only views or to withhold approval until the user has time to understand the information on display. User variables might be rendered as knobs, sliders, toggles, and text boxes.
 
