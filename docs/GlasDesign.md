@@ -99,7 +99,7 @@ A program is a value with a known interpretation. An application is a program wi
 
 As a simple naming convention, global module 'lang-xyz' should detail how to compile files with extension ".xyz". This detail should be represented as an 'app' namespace definining `compile : SourceCode -> ModuleValue` with limited effects. Source code is *usually* a binary, but composition of file extensions allows for structured source. Compilation must succeed in a single step. 
 
-Effects are restricted to ensure deterministic, reproducible outcomes and to simplify integration of the compiler function into other contexts. The compiler is limited to loading modules and logging messages. When loading modules, dependency cycles or a failed download may cause compilation to logically diverge and report an error.
+Effects are restricted to ensure deterministic, reproducible outcomes and to simplify integration of the compiler function into other contexts. The compiler is limited to loading modules and debug output such as logging messages and profiling. When loading modules, dependency cycles or a failed download may cause compilation to logically diverge and report an error.
 
 I hope to eventually support many 'associated' language tools by naming conventions in the module system, such as support for REPL, linters, syntax highlighting, [language server protocol](https://en.wikipedia.org/wiki/Language_Server_Protocol), interactive tutorials, etc.. However, these could be defined in separate modules, e.g. 'repl-xyz'. 
 
@@ -107,7 +107,7 @@ I hope to eventually support many 'associated' language tools by naming conventi
 
 As a simple naming convention, local modules whose names start with "test-" will be interpreted as tests. Tests can automatically be compiled and evaluated as part of building the owning module. The glas system can automatically maintain a 'system health' report based on which tests are passing, which are failing, and test coverage at the scope of a distribution.
 
-Each test module may define multiple test methods as `test.*`. This has the same interface as application built-in tests. However, a test module has limited access to effects to guarantee tests are reproducible. Effects includes language module effects and 'fork' for non-deterministic choice and fuzz testing.
+Each test module may define multiple test methods as `test.*`. This has the same interface as application built-in tests. However, a test module has limited access to effects to guarantee tests are reproducible. Effects includes language module effects plus `sys.fork` for non-deterministic choice and fuzz testing.
 
 In case of fuzz testing with 'fork', how much testing should be performed will depend on quotas and heuristics. But a smarter test system can remember which tests are performed, focus on regression tests, and leverage fork to focus on edge cases and improve test coverage. 
 

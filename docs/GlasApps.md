@@ -142,6 +142,8 @@ The big idea for [glas GUI](GlasGUI.md) is that users participate in transaction
 
 Anyhow, this will be difficult to implement efficiently before the glas system matures, and is adequately substituted by HTTP interface in the short term. So, I don't plan to develop GUI until later.
 
+*Aside:* Analogous to `sys.refl.http` a runtime could define `sys.refl.gui` to provide a generic debugger interface. The application 'gui' method could route some requests here based on navigation vars.
+
 ## Non-Deterministic Choice
 
 In context of a transaction loop, fair non-deterministic choice serves as a foundation for task-based concurrency. The idea is that if the choice is part of the stable prefix for a transaction, we can replicate the transaction to take each choice and evaluate in parallel. Further, where choice isn't stable, we can effectively 'search' for a choice that results in successful commit.
@@ -154,7 +156,15 @@ Fair choice isn't random. Rather, given sufficient opportunities, we'll eventual
 
 *Note:* Reading from a 'bag' would implicitly involve `sys.fork()`. 
 
-*Thought:* Do I need a separate API for acquiring cryptographically random data?
+## Entropy
+
+Conventional APIs for random data are awkward in context of *transaction loops*, unnecessarily involving PRNG state or non-deterministic choice. But there is at least one simple API concept that works very well: sample a cryptographically random field. Proposed API:
+
+* `sys.rand(Index,N)` - returns a natural number less than N (diverges as type error if N is not a positive natural number), cryptographically randomized across different `(Index, N)` pairs. Repeating the same request should always return the same result.
+
+One simple implementation of this API is reminiscent of [HMAC](https://en.wikipedia.org/wiki/HMAC), involving a secure hash of the request and a hidden runtime parameter. This is expensive. In theory, a sophisticated implementation could recognize and optimize common request patterns. But it might prove simpler to use `sys.rand` to seed conventional PRNGs.
+
+*Note:* It is feasible to securely partition random data by including abstract elements in Index, such as database keys or namespace names.  
 
 ## Time
 
@@ -167,21 +177,27 @@ In context of RPC, each process may have its own local estimate of current time,
 
 This API does not cover one common conventional use case for time APIs: profiling. Profiling is instead handled as a form of runtime reflection in context of transactions.
 
+## Background Eval
+
+Leveraging reflection, it is feasible to signal that another transaction should perform some tasks in the background *even if the current transaction aborts*. This weakens isolation and atomicity of transactions, but it can be safe in many cases, e.g. where side effects are negligible (like HTTP GET) or to trigger previously committed background tasks. 
+
+One viable expression is `sys.refl.bgeval(MethodName, Args)` representing that we'll call `MethodName(Args)` in the background - logically *before* the current transaction - then continue with the result. To keep it simple, the argument and result types may be restricted, e.g. to plain old data. In case of read-write conflict, we can report an error instead of thrashing.
+
+Conceptually, the current transaction is reading a 'cached' result from the background transaction, while continuous requests would continously maintain the cache. 
+
 ## Profiling
 
+Profiling should be modeled as an annotation on programs instead of an actual effect. This could be supported by macro or built-in syntax, something like `%prof ProfileId Operation` representing that we want to accumulate statistics about Operation. ProfileId is initially an arbitrary name from the namespace, used to filter or aggregate statistics. Gathered statistics may include counts of entries and exits, stats on resource usage (time, memory, IO), and tracking why we aborted an operation (conflict? failure? type error? timeout?), and so on.
+
+These stats should be discoverable through `sys.refl.http`, and we might also configure a runtime to periodically report changing statistics to standard error. Eventually, we might develop an internal API `sys.refl.prof.*` or extend the ProfileId type.
 
 ## Logging
 
-Logging is a convenient approach to debugging. We can easily support a logging effect. Alternatively, we could introduce logging as a program annotation, accessible via reflection. But it's convenient to introduce as an effect because it allows for flexible handling.
+Like profiling, logging should be modeled as an annotation on programs instead of an actual effect. Basic logging might be expressed as `%log ChannelId MessageExpr Operation`. Here ChannelId is an arbitrary name from the namespace to support disabling or filtering of messages, and MessageExpr should compute a renderable value without observable side-effects (this can be type-checked later). 
 
-* **log:Message** - Response is unit. Arbitrary output message, useful for progress reports or debugging.
+This will log MessageExpr over the course of Operation. In the common case where Operation is a no-op, we'll just output MessageExpr once. But in the general case, we might take this to automatically maintain and animate MessageExpr as it changes. Even when MessageExpr is constant, it can provide useful hierarchical context. 
 
-The proposed convention is that a log message is represented by a record of ad-hoc fields, whose roles and data types are de-facto standardized. For example, `(lv:warn, text:"I'm sorry, Dave. I'm afraid I can't do that.", msg:(event:(...),state:(...)) from:hal)`. This supports extension with new fields and structured content.
-
-Initially, log messages will simply write to standard error. Messages may be colored based on 'lv'. However, this could be improved significantly. I hope to eventually support a graphical tree-view of 'fork' processes where each process has its own stable subset of log messages, and we can scrub or search the timeline.
-
-*Note:* It is feasible to push logging into the debug layer, e.g. with a 'trace' annotation on a log function. Ideally we'd abstract logging effects.
-
+Logs are accessible through `sys.refl.http`, and we might also configure a subset of log messages to automatically render to standard error. Eventually, we might develop an internal API `sys.refl.logs.*` or extend the ChannelId type.
 
 ## Shared Database
 
@@ -324,27 +340,6 @@ A port is a fixed-width 16-bit number. An addr is a fixed-width 32-bit or 128-bi
 * reload source
 * SIGHUP?
 
-## Background Requests
-
-
-
-Background evaluation can be understood as a use of reflection that weakens isolation of transactions. The idea is that we can evaluate a transaction, fail, but someone else can determine that we failed because we were missing some data that could have been cached prior to the transaction. 
-
-A runtime can provide `sys.refl.bgeval(MethodName, Args)` to pause the calling transaction, evaluate `MethodName(Args)` in a separate transaction (logically *prior* to the calling transaction), then continue the calling transaction with the returned value. The Args type can be restricted to plain old data.
-
-If the background operation fails, it is implicitly retried until it succeeds or the caller is aborted.
-
-Use cases: 
-
-* Cacheable queries, e.g. evaluate HTTP GET request within a transaction. Background evaluation allows you to pretend you performed the query shortly before the transaction and cached the result.
-* Demand driven scheduling, i.e. perform background tasks lazily as needed. This should be for operations that might have otherwise run in a concurrent 'step' task.
-* Debugging, i.e. you could forcibly output some results before the calling transaction aborts.
-
-Background evaluation is very easily abused. It should be handled with care, similar to 'unsafePerformIO' in Haskell. 
-
-Of course, this can go wrong in many ways. The requested operation must be safe so we can ignore any effects. The result must be cacheable to mitigate stability issues. Read-write conflicts between the background operation and the current transaction could abort both or result in system thrashing. But these issues can be mitigated through API design and user discipline. 
-
-*Note:* The type for MethodName might be an abstract built-in, accessed by keyword.
 
 #### Data Representation
 
