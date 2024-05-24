@@ -1,6 +1,6 @@
 # Glas Configuration Language?
 
-I want a lightweight syntax for configuration of glas systems. Earlier, I developed [text tree](TextTree.md) for this role, but it lacks support for many features I want from a good configuration system.
+I want a lightweight syntax for configuration of glas systems. Earlier, I developed [text tree](TextTree.md) for this role, but I'd prefer something with the inheritance, abstraction, and composition features of [namespaces](GlasNamespaces.md). 
 
 ## Desiderata
 

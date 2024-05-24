@@ -54,7 +54,7 @@ Applications may be able to publish and subscribe to RPC 'objects' through a con
 
 Publishing RPC objects might be expressed as defining a hierarchical component `rpc.foo.(Method*)`. Subscribing to an RPC interface might conversely be expressed as declaring `sys.rpc.bar.(AbstractMethod*)`.  In case of missing or ambiguous remote object, the transaction may simply diverge. But we could also support collections both directions, i.e. `rpc.foo[]` and `sys.rpc.bar[]`, with `sys.rpc.bar[].keys` listing available instances.
 
-The configured registry is generally a composite with varying trust levels. Published RPC objects or subscribed interfaces will include tags for routing and filtering. For example, we might define `.tag.access.trusted` on a published RPC object to ensure it's only published to trusted registries, or add it to a subscribed RPC object to only search trusted registries. Tags can also identify specific services or topics. Tags might be represented by abstract methods.
+The configured registry is generally a composite with varying trust levels. In addition to ad-hoc authorization and authentication methods at the registry level, each RPC object or subscribed interface may include tags for routing published RPC objects and filtering received RPC objects. For example, by defining faux method `tag.access.trusted` we could restrict publishing to a registry 'trusted' in the runtime configuration. Other useful tags might indicate topics or service names.
 
 ### Optimizations
 
@@ -68,19 +68,21 @@ Large values might be delivered via proxy [CDN](https://en.wikipedia.org/wiki/Co
 
 The runtime implements a key-value database API with both shared persistent and private in-memory data. The persistent database is configured externally and may include distributed databases. The database should implicitly support transactions, accelerated representations, and content-addressed storage for large values.
 
-Database keys integrate logic for persistence and access control. A basic key might be constructed as `sys.db.key(oldKey, sys.db.dir("foo"))`, while an in-memory key might use `sys.db.key(fooKey, sys.db.rtdir("bar"))`. We can understand `sys.db.rtdir` as constructing an index scoped to the runtime OS process lifespan (see *abstract types and lifespans*). Other constructors could accept an open file reference, modeling a temporary region.
+Database keys are aligned to a hierarchical directory structure, and integrate some logic for persistence. A basic key might be constructed as `sys.db.dir(oldDir, "foo")`, while an in-memory key might use `sys.db.rtdir(fooDir)`. We might understand the latter as mapping to `"oldDir/foo/~"` where `~` maps to an in-memory overlay specific to the runtime instance, except that `~` is abstracted to control accidents.
 
-Regarding access control, it is feasible to model 'secure' directory structures involving HMAC bearer tokens or other cryptographic access tokens. Also, some keys may restrict read access or write access to data. But I don't intend to focus on this opportunity until much later.
-
-Supported data types should include variables, queues, and bags. These are simple to implement and have convenient behavior in context of concurrency, distribution, and network partitioning:
+Supported data types should at least include variables, queues, and bags. These are simple to implement and have convenient behavior in context of concurrency, distribution, and network partitioning:
 
 * variables are read-write in one partition, cached read-only on others
 * queues are read-write in one partition, buffered write-only on others
 * bags are read-write on all partitions, rearranging items if connected
 
-I am contemplating extensions for [CRDTs](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) and other specialized types.
+We might eventually pursue extensions for counters or [CRDTs](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) and other specialized types.
 
-Anyhow, the programming language should automate most mapping from declared data variables to database keys and data access methods. Key construction should be heavily optimized, e.g. a static in-memory key might reduce to a cached pointer under-the-hood.
+The API to access these can be specific to each type, e.g. `sys.db.var.get` and `sys.db.queue.write`. This allows suitable optimized methods for each use case. Essentially, every database key might be understood as mapping to one var, one queue, one bag, and any number of subdirectories. 
+
+In theory, we could add some access control to the database keys, e.g. restrict the key to read-only access to a specific variable. But I don't have a strong motive for this. Namespaces provide adequate access control within the application, and database keys will likely be ephemeral or even be treated as functional arguments (cannot be returned, but can be constructed locally via macros).
+
+Anyhow, the programming language should help automate the mapping of declared state to stable database keys and specific access methods. Key construction can be heavily optimized, e.g. a static in-memory key might reduce to a cached pointer under-the-hood.
 
 ### Indexed Collections
 
@@ -96,15 +98,13 @@ Manual caching using application state is error prone, likely to interfere with 
 
 ### Shared State
 
-Applications may use shared, persistent state in the configured database for asynchronous interaction between applications. Many potential problems with shared state are mitigated by transactions, incremental computing, reactivity, and lifespan types. With just a little access control, queues or bags would model effective mailboxes.
+Applications that share a database may interact asynchronously through shared, persistent state. Many common issues with shared state are mitigated between transactions and integration with incremental computing. However, glas systems do not encourage sharing a database between multiple users. Often, a database is used only by a single application.
 
-We can feasibly extend the database to support a few more common yet simple patterns, such as databuses for many-to-many communications. However, insofar as we need to protect ad-hoc invariants, we should hide state behind an RPC API.
+In practice, instead of directly using shared state, two applications may interact asynchronously through a shared, stateful service. This has most benefits of shared state and further allows the service to abstract over representation details. However, it does require effective authentication models for RPC registries. 
 
 ### Nominative Types
 
-It is feasible to integrate names into abstract types. However, in context of live coding, the application namespace is ephemeral, and should be restricted to ephemeral types. In general, we'll also want abstract types with the runtime lifespan.
-
-Database keys can serve as an alternative source of names. We can introduce an abstract dictionary type indexed by database keys. Intriguingly, this implicitly supports [weak references](https://en.wikipedia.org/wiki/Weak_reference), e.g. if a dbKey included an open file reference in the directory structure. Ephemeral dictionaries can also be supported, using names from the application namespace in the directory structure.
+It is feasible to integrate names into abstract types. However, in context of live coding, the application namespace is ephemeral, thus should be restricted to ephemeral types. In general, we'll also want abstract types with a runtime or persistent lifespan. Database keys can serve as an alternative source of 'names' in this role. 
 
 ## Implicit Parameters and Algebraic Effects
 
@@ -140,9 +140,9 @@ As a convention, applications might route `/sys` to a runtime provided `sys.refl
 
 The big idea for [glas GUI](GlasGUI.md) is that users participate in transactions through reflection on a user agent. That is, users can see data and queries presented to the user agent, and adjust how the agent responds to queries on their behalf. This combines nicely with live coding, but in conventional cases the response to a query can be modeled as a variable bound to a toggle, text-box, or slider.
 
-Anyhow, this will be difficult to implement efficiently before the glas system matures, and is adequately substituted by HTTP interface in the short term. So, I don't plan to develop GUI until later.
+Analogous to `sys.refl.http` a runtime could define `sys.refl.gui` to provide a generic debug interface. The application 'gui' method could route some requests to this location based on navigation vars.
 
-*Aside:* Analogous to `sys.refl.http` a runtime could define `sys.refl.gui` to provide a generic debugger interface. The application 'gui' method could route some requests here based on navigation vars.
+Anyhow, this will be difficult to implement efficiently before the glas system matures, and is adequately substituted by HTTP interface in the short term. So, I don't plan to develop GUI until later.
 
 ## Non-Deterministic Choice
 
@@ -156,15 +156,15 @@ Fair choice isn't random. Rather, given sufficient opportunities, we'll eventual
 
 *Note:* Reading from a 'bag' would implicitly involve `sys.fork()`. 
 
-## Entropy
+## Random Data
 
-Conventional APIs for random data are awkward in context of *transaction loops*, unnecessarily involving PRNG state or non-deterministic choice. But there is at least one simple API concept that works very well: sample a cryptographically random field. Proposed API:
+Conventional APIs for random data are awkward in context of *transaction loops*, overlapping with PRNG state or non-deterministic choice. But there is at least one simple API concept that works very well: sample a cryptographically random field. To simplify persistence, mirroring, and partitioning of the random field, it is convenient to align this field with the database. Proposed API:
 
-* `sys.rand(Index,N)` - returns a natural number less than N (diverges as type error if N is not a positive natural number), cryptographically randomized across different `(Index, N)` pairs. Repeating the same request should always return the same result.
+* `sys.db.rand(Key, N)` - returns a natural number less than N (diverges as type error if N is not a positive natural number), cryptographically randomized with a uniform distribution across different `(Key, N)` requests. Repeated requests will return the same value.
 
-One simple implementation of this API is reminiscent of [HMAC](https://en.wikipedia.org/wiki/HMAC), involving a secure hash of the request and a hidden runtime parameter. This is expensive. In theory, a sophisticated implementation could recognize and optimize common request patterns. But it might prove simpler to use `sys.rand` to seed conventional PRNGs.
+This API is very easily implemented using [HMAC](https://en.wikipedia.org/wiki/HMAC). However, HMAC is relatively slow and inefficient. Where an application needs many random values, might be better to model a conventional PRNG and seed it from `sys.db.rand`.
 
-*Note:* It is feasible to securely partition random data by including abstract elements in Index, such as database keys or namespace names.  
+*Note:* Users may also access random data from the OS or network. 
 
 ## Time
 
@@ -177,78 +177,72 @@ In context of RPC, each process may have its own local estimate of current time,
 
 This API does not cover one common conventional use case for time APIs: profiling. Profiling is instead handled as a form of runtime reflection in context of transactions.
 
-## Background Eval
+## Logging
 
-Leveraging reflection, it is feasible to signal that another transaction should perform some tasks in the background *even if the current transaction aborts*. This weakens isolation and atomicity of transactions, but it can be safe in many cases, e.g. where side effects are negligible (like HTTP GET) or to trigger previously committed background tasks. 
+Like profiling, logging should be modeled as an annotation on programs instead of an actual effect. Basic logging might be expressed as `%log ChannelId MessageExpr Operation` in the AST, corresponding to a structure like `log (chan, Msg) { Operation }` in syntax. 
 
-One viable expression is `sys.refl.bgeval(MethodName, Args)` representing that we'll call `MethodName(Args)` in the background - logically *before* the current transaction - then continue with the result. To keep it simple, the argument and result types may be restricted, e.g. to plain old data. In case of read-write conflict, we can report an error instead of thrashing.
+Here ChannelId is initially a name from the namespace. MessageExpr should evaluate to a renderable value without observable side-effects. The idea is that we log over Operation. This produces at least one message values, but may produce more as Operation modifies state read by MessageExpr. Further, even when MessageExpr is constant, this structure provides convenient hierarchical context for progressive disclosure or debugger integration.
 
-Conceptually, the current transaction is reading a 'cached' result from the background transaction, while continuous requests would continously maintain the cache. 
+Logs should be accessible through `sys.refl.http`, and we might configure a few channels to print to standard error under suitable conditions. Eventually, we might develop an internal API `sys.refl.logs.*` or extend the ChannelId type.
 
 ## Profiling
 
-Profiling should be modeled as an annotation on programs instead of an actual effect. This could be supported by macro or built-in syntax, something like `%prof ProfileId Operation` representing that we want to accumulate statistics about Operation. ProfileId is initially an arbitrary name from the namespace, used to filter or aggregate statistics. Gathered statistics may include counts of entries and exits, stats on resource usage (time, memory, IO), and tracking why we aborted an operation (conflict? failure? type error? timeout?), and so on.
+Profiling could be modeled very similarly to logging, something like `%prof ProfileId Operation`. ProfileId is initially a name from the namespace to partition statistics. Gathered statistics may include counts of entries and exits, stats on resource usage (time, memory, IO), and tracking why we aborted an operation (conflict? failure? type error? timeout?), and so on. Any expensive measurements can be controlled by configuration.
 
-These stats should be discoverable through `sys.refl.http`, and we might also configure a runtime to periodically report changing statistics to standard error. Eventually, we might develop an internal API `sys.refl.prof.*` or extend the ProfileId type.
+As with logging, stats should be accessible through `sys.refl.http` and we might configure some to print periodically to standard error as things change. Eventually, we might develop an internal API `sys.refl.prof.*` or extend the ProfileId type.
 
-## Logging
+## Background Eval
 
-Like profiling, logging should be modeled as an annotation on programs instead of an actual effect. Basic logging might be expressed as `%log ChannelId MessageExpr Operation`. Here ChannelId is an arbitrary name from the namespace to support disabling or filtering of messages, and MessageExpr should compute a renderable value without observable side-effects (this can be type-checked later). 
+It is inconvenient to require a multiple transactions even for heuristically 'safe' operations, such as reading a file or HTTP GET. In these cases, an escape hatch from the transaction system is convenient. Background eval is a viable escape hatch for this role. Proposed API:
 
-This will log MessageExpr over the course of Operation. In the common case where Operation is a no-op, we'll just output MessageExpr once. But in the general case, we might take this to automatically maintain and animate MessageExpr as it changes. Even when MessageExpr is constant, it can provide useful hierarchical context. 
+* `sys.refl.bgeval(MethodName, Arg)` - evaluate `MethodName(Args)` in a background transaction (logically prior to the calling transaction), then continue with the returned value (logically a *cached* value). The Arg and return value must be plain old data (otherwise diverges as type error). 
 
-Logs are accessible through `sys.refl.http`, and we might also configure a subset of log messages to automatically render to standard error. Eventually, we might develop an internal API `sys.refl.logs.*` or extend the ChannelId type.
+Conceptually, this involves a runtime process reflecting on active transactions and 'anticipating' their needs. When called in the stable prefix of a transaction loop, the background transaction effectively becomes a concurrent transaction loop responsible for maintaining a cache. There is some risk of 'thrashing' if the background transaction conflicts with the calling transaction, but thrashing is easily recognized and debugged.
 
-## Shared Database
+*Note:* In addition to fetching cacheable data, background eval can be safely applied to scheduling background operations on demand. This is essentially the lazy alternative to 'step'. 
 
-Transaction loop applications constrain the effects API. Transactions easily support buffered interactions, such as reading and writing channels or mailboxes. However, they hinder synchronous request-response interactions with external services. If a remote service supports distributed transactions, or if we can reasonably assume a request is read-only and cacheable (like HTTP GET), then we could issue a request within the transaction. Otherwise, the request will be scheduled for delivery after we commit, and the response is deferred to a future transaction.
+## Foreign Function Interface? Tentative.
 
+A foreign function interface (FFI) is convenient for integration with existing systems. But FFI can be non-trivial due to differences in data models, error handling, memory management, and so on. 
 
-The filesystem API doesn't conveniently integrate with glas structured data, stowage, and transactions. We could instead have the runtime provide a database to the application. A simplistic API might start with this:
+Unfortunately, I haven't found a good way to reconcile FFI with transactions and transaction loop optimizations. The best solution I've found is to instead schedule non-transactional operations to run between transactions. A viable API:
 
-* **db:get:Key** - get value associated with Key.
-* **db:set:(k:Key, v:Value)** - set value associated with Key. 
-* **db:del:Key** - remove value from database.
+* `sys.ffi.cfunc(LibName, FunctionName, AdapterHint)` - returns abstract FnRef for a C function in a dynamically loaded library. The AdapterHint may include type descriptions, parameter names, idempotence and stability, etc.. We won't necessarily support all C types, but basic integers and binary buffers (both input and output) should be supported.
+* `sys.ffi.sched(FnRef, Args)` - schedules a call to a foreign function and returns an abstract OpRef. This will run shortly after the current transaction commits. For convenience, calls will usually run in the same order they are scheduled, i.e. writing requests to a runtime global queue.
+* `sys.ffi.result(OpRef)` - returns result of a completed operation, otherwise fails.
 
-We could incrementally introduce more APIs for performance reasons:
+We can later add some methods to observe more detailed status of OpRef, or extend FnRef with lightweight scripts. However, as a general rule, transaction loops should not schedule any 'long running' scripts or operations because that will interfere with live coding.
 
-* **db:check:Key** - test if key is defined without reading it.
-* **db:read:(k:Key, n:Count)** - Key must refer to a List value. Remove and return a list of up to Count available items.
-* **db:write:(k:Key, v:List)** - Key must refer to a List value. Addend this list. 
+## Configuration Variables? Tentative.
 
-We could further extend this to databuses, pubsub systems, mailboxes, tuple spaces via shared structure more sophisticated than lists, and perhaps with abstraction and structure on Keys. Our database could also support abstract or accelerated sets. 
-
-Assuming Keys are abstracted, we can provide a few initial keys through the effectful environment and also provide APIs to derive keys, e.g. to restrict permissions, or build and discover associated structure similar to a filesystem directory. Examples of deriving Keys via API:
-
-* *db:assoc:(k:Key, rel:Label)* - derive and return a key corresponding to following a labeled edge from a given key. Label might be restricted to data, but we could develop a variation that supports labeling with other Keys.
-* *db:restrict:(k:Key, allow:Ops)* - return a derived key with restricted authority.
-
-Abstraction can be enforced through type systems, address translation tables, or cryptography (e.g. HMAC). Intriguingly, we can also control abstract keys via logical expiration, such that fresh keys must be continuously derived. This would ensure visibility, revocability, and development of reactive systems.
-
-I propose to start with a simple key-value database API, a few initial abstract keys (e.g. app home, user home, global shared), and a filesystem-based derivation rule for new keys. This would be enough for most apps while leaving room for performance and security extensions. 
-
-## Standardized Mailbox or Databus or Tuple Space
-
-Support for a lightweight mailbox style event systems would greatly simplify integration of an application with OS signals, HTTP services, and inter-app communication within glas systems. This could potentially build on the db API, or it could be a separate effect.
-
-One challenge is that we need each subprogram to filter for relevant events. This might involve abstraction of keys that apply simple filters, rather than applying a filter to every access.
-
-## Configuration Variables
-
-Instead of configuration files, it would be convenient to support configuration as a database feature. Perhaps one shared between application and runtime. This would allow configurations to be edited through runtime layer HTTP services, for example.
+The runtime configuration may include some ad-hoc variables. I'm not sure I want this to be a separate feature from environment variables, i.e. we could express configurations as applying a mixin to environment variables.
 
 ## Environment Variables
 
-A simple API for access to OS environment variables, such as GLAS_PATH, or extended environment variables from the runtime.
+A simple API to access OS environment variables.
 
-* **env:get:Key** - read-only access to environment variables. 
-* **env:list** - returns a list of defined environment variables.
+* `sys.env.get(Name)` - return value associated with Name, or fails if Name is undefined. Names and returned values are simple texts (restricted binaries).
+* `sys.env.list()` - return a list of defined Names.
 
-Glas applications won't update environment variables. However, it is possible to simulate the environment for a subprogram via effects handlers. 
+Glas applications won't directly update environment variables, but could control the namespace to present alternative variable views to subcomponents.
+
+## CLI Integration?
+
+Access to command-line arguments and console IO could be provided through `sys.cli.*`. This is instead of providing a file handle.
+
+* `sys.cli.args()` - return the list of strings provided by the command line interface
+* `sys.cli.getc()` - read a byte from standard input; diverges if no data is available
+* `sys.cli.putc(Byte)` - write a single byte to standard output; buffered then written later when the transaction commits.
+* performance variants (e.g. read and write binaries)
+* possible 'ungetc' for shoving stuff into the read buffer.
+
+Access to standard error is not provided here, but might be indirectly accessed based on configuration of logging, profiles, etc..
 
 ## Filesystem
 
-Filesystems are ubiquitous, universally awkwardly, and usually do not support transactions. Safe filesystem operations will need to be partitioned across multiple transactions to represent points of concurrent interference. However, we can provide some 'unsafe' filesystem APIs that assume non-interference and are considerably more convenient. 
+Safe filesystem operations may need to be partitioned across multiple transactions. But we can support a simplified API that is safe assuming no concurrent interference.
+
+However, we can provide some 'unsafe' filesystem APIs that assume non-interference and are considerably more convenient. 
 
 Proposed API:
 
@@ -289,9 +283,6 @@ Proposed API:
 
 It is feasible to extend directory operations with option to 'watch' a directory for updates.
 
-## Database Integration?
-
-It might be worthwhile to explicitly support some external transactional databases. It would allow us to mitigate a lot of issues associated with filesystem operations. However, this is not a high priority, and might be achievable via *background eval*.
 
 ## Network APIs
 
@@ -333,15 +324,14 @@ A port is a fixed-width 16-bit number. An addr is a fixed-width 32-bit or 128-bi
 
 *Aside:* No support for unix sockets at the moment, but could be introduced if needed.
 
-
 ## Live Coding
 
 * reload config
 * reload source
 * SIGHUP?
+* reflection on source code
 
-
-#### Data Representation
+## Reflection on Representation
 
 The underlying representation for data is usually transparent. However, there are some cases where we'd want to make it more visible, such as manually tunneling glas data over TCP. Potential operations:
 
@@ -349,21 +339,4 @@ The underlying representation for data is usually transparent. However, there ar
 * Convert glas data to and from [glob](GlasObject.md) binary. This requires some interaction with content-addressed storage, e.g. taking a 'storage session' parameter.
 
 This would probably be sufficient for most use-cases, but we could add some mechanisms to peek at representation details or access representation-layer annotations without serializing the data.
-
-#### Miscellaneous
-
-* Access current time (non-transactional). Useful for profiling.
-* Access ad-hoc statistics
-  * CPU, memory, GC stats, transaction counts 
-  * conflict counts, wasted CPU due to aborts
-    * worst offenders for transaction conflicts 
-  * database and stowage sizes
-  * RPC counters and recent history 
-* Peruse stable transactions, log outputs, runtime type errors
-* Internal access to runtime system HTTP, `sys.refl.http` 
-* Reload application from sources. Useful for live coding.
-* Access unique app version identifier, secure hash of sources.
-* Browse the application namespace. Call arbitrary methods.
-* Browse application database. Modify state directly.
-* Potential source mapping, map methods to relevant sources.
 

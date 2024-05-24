@@ -49,7 +49,7 @@ It is feasible to could further extend Node with specialized representations for
 
 ### Integers
 
-Integers in glas systems are encoded as variable length bitstrings, msb to lsb, with negatives in one's complement:
+Integers in glas systems are typically encoded as variable length bitstrings, msb to lsb, with negatives in one's complement:
 
         Integer  Bitstring
          4       100
@@ -64,7 +64,7 @@ Integers in glas systems are encoded as variable length bitstrings, msb to lsb, 
 
 ### Lists, Arrays, Queues, Binaries
 
-Sequential structure is usually encoded as a list. A list is represented as a binary tree where the left nodes are elements and the right nodes form the spine of the tree, terminating with a leaf node.
+Sequential structure in glas is usually encoded as a list. A list is as a binary tree where every left node is an element and every right node is a remaining list, and the empty list is a simple leaf node.
 
         type List a = (a * List a) | () 
 
@@ -145,9 +145,21 @@ Memoization is most easily applied to tree structures, where we can compute some
 
 ## Thoughts
 
+### Variable Width Posits?
+
+I currently do not specify a 'standard' floating point representation for glas. It simply doesn't seem very necessary for early use cases. However, a viable option is variable-width [type III unums](https://en.wikipedia.org/wiki/Unum_%28number_format%29#Posit_%28Type_III_Unum%29) with a constant exponent size of three bits (es=3).
+
+This format is `(sign)(regime)(exponent)(fraction)`. In context of variable bit width, regime and fraction are not limited in size. But there are tradeoffs between regime run length and exponent size, and diminishing returns for larger exponent sizes.
+
+That said, I think exact rational numbers, perhaps represented by a pair of integers in reduced form, would also be a decent alternative for most use cases at the glas layer. With rationals, we could explicitly 'round' rationals to an arbitrary fraction. 
+
 ### Type Checking
 
 Type annotations can be included in the application namespace and perhaps also within program definitions. Ideally, we can immediately begin to perform some checks on programmer assumptions and expectations based on these types. However, I hope for types to be 'partial' in the sense that we can leave them partially unspecified and incrementally refine them. Types with holes in them.
+
+### Proof Carrying Code
+
+I'd like to start supporting proof carrying code and tactics relatively early. This should involve annotations within code, e.g. `(%proof Property Tactics Subprog)`, where both properties and proof tactics can be abstracted via the namespace.
 
 ### Useful Languages
 
