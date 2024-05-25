@@ -77,6 +77,14 @@ Direct representation of lists is inefficient for many use-cases, such as random
 
 Binaries receive special treatment because they are a popular data representation for filesystems and networks. Within glas systems, a binary is canonically represented as a list of small integers (0..255), but the finger-tree rope might allocate binary fragments of many kilobytes or megabytes. Program annotations can provide guidance, e.g. ask a runtime to 'flatten' a binary to control chunk size.
 
+### Floating Point
+
+I propose variable-width [posits (type III unums)](https://en.wikipedia.org/wiki/Unum_%28number_format%29#Posit_%28Type_III_Unum%29) as the standard representation for floating point numbers in glas systems, at least outside of accelerated operations. Variable width posits do not restrict the number of regime or fraction bits.
+
+I adjust the encoding minimally to ensure injectivity: that every bitstring encodes a unique number. Proposed changes: abandon not-a-real, encode zero as starting with a '1' sign bit (so every number is encoded using at least one '1' bit), then truncate the final `1000..0` suffix from the posit encoding. After truncation, zero is represented by the empty bitstring.
+
+Exponent size will simply be fixed at three bits (es=3). In context of unbounded regime, exponent size doesn't affect which numbers we can encode, only redistributes them. Three bits seems balanced for most use cases and enables very large integers to be precisely encoded using one regime bit per eight (`2^es`) data bits in fraction, similar to varint encodings.
+
 ### Accelerated Representations
 
 We can generalize the idea of representing lists as finger-tree ropes to support for unboxed floating point matrices, unordered data types (e.g. sets, unlabeled graphs), or even virtual machine states (with registers, memory, etc.).
@@ -144,14 +152,6 @@ Any computation that could run lazily or in parallel can potentially be memoized
 Memoization is most easily applied to tree structures, where we can compute some monoidal value for each tree node based on the value in each child. Unfortunately, it does not easily apply to lists because the underlying finger-tree structure is not visible. This can be mitigated by applying some other stable chunking system to the list, cf. [prolly trees](https://docs.dolthub.com/architecture/storage-engine/prolly-tree).
 
 ## Thoughts
-
-### Variable Width Posits?
-
-I currently do not specify a 'standard' floating point representation for glas. It simply doesn't seem very necessary for early use cases. However, a viable option is variable-width [type III unums](https://en.wikipedia.org/wiki/Unum_%28number_format%29#Posit_%28Type_III_Unum%29) with a constant exponent size of three bits (es=3).
-
-This format is `(sign)(regime)(exponent)(fraction)`. In context of variable bit width, regime and fraction are not limited in size. But there are tradeoffs between regime run length and exponent size, and diminishing returns for larger exponent sizes.
-
-That said, I think exact rational numbers, perhaps represented by a pair of integers in reduced form, would also be a decent alternative for most use cases at the glas layer. With rationals, we could explicitly 'round' rationals to an arbitrary fraction. 
 
 ### Type Checking
 
