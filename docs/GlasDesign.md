@@ -77,14 +77,6 @@ Direct representation of lists is inefficient for many use-cases, such as random
 
 Binaries receive special treatment because they are a popular data representation for filesystems and networks. Within glas systems, a binary is canonically represented as a list of small integers (0..255), but the finger-tree rope might allocate binary fragments of many kilobytes or megabytes. Program annotations can provide guidance, e.g. ask a runtime to 'flatten' a binary to control chunk size.
 
-### Floating Point
-
-I propose variable-width [posits (type III unums)](https://en.wikipedia.org/wiki/Unum_%28number_format%29#Posit_%28Type_III_Unum%29) as the standard representation for floating point numbers in glas systems, at least outside of accelerated operations. Variable width posits do not restrict the number of regime or fraction bits.
-
-I adjust the encoding minimally to ensure injectivity: that every bitstring encodes a unique number. Proposed changes: abandon not-a-real, encode zero as starting with a '1' sign bit (so every number is encoded using at least one '1' bit), then truncate the final `1000..0` suffix from the posit encoding. After truncation, zero is represented by the empty bitstring.
-
-Exponent size will simply be fixed at three bits (es=3). In context of unbounded regime, exponent size doesn't affect which numbers we can encode, only redistributes them. Three bits seems balanced for most use cases and enables very large integers to be precisely encoded using one regime bit per eight (`2^es`) data bits in fraction, similar to varint encodings.
-
 ### Accelerated Representations
 
 We can generalize the idea of representing lists as finger-tree ropes to support for unboxed floating point matrices, unordered data types (e.g. sets, unlabeled graphs), or even virtual machine states (with registers, memory, etc.).
@@ -200,3 +192,40 @@ The glas module system currently hinders manual provenance tracking, thus any ef
 ### Alternative Data
 
 I've often considered extending glas data to support graph structures or unordered sets. I think these could give some benefits to users, but it isn't clear to me how to effectively and efficiently work with them yet. For now, perhaps keep it to accelerated models.
+
+
+## Tentative Data Representations
+
+Not really committed to anything here yet.
+
+### Rational Numbers 
+
+Ratios are easily represented as a pair of integers, often in reduced form. I think that exact rational numbers is probably the best option for most use cases in glas systems outside of high performance computing. Where needed, our math can include explicit operations in our computations to 'round' rational numbers to another rational. 
+
+### Floating Point
+
+I think glas systems should favor exact rational numbers, or otherwise exactly represent and compute with whatever numbers are expressed by programmers. However, we could adapt the [posit](https://en.wikipedia.org/wiki/Unum_(number_format)#Posit_(Type_III_Unum)) to a variable width encoding. In context of variable width regime and fraction, posits can exactly represent any rational whose denominator is a power of two (including integers).
+
+To ensure an injective encoding of a variable width format, we will drop support for 'not a real' (usually `10*`), instead use sign bit '1' for zero (such that all posits are represented using a '1' bit), then truncate the final `10*` pattern from the number. This truncates zero to the empty bitstring and ensures every bitstring represents a different number.
+
+For consistecy with integers, and to obtain a nice lexicographic sort on bitstrings such that suffix `'0(any)' < '' < '1(any)'` with a matching prefix, I propose to use sign bit '1' for positive numbers then flip *all* bits (not just the sign bit) for negative numbers.
+
+Finally, the normal posit `(regime)(exponent)` encoding doesn't scale well to very large exponents. For example, to express numbers near 2^300 with es=3 would require 100 regime bits. A viable solution is to increase exponent size at higher regimes.
+
+        regime  es                  
+            # first four regimes same as posit (es=2)
+        10      2   (0..3)
+        01      2   (-4..-1)
+        110     2   (4..7)
+        001     2   (-8..-5)
+            # higher regimes add one exponent bit each
+            # regime adds a power of two to exponent
+        1110    3   (8..15)
+        0001    3   (-16..-9)
+        11110   4   (16..31)
+        00001   4   (-32..-17)
+        111110  5   (32..63)
+        000001  5   (-64..-33)
+
+This complicates the encoding a little, but I feel it is a worthwhile tradeoff so we can work effectively with a much wider range of numbers. We could tune initial exponent size a little to shuffle which numbers are represented by which bitstrings, but two bits seems a pretty good default choice. 
+
