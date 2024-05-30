@@ -1,8 +1,10 @@
 # Initial Language for Glas
 
+The glas system can support multiple programming languages, but there 
+
 ## Outcome
 
-A ".g" file should compile to `g:(Struct of (Namespace of AbstractAssembly))`. In this context, a dict is a simple trie of `(symbol:Value, ...)` with no direct reference between symbols. A [namespace](GlasNamespaces.md) is a more sophisticated 
+A ".g" file should compile to `glas:(Dict of (Namespace of AbstractAssembly))`. In this context, a dict is a simple trie of `(symbol:Value, ...)` with no direct reference between symbols. A [namespace](GlasNamespaces.md) is a more sophisticated 
 
  containing [abstract assembly](AbstractAssembly.md) definitions. This compiles 
 To simplify extensibility, dictionary definitions are initially limited to 'ns' and 'mx' headers, and the 'g' header can help integrate ".g" modules into other languages.
@@ -35,7 +37,43 @@ I hope to also support lightweight DSLs based on macros.
 
 ## Macros For All
 
-##
 
+## Caching
+
+## Types
+
+## Logging
+
+## Profiling
+
+## Proof Carrying Code
+
+
+## Process Networks
+
+
+
+it isn't clear how to make a process networks integrate nicely with effects and transactions.
+
+To support distributed computations at larger scales, it might be convenient to support some model of process networks within glas programs. However, 
+
+
+
+I believe Glas systems would benefit heavily from good support for Kahn Process Networks, especially temporal KPNs (where processes, channels, and messages have abstract time). 
+
+I would like the KPN language to produce KPN representations without any specific assumption about the target platform, i.e. so it could be compiled to multiple targets - including, but not limited to, Glas processes.
+
+Instead of dynamic channels, might aim for labeled ports with external wiring. This would be a closer fit for the static-after-metaprogramming structure of glas systems.
+
+## Soft Constraint Search
+
+This is a big one. I'd like to support search for flexible models, especially including metaprogramming. The main thing here would be to express and compose search models, and also develop the optimizers and evaluators for the search.
+
+## Logic Language
+
+
+## Glas Lisp 
+
+Lightweight support for recursion might be convenient.
 
 

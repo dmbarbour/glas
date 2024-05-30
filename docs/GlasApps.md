@@ -56,6 +56,8 @@ Publishing RPC objects might be expressed as defining a hierarchical component `
 
 The configured registry is generally a composite with varying trust levels. In addition to ad-hoc authorization and authentication methods at the registry level, each RPC object or subscribed interface may include tags for routing published RPC objects and filtering received RPC objects. For example, by defining faux method `tag.access.trusted` we could restrict publishing to a registry 'trusted' in the runtime configuration. Other useful tags might indicate topics or service names.
 
+*Note:* The runtime must open a network port to receive RPC requests. Configuring this is a bit awkward because the port cannot be shared concurrently.
+
 ### Optimizations
 
 When publishing an RPC object, we could also publish some code for each method to support fully or partially local evaluation and reduce network traffic. Conversely, when calling a remote method, the caller could include some code representing the next few steps in the continuation, which would support pipelining of multiple remote calls.
@@ -136,6 +138,8 @@ Initially, each HTTP request is evaluated in a separate transaction. If the HTTP
 
 As a convention, applications might route `/sys` to a runtime provided `sys.refl.http`. This could provide access to logging, testing, profiling, debugging, and similar features via browser.
 
+*Note:* The runtime can provide RPC and HTTP on the same network port, distinguishing based on request headers. 
+
 ## Graphical User Interface? Defer.
 
 The big idea for [glas GUI](GlasGUI.md) is that users participate in transactions through reflection on a user agent. That is, users can see data and queries presented to the user agent, and adjust how the agent responds to queries on their behalf. This combines nicely with live coding, but in conventional cases the response to a query can be modeled as a variable bound to a toggle, text-box, or slider.
@@ -150,7 +154,7 @@ In context of a transaction loop, fair non-deterministic choice serves as a foun
 
 Proposed API:
 
-* `sys.fork(N)` - blindly but fairly chooses and returns a natural number less than N. (Diverges as type error if N is not a positive natural number.)
+* `sys.fork(N)` - blindly but fairly chooses and returns an integer in the range 0..(N-1). Diverges if N is not a positive integer.
 
 Fair choice isn't random. Rather, given sufficient opportunities, we'll eventually try everything. Naturally, fairness is weakened insofar as a committed choice constrains future opportunities. More generally, 'fair' choice will also be subject to external reflection and influence to support conflict avoidance in scheduling, replay for automated testing or debugging, or user attention in a GUI. The sequence of choices might be modeled as an implicit parameter to a transaction. 
 
@@ -190,6 +194,8 @@ Logs should be accessible through `sys.refl.http`, and we might configure a few 
 Profiling could be modeled very similarly to logging, something like `%prof ProfileId Operation`. ProfileId is initially a name from the namespace to partition statistics. Gathered statistics may include counts of entries and exits, stats on resource usage (time, memory, IO), and tracking why we aborted an operation (conflict? failure? type error? timeout?), and so on. Any expensive measurements can be controlled by configuration.
 
 As with logging, stats should be accessible through `sys.refl.http` and we might configure some to print periodically to standard error as things change. Eventually, we might develop an internal API `sys.refl.prof.*` or extend the ProfileId type.
+
+
 
 ## Background Eval
 
@@ -231,10 +237,8 @@ Glas applications won't directly update environment variables, but could control
 Access to command-line arguments and console IO could be provided through `sys.cli.*`. This is instead of providing a file handle.
 
 * `sys.cli.args()` - return the list of strings provided by the command line interface
-* `sys.cli.getc()` - read a byte from standard input; diverges if no data is available
-* `sys.cli.putc(Byte)` - write a single byte to standard output; buffered then written later when the transaction commits.
-* performance variants (e.g. read and write binaries)
-* possible 'ungetc' for shoving stuff into the read buffer.
+* `sys.cli.getc()` - read a byte from standard input; diverges if not enough data is available.
+* `sys.cli.putc(Byte)` - write a byte to standard output; write is buffered until commit.
 
 Access to standard error is not provided here, but might be indirectly accessed based on configuration of logging, profiles, etc..
 

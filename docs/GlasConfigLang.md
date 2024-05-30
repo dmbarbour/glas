@@ -1,6 +1,17 @@
-# Glas Configuration Language?
+# Glas Configuration Language
 
-I want a lightweight syntax for configuration of glas systems. Earlier, I developed [text tree](TextTree.md) for this role, but I'd prefer something with the inheritance, abstraction, and composition features of [namespaces](GlasNamespaces.md). 
+I want a lightweight syntax for configuration of glas systems. Initially, this 
+
+ Earlier, I developed [text tree](TextTree.md) for this role, but I'd prefer something with the inheritance, abstraction, and composition features of [namespaces](GlasNamespaces.md). 
+
+
+
+## Distributions as Namespaces
+
+Instead of modeling a 'search path', consider modeling a namespace of global modules. Each module is essentially defined as a `(Location, Renames)` pair. The renames apply to 
+
+We can record the 'rename' map within each mo
+
 
 ## Desiderata
 
@@ -21,11 +32,21 @@ I want a lightweight syntax for configuration of glas systems. Earlier, I develo
   * can comprehend and control variation
   * lightweight guarantee of termination
 
+## Thoughts
+
+Some ideas: a distribution is modeled as a namespace of modules, but we'll also need to logically rename which 'global' modules are referenced by a module within the distribution. This requires preserving the 'ln' map to apply renames to defined modules. It is feasible to have scoped or private global modules after accounting for renames.
+
+For file locations, I'll need to reference the location of the current file.
+
 ## Structure
 
-I propose that a configuration compile to a record of [namespaces](GlasNamespaces.md), similar to the ".g" programs. This is convenient both for consistency and for abstraction of locations. In case of `from Location import ...` we can potentially abstract Location as a reference to a namespace or hierarchical namespace component.
+Toplevel: A dictionary that may contain [namespaces](GlasNamespaces.md). 
 
-But compared to the primary glas language, configurations will have a more limited computation language. This might be expressed as an [abstract assembly](AbstractAssembly.md), even if we don't immediately take advantage of the abstraction.
+This is consistent with the initial glas language. However, there would be some significant differences regarding how 
+
+This simplifies abstraction and mixins compared to directly modeling a toplevel namespace. It is also consistent with my initial glas language. The main differences are that locations in the configuration language must be more concrete, and the language should guarantee termination. 
+
+*Aside:* We could still use an [abstract assembly](AbstractAssembly.md) when compiling the configuration, even if we don't take any advantage of this abstraction.
 
 ## Locations
 
@@ -60,3 +81,14 @@ A runtime system and application could contribute some ad-hoc variables prior to
 
 I think this is quite doable. 
 
+## Misc
+
+### RPC Registry Configuration
+
+The simplest registry might be configured as a remote service (URL and access tokens), shared database, or distributed hashtable. We also need composite registries, and support for filtering and editing 'tags' for both publish and subscribe.
+
+### Database Configuration
+
+At least one database should be configured to support persistent data. We might initially use LMDB or RocksDB, which would require configuring a filesystem location. Eventually, we might also want to support distributed databases with special handling of vars, queues, bags, etc..
+
+*Note:* I've rejected the idea of 'mounting' databases as a basis for sharing because it complicates reasoning. Instead, we should focus on databases that are 'natively' distributed, and support access control to keys. 
