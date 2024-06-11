@@ -2,13 +2,13 @@
 
 The glas command line interface supports one primary operation:
 
-        glas --run ModuleRef -- Args To App
+        glas --run ModuleRef Args To App
 
 Other runtime options may be provided prior to the '--' separator. However, I hope to minimize the number of runtime options needed on the command line, and instead support user-defined commands via lightweight syntactic sugar.
 
         glas opname a b c 
             # rewrites to
-        glas --run glas-cli-opname -- a b c
+        glas --run glas-cli-opname a b c
 
 By combining this syntactic sugar with *Staged Applications* (see below), glas supports user defined command line languages.
 
@@ -31,21 +31,23 @@ This configuration file should describe system-wide features such as global modu
 
 ## Running Applications
 
-        glas --run ModuleRef -- Args
+        glas --run ModuleRef Args
 
-The glas executable first compiles the referenced module into a value. This value must be recognized as representing an application. 
+The glas executable first compiles the referenced module into a structured value. Initially, we'll recognize `glas:(app:Application, ...)`, i.e. the compiled output of a ".glas" module that defines 'app'. The Application type is itself a structured value representing a [namespace](GlasNamespaces.md) of methods. At this point, the methods have been compiled to an intermediate language, a Lisp-like [abstract assembly](AbstractAssembly.md). AST constructor methods and system methods (`%*` and `sys.*` by convention) are left abstract to be implemented by the runtime.
 
-Initially, we'll only recognize ".glas" and compatible modules, which evaluate to something like `glas:(Dict of (Namespace of AbstractAssembly))`. In this case, the dictionary should contain 'app', and its namespace should represent an abstract [application object](GlasApps.md). The application namespace leaves some methods undefined, such as system methods and [abstract assembly constructors](AbstractAssembly.md) and (`sys.*` and `%*`), to be provided by the runtime.
+The default interpretation is a [transaction loop](GlasApps.md). The runtime will evaluate 'start' once, then 'step' repeatedly until the application halts, each in a separate transaction. The runtime may also recognize interfaces such as 'http' or 'gui' and implicitly implement an HTTP service or GUI user agent.
 
-In addition to conventional apps, special run modes may be recognized and run differently. For example, an application that defines `run-mode-staged` might be interpreted as a staged application. The default run mode could be `run-mode-loop`.
+Alternative interpretations may be indicated by defining 'flag' methods in the namespace. Initially, we'll recognize 'run-mode-loop' which indicates the default interpretation, and 'run-mode-staged' to support user-defined languages on the command line. Any unrecognized 'run-mode-\*' flag should raise an error.
 
 ### Staged Applications
 
-Staged applications, indicated by 'run-mode-staged', support user-defined command line languages. 
+Staged applications are indicated by defining 'run-mode-staged'. The definition is irrelevant. When recognized, the runtime will instead interpret the application as a language module. That is, it should define `compile : SourceCode -> ModuleValue` and the only available effect is to load modules (`sys.load`).
 
-        glas --run StagedApp -- Description Of App -- Args To Returned App
+        glas --run StagedApp Args To App Constructor -- Args To Next Stage
 
-In this case, the application has the same interface as language modules, i.e. `compile : SourceCode -> ModuleValue` with limited effects (just `sys.load(ModuleRef)`), except our SourceCode is now `["Description", "Of", "App"]`. The returned ModuleValue is then interpreted as another application, receiving the remaining arguments.
+In this case, the SourceCode is a list of command line arguments `["Args", "To", "App", "Constructor"]`. The returned value must be recognized as a compiled application module, e.g. `glas:app:Application`. This is then run with remaining arguments `["Args", "To", "Next", "Stage"]`. The `"--"` separator is optional; if omitted, it is inserted implicitly as the final argument.
+
+Between staged applications and the syntactic sugar for user-defined operations, users can effectively extend the glas command line language just by defining modules. The main alternative is *Inline Scripting* (see below) but it is relatively awkward to work with large argument strings in most command shells.
 
 ## Scripting
 
@@ -53,7 +55,7 @@ Proposed operations:
 
         glas --script.FileExt (ScriptFile) (Args)
 
-FileExt may be anything we can use as a file extension, including multiple extensions. Intended usage context is a shebang script file within Linux:
+FileExt may be anything we can use as a file extension, including composite extensions. Intended usage context is a shebang script file within Linux:
 
         #!/usr/bin/glas --script.g
         program goes here
@@ -66,9 +68,9 @@ This operation loads the script file, skips first line if it starts with shebang
 
 An obvious variation on the above is to embed the script text into the command line argument. Proposed operation:
 
-        glas --cmd.FileExt ScriptText -- Args
+        glas --cmd.FileExt ScriptText Args
 
-This can be convenient in some cases. It enables users to favor familiar file-based languages without requiring a separate file. That said, most file-based languages are probably an awkward fit for inline scripting, and users might ultimately be better off developing and learning a suitable command-line language (via staged app).
+This allows familiar file-based languages to be used without the file. Working with a large or multi-line text arguments is awkward in most command shells, so I favor staged applications in this role. However, inline scripting might prove more convenient when the glas command is embedded within a shell script.
 
 ## Other Operations
 
@@ -76,11 +78,10 @@ Proposed operations:
 
 * `--version` - print version to console
 * `--help` - print basic usage to console 
-* `--check ModuleRef` - compile module pass/fail, do not run
-* `--list-modules` - report global modules in configured distribution
+* `--check ModuleRef` - compile module pass/fail, do not run app
 * `--init` - create initial configuration file, might prompt user
 
-We should avoid adding too much logic to the command line interface, thus features such as a REPL or debug support would mostly be shifted to user-defined operations. But we can support a few built-ins. Ideally, the same operations can be supported via user-defined operations. For example, enable '`glas version`' to obtain information about runtime version as an effect.
+I hope to keep the glas executable small, pushing most logic into the module system. But if there is a strong argument for introducing new features as built-ins, we can do so. Built-in features can potentially be accessed through `sys.refl.*` APIs.
 
 ## Exit Codes
 
@@ -89,7 +90,7 @@ Keeping it simple.
          0  pass
          1  fail
 
-Using log messages for detailed warnings or errors.
+We'll rely on log messages for detailed warnings or errors. But we might allow applications to set an exit code more generally.
 
 ## Bootstrap
 

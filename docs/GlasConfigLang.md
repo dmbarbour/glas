@@ -1,10 +1,10 @@
 # Glas Configuration Language
 
-I want a lightweight syntax for configuration of glas systems. Initially, this 
+I want a lightweight syntax for configuration of glas systems. Earlier, I developed [text tree](TextTree.md) for this role, but I've determined that it isn't quite what I need. I want the inheritance, abstraction, and composition features of [namespaces](GlasNamespaces.md).
 
- Earlier, I developed [text tree](TextTree.md) for this role, but I'd prefer something with the inheritance, abstraction, and composition features of [namespaces](GlasNamespaces.md). 
+## Design Decisions
 
-
+This is an incomplete list of design 
 
 ## Distributions as Namespaces
 

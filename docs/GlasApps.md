@@ -126,7 +126,7 @@ Of course, tests inevitably incur performance overheads. A runtime can potential
 
 The runtime first calls `start()`, repeating only if it fails to commit, then repeatedly calls `step()` in separate transactions. This allows for some one-time initialization and the main application loop. To support graceful shutdown, the runtime may also call `stop()` to signal that the application should halt after an OS event such as SIGTERM or WM_CLOSE. 
 
-An application may voluntarily halt by calling and committing `sys.halt()`. This asks the runtime to make the current transaction the final one. 
+An application may voluntarily halt by calling and committing `sys.halt()`. This asks the runtime to make the current transaction the final one.
 
 ## HTTP Interface
 
@@ -181,72 +181,103 @@ In context of RPC, each process may have its own local estimate of current time,
 
 This API does not cover one common conventional use case for time APIs: profiling. Profiling is instead handled as a form of runtime reflection in context of transactions.
 
-## Logging
+## Debugging
 
-Like profiling, logging should be modeled as an annotation on programs instead of an actual effect. Basic logging might be expressed as `%log ChannelId MessageExpr Operation` in the AST, corresponding to a structure like `log (chan, Msg) { Operation }` in syntax. 
+In general, debugger integration should be supported using annotations rather than effects. That is, it should be easy to insert or remove and enable or disable debugging features without influencing formal behavior modulo reflection. Runtime reflection can potentially observe performance or debug outputs, and should be modeled effectfully through APIs in `sys.refl.*`. 
 
-Here ChannelId is initially a name from the namespace. MessageExpr should evaluate to a renderable value without observable side-effects. The idea is that we log over Operation. This produces at least one message values, but may produce more as Operation modifies state read by MessageExpr. Further, even when MessageExpr is constant, this structure provides convenient hierarchical context for progressive disclosure or debugger integration.
+### Logging
 
-Logs should be accessible through `sys.refl.http`, and we might configure a few channels to print to standard error under suitable conditions. Eventually, we might develop an internal API `sys.refl.logs.*` or extend the ChannelId type.
+In context of transaction loops, I find it useful to model logging as a form of debugger integration instead of an output stream. This enables observation of aborted transactions and presentation of logs as a time-varying structure, aligned with incremental computing and branching on `sys.fork`. 
 
-## Profiling
+Conventional logging can be improved considerably by introducing a `log(channel, message) { operation }` syntax (or `%log Channel Message Operation` AST). This allows the system to maintain a message as it changes over the course of an operation, or integrate log messages with a call stack. Further, the system can augment log messages with general metadata about the operation, such as time spent or memory allocations. 
 
-Profiling could be modeled very similarly to logging, something like `%prof ProfileId Operation`. ProfileId is initially a name from the namespace to partition statistics. Gathered statistics may include counts of entries and exits, stats on resource usage (time, memory, IO), and tracking why we aborted an operation (conflict? failure? type error? timeout?), and so on. Any expensive measurements can be controlled by configuration.
+The channel provides a handle for fine-grained configuration of logging behavior. This should include ability to disable logging statically or conditionally. To simplify configuration, channels should be compile time expressions (optionally including static parameters). Disabling logs should be transparent, thus message expressions must not modify state; alternatively, we might evaluate each message in an implicit transaction then abort. We can feasibly configure logging of method calls, i.e. each method name an implicit channel, parameters a message, body as operation.
 
-As with logging, stats should be accessible through `sys.refl.http` and we might configure some to print periodically to standard error as things change. Eventually, we might develop an internal API `sys.refl.prof.*` or extend the ProfileId type.
+Log messages should initially be accessible via `sys.refl.http`. Eventually, we might introduce an API under `sys.refl.log.*` for structured access and dynamic configuration. Also, it should be possible to configure a runtime to write logs to file or standard error.
 
+### Profiling
 
+Profiling can be modeled as a configuration option for logging, focused on performance metadata around 'operation' instead of the message. The message remains useful for indexing: we might aggregate stats on `(channel, message)` pairs, where channel is static and message is dynamic.
+
+To simplify configuration and support reasonable defaults, we might use a distinct naming conventions for profiling channels. This might involve a simple variant header on the channel name. We could also use a separate syntax for profiling, to more clearly express intent.
+
+### Tracing? Tentative.
+
+In some cases, it is useful to track dataflows through a system including across remote procedure calls and transactions. This can be partially supported by including provenance annotations within data representations. The [glas object](GlasObject.md) representation supports such annotations, for example. We will need something more to efficiently maintain provenance when processing data. I suspect this will need an ad-hoc solution for now.
+
+### Mapping
+
+For live coding, projectional editing, debugging, etc. we often want to map program behavior back to source texts. In context of staged metaprogramming, this might best be modeled as *Tracing* source texts all the way to compiled outputs. This implies provenance annotations are represented at the data layer, not the program layer. 
+
+For performance, a late stage compiler might extract and preprocess annotations in order to more efficiently maintain provenance metadata (e.g. as if tracing an interpreter). But this should be understood as an optimization.
+
+## Data Representation? Defer.
+
+We can manually serialize data to and from binaries. However, in some cases we might prefer to preserve underlying data representations used by the runtime. This potentially allows for greater performance, but it requires reflection methods to observe runtime representations or interact with content addressed storage. Viable sketch:
+
+* Interaction with content-addressed storage. This might be organized into 'storage sessions', where a session can serve as a local GC root for content-addressed data.
+* Convert glas data to and from [glob](GlasObject.md) binary. This requires some interaction with content-addressed storage, e.g. taking a 'storage session' parameter.
+
+The details need some work, but I think this is sufficient for many use-cases. It might be convenient to introduce a few additional methods for peeking at representation details without full serialization.
 
 ## Background Eval
 
-It is inconvenient to require a multiple transactions even for heuristically 'safe' operations, such as reading a file or HTTP GET. In these cases, an escape hatch from the transaction system is convenient. Background eval is a viable escape hatch for this role. Proposed API:
+It is inconvenient to require multiple transactions for heuristically 'safe' operations, such as reading a file or HTTP GET. In these cases, an escape hatch from the transaction system is convenient. Background eval is a viable escape hatch for this role. Proposed API:
 
-* `sys.refl.bgeval(MethodName, Arg)` - evaluate `MethodName(Args)` in a background transaction (logically prior to the calling transaction), then continue with the returned value (logically a *cached* value). The Arg and return value must be plain old data (otherwise diverges as type error). 
+* `sys.refl.bgeval(MethodRef, Args)` - evaluate `MethodRef(Args)` in a background transaction logically prior to the calling transaction, commit, then continue with a returned value. While waiting, if the calling transaction is aborted due to change in external conditions, the background transaction should also be aborted. To keep it simple, argument and return values are limited to plain old data. The method reference is an abstract name, subject to namespace-based access control. 
 
-Conceptually, this involves a runtime process reflecting on active transactions and 'anticipating' their needs. When called in the stable prefix of a transaction loop, the background transaction effectively becomes a concurrent transaction loop responsible for maintaining a cache. There is some risk of 'thrashing' if the background transaction conflicts with the calling transaction, but thrashing is easily recognized and debugged.
+Background eval can be used within a transaction loop and is fully compatible with transaction loop optimizations including incremental computing, reactivity, and replication on non-deterministic choice. In the latter case, we can implicitly fork the caller to handle each return value. 
 
-*Note:* In addition to fetching cacheable data, background eval can be safely applied to scheduling background operations on demand. This is essentially the lazy alternative to 'step'. 
+We can safely leverage background eval for cacheable read-only queries or to lazily process background tasks that would have otherwise been handled in a concurrent loop (e.g. via 'step'). There is some risk of thrashing if the background transaction has a read-write conflict with the calling transaction, but thrashing is easy to recognize and debug.
+
+## Lazy and Future Eval? Manual!
+
+Applications can model asynchronous operations by writing requests into state that will eventually be processed by background `step` or `sys.refl.bgeval`. Modeling this explicitly is convenient for understanding how asynchronous operations interact with orthogonal persistence, live coding, and interruption. In contrast, background eval avoids most of these concerns.
 
 ## Foreign Function Interface? Tentative.
 
-A foreign function interface (FFI) is convenient for integration with existing systems. But FFI can be non-trivial due to differences in data models, error handling, memory management, and so on. 
+A foreign function interface (FFI) is convenient for integration with existing systems. Of greatest interest is a C language FFI. But FFI can be non-trivial due to differences in data models, error handling, memory management, and so on. I haven't discovered any simple and effective means to reconcile a C FFI with hierarchical transactions or transaction loop optimizations (incremental computing, logical replication on fork, reactivity, etc.). 
 
-Unfortunately, I haven't found a good way to reconcile FFI with transactions and transaction loop optimizations. The best solution I've found is to instead schedule non-transactional operations to run between transactions. A viable API:
+The best solution I've found is to instead schedule non-transactional C operations to run between transactions. A viable API:
 
-* `sys.ffi.cfunc(LibName, FunctionName, AdapterHint)` - returns abstract FnRef for a C function in a dynamically loaded library. The AdapterHint may include type descriptions, parameter names, idempotence and stability, etc.. We won't necessarily support all C types, but basic integers and binary buffers (both input and output) should be supported.
-* `sys.ffi.sched(FnRef, Args)` - schedules a call to a foreign function and returns an abstract OpRef. This will run shortly after the current transaction commits. For convenience, calls will usually run in the same order they are scheduled, i.e. writing requests to a runtime global queue.
-* `sys.ffi.result(OpRef)` - returns result of a completed operation, otherwise fails.
+* `sys.ffi.cfunc(LibName, FunctionName, AdapterHint)` - returns abstract FnRef for a C function in a dynamically loaded library. The AdapterHint should minimally indicate argument and result types, but might further include calling conventions, parallelism options, cacheability or idempotence, and other features. Also, we won't necessarily support all C functions, but we should support common integer and binary array types.
+* `sys.ffi.sched(FnRef, Args)` - schedules a call to a foreign function and returns an abstract OpRef. This will run shortly after the current transaction commits. For convenience, calls will usually run in a single thread in the same order they are scheduled unless configured otherwise via AdapterHint.
+* `sys.ffi.result(OpRef)` - returns result of a completed operation, otherwise diverge. If called from the same transaction that scheduled the operation, divergence is guaranteed.
 
-We can later add some methods to observe more detailed status of OpRef, or extend FnRef with lightweight scripts. However, as a general rule, transaction loops should not schedule any 'long running' scripts or operations because that will interfere with live coding.
+We can later introduce methods to observe detailed status of OpRef, or support limited scripts in place of FnRef. However, as a general rule, transaction loops should avoid scheduling long running scripts or operations because doing so interferes with live coding and orthogonal persistence.
+
+*Note:* Where it's just a performance question, glas systems should favor *acceleration* over FFI if it's just for performance. Acceleration is a lot more friendly than FFI (safe, secure, portable, reproducible, scalable, etc.) but does not solve integration with the outside world.
 
 ## Configuration Variables? Tentative.
 
-The runtime configuration may include some ad-hoc variables. I'm not sure I want this to be a separate feature from environment variables, i.e. we could express configurations as applying a mixin to environment variables.
+A runtime configuration might include ad-hoc variables. However, I'm not sure I want this to be a separate feature from environment variables. We could instead express configurations as applying a mixin to the environment, allowing ad-hoc extensions and overrides.
 
 ## Environment Variables
 
-A simple API to access OS environment variables.
+A simple API to access OS environment variables. Viable API:
 
 * `sys.env.get(Name)` - return value associated with Name, or fails if Name is undefined. Names and returned values are simple texts (restricted binaries).
-* `sys.env.list()` - return a list of defined Names.
+* `sys.env.list()` - return list of defined Names.
+* `sys.env.args()` - return list of strings provided as arguments to the executable (usually via CLI).
 
-Glas applications won't directly update environment variables, but could control the namespace to present alternative variable views to subcomponents.
+Glas applications won't directly update environment variables. However, it is feasible to intercept a subcomponent's access to `sys.env.*`. 
 
-## CLI Integration?
+## Console IO
 
-Access to command-line arguments and console IO could be provided through `sys.cli.*`. This is instead of providing a file handle.
+Access to standard input and output streams is provided through `sys.tty.*`.
 
-* `sys.cli.args()` - return the list of strings provided by the command line interface
-* `sys.cli.getc()` - read a byte from standard input; diverges if not enough data is available.
-* `sys.cli.putc(Byte)` - write a byte to standard output; write is buffered until commit.
+* `sys.tty.read(Count)` - return list of Count bytes from standard input; diverge if data insufficient. (*Note:* the input buffer will be treated as empty during 'start'.)
+* `sys.tty.write(Binary)` - write given binary to standard output, buffered until commit. Returns unit.
 
-Access to standard error is not provided here, but might be indirectly accessed based on configuration of logging, profiles, etc..
+To keep it simple, input echo and line buffering are disabled by default, and the application does not directly observe the input buffer (which could result in race conditions). Also, the application does not distinguish between a 'closed' input stream and the user simply not providing further input. Applications may leverage [ANSI escape codes](https://en.wikipedia.org/wiki/ANSI_escape_code) for pseudo-graphics or device control. 
+
+The runtime can potentially provide associated methods via `sys.refl.tty.*` for low level access and configuring terminal options. However, this is low priority.
+
+The standard error stream is reserved by the glas runtime. Before an application starts, the runtime may report status through standard error including initialization errors and warnings. After the application halts, some final summary output may also be reported. The runtime may grant applications limited access to standard error via reflection API, but in practice most use cases should be based on separate log files or HTTP access (routing `/sys` to `sys.refl.http`).
 
 ## Filesystem
 
-Safe filesystem operations may need to be partitioned across multiple transactions. But we can support a simplified API that is safe assuming no concurrent interference.
-
-However, we can provide some 'unsafe' filesystem APIs that assume non-interference and are considerably more convenient. 
+Interaction with the filesystem is awkward due to the non-transactional nature of filesystems and their different security model. However, this can be mitigated, and we can shift most 'operations' on files 
 
 Proposed API:
 
@@ -334,13 +365,3 @@ A port is a fixed-width 16-bit number. An addr is a fixed-width 32-bit or 128-bi
 * reload source
 * SIGHUP?
 * reflection on source code
-
-## Reflection on Representation
-
-The underlying representation for data is usually transparent. However, there are some cases where we'd want to make it more visible, such as manually tunneling glas data over TCP. Potential operations:
-
-* Interaction with content-addressed storage. This might be organized into 'storage sessions', where a session can serve as a cache and GC root for content-addressed binaries.
-* Convert glas data to and from [glob](GlasObject.md) binary. This requires some interaction with content-addressed storage, e.g. taking a 'storage session' parameter.
-
-This would probably be sufficient for most use-cases, but we could add some mechanisms to peek at representation details or access representation-layer annotations without serializing the data.
-

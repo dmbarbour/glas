@@ -122,19 +122,19 @@ As a simple naming convention, global module 'lang-xyz' should detail how to com
 
 To ensure reproducible results, the only observable effect a compiler has access to is to 'load' modules.
 
-* `sys.load(ModuleRef)` - On success, returns compiled value of the indicated module. On failure, may diverge or fail on error. Divergence is used only where observing failure would be non-deterministic, e.g. in case of a dependency cycle or network fault. ModuleRef:
+* `sys.load(ModuleRef)` - On success, returns compiled value of the indicated module. On error, diverge if observing failure would be non-deterministic (e.g. dependency cycle or network fault), otherwise fail deterministically. ModuleRef:
   * *local:Text* - identifies a subfolder or file (modulo extensions). 
   * *global:Text* - identifies a global module from the configuration.
 
-Of course, the compiler also has full access to logging, loading, caching, acceleration, and other useful 'effects' that are accessible via annotations.
+The compiler also has access to logging, tracing, caching, acceleration, and other useful 'effects' that are accessible via annotations but are not directly observable by the compiler. 
 
-Long term, we'll also want support for REPL, linter, syntax highlighting, [language server protocol](https://en.wikipedia.org/wiki/Language_Server_Protocol), interactive tutorials, etc.. These might be introduced with similar naming conventions.
+Long term, I also want to support REPL, linter, syntax highlighting, [language server protocol](https://en.wikipedia.org/wiki/Language_Server_Protocol), interactive tutorials, etc.. However, rather than directly extending the main language module, we might introduce these features under similar naming conventions.
 
 ### Automated Testing
 
 As a simple naming convention, local modules whose names start with "test-" will be recognized as tests. Tests can be compiled and evaluated by the glas system to produce or maintain a health report. Each test application may define multiple test methods as `test.*`. A test method should have a simple `unit -> unit | FAIL` type. 
 
-Effects in automated tests are restricted to ensure reproducibility and replayability. This includes the effects from language modules, plus `sys.fork` for fuzz testing and search.
+Effects in automated tests are restricted to ensure reproducibility and replayability. Tests may support all effects from language modules plus `sys.fork` for fuzz testing and search.
 
 * `sys.fork(N)` - returns an integer in the range `0..(N-1)`. Diverges if N is not a positive integer.
 
@@ -218,29 +218,35 @@ Not really committed to anything here yet.
 
 ### Rational Numbers 
 
-Ratios are easily represented as a pair of integers, not always in reduced form. In many cases, such as within a program AST, it is convenient to model rational numbers precisely without conversion to floating point or imprecise types. Where needed, math can include explicit operations in our computations to 'round' rational numbers to another rational. 
+Ratios are easily represented as a pair of integers, not necessarily in reduced form. In many cases, such as within a program AST, it is convenient to model rational numbers precisely without conversion to floating point or imprecise types. Where needed, math can include explicit operations in our computations to 'round' rational numbers to another rational.
 
-### Floating Point
+### Floating Point (Tentative)
 
-This proposed 'default' floating point number representation for glas is based on [posits](https://en.wikipedia.org/wiki/Unum_(number_format)#Posit_(Type_III_Unum)) but adjusted for arbitrary length bitstrings. In this modified encoding, every bitstring encodes a unique rational number. There is no support for not-a-number. Any rational number whose denominator is a power of two can be precisely represented. The zero value is conveniently represented by the empty bitstring. 
+This proposed floating point number representation for glas is based on [posits](https://en.wikipedia.org/wiki/Unum_(number_format)#Posit_(Type_III_Unum)) but adjusted for arbitrary length bitstrings. In this modified encoding, every bitstring encodes a unique rational number. Any rational number whose denominator is a power of two can be precisely represented. The zero value is conveniently represented by the empty bitstring. 
 
-As with posits, we interpret the bitstring as `(sign)(regime)(exponent)(fraction)`, with negatives using sign bit '1'. Unlike posits, there is no limit on regime or fraction size, and we logically add a `1000..0` suffix to the bitstring before interpreting it. That is a '1' bit followed by however many '0' bits are needed to reach the fraction. Further, to scale efficiently to large exponents, I increase exponent size (es) with regime:
+To interpret any non-empty bitstring, we'll first add logically a `1000..` suffix (that is a 1 bit followed by infinite 0 bits) then interpret the result as `(sign)(regime)(exponent)(fraction)`. Adding a 0 to the fraction doesn't modify the encoded number, thus in practice we need only add bits up to the fraction. 
+
+Further, to improve how posits scale to much larger numbers, I increase exponent size (es) with regime using a simple pattern:
 
         regime  es      exponent
-        10      2       0..3        
+        10      2       0..3  
         110     2       4..7
         1110    3       8..15
         11110   4       16..31
         111110  5       32..63
-        ...
+        (1*N)0  N       (2^N)..(2^(N+1)-1)
 
         01      2       -4..-1
         001     2       -8..-5
         0001    3       -16..-9
         00001   4       -32..-17
         000001  5       -64..-33
-        ...
+        (0*N)1  N       -(2^(N+1))..-((2^N)+1)
 
 The final number is computed as `(-1)^(sign) * 2^(exponent) * (1.(binary fraction))`.
 
-I hesitate to standardize this mostly because I don't see a strong use case for floating point at the 'glas' program layer. I suspect we'll mostly favor rational numbers and ratios, and when we do want floating point it will be in context of an accelerator, in which case we'll need to favor a format supported by the hardware.
+However, I'm not convinced this is a good fit for my vision of glas systems. One significant weakness of arbitrary width floating point is that it becomes unclear how many bits should be kept at any given step. Even initial representation is troublesome: no matter how many bits, we cannot exactly represent decimal number `0.3`. We would need precision arguments on many operations. Also, floating point math is often expected to leverage hardware. 
+
+My vision for glas systems might be better served by favoring rational numbers in glas data, then separately accelerate IEEE 754 floating point arithmetic and matrix computations. Leave conversions to the users.
+
+*Aside:* Floating point arithmetic isn't fully deterministic in the sense that different hardware can have different results for the same operation. This complicates acceleration. We might instead introduce floating point operations as an abstract AST extension or an effect.
