@@ -191,6 +191,14 @@ Nominative data types, implicit parameters, and algebraic effects may also be ti
 
 For each user-defined method, there might be several 'slots' defined in the namespace - e.g. representing declared types, the function code, and perhaps even a macro for invoking that code (to unify methods and macros, similar to fexprs). This is left entirely to the language design.
 
+## Global Namespace
+
+This namespace model doesn't directly support global names, but by convention we could implicitly propagate access to a namespace of globals into every hierarchical subcomponent. For every component 'foo', the implicit rename rule might be `{ "" => "foo.", "globals." => "globals." }`. With this, the hierarchical component can both reference and define globals. Further, we could still support translate globals to support intervention, overrides, and integration.
+
+Of course, 'globals.' is a long prefix for this role. A single character is sufficient. In context of [abstract assembly](AbstractAssembly.md) the front-end syntax might propagate '%' as a global namespace. To avoid additional rewrite rules, we could reserve '%.' or similar for user-defined globals.
+
+Support for globals is familiar and can improve concision when integrating components with their environments. Similar to conventional 'imports' of libraries, we could load and define the same globals many times, leveraging the ability to merge identical definitions. We would only need to resolve actual conflicts. That said, I'm not convinced this is a feature I want to encourage for glas systems.
+
 ## Tentative Extensions
 
 ### Copy Operation

@@ -1,52 +1,52 @@
 # Abstract Assembly
 
-The big idea for abstract assembly is that a front-end compiler expresses an intermediate-language in terms of abstract methods within the same [namespace](GlasNamespaces.md) as user-defined methods. This subjects compiled definitions to namespace-layer access control, extension, adaptation, and override. The proposed representation is reminiscent of Lisp or Scheme:
+The main idea for abstract assembly to use Names from a *user-controlled namespace* as constructors in an abstract syntax tree (AST) intermediate representation. This gives users an opportunity to control through the namespace which language features a subprogram may use, to override language features, to adapt between languages, and potentially to extend a language with new features. 
 
-        type App = (0b1:Name, List of Arg)
-        type Arg = 0b0:Data
-                 | 0b1:Name
-                 | App
+Proposed representation for abstract assembly as glas data:
 
-Primitive AST constructors might be named '%addi', '%cond', '%seq', etc.. A front-end compiler can forward to hierarchical components by default via prefix rename 'foo.% => %'. With language support, users could control forwarding, e.g. to hide '%amb' from a deterministic subprogram or substitute '%debug-assert' with '%pass' to disable debug testing for a specific component.
+        type AST = c:(Name, List of AST)        # constructor
+                 | d:Data                       # embedded data
+                 | n:Name                       # name (as arg)
+                 | z:Localization               # localization
 
-User-defined AST constructors are possible contingent on context, perhaps expressed as pure functions of type `List of Arg -> AST`. The AST data type is usually abstract, requiring construction in terms of primitives. User-defined constructors can serve a role similar to macros or EDSL compilers, but with potential benefits from evaluation in a later stage.
+The types for Name and Localization depend on the namespace model. In case of [glas namespaces](GlasNamespaces.md) we could use:
 
-Intriguingly, it is feasible to *sandbox* a subprogram, implementing user-defined 'primitive' constructors for a subprogram then applying an adapter to 'compile' back into the host AST. This sandbox can support emulation or adaptation between intermediate languages and provides opportunity for user-defined profiling, debugging, and optimizations.
+        type Name = Binary                              # not prefix of another
+        type Localization = Map of Prefix to Prefix     # rewrite longest match
+        type Prefix = Binary                            # empty up to full Name
 
-## Names and Name Capture
+Localization captures all rewrite rules that would apply to a Name. This can be useful in context of staged computing, where some names might be integrated in a later stage. In case of glas namespaces, we would capture link (ln) operations, aggregating via followed by (fby) composition.
 
-There should be no `Binary -> Name` function at runtime. Why not? Because such a function would complicate reasoning about scope of names, rename context, and dead-code elimination. This would further impact [security assumptions](https://en.wikipedia.org/wiki/Object-capability_model).
+As a convention, I propose primitive AST constructors are '%' prefixed. This enables easy recognition, resists accidental name collisions, supports prefix-based propagation of primitives into hierarchical components, and simplifies syntactic control of direct user access to primitives. A few primitive AST nodes for a procedural language might include %seq, %i.add, %cond, %call, and so on.
 
-However, it is feasible for the front-end compiler to help capture access to names, i.e. syntax `&foo` might compile to `(%data 0b1:"foo")`. To support some form of 'eval', users can still create lookup tables manually, e.g. `[("foo", &foo), ("bar", &bar), ...]`, and this could be automated by metaprogramming in the front-end language.
+The abstraction overhead for abstract assembly is negligible and is paid entirely at compile time. To simulate a concrete assembly, it is sufficient to propagate '%' names into hierarchical components by default (i.e. `{ "" => "foo.", "%" => "%" }` for component 'foo'). The abstraction can still be useful in some contexts, such as when integrating components developed in multiple languages.
+
+## Name Capture
+
+By leveraging Localization, it is feasible to introduce operations such as `Binary -> Name` that account for how the name would be rewritten in context. This preserves namespace-based access control. However, unless this operation is used only at compile-time, it very easily interferes with dead code elimination.
+
+In practice, a better solution is to construct an explicit table of all the names we might reference, e.g. `[["foo", &foo], ["bar", &bar], ...]`. This would allow for more precise erasure of unused definitions.
+
+*Note:* We can easily support the converse, `Name -> Binary`. But this should be part of a reflection API because we don't always want components to know their own embedding.
 
 ## Capture of Stack Variables
 
-We could make locals unforgeable by associating them with names, e.g. `(%local &privateScopeName 2)`. A late stage compiler could easily detect which names are in scope. This would give us [macro hygiene](https://en.wikipedia.org/wiki/Hygienic_macro) via object capability security.
+Instead of `(%local "x")`, we could associate local variable names with the namespace. This could be name per variable or per scope, the latter involving `(%local &privateScopeName "x")`. This provides a simple basis for [macro hygiene](https://en.wikipedia.org/wiki/Hygienic_macro). A macro would be unable to 'forge' a local reference unless specifically implemented for use in a known scope.
+
+## Switchable Primitives
+
+Even without overrides and staged computing, it is feasible to introduce sets of related operations then use the namespace to switch between them. For example, `%debug-assert` might implicitly be checked, but for a given subprogram we might redirect to `%debug-assert.unchecked`. That said, this is awkward and inflexible compared to user-defined, staged operations. Still, I wonder if we'll find use for the idea somewhere.
 
 ## Dynamic Eval
 
-The intermediate language can define a primitive '%eval' operator, or a runtime could supply 'sys.refl.eval' as an effect. Either way, it might be convenient to express this in terms of evaluating an AST node, implicitly leveraging the runtime's built-in JIT compiler, memoization, acceleration, and other optimizations. This avoids tying 'eval' to any particular front-end syntax.
+The intermediate language can define a primitive '%eval' operator, or a runtime could define a 'sys.refl.eval' method. Either way, it might be convenient to express this in terms of evaluating an AST node, implicitly leveraging the runtime's built-in JIT compiler and directly integrating runtime features such as logging and acceleration.
 
-The main challenge with 'eval' is interaction with a type system, i.e. ensuring the AST has behavior that is compatible in context. Safe eval might require tracking type information in the intermediate language, and perhaps restricting the types of expressions we may evaluate.
+A relevant challenge with 'eval' is interaction with a static type checker. This seems more approachable as a primitive, i.e. `(%eval StaticTypeExpr DynamicASTExpr)` would allow for integration assumptions to be locally verified prior to evaluation. Ideally, the StaticTypeExpr can be partially or fully inferred from context. This might require specialized AST nodes for type variables or 'holes' in type expressions.
 
-*Note:* Intriguingly, if '%eval' proves to be unused in the application, or to be used only with constant program arguments, a late-stage compiler could drop expensive JIT support. 
+Conveniently, we can easily optimize if eval is applied to a static AST expression, and a late stage compiler can remove the expensive JIT subsystem if an optimizer erases all reference to '%eval'. 
 
 ## Static Eval
 
-Static evaluation can easily be guided by annotations and independent of semantics. Alternatively, the intermediate language could support '%static-if' and '%ifdef' to make static evaluation explicit. The main difference regards staging. With annotations, we're limited to effects where it doesn't matter when they evaluate. With explicit static eval, we can explicitly support compile-time effects.
+In some cases, we'll want to insist certain expressions are evaluated at compile time. This should be supported by annotations and the type system. Ideally, a static expression may read static function parameters, and a subset of function return values (or other outputs) may also be static. If we support static implicit parameters, we can effectively model an effectful compile-time environment. 
 
-Effective support for static eval should enhance metaprogramming with abstract assembly. Ideally, we should be able to abstract over 'const' arguments to methods when constructing AST nodes. 
-
-## Effects API? Tentative.
-
-I intend to also use the namespace to control effects. My initial proposal is to use the 'sys.' namespace component for effects, but I could easily use '%' and conflate effects with the abstract assembly layer, e.g. use `%amb` instead of `sys.fork`, `%trace` instead of `sys.log`, or `%file.open` instead of `sys.file.open`. 
-
-I think this would simplify syntactic integration, e.g. `A | B | C` could be expressed easily as `%amb` at the AST layer. And our front-end compiler wouldn't need special rules for 'sys', only for a few single character prefixes such as '%' and '~'. 
-
-Anyhow, this is beyond the scope of abstract assembly. I can leave it to [glas lang](GlasLang.md) and [glas apps](GlasApps.md).
-
-## Concrete Assembly? No.
-
-The proposed representation is easily extended to let the AST constructor be `0b0:Data` instead of just `0b1:Name`. This allows for constructors to be concrete symbols or integers, or even bytecodes. 
-
-However, there is almost no benefit in favoring concrete constructors. It might allow a few eager optimizations, but many optimizations would need to be repeated after function inlining regardless, and function inlining must wait for the final namespace. For a negligible opportunity, we'd sacrifice many *systemic* benefits of abstract assembly. This seems most unwise.
+It is feasible to also support some *semantic* forms of static evaluation as AST primitives. This might be useful for '%static-if' and '%ifdef' and similar, allowing us to more precisely control static evaluation. I would prefer to avoid true compile-time effects because those would hinder dead code elimination and JIT compilation, but static conditionals and static loop expansions might prove convenient.

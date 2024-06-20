@@ -16,7 +16,7 @@ A file is compiled based on its file extensions. To process a file named "foo.ex
 
 File extensions may be composed. For example, "example.json.m4.gz" would essentially apply a pipeline of three compilers: lang-gz then lang-m4 then lang-json. This might decompress the file binary, apply a text macro preprocessor, then parse the result as JSON. Conversely, if file extensions are elided the compiled value is the unmodified file binary.
 
-A folder is compiled to the value of its contained "public" file, which may have any extension. Folders are implicit dependency boundaries: due to limitations on effects, the compiler can only reference local files or subfolders and global modules configured with the CLI. Further, folders may contain ad-hoc auxilliary content such as tests, readme, license, or a cryptographically signed manifest. All global modules are represented by folders. 
+A folder is compiled to the value of its contained "export" file, which may have any recognized file extension. Folders are implicit dependency boundaries: a compiler can reference only local files or subfolders, or external modules referenced through the system configuration. Folders may contain ad-hoc auxilliary content such as tests, readme, license, or a signed manifest.
 
 ## Data
 
@@ -118,27 +118,29 @@ The glas system is extensible via language modules, acceleration, and staging. T
 
 ### Language Modules
 
-As a simple naming convention, global module 'lang-xyz' should detail how to compile files with extension ".xyz". The 'app' namespace should define `compile : SourceCode -> ModuleValue`. The SourceCode is often a file binary, though this may vary when composing file extensions or reusing the language module in other contexts. The compiled ModuleValue can be any plain old glas data.
+As a simple naming convention, global module `lang.xyz` should detail how to compile files with extension ".xyz". The 'app' namespace should define `compile : SourceCode -> ModuleValue`. The SourceCode is usually a file binary, but may in general may be any glas data. The general case appears easily in context of composing file extensions. The compiled module value may be any glas data, but is most often an intermediate representation for a compiled program. 
 
-To ensure reproducible results, the only observable effect a compiler has access to is to 'load' modules.
+To ensure reproducible results, the compiler has very limited access to effects. The only observable effect is to is to 'load' compiled values from external modules. For convenience, this extends to staged compilation, treating it as a special module reference.
 
-* `sys.load(ModuleRef)` - On success, returns compiled value of the indicated module. On error, diverge if observing failure would be non-deterministic (e.g. dependency cycle or network fault), otherwise fail deterministically. ModuleRef:
-  * *local:Text* - identifies a subfolder or file (modulo extensions). 
-  * *global:Text* - identifies a global module from the configuration.
+* `sys.load(ModuleRef)` - On success, returns compiled value of the indicated module. On error, diverges if observing failure would be non-deterministic (e.g. dependency cycle, network fault, resource quota), otherwise fails deterministically. We'll broadly distinguish a few kinds of ModuleRef:
+  * *local:Text* - refers to a local file or subfolder, found within the same folder as whatever file is currently being compiled. The Text must not include the dot file extension or folder path separator.
+  * *global:Text* - refers to an externally configured value by name. This may be localized, e.g. a configuration might override `global:"foo"` as referenced from a specific module. But the value will be consistent across local modules.
+  * *inline:Data* - trivially return Data. Equivalent to staging with an identity function. This is useful only in context of composite ModuleRef options, such as *stage*.
+  * *stage:(LangRef, DataRef)* - here LangRef and DataRef are both ModuleRefs. In practice, LangRef might be `global:"lang.foo"` corresponding to file extension `".foo"`, while DataRef is `inline:Text` corresponding to a file body.
 
-The compiler also has access to logging, tracing, caching, acceleration, and other useful 'effects' that are accessible via annotations but are not directly observable by the compiler. 
+Annotations within the compiler can further support logging, profiling, tracing, caching, parallelism, quotas, and hardware acceleration. These effect-like features are not observable by the compiler but may help with performance and debugging.
 
-Long term, I also want to support REPL, linter, syntax highlighting, [language server protocol](https://en.wikipedia.org/wiki/Language_Server_Protocol), interactive tutorials, etc.. However, rather than directly extending the main language module, we might introduce these features under similar naming conventions.
+Long term, I also want to support REPL, linter, syntax highlighting, [language server protocol](https://en.wikipedia.org/wiki/Language_Server_Protocol), interactive tutorials, etc.. In context of staging, it is most convenient to support these features as additional interfaces on language modules. But I'm not in a hurry to develop these integration APIs.
 
 ### Automated Testing
 
 As a simple naming convention, local modules whose names start with "test-" will be recognized as tests. Tests can be compiled and evaluated by the glas system to produce or maintain a health report. Each test application may define multiple test methods as `test.*`. A test method should have a simple `unit -> unit | FAIL` type. 
 
-Effects in automated tests are restricted to ensure reproducibility and replayability. Tests may support all effects from language modules plus `sys.fork` for fuzz testing and search.
+Effects in automated tests are restricted to ensure reproducibility and replayability. In addition to annotations for logging, profiling, caching, etc. we can use `sys.fork` for fuzz testing and search.
 
 * `sys.fork(N)` - returns an integer in the range `0..(N-1)`. Diverges if N is not a positive integer.
 
-The test system is free to leverage abstract interpretation, heuristics, and memory to search for 'fork' choices that are more likely to result in test failure, such as edge cases or regression tests.
+The test system is free to leverage abstract interpretation, heuristics, and memory to focus on 'fork' choices that are more likely to result in test failure, such as edge cases or regression tests.
 
 *Note:* Due to limited effects, the test system requires explicit simulation of test environments in many cases. Additionally, true integration testing must use test applications instead of regular test modules.
 

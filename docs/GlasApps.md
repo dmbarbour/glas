@@ -234,6 +234,12 @@ We can safely leverage background eval for cacheable read-only queries or to laz
 
 Applications can model asynchronous operations by writing requests into state that will eventually be processed by background `step` or `sys.refl.bgeval`. Modeling this explicitly is convenient for understanding how asynchronous operations interact with orthogonal persistence, live coding, and interruption. In contrast, background eval avoids most of these concerns.
 
+## Module System Access? Partial. Defer. 
+
+Users might want APIs for browsing and querying the module system, listing which global modules contributed to the current application, access to automated test results, loading modules, and so on.
+
+We can immediately implement the `sys.load` API used by language modules. In this case, the implicit localization might be `{ "" => "distro." }`, i.e. assuming names come from the end user. A more complete API can deferred until we have a better understanding of use cases and what is easily implemented.
+
 ## Foreign Function Interface? Tentative.
 
 A foreign function interface (FFI) is convenient for integration with existing systems. Of greatest interest is a C language FFI. But FFI can be non-trivial due to differences in data models, error handling, memory management, and so on. I haven't discovered any simple and effective means to reconcile a C FFI with hierarchical transactions or transaction loop optimizations (incremental computing, logical replication on fork, reactivity, etc.). 

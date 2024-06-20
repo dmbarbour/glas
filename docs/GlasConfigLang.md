@@ -1,42 +1,88 @@
 # Glas Configuration Language
 
-I want a lightweight syntax for configuration of glas systems. Earlier, I developed [text tree](TextTree.md) for this role, but I've determined that it isn't quite what I need. I want the inheritance, abstraction, and composition features of [namespaces](GlasNamespaces.md).
+The glas configuration language is lightweight and generic. Each configuration file represents a dictionary of [namespaces and mixins](GlasNamespaces.md). The primary configuration is the namespace 'config', but other namespaces may represent reusable components, mixins, or functions. The definitions within each namespace must be acyclic, and there are no general loops, thus termination is guaranteed.
 
-## Design Decisions
+Configured features are ultimately represented by names and data within the namespace. This must be interpreted by the application or runtime.
 
-This is an incomplete list of design 
+## Global Modules
 
-## Distributions as Namespaces
+Global modules will be individually defined under 'distro.' prefix, i.e. in case of `glas --run foo Args` the runtime will search for 'distro.foo' within the configuration namespace. The value of 'distro.foo' should be recognized as a module reference. Proposed representation of module references:
 
-Instead of modeling a 'search path', consider modeling a namespace of global modules. Each module is essentially defined as a `(Location, Renames)` pair. The renames apply to 
+        type GlobalModuleRef 
+              = remote:(at:Location, ln:Localization)
+              | staged:(lang:GlobalModuleRef, src:GlobalModuleRef, ln:Localization)
+              | inline:PlainOldData  
 
-We can record the 'rename' map within each mo
+A remote module includes a Location and Localization. Both are abstract types for security reasons. The Location type may represent a file path on the local machine, or a URL to a remote DVCS repository. I intend to use the same Location type for importing configuration files. The Localization type relates to abstract assembly and the namespace model, and enables users to override dependencies of a module.
+
+A staged module will first load the language module and source module values, then 'compile' the source via the language under a given localization. An inline module will trivially return a value that is computed entirely within the configuration.
+
+## Security Concerns for Locations and Localizations
+
+The main security threat related to configuration of glas systems involves unpredictable dependencies. For example, it's okay if a local file references another local file, or for a remote file to reference another remote file, but not for a remote file to reference a local file. We'll similarly want to control dependencies within the configuration namespace.
+
+To resolve these concerns, the types for Location, Localization, and Names will be abstract within the configuration. These types can only be produced and composed by keyword, and would use specialized AST constructors in the intermediate [abstract assembly](AbstractAssembly.md).
+
+That said, I don't see a use case for Names as data within a configuration. So, Locations and Localizations would be the primary abstract types in configurations.
+
+## Locations
 
 
-## Desiderata
+## Namespaces as Functions
 
-* clean syntax
-  * avoids punctuation and escape characters
-  * minimal boiler-plate for common use case
-* support for inheritance from other files
-  * both local files and remote git etc.
-  * flexible composition and overrides
-* effective for configuring many things
-  * global module namespace (with its own overrides)
-  * RPC registries (composition, tags and filters)
-  * runtime database, possibly distributed
-  * ad-hoc configuration vars for apps
-* limited abstraction
-  * mixins and perhaps simple functions
-  * rules for specific apps or runtimes 
-  * can comprehend and control variation
-  * lightweight guarantee of termination
+A namespace of simple data expressions can represent a function. For example, we can develop a namespace where the client is expected to override 'x' and 'y' then read 'result'. To apply this function, we would dedicate a fresh hierarchical 'scratch' space for evaluation, while overriding a few arguments.
 
-## Thoughts
+A direct encoding might look something like:
 
-Some ideas: a distribution is modeled as a namespace of modules, but we'll also need to logically rename which 'global' modules are referenced by a module within the distribution. This requires preserving the 'ln' map to apply renames to defined modules. It is feasible to have scoped or private global modules after accounting for renames.
+        import foo as tmp    # tl:(def(foo), { "" => "tmp." })
+        override tmp.x = expr1
+        override tmp.y = expr2
+        rename tmp.result to bar
+        hide tmp  # rename 'tmp' to a fresh private namespace
 
-For file locations, I'll need to reference the location of the current file.
+This is a bit bulky, so we'll need some syntactic sugar. Perhaps something like:
+
+        import foo as tmp with
+          x = expr1
+          y = expr2
+          result -> bar
+        hide tmp
+
+        eval foo with
+          x = expr2
+          y = expr2
+          result -> bar
+
+        apply foo(x=expr1, y=expr2, result->bar)
+
+More generally, we could support shorthand 'z->z' as 'z', and perhaps prefix rewrites at '.' boundaries such as 'z. -> xyz.'. We could also understand 'eval' as a form of import and `(x = expr1, y = expr2, result->bar)` as similar to an import list. This would extend to qualified imports, `import as with`. 
+
+Note that this shorthand is at the namespace layer. It is technically feasible to support function evaluation within data expressions, i.e. something like `(%apply d:Namespace KWArgs)`. This is potentially more flexible and convenient, e.g. KWArgs might reference local variables. But I'd prefer to keep the configuration language extremely simple.
+
+## Configuring RPC Registries, Databases, Etc..
+
+We'll need to publish and discover RPC interfaces via intermediate matchmaking service, or to a shared database. Initially, this might only support one case, such as publishing through a local folder in the filesystem. Similar for the key-value database.
+
+Ultimately, a lot of configuration will be more ad-hoc, with de-facto standardization.
+
+## Application Specific Configuration
+
+Some properties cannot be shared between applications. One obvious case is the TCP port we open to receive HTTP and RPC requests. In these cases, it's best if we can leave configuration to the application itself. 
+
+Dynamic configuration is possible through a reflection API. For example, upon `start()` the application might configure the runtime through operations such as `sys.refl.bind("127.0.0.1:8080")`. Static configuration is feasible by extending the application's interface with a `config.*` section. For example, an application might define `config.bind` returning a list of TCP listen targets. In the latter case, we might constrain the effect type. 
+
+## Data Expression Language
+
+
+
+### Conditional Expressions
+
+We could support `iflet x = Expr1 then Expr2 else Expr3` where only Expr2 has `x` in scope as a local variable. This corresponds to `try/then/else`, allowing us to 'commit' to Expr2 after evaluating Expr1. A simple variant `Expr1 | Expr2` might correspond to `iflet x = Expr1 in x else Expr2`. And we could have `if Expr1 then Expr2 else Expr3` where we don't actually capture Expr1, only test whether it is well defined.
+
+For an expression to be well defined, it must depend only on well-defined names, and it must evaluate successfully. We might have some comparison expressions, e.g. where `("a" = "a")` evaluates to `"a"` while `("a" = "b")` simply fails. Also, any name that is part of a dependency cycle is considered undefined; we won't even attempt to evaluate the definitions.
+
+
+
 
 ## Structure
 
