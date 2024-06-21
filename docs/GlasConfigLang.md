@@ -28,7 +28,7 @@ That said, I don't see a use case for Names as data within a configuration. So, 
 ## Locations
 
 
-## Namespaces as Functions
+## Namespaces Layer Functions
 
 A namespace of simple data expressions can represent a function. For example, we can develop a namespace where the client is expected to override 'x' and 'y' then read 'result'. To apply this function, we would dedicate a fresh hierarchical 'scratch' space for evaluation, while overriding a few arguments.
 
@@ -57,7 +57,7 @@ This is a bit bulky, so we'll need some syntactic sugar. Perhaps something like:
 
 More generally, we could support shorthand 'z->z' as 'z', and perhaps prefix rewrites at '.' boundaries such as 'z. -> xyz.'. We could also understand 'eval' as a form of import and `(x = expr1, y = expr2, result->bar)` as similar to an import list. This would extend to qualified imports, `import as with`. 
 
-Note that this shorthand is at the namespace layer. It is technically feasible to support function evaluation within data expressions, i.e. something like `(%apply d:Namespace KWArgs)`. This is potentially more flexible and convenient, e.g. KWArgs might reference local variables. But I'd prefer to keep the configuration language extremely simple.
+I propose namespace layer functions as the primary way to to abstract over both configurations and data. This allows for a relatively simple data expression language. 
 
 ## Configuring RPC Registries, Databases, Etc..
 
@@ -73,6 +73,7 @@ Dynamic configuration is possible through a reflection API. For example, upon `s
 
 ## Data Expression Language
 
+I want to keep this language very simple. There are no user-defined functions at this layer, but we might, only user-defined data. We'll freely use keywords and dedicated syntax for arithmetic, conditions, etc.
 
 
 ### Conditional Expressions

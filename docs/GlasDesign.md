@@ -27,18 +27,18 @@ The 'plain old data' type for glas is the finite, immutable binary tree. Trees c
 
 A binary tree can easily represent a pair `(a, b)`, either type `(a + b)`, or unit `()`. 
 
-However, glas systems often favor labeled data as more human meaningful and openly extensible. Labels can be encoded into a *path* into the tree, where each path encodes a symbol using null-terminated UTF-8. For example, label 'data' would be encoded into the path `01100100 01100001 01110100 01100001 00000000` where '0' and '1' respectively represent following the left or right branch. 
+However, glas systems often favor labeled data as more human meaningful and openly extensible. Labels can be encoded into a *path* into the tree. For example, 'data' might be encoded as UTF-8 into the path '01100100 01100001 01110100 01100001' where '0' and '1' represent left and right branches into a binary tree. 
 
-A dictionary such as `(height:180, weight:200)` may have many such paths, implementing a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). An open variant would instead have exactly one label.
+A dictionary such as `(height:180, weight:200, ...)` contains many labeled values, implementing a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). To support iteration over dictionary keys, we'll add a NULL separator '00000000' between the label and data. That is, the ':' is actually encoded as a NULL, and NULL should not appear within labels. A labeled variant type is effectively a dictionary that contains exactly one label from a known set.
 
-To efficiently represent labeled data, non-branching path fragments must be compactly encoded. A viable runtime representation is closer to:
+To efficiently represent dictionaries and variants, we must compactly encode non-branching sequences of bits. A viable runtime representation is closer to:
 
         type Tree = (Stem * Node)       // as a struct
         type Stem = uint64              // encoding 0..63 bits
         type Node = 
             | Leaf 
             | Branch of Tree * Tree     // branch point
-            | Stem64 of uint64 * Node   // all 64 bits
+            | Stem64 of uint64 * Node   // all 64 bits!
 
         Stem Encoding (0 .. 63 bits)
             10000..0     0 bits
@@ -48,7 +48,7 @@ To efficiently represent labeled data, non-branching path fragments must be comp
             abcde..1    63 bits
             00000..0     unused
 
-We will further extend the Node type to support efficient Lists and other *Accelerated Representations* as described below. Further, a programming language may abstract over some representations, and enforce abstractions. However, the general idea is that data is represented as a binary tree.
+This provides a base encoding. We'll further extend the Node type to detect violation of runtime type assumptions, to support debug tracing, and to enhance performance (see *Accelerated Representations* below). But glas data should generally be understood as binary trees.
 
 ### Integers
 
@@ -84,13 +84,9 @@ Binaries receive special treatment because they are a popular data representatio
 
 ### Accelerated Representations
 
-We can generalize the idea of representing lists as finger-tree ropes to support for unboxed floating point matrices, unordered data types (e.g. sets, unlabeled graphs), or even virtual machine states (with registers, memory, etc.).
+We can generalize the idea of representing lists as finger-tree ropes to other optimized representations. For example, a compiler could convert known dictionary and variant types into 'structs' and 'enums'. We could optimize vectors and matrices of unboxed floating point numbers. Unordered data types, such as sets or unlabeled graphs, can be assigned a canonical representation as a binary tree (see [graph canonization](https://en.wikipedia.org/wiki/Graph_canonization)) then we can develop accelerated representations that logically reduce to the canonical form.
 
-In each case, we first define a canonical representation as a binary tree. For example, a matrix could be a list of lists. A set can be represented by an ordered list. An unlabeled graph might refer to [graph canonization](https://en.wikipedia.org/wiki/Graph_canonization). A VM state might use a simple record.
-
-However, constructing, validating, manipulating, and maintaining the canonical representation is expensive and error-prone. Instead, the runtime provides specialized under-the-hood representations, and users manipulate that representation indirectly through built-in or accelerated functions. Use of abstract data types can guard against accidental conversion to the canonical representation.
-
-The runtime can maintain accelerated representations even when serializing data for RPC communication or a key-value database. In case of [glas object](GlasObject.md), this leverages the external reference type. Use of runtime reflection APIs may allow programs to observe actual under-the-hood representations.
+The runtime can potentially maintain accelerated representations even when serializing data for RPC communication or a persistent key-value database. In case of [glas object](GlasObject.md), this leverages the external reference type. Use of runtime reflection APIs may allow programs to observe actual under-the-hood representations.
 
 ### Very Large Values
 
@@ -100,13 +96,15 @@ Content-addressed references simplify memoization, communication, and orthogonal
 
 ### Abstract Data Types
 
-Data abstraction is an extrinsic property of data, i.e. data is abstract *in context* of a given subprogram or even an entire application. Ideally, data abstraction should be enforced via static analysis and have zero runtime overhead. For example, we could check that a subprogram only observes or constructs specific data structures indirectly through provided methods. 
+Data abstraction is an extrinsic property of data, i.e. data is abstract *in context* of a given subprogram. In case of abstract runtime types (such as open file handles), the scope of abstraction might be an entire application. Ideally, data abstraction is enforced by static analysis, eliminating runtime overheads. However, static analysis is difficult in many cases. 
 
-Unfortunately, static analysis isn't always feasible. In these cases, a runtime might dynamically enforce data abstraction, guided by program annotations. Efficient dynamic enforcement may involve integration with the runtime data representation, e.g. to 'wrap' data with a type header (perhaps a name or database key). Similarly, [substructural types](https://en.wikipedia.org/wiki/Substructural_type_system) might be enforced using 'copyable' and 'droppable' flags in the data.
+We can extend the data representation with barriers to efficiently detect violation of type assumptions at runtime. These barriers might be manipulated by 'annotations' that wrap and unwrap values with type headers at runtime. This has unavoidable overhead, but it can be acceptable depending on granularity. A compiler might eliminate many wrap-unwrap pairs based on static analysis.
+
+In case of [substructural types](https://en.wikipedia.org/wiki/Substructural_type_system) we might further restrict a subprogram's ability to 'copy' or 'drop' data. Again, this is best enforced by static analysis, but we could 
 
 ### Nominative Types
 
-It is feasible to support [nominative types](https://en.wikipedia.org/wiki/Nominal_type_system) in context of a namespace. Instead of indexing binary trees via bitstrings, we can index abstract types using names. To integrate with live coding, orthogonal persistence, and distributed systems we should favor database keys as the foundation for these names instead of the program namespace (see *Programs and Applications*). 
+A runtime can support [nominative types](https://en.wikipedia.org/wiki/Nominal_type_system) as an abstract type. Essentially, instead of using bitstrings as 'labels' for a dictionary or variant, we can use database keys or names from a [namespace](GlasNamespaces.md), abstracting over representation details. In context of live coding, orthogonal persistence, and distribution, nominative types must be carefully scoped.
 
 ## Programs and Applications
 

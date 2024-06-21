@@ -8,7 +8,7 @@ Other runtime options may be provided prior to the '--' separator. However, I ho
 
         glas opname a b c 
             # rewrites to
-        glas --run glas-cli-opname a b c
+        glas --run cli.opname a b c
 
 By combining this syntactic sugar with *Staged Applications* (see below), glas supports user defined command line languages.
 

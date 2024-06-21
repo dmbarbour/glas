@@ -13,14 +13,13 @@ This document assumes definitions are expressed using [abstract assembly](Abstra
               | df:(Map of Name to Def)             # definitions
               | ln:(Map of Prefix to Prefix)        # link defs
               | mv:(Map of Prefix to Prefix)        # move defs
-              | rm:(Map of Prefix to unit)          # remove defs
+              | rm:(Set of Prefix to unit)          # remove defs
               | tl:(NSOp, Map of Prefix to Prefix)  # translate
 
-        type Name = Binary                          # assumed prefix unique
-        type Prefix = Binary                        # empty up to full Name
-        type Map = specialized trie                 # essential! see below!
-        type Opt T = List of T, max length one      # keeping it simple
-        type Def = abstract assembly                # or similar
+        type Name = Symbol                          # assumed prefix unique   
+        type Prefix = Symbol                        # empty up to full name
+        type Symbol = Bitstring                     # byte aligned, no NULL
+        type Map = Dictionary                       # trie; NULL separators
 
 * mixin (mx) - apply a sequence of operations to the tacit namespace
 * namespace (ns) - evaluate NSOp (usually mx) in context of empty namespace, evaluating to definitions (df). This could be evaluated eagerly at AST construction time, so this operation is mostly about deferring costs and lazy evaluation.
@@ -30,7 +29,13 @@ This document assumes definitions are expressed using [abstract assembly](Abstra
 * remove (rm) - remove definitions in tacit namespace, essentially a move to `/dev/null`.
 * translate (tl) - rewrite names in an operation before it is applied; useful for abstracting mixins.
 
-There are several tentative extensions described later.
+## Prefix Unique Names
+
+If we define both 'food' and 'foodie', the current NSOp type would make it relatively difficult to rename or delete 'food' without also renaming or deleting 'foodie'. 
+
+To solve this, we assume prefix-unique names. In practice, this means a compiler will implicitly add a unique suffix to every name. The NULL byte is reserved, but the compiler might use 'food#' vs 'foodie#' assuming '#' isn't normally permitted in names (or the compiler escapes it). Of course, other control characters are available, but a printable character may prove more convenient for pretty-printing of namespaces.
+
+In any case, the prefix uniqueness requirement shouldn't affect programmers directly. 
 
 ## Common Usage Patterns
 
