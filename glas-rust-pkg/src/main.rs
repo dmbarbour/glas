@@ -38,6 +38,11 @@ fn help_text() -> String {
         ].into_iter().map(|s| s.to_string()).collect::<Vec<String>>().join("\n")
 }
 
+fn version_text() -> String {
+    let ver = "0.0";
+    format!("glas bootstrap in rust (glas-rust-pkg) version {}", ver)
+}
+
 //
 //      glas --help                 # print help description
 //      glas --version              # print implementation version
@@ -97,14 +102,20 @@ fn parse_args(args: Vec<String>) -> Mode {
 }
 
 fn run_glas(operation : Mode) {
-    println!("Run Mode: {:?}", operation);
+    //println!("Run Mode: {:?}", operation);
     match operation {
-        Mode::Run(_m, _args) => (),
-        Mode::Script(_lang, _file, _args) => (),
-        Mode::Cmd(_lang, _script, _args) => (),
-        Mode::Check(_m) => (),
-        Mode::Init => (),
-        Mode::Version => (),
+        Mode::Run(m, args) => 
+            println!("todo: Run {:?} {:?}", m, args),
+        Mode::Script(lang, file, args) => 
+            println!("todo: Script {:?} {:?} {:?}", lang, file, args),
+        Mode::Cmd(lang, script, args) => 
+            println!("todo: Cmd {:?} {:?} {:?}", lang, script, args),
+        Mode::Check(m) => 
+            println!("todo: Check {:?}", m),
+        Mode::Init => 
+            println!("todo: Init"),
+        Mode::Version => 
+            println!("{}", version_text()),
         Mode::Help => 
             println!("{}", help_text()),
         Mode::Unrecognized => {

@@ -27,8 +27,39 @@ That said, I don't see a use case for Names as data within a configuration. So, 
 
 ## Locations
 
+Locations need special attention for security reasons. This mostly applies later, when we start using remote locations (e.g. a configuration file in a DVCS repository). We can get started with just local files, keeping extensions in mind.
 
-## Namespaces Layer Functions
+I imagine a grammar similar to this for parsing Locations:
+
+        expr Location 
+                = file Path                     # absolute or relative to current file
+                | eval Expr in Namespace        # for abstraction, libraries of locations
+                | git ...                       # extensions as needed
+
+        expr Path = StringLiteral
+
+We'll use locations in context of configuration file imports:
+
+        open Location                           # single inheritance
+        from Location import ImportList         # selective imports
+        import Location as LocalName            # qualified import (hierarchical)
+
+When embedding locations as data in more general expressions, I propose prefix '@' to indicate that we should parse a location.
+
+        ns foo {
+          fooFile = @file "./foo"
+        }
+        from (eval fooFile in foo) import ...
+
+The 'file' location will implicitly add the configuration file's location to the intermediate AST at parse time. This is very useful for relative paths, ensuring they are relative to the correct file even across imports. We can also detect problematic paths, such as a file path that steps outside a remote file's repository.
+
+The 'eval' location is useful for abstracting locations, or developing libraries of locations. It lets us describe locations before they are used or even in a separate file.
+
+## Toplevel Syntax
+
+
+
+## Namespaces as Functions
 
 A namespace of simple data expressions can represent a function. For example, we can develop a namespace where the client is expected to override 'x' and 'y' then read 'result'. To apply this function, we would dedicate a fresh hierarchical 'scratch' space for evaluation, while overriding a few arguments.
 
@@ -75,66 +106,31 @@ Dynamic configuration is possible through a reflection API. For example, upon `s
 
 I want to keep this language very simple. There are no user-defined functions at this layer, but we might, only user-defined data. We'll freely use keywords and dedicated syntax for arithmetic, conditions, etc.
 
-
 ### Conditional Expressions
 
 We could support `iflet x = Expr1 then Expr2 else Expr3` where only Expr2 has `x` in scope as a local variable. This corresponds to `try/then/else`, allowing us to 'commit' to Expr2 after evaluating Expr1. A simple variant `Expr1 | Expr2` might correspond to `iflet x = Expr1 in x else Expr2`. And we could have `if Expr1 then Expr2 else Expr3` where we don't actually capture Expr1, only test whether it is well defined.
 
 For an expression to be well defined, it must depend only on well-defined names, and it must evaluate successfully. We might have some comparison expressions, e.g. where `("a" = "a")` evaluates to `"a"` while `("a" = "b")` simply fails. Also, any name that is part of a dependency cycle is considered undefined; we won't even attempt to evaluate the definitions.
 
+### Arithmetic
 
+I'm torn a bit on how much support for arithmetic in configurations should be provided. Integers? Rationals? Vectors and matrices? I'm leaning towards support for ad-hoc polymorphism based on the shape of data.
 
+### Lists and Tables
 
-## Structure
+I don't plan to support full loops, but it might be convenient to support some operations to filter, join, zip, and summarize lists similar to a relational algebra. 
 
-Toplevel: A dictionary that may contain [namespaces](GlasNamespaces.md). 
+### Structured Data
 
-This is consistent with the initial glas language. However, there would be some significant differences regarding how 
+Support for pairs, lists, and and labeled variants or dictionaries is essential. We could also make it feasible to lift a configuration namespace into data.
 
-This simplifies abstraction and mixins compared to directly modeling a toplevel namespace. It is also consistent with my initial glas language. The main differences are that locations in the configuration language must be more concrete, and the language should guarantee termination. 
-
-*Aside:* We could still use an [abstract assembly](AbstractAssembly.md) when compiling the configuration, even if we don't take any advantage of this abstraction.
-
-## Locations
-
-The configuration language layer deal with filesystem and network locations. Locations are used in many cases: import of configuration files, reference to global modules, database persistence, etc..
-
-I propose to model locations as an abstract data type. We won't manipulate locations as strings or as structured namespace components. Instead, locations are manipulated through a handful of abstract AST constructors.
-
-
-
-
-
-
-
-
-
-Locations are ne includes for import of other configuration files. 
-
-The simplest location is a file path. A more sophisticated location might name a remote DVCS repository, including access tokens and version tags, together with a relative file path. 
-
-Although it is feasible to model location as a structured namespace component, I think it would be more convenient to model locations as an abstract data type. This might involve explicit support from the abstract assembly layer.
-It would probably be convenient if a 'location' is modeled as an abstract data type - a feature supported by the abstract assembly - instead of modeling a location as a st
-
-
-* composing texts and including named values within a text
-* 'nameof(name)' expands to a name's text representation (after rename)
-* distinguish whether a name is a text, a number, a dict, or undefined
-* simple conditional expressions
-* possible arithmetic on texts that represent decimal numbers. 
-* uncertain: support for lists, looping over lists, list names in namespace
-
-A runtime system and application could contribute some ad-hoc variables prior to computing some parts of the configuration, but not for others.
-
-I think this is quite doable. 
-
-## Misc
-
-### RPC Registry Configuration
+## RPC Registry Configuration
 
 The simplest registry might be configured as a remote service (URL and access tokens), shared database, or distributed hashtable. We also need composite registries, and support for filtering and editing 'tags' for both publish and subscribe.
 
-### Database Configuration
+Fortunately, other than often including a Location in a registry, we don't need any additional support for registries.
+
+## Database Configuration
 
 At least one database should be configured to support persistent data. We might initially use LMDB or RocksDB, which would require configuring a filesystem location. Eventually, we might also want to support distributed databases with special handling of vars, queues, bags, etc..
 
