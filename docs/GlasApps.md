@@ -80,7 +80,7 @@ Large values might be delivered via proxy [CDN](https://en.wikipedia.org/wiki/Co
 
 The runtime implements a key-value database API with both shared persistent and private in-memory data. The persistent database is configured externally and may include distributed databases. The database should implicitly support transactions, accelerated representations, and content-addressed storage for large values.
 
-Database keys are aligned to a hierarchical directory structure, and integrate some logic for persistence. A basic key might be constructed as `sys.db.dir(oldDir, "foo")`, while an in-memory key might use `sys.db.rtdir(fooDir)`. We might understand the latter as mapping to `"oldDir/foo/~"` where `~` maps to an in-memory overlay specific to the runtime instance, except that `~` is abstracted to control accidents.
+Database keys are aligned to a hierarchical directory structure, and integrate some logic for persistence. A basic key might be constructed as `sys.db.dir(oldDir, "foo")`, while an in-memory key might use `sys.db.rtdir(fooDir)`. We might understand the latter as mapping to `"oldDir/foo/~"` where `~` maps to an in-memory overlay specific to the runtime instance, albeit with `~` abstracted.
 
 Supported data types should at least include variables, queues, and bags. These are simple to implement and have convenient behavior in context of concurrency, distribution, and network partitioning:
 
@@ -90,9 +90,9 @@ Supported data types should at least include variables, queues, and bags. These 
 
 We might eventually pursue extensions for counters or [CRDTs](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) and other specialized types.
 
-The API to access these can be specific to each type, e.g. `sys.db.var.get` and `sys.db.queue.write`. This allows suitable optimized methods for each use case. Essentially, every database key might be understood as mapping to one var, one queue, one bag, and any number of subdirectories. 
+The API to access these can be specific to each type, e.g. `sys.db.var.get` and `sys.db.queue.write`. This allows suitable optimized methods for each use case. We could also allow the same key to be reused for a var, a queue, a bag, and a directory structure, implicitly selected based on the API used.
 
-In theory, we could add some access control to the database keys, e.g. restrict the key to read-only access to a specific variable. But I don't have a strong motive for this. Namespaces provide adequate access control within the application, and database keys will likely be ephemeral or even be treated as functional arguments (cannot be returned, but can be constructed locally via macros).
+For my vision of glas systems, I think it's best if database keys are *ephemeral*. That is, the databases will contain data but not contain references to other parts of the database. This restriction results in simpler schema, more explicit relationships and indexing, greater consistency between internal and external APIs, and pushes most abstraction into the namespace layer.
 
 Anyhow, the programming language should help automate the mapping of declared state to stable database keys and specific access methods. Key construction can be heavily optimized, e.g. a static in-memory key might reduce to a cached pointer under-the-hood.
 
@@ -114,13 +114,78 @@ Applications that share a database may interact asynchronously through shared, p
 
 In practice, instead of directly using shared state, two applications may interact asynchronously through a shared, stateful service. This has most benefits of shared state and further allows the service to abstract over representation details. However, it does require effective authentication models for RPC registries. 
 
-### Nominative Types
+## Mirroring for Performance and Partitioning Tolerance
 
-It is feasible to integrate names into abstract types. However, in context of live coding, the application namespace is ephemeral, thus should be restricted to ephemeral types. In general, we'll also want abstract types with a runtime or persistent lifespan. Database keys can serve as an alternative source of 'names' in this role. 
+See [Glas Mirrors](GlasMirror.md).
 
-## Mirroring and Partitioning Tolerance
+## Defunctionalized Procedures and Processes
 
-This grew a fair bit. See [Glas Mirrors](GlasMirror.md).
+Glas languages should provide a convenient syntax for partitioning large tasks into smaller transactional steps. Although this has some overhead, 
+
+
+An operation would take some representation of the continuation as an argument, and after each step will return an updated representation. Performance should be acceptable if every transactional step does enough working or waiting to mask the overhead of analyzing and constructing the continuation.
+
+
+
+
+
+
+
+
+ to some coarse-grained states it should be acceptable.
+
+ a direct procedural implementation, but it might be adequate for 
+
+Performance will undoubtedly take a hit compared to a procedural implementation.
+
+
+wind-unwind will undoubtely be awful compared to a direct procedural implementation. 
+
+some representation of the continuation.
+
+ Although performance will take a hit compare  Performance will suffer c
+
+Each operation would take an argument representing its current step, and will eventually yield some representation of where to continue the operation. This is inefficient compared to the conventional call stack and process counter of a procedural language, but the performance should be adequate for coarse-grained use.
+
+
+
+
+
+
+
+Essentially, we'll inefficiently model the call stack and process counter of a procedural language.
+
+
+
+Without a lot of work, this will be much less efficient than a conventional procedural language. 
+
+In context of live coding, we 
+
+
+
+In context of a transaction loop, the compiled operation would read the 'step' to determine where we are, perform some operations, then yield, returning a modified 'step' value that represents the continuation or final result.
+
+Ideally, the yield points are described in a manner that can help ensure stability in context of live coding. It isn't clear to me what this requires.
+
+Compared to a direct procedure
+
+
+
+this operbe reading the step to determine where we are, then 
+
+Each 'step' should  we would have some state representing how to continue to the next step. Embedding procedures within a transaction loop also provides a nice semantics for 
+
+This is especially valuable when interacting with filesystem APIs, network APIs, or FFI. It allows users to program these things in a more direct style.
+
+ synchronous request-response that just happens to break down into 
+
+Embedding
+
+We might use `atomic {}` blocks within these procedures to indicate where multiple steps must complete within a single transaction. Thus, we model transactions within multi-step procedures within a transaction loop. B
+
+ Seems a bit mad. But embedding procedures in the transaction loop is u
+
+quite useful because it provides a robust semantics for concurrency, waits, interrupts, reactivity, live coding, and so on. 
 
 ## Implicit Parameters and Algebraic Effects
 
@@ -138,15 +203,13 @@ Of course, tests inevitably incur performance overheads. A runtime can potential
 
 ## HTTP Interface
 
-Most applications should define a `http : Request -> Response` method. If nothing else, the application could route `/sys` to `sys.refl.http` to provide access to logs, profiles, debug views, and so on. We will often use HTTP to provide an initial user interface. Also, just in general, glas systems will use HTTP GET as a better version of 'toString'.
+Most applications should define a `http : Request -> Response` method. If nothing else, the application might route `"/sys"` to `sys.refl.http` to let users access to logs, profiles, and debug views. HTTP will also be our primary basis for GUI until glas systems - especially support for incremental computing - has matured a fair bit. 
 
-The glas runtime will provide the HTTP service after a successful `start()`. The network binding is application specific, perhaps configurable via `sys.refl.bind()` or `settings.bind`. If unspecified, a port might be randomly chosen by the OS. By default, the same network port may be shared between HTTP, RPC, and mirroring protocols. 
+After a successful start, the runtime will open a TCP port (subject to configuration), print a URL to standard error, and begin accepting requests. The same TCP port may be shared between HTTP, RPC, mirroring protocols, and so on. 
 
-Each 'http' request is handled in a separate transaction. If the request fails, it will be retried until it succeeds or times out. This provides a simple basis for long polling and reactive web applications. We might eventually develop custom HTTP headers enabling multiple HTTP requests to participate in one transaction via [XMLHttpRequest](https://en.wikipedia.org/wiki/XMLHttpRequest).
+Each 'http' request is handled in a separate transaction. If the transaction aborts, the request is implicitly retried until it succeeds or times out. This provides a simple basis for long polling and reactive web applications. It does seem feasible to develop custom HTTP headers to let multiple HTTP requests participate in a transaction, accessible via XMLHttpRequest, but that's a problem for the distant future.
 
-The Request and Response types are binaries representing a complete request or response. However, the runtime may accelerate functions to access and manipulate this this data, providing indexed access to the URL, headers, status codes, and so on. In general, requests are preprocessed and responses are postprocessed by the runtime, which may add, remove, or reorder headers.
-
-*Note:* Users can manually implement an HTTP service by creating a TCP listener. 
+The Request and Response types are binaries representing a complete request or response. However, the runtime may accelerate functions to access and manipulate this this data, providing indexed access to the URL, headers, status codes, and so on. In general, requests are preprocessed and responses are postprocessed and validated by the runtime. Headers may be added, removed, and reordered.
 
 ## Graphical User Interface? Defer.
 
@@ -183,11 +246,10 @@ This API is very easily implemented using [HMAC](https://en.wikipedia.org/wiki/H
 Transactions may observe time and abort if time isn't right. In context of a transaction loop, this can be leveraged to model timeouts or waiting on the clock. To support incremental computing, we add a variant API:
 
 * `sys.time.now()` - Returns a TimeStamp representing a best estimate of current time as a number of 100 nanosecond intervals since Jan 1, 1601 UTC (aka Windows NT time format, albeit not limited to 64 bits). Multiple queries to the clock should return the same value within a transaction. A runtime may adjust for estimated time of commit.
-* `sys.time.check(TimeStamp)` - Observes `sys.time.now() >= TimeStamp`. Use of 'check' should be preferred in context of incremental computing or reactivity because it makes it very easy for the runtime to set precise trigger events on the clock, and can also avoid read-write conflicts. It is feasible to compute the transaction slightly ahead of time and have it ready to commit at the indicated time.
+* `sys.time.after(TimeStamp)` - Observes `sys.time.now() >= TimeStamp`. This is more convenient for incremental computing and reactivity, allowing the runtime to schedule waiting on the clock.
+* `sys.time.clock` (tentative) - an implicit parameter to select between clocks.
 
-In context of RPC, each process may have its own local estimate of current time, but ideally we'd use something like NTP or PTP to gradually synchronize clocks.
-
-This API does not cover one common conventional use case for time APIs: profiling. Profiling is instead handled as a form of runtime reflection in context of transactions.
+In this API, all calls to `sys.time.now()` within a given transaction will return the same value. Thus, this API is completely useless for profiling. Profiling is instead handled via annotations and accessed via reflection APIs.
 
 ## Debugging
 
@@ -232,15 +294,18 @@ The details need some work, but I think this is sufficient for many use-cases. I
 
 It is inconvenient to require multiple transactions for heuristically 'safe' operations, such as reading a file or HTTP GET. In these cases, an escape hatch from the transaction system is convenient. Background eval is a viable escape hatch for this role. Proposed API:
 
-* `sys.refl.bgeval(MethodRef, Args)` - evaluate `MethodRef(Args)` in a background transaction logically prior to the calling transaction, commit, then continue with a returned value. While waiting, if the calling transaction is aborted due to change in external conditions, the background transaction should also be aborted. To keep it simple, argument and return values are limited to plain old data. The method reference is an abstract name, subject to namespace-based access control. 
+* `sys.refl.bgeval(MethodName, Args)` - evaluate `MethodName(Args)` in a background transaction logically prior to the calling transaction, commit, then continue with a returned value. If the calling transaction is aborted, so is an incomplete background transaction. The argument and return value types must be plain old data. The method name is an abstract reference to the local namespace.
 
-Background eval can be used within a transaction loop and is fully compatible with transaction loop optimizations including incremental computing, reactivity, and replication on non-deterministic choice. In the latter case, we can implicitly fork the caller to handle each return value. 
+Normally, to simplify live coding, method names are ephemeral and cannot be transferred between transactions. However, this is a special case because we're transferring the method name *backwards* in time. There is no risk of a code switch logically occuring between the name being stored and applied.
 
-We can safely leverage background eval for cacheable read-only queries or to lazily process background tasks that would have otherwise been handled in a concurrent loop (e.g. via 'step'). There is some risk of thrashing if the background transaction has a read-write conflict with the calling transaction, but thrashing is easy to recognize and debug.
+Background eval is compatible with transaction loop optimizations. For example, the operation can be stable for incremental computing. If a background transaction may return a non-deterministic choice of values, this choice naturally propagates into the caller.
 
-## Lazy and Future Eval? Manual!
+Aside from cacheable read-only operations, we can safely apply background eval for on-demand triggering of background tasks. For example, we can use background eval to process a queue of pending tasks. The on-demand nature allows for a bit more laziness, and may be more predictable than waiting on 'step'.
 
-Applications can model asynchronous operations by writing requests into state that will eventually be processed by background `step` or `sys.refl.bgeval`. Modeling this explicitly is convenient for understanding how asynchronous operations interact with orthogonal persistence, live coding, and interruption. In contrast, background eval avoids most of these concerns.
+## Long Running Transactions
+
+If we want to model 
+
 
 ## Module System Access? Partial. Defer. 
 
@@ -335,7 +400,36 @@ It is feasible to extend directory operations with option to 'watch' a directory
 
 ## Network APIs
 
-Network APIs have some implicit buffering that aligns well with transactional operations. We can develop TCP and UDP APIs. However, those are a bit awkward in context of mirrored applications. To support limited access to the network from mirrors, we might also support something like XMLHttpRequest.
+Network APIs are straightforward in 
+
+I propose to support TCP, UDP, and XMLHttpRequest. 
+ awkward because we need multiple transactions to do anything useful: commit a request in one transaction, handle a response in another, etc.. 
+
+Synchronous request-response patterns aren't a good fit: a request must be committed in one transaction, then the response handled in a later transaction. 
+
+ in a later transaction. 
+
+
+We must commit to the request in one transaction, then await a response in a future transaction.
+
+
+
+
+
+I propose three network APIs for common glas applications: TCP, UDP, and XMLHttpRequest. 
+
+
+
+ the response will only become available in a future transaction (if ever). 
+
+ is that we cannot send a request then await a response within the same transaction. We must commit the request before the response even has a possibility of arriving.
+
+The we must be careful to ensure that requests are committed
+
+. I propose TCP and UDP because they're ubiquitous
+
+
+that aligns well with transactional operations. We can develop TCP and UDP APIs. However, those are a bit awkward in context of mirrored applications. To support limited access to the network from mirrors, we might also support something like XMLHttpRequest.
 
 typical TCP or UDP network API is relatively awkward in context of mirroring. We might 
 

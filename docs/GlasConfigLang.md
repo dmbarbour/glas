@@ -1,8 +1,79 @@
 # Glas Configuration Language
 
-The glas configuration language is lightweight and generic. Each configuration file represents a dictionary of [namespaces and mixins](GlasNamespaces.md). The primary configuration is the namespace 'config', but other namespaces may represent reusable components, mixins, or functions. The definitions within each namespace must be acyclic, and there are no general loops, thus termination is guaranteed.
+The glas configuration language is lightweight and generic. Support for computation is very limited, but there is ample support for modular composition and extension. This supports very large configurations. Instead of search paths or package managers, we'll tend to import a configuration file representing a community distribution of modules.
 
-Configured features are ultimately represented by names and data within the namespace. This must be interpreted by the application or runtime.
+## Data
+
+This language is dynamically typed, and supports very few data types. 
+
+* integers
+* lists - including texts and tables 
+* dictionaries with symbolic keys
+* variants as singleton dictionaries
+* locations - files, git repos, etc.
+* localizations - for latent binding
+
+The basic data is integers, lists, dictionaries, and variants. Basic data will translate to glas data, but only to a subset: we cannot represent arbitrary glas data in configurations.
+
+For example, there is no support for representing primitive pairs.
+
+
+
+
+
+Locations and localizations are kept abstract within configurations for security reasons, 
+
+
+This will translate directly to glas data, though converting rationals is a little awkward because they don't have a standard representation in glas.
+
+Special data includes locations and localizations.
+
+
+* namespaces - functions, configurations
+
+
+
+
+
+
+
+
+
+rational numbers, lists,  and 
+
+dictionaries, variants (as singleton dictionaries), and lists
+
+ limited support for data types. 
+
+
+
+may grow very large: we'll often define every global module rather than define a generic search path. 
+
+ However, there is ample support for modularity, given we expect to work with very *large* configurations.
+
+
+
+
+Every configuration file 
+
+There is a simple language for expressing data. 
+
+but every configuration file compiles to a [mixin](GlasNamespaces.md) that can manipulate the tacit namespace upon import.
+
+ that may introduce new definitions, rename or override prior definitions, and generally mess with 
+
+ prior override, and  prior definitions.
+
+A configuration file
+
+
+A configuration file represents a collection of [namespaces and mixins](GlasNamespaces.md). Configuration files can modularly import other configuration files. 
+
+. The primary configuration is the namespace 'config'. Each definition in
+
+, but other namespaces may represent reusable components, mixins, or functions. The definitions within each namespace must be acyclic, and there are no general loops, thus termination is guaranteed.
+
+Configured features are ultimately represented by names and data within the namespace.
 
 ## Global Modules
 
@@ -59,7 +130,7 @@ The 'eval' location is useful for abstracting locations, or developing libraries
 
 ## System and Environment Variables
 
-I propose to reserve `sys.*` for ad-hoc system provided configuration variables, analogous to applications. For example, we might define `sys.env.*` based on the OS environment, and perhaps `sys.os = "Linux"` and `sys.arch = "x86"` and `sys.cli.ver = "1.2.3"` and similar. 
+I propose to reserve `sys.*` for ad-hoc system provided configuration variables, analogous to applications. For example, we might define `sys.env.*` based on the OS environment, and perhaps `sys.os = "Linux"` and `sys.arch = "x86"` and a collection of named runtime features. 
 
 This allows for adaptive configurations, and simultaneously supports precise namespace-based control over dependencies. On one hand, a global module might be defined with reference to `sys.os`. On the other, we could translate this to `target.sys.os` to support cross compilation.
 
@@ -106,7 +177,9 @@ Ultimately, a lot of configuration will be more ad-hoc, with de-facto standardiz
 
 ## Application Settings and Dynamic Configuration
 
-Some properties cannot be shared between applications. In these cases, the application may define ad-hoc `settings.*` methods, to be evaluated by the runtime or late-stage compiler (with very limited access to effects). The compiler may warn if settings are unrecognized. Alternatively, the runtime may provide `sys.refl.*` methods for dynamic configuration where suitable. 
+Some properties cannot be shared between applications. In these cases, the application may define ad-hoc `settings.*` methods, to be evaluated by the runtime or late-stage compiler, with very limited access to effects. Alternatively, a runtime may provide `sys.refl.*` methods for dynamic configuration where suitable. 
+
+Application specific settings should generally support indirection through the configuration. For example, instead of an application directly specifying a network port for HTTP and RPC requests, we might name an option detailed in the configuration file. This doesn't preclude direct configuration.
 
 Settings are especially suitable for 'static' integration. A compiler can produce a specialized runtime based on settings. For many properties, a runtime could reasonably support both mechanisms, and a compiler might specialize only if settings are used and the reflection API is dead code.
 
