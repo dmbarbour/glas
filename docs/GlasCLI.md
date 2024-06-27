@@ -4,20 +4,68 @@ The glas command line interface supports one primary operation:
 
         glas --run ModuleRef Args To App
 
-Other runtime options may be provided prior to the '--' separator. However, I hope to minimize the number of runtime options needed on the command line, and instead support user-defined commands via lightweight syntactic sugar.
+This combines with a lightweight syntactic sugar:
 
         glas opname a b c 
             # rewrites to
         glas --run cli.opname a b c
 
+The referenced module may directly describe an application or may describe a staged compiler, treating the remaining arguments as a program in a user-defined language. The intention is to shift most logic into the glas module system, and to keep the command line simple and free of clutter.
+
+## Configuration
+
+The glas executable will look for environment variable `GLAS_CONF`, which should name a configuration file. If this environment variable is undefined, the default file path is OS specific: `"~/.config/glas/default.conf"` on Linux or `"%AppData%\glas\default.conf"` on Windows. 
+
+This configuration file should use the [glas configuration language](GlasConfigLang.md). Although this language aims to be simple, there is a lot to configure. For example, instead of search paths, every global module will be independently named in the configuration. Use of ModuleRef 'cli.opname' on the command line will map to 'module.cli.opname' in the configuration. To mitigate this, the configuration language supports imports, inheritance, and overrides. A user's configuration might inherit a distribution maintained by a company or community.
+
+Some things we'll configure via file:
+
+* *global modules* - Mapping global module names to locations. Also supports constants and staged modules. No support for search paths, but we can eventually import community 'distributions'.
+* *key-value database* - For orthogonal persistence and asynchronous communication. We'll probably start with a file-based database, perhaps LMDB or LSM tree. We might eventually want distributed databases.
+* *RPC registries* - Where to publish and discover RPC objects. In general will route to multiple registries with varying trust levels using tag-based filters.
+* *application config vars* - an extended set of environment variables
+* *ad-hoc runtime options* - such as logging and profiling
+* *mirroring* - Automatically deploy applications to remote nodes for performance and network partitioning tolerance.
+* *content delivery networks* - For large values, communicated frequently. Based around content addressed data.
+* *proxy compiler and cache* - For large computations, often shared between processes.
+
+However, file-based configuration is unsuitable for some properties. For example, the bindings for RPC and HTTP requests cannot be shared between concurrent OS processes. In these cases, we'll rely on application specific `settings.*` methods or dynamic configuration via `sys.refl.*` methods. 
+
+We specifically won't add command line switches.
+
+## Global Module Distribution
+
+
+
+## Secondary Operations
+
+Aside from '--run'
+
+
+## Global Module Distribution
+
+
+Every ModuleRef must be defined in the [glas runtime configuration file](GlasConfigLang.md). The simplest definition is a file path, but glas systems will eventually support remote modules via DVCS repositories.
+
+
+
+ The configuration file is specified by the GLAS_CONF environment variable. 
+ in the glas configuration. However, it may instead refer to a staged compiler  
+
+
+The ModuleRef binds a name in the glas system configuration. Modules are generally included in the configuration namespace under 'distro.', so we'd look for 'distro.cli.opname' in the configuration, which must evaluate to  
+
+ to the glas runtime configuration, a file referenced by environment variable GLAS_CONF. 
+
 By combining this syntactic sugar with *Staged Applications* (see below), glas supports user defined command line languages.
+
+
+
 
 ## ModuleRef
 
 A ModuleRef is a string that uniquely identifies a module. Initially, this may be a global module or a file path.  
 
-        global-module
-        ./FilePath
 
 A FilePath is heuristically recognized by containing a directory separator (such as '/'). The glas command line interface will attempt to interpret any file or folder as a module, as requested. Otherwise, we'll search the runtime configuration for a global module of the given name. 
 
@@ -25,7 +73,7 @@ A FilePath is heuristically recognized by containing a directory separator (such
 
 To avoid clutter, I hope to keep runtime configuration options off the command line. This limits configuration to environment variables, configuration files, and the application itself. 
 
-To simplify switching of configurations, I propose for `GLAS_CONF` environment variable to specify a configuration file. If unspecified, the default configuration file is OS specific, e.g. `"~/.config/glas/default.conf"` on Linux or `"%AppData%\glas\default.cfg"` on Windows. This file uses the [glas configuration language](GlasConfigLang.md).
+To simplify switching of configurations, I propose for `GLAS_CONF` environment variable to specify a configuration file. If unspecified, the default configuration file is OS specific, e.g.  This file uses the [glas configuration language](GlasConfigLang.md).
 
 This configuration file should describe system-wide features such as global modules, a shared key-value database, the RPC registry. Additionally, it may describe defaults for instance specific features such as quotas, memory management, logging options, and so on. However, the latter may be subject to application tuning via `conf.*` or `sys.refl.conf.*` methods.
 
@@ -35,13 +83,13 @@ This configuration file should describe system-wide features such as global modu
 
 The glas executable first compiles the referenced module into a structured value. Initially, we'll recognize `glas:(app:Application, ...)`, i.e. the compiled output of a ".glas" module that defines 'app'. The Application type is itself a structured value representing a [namespace](GlasNamespaces.md) of methods. At this point, the methods have been compiled to an intermediate language, a Lisp-like [abstract assembly](AbstractAssembly.md). AST constructor methods and system methods (`%*` and `sys.*` by convention) are left abstract to be implemented by the runtime.
 
-The default interpretation is a [transaction loop](GlasApps.md). The runtime will evaluate 'start' once, then 'step' repeatedly until the application halts, each in a separate transaction. The runtime may also recognize interfaces such as 'http' or 'gui' and implicitly implement an HTTP service or GUI user agent.
+The default interpretation is a [transaction loop](GlasApps.md). In addition to evaluating the 'step' transaction forever, the runtime may recognize interfaces such as 'http' or 'gui' and implicitly implement an HTTP service or GUI user agent.
 
-Alternative interpretations may be indicated by defining 'flag' methods in the namespace. Initially, we'll recognize 'run-mode-loop' which indicates the default interpretation, and 'run-mode-staged' to support user-defined languages on the command line. Any unrecognized 'run-mode-\*' flag should raise an error.
+An alternative interpretation may be indicated by defining `settings.mode`. The main alternative is a staged application. 
 
 ### Staged Applications
 
-Staged applications are indicated by defining 'run-mode-staged'. The definition is irrelevant. When recognized, the runtime will instead interpret the application as a language module. That is, it should define `compile : SourceCode -> ModuleValue` and the only available effect is to load modules (`sys.load`).
+A staged application will be interpreted as a language module. That is, it should define `compile : SourceCode -> ModuleValue` and the only observable effect is to load modules (`sys.load`).
 
         glas --run StagedApp Args To App Constructor -- Args To Next Stage
 

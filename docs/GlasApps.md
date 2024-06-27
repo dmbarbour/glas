@@ -12,41 +12,51 @@ Application state is logically mapped to a key-value database. Construction of k
 
 ## Transaction Loops
 
-When an atomic, isolated transaction is predictably repeated, we can apply many useful optimizations and support some interesting features.
+In a transaction loop, we repeatedly evaluate the same atomic, isolated transactions. Many interesting optimizations and opportunities apply to this scenario based on the assumptions of atomicity, isolation, and predictable repetition.
 
-* *Incremental.* Instead of recomputing everything from the start of the transaction, we can cache a 'stable prefix' and recompute from where inputs change. We would need to track inputs regardless for read-write conflict analysis.
+* *Incremental.* Instead of recomputing everything from the start of the transaction, we can cache the transaction prefix and recompute from where inputs actually changed. Programmers can leverage this by designing most transactions to have a 'stable' prefix. This can generalize to caching computations that tend to vary independently.
 
-* *Reactive.* No need to repeat an obviously unproductive transaction. A compiler could instead attach some hooks to wait for relevant changes before retrying. Obviously unproductive transactions include those that would abort or would repeatedly write the same data into the same variables.
+* *Reactive.* In some cases, repeating a transaction is obviously unproductive. For example, if the transaction aborts, or if it repeatedly writes the same values to the same variables. In these cases, the system can simply wait for relevant changes in the environment before retrying. With some careful API design (and perhaps a few annotations), programmers can ensure wait conditions are obvious to the runtime without ever explicitly waiting.
 
-* *Concurrent.* To isolated transactions there is no observable distinction between repetition and replication. If a transaction includes a non-deterministic choice, we can replicate the transaction and evaluate both choices in parallel. Assuming there is no read-write conflict, we can commit both. If the choice is within the stable prefix for incremental computing, each replica effectively become a separate thread.
+* *Concurrent.* For isolated transactions, there is no observable distinction between repetition and replication. This becomes useful in context of incremental computing and fair non-deterministic choice. For example, a `fork(N)` effect might logically return a natural number less than N, but might be implemented by creating N copies of the transaction and evaluating them in parallel. Assuming those transactions do not have a read-write conflict, they may even commit in parallel. This effectively models multi-threaded systems without explicit threads.
 
-* *Live Coding.* A repeating transaction is easily modified between transactions. Further, it is feasible to evaluate a proposed update in the live system and detect obvious transition errors before committing to anything.
+* *Live Coding.* Transaction loops simplify the problem. The behavior of a repeating transaction can be easily modified between transactions. We can test changes and obtain feedback before committing to ensure a predictable transition. However, application state, schema update, and IDE integration also need attention. 
 
-* *Distribution.* Assume we replicate a repeating transaction across multiple nodes, leveraging a distributed database for application state. While the network is connected, this replication doesn't affect formal behavior. While the network is disrupted, the application can continue to provide degraded service in each partition containing a replica. The system can recover resiliently when connectivity is restored. 
+* *Distribution.* Distributed transactions are expensive in general, but there are ways to mitigate costs. For example, a queue can have multiple concurrent writers and a single reader without a read-write conflict between transactions. In case of network disruption, writes to a queue can be buffered locally then delivered when the systems reconnect. Read-mostly state can be locally cached. Programmers can design concurrent operations such that only a few are blocked by lack of network connectivity. 
 
-* *Congestion Control.* The system can heuristically tune relative frequency of repeating transactions to control buffer sizes. For example, transactions that would write to a buffer can speed up when the buffer is running low and slow down when the buffer is running high, and vice versa for readers. This is easily combined with more explicit control.
+* *Mirroring.* In a fully connected network, a distributed transaction can be processed anywhere, and location affects only performance. But when the network is fails, location suddenly matters. It is feasible to replicate a repeating transaction across nodes to improve network partitioning tolerance. Upon network disruption, each partition can maintain partial access to the distributed database and RPC registries. As the network is recovered, the transaction loop would regain full functionality.
 
-* *Real-time.* A repeating transaction can wait on a clock by simply aborting when it notices the time is not right. This combines nicely with *reactivity* for scheduling future actions. Intriguingly, the system can precompute the transaction slightly ahead of time, hold it ready to commit, and block any transactions that would result in a read-write conflict. This can form a robust basis for real-time systems.
+* *Congestion Control.* If a repeating transaction writes to a queue that already contains many items, the runtime might reduce priority for evaluating that transaction again. Conversely, we could increase priority of transactions that we expect will write to a near-empty queue. A few heuristics like this can mitigate scenarios where work builds up or runs dry. This combines nicely with more explicit controls.
 
-* *Auto-tune.* A system control loop may read some tuning parameters. An external agent might heuristically adjust tuning parameters based on feedback. A transaction loop makes this pattern more robust and flexible because we can potentially test a proposed adjustment without committing to it. Changes that would obviously lead to worse outcomes can be aborted.
+* *Real-time.* A repeating transaction can wait on a clock by becoming unproductive when the time is not right. This combines nicely with *reactivity* for scheduling future actions. Intriguingly, the system can precompute a pending transaction slightly ahead of time and hold it ready to commit at the earliest moment. This can form a simple and robust basis for real-time systems.
 
-* *Loop Fusion.* The system is free to merge smaller transactions into a larger transaction. This can be performed for performance reasons where the fused transaction improves stability or allows some new optimizations. It could also be used for debugging, e.g. to obtain a view immediately after specific transactions and control commit.
+* *Auto-tune.* Even without transactions, a system control loop can read calibration parameters and heuristically adjust them based on feedback. However, transactions make this pattern much safer, allowing aggressive experimentation without committing to anything. This creates new opportunities for adaptive software.
 
-These optimizations are non-trivial and won't immediately be available for glas systems. Short term, we might be limited to single-threaded event loops or state machines. 
+* *Loop Fusion.* The system is always free to merge smaller transactions into a larger transaction. Potential motivations include debugging of multi-step interactions, validation of live coding or auto-tuning across multiple steps, and loop fusion optimizations.
 
-## Abstract Types and Lifespans
+Unfortunately, we need a mature optimizer and runtime system for these opportunities become acceptably efficient. This is an unavoidable hurdle for transaction loops. Meanwhile, the direct implementation is usable only for single-threaded event dispatch and state machines.
+
+## Application Life Cycle
+
+For a transaction loop application, the first effectful operation is `start()`. This will be retried indefinitely until it commits successfully. After a successful start, the runtime will begin evaluating `step()` repeatedly in separate transactions. The runtime will also bind the application to external interfaces to receive RPC and HTTP requests, GUI connections, and so on.
+
+In context of live coding or continuous deployment, we'll call the updated application's `switch()` method to help smoothly transition between versions of code at runtime. We'll continue running a prior version of `step()` and other methods until we switch successfully, at which point we'll transition atomically to the new code. Of course, if the prior version never successfully started, we may instead try the updated `start()`.
+
+A transaction loop application may voluntarily halt by calling and committing `sys.halt()`. To support graceful shutdown, the glas runtime will bind OS events such as SIGTERM or WM_CLOSE to call a `stop()` method. However, if an application does not voluntarily halt, we'll simply leave it to more aggressive mechanisms such as SIGKILL, Task Manager, or cycling power.
+
+*Note:* An application may define `settings.run-mode` to indicate alternative life cycles, such as staged applications. However, transaction loops are the default for glas systems.
+
+## Data Lifespans, Live Coding, and Higher Order Programming
 
 Consider a few broad lifespans for data:
 
-* *persistent* - plain old data or abstract *accelerated representations* (e.g. for sets, graphs, or unboxed matrices). Persistent data can be stored persistently and shared between apps.
+* *persistent* - plain old data and possibly abstract *accelerated representations* (e.g. for sets, unlabeled graphs, and unboxed matrices). Persistent data can be stored persistently and shared between apps.
 * *runtime* - includes abstract reference to open file handles, network sockets, or the OS process. Runtime data is stored in memory between transactions within a single OS process.  
-* *ephemeral* - bound to the current transaction or even to a frame on the call stack. Although ephemeral types cannot be stored between transactions, they may be 'stable' in context of incremental computing or memoization. 
+* *ephemeral* - bound to the current transaction or perhaps to a specific frame on the call stack. Cannot be stored between transactions, yet ephemeral types may be *stable* for purpose of partial evaluation or caching.
 
-In glas systems, many abstract types are ephemeral including first-class functions or objects, nominative types, and database keys. This is intended to simplify live coding, remote procedure calls, and access control and revocation. Of course, programmers can always model scripts as persistent data.
+In context of potential live coding, it is best to model method names as ephemeral types because we might switch the entire namespace between transactions. 
 
-When serialized (e.g. in context of remote procedure calls) abstract ephemeral and runtime types may be represented concretely as external reference indices into transaction-specific tables, and protected against forgery or reuse by including a transaction-local HMAC or access token.
-
-*Aside:* Note that lifespan is independent of computation time. For example, an optimizer can propagate ephemeral constants at compile-time, caching the result.
+However, this implies we cannot pass first-class functions or objects between transactions. To mitigate this, glas front-end languages should support stable and efficient [defunctionalization](https://en.wikipedia.org/wiki/Defunctionalization) of multi-step procedures or processes, enabling evaluation of long-running tasks over multiple transactions. Further, it should be easy for programs to cache compilation of stable data into ephemeral functions.
 
 ## Transactional Remote Procedure Calls
 
@@ -108,6 +118,10 @@ In practice, instead of directly using shared state, two applications may intera
 
 It is feasible to integrate names into abstract types. However, in context of live coding, the application namespace is ephemeral, thus should be restricted to ephemeral types. In general, we'll also want abstract types with a runtime or persistent lifespan. Database keys can serve as an alternative source of 'names' in this role. 
 
+## Mirroring and Partitioning Tolerance
+
+This grew a fair bit. See [Glas Mirrors](GlasMirror.md).
+
 ## Implicit Parameters and Algebraic Effects
 
 Implicit parameters can be modeled as a special case of algebraic effects or vice versa (with function passing). I propose to tie implicits to the namespace. This resists accidental name capture or conflict, allows for private or capability secure implicits, and simplifies interaction between implicits and remote procedure calls.
@@ -122,23 +136,17 @@ If tests fail, the transaction can be aborted. This allows tests to protect ad-h
 
 Of course, tests inevitably incur performance overheads. A runtime can potentially apply incremental computing and reactivity features of transaction loops to minimize rework. Alternatively, configurations can reduce testing, trading confidence for performance. Even infrequent tests could help track system health.
 
-## Primary Life Cycle
-
-The runtime first calls `start()`, repeating only if it fails to commit, then repeatedly calls `step()` in separate transactions. This allows for some one-time initialization and the main application loop. To support graceful shutdown, the runtime may also call `stop()` to signal that the application should halt after an OS event such as SIGTERM or WM_CLOSE. 
-
-An application may voluntarily halt by calling and committing `sys.halt()`. This asks the runtime to make the current transaction the final one.
-
 ## HTTP Interface
 
-Applications may define a `http : Request -> Response` method. The toplevel 'http' method may implicitly be bound to the same network port used to receive RPC requests. The runtime may validate requests before the application sees them, and validate responses before passing them to the caller. An 'http' interface on subcomponents can used in routing, composition, or to provide a debug interface. 
+Most applications should define a `http : Request -> Response` method. If nothing else, the application could route `/sys` to `sys.refl.http` to provide access to logs, profiles, debug views, and so on. We will often use HTTP to provide an initial user interface. Also, just in general, glas systems will use HTTP GET as a better version of 'toString'.
 
-To simplify integration, the Request and Response types are binaries per the HTTP specification, albeit without support for pipelining or chunking. However, for performance, users will usually process requests and incrementally construct responses through `sys.http.*` methods, leveraging *accelerated representations* under the hood. HTTP pipelining may be transparently handled by the runtime.
+The glas runtime will provide the HTTP service after a successful `start()`. The network binding is application specific, perhaps configurable via `sys.refl.bind()` or `settings.bind`. If unspecified, a port might be randomly chosen by the OS. By default, the same network port may be shared between HTTP, RPC, and mirroring protocols. 
 
-Initially, each HTTP request is evaluated in a separate transaction. If the HTTP request aborts, it is implicitly retried until it commits or a configurable timeout is reached. This supports long polling and leverages the incremental computing and reactivity of transaction loops. Eventually, we might develop custom HTTP headers to compose multiple requests into a larger transaction.
+Each 'http' request is handled in a separate transaction. If the request fails, it will be retried until it succeeds or times out. This provides a simple basis for long polling and reactive web applications. We might eventually develop custom HTTP headers enabling multiple HTTP requests to participate in one transaction via [XMLHttpRequest](https://en.wikipedia.org/wiki/XMLHttpRequest).
 
-As a convention, applications might route `/sys` to a runtime provided `sys.refl.http`. This could provide access to logging, testing, profiling, debugging, and similar features via browser.
+The Request and Response types are binaries representing a complete request or response. However, the runtime may accelerate functions to access and manipulate this this data, providing indexed access to the URL, headers, status codes, and so on. In general, requests are preprocessed and responses are postprocessed by the runtime, which may add, remove, or reorder headers.
 
-*Note:* The runtime can provide RPC and HTTP on the same network port, distinguishing based on request headers. 
+*Note:* Users can manually implement an HTTP service by creating a TCP listener. 
 
 ## Graphical User Interface? Defer.
 
@@ -152,7 +160,7 @@ Anyhow, this will be difficult to implement efficiently before the glas system m
 
 In context of a transaction loop, fair non-deterministic choice serves as a foundation for task-based concurrency. The idea is that if the choice is part of the stable prefix for a transaction, we can replicate the transaction to take each choice and evaluate in parallel. Further, where choice isn't stable, we can effectively 'search' for a choice that results in successful commit.
 
-Proposed API:
+Proposed APIs:
 
 * `sys.fork(N)` - blindly but fairly chooses and returns an integer in the range 0..(N-1). Diverges if N is not a positive integer.
 
@@ -327,7 +335,11 @@ It is feasible to extend directory operations with option to 'watch' a directory
 
 ## Network APIs
 
-Network APIs have some implicit buffering that aligns well with transactional operations. However, the common request-response pattern must be awkwardly separated into two transactions. 
+Network APIs have some implicit buffering that aligns well with transactional operations. We can develop TCP and UDP APIs. However, those are a bit awkward in context of mirrored applications. To support limited access to the network from mirrors, we might also support something like XMLHttpRequest.
+
+typical TCP or UDP network API is relatively awkward in context of mirroring. We might 
+
+However, the common request-response pattern must be awkwardly separated into two transactions. 
 
 * `sys.tcp.` - namespace for TCP operations.
   * `listener.` - namespace for 

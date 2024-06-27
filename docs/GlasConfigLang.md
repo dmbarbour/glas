@@ -6,16 +6,18 @@ Configured features are ultimately represented by names and data within the name
 
 ## Global Modules
 
-Global modules will be individually defined under 'distro.' prefix, i.e. in case of `glas --run foo Args` the runtime will search for 'distro.foo' within the configuration namespace. The value of 'distro.foo' should be recognized as a module reference. Proposed representation of module references:
+Global modules will be individually defined under 'module.' prefix, i.e. in case of `glas --run foo Args` the runtime will search for 'module.foo' within the configuration namespace. This should evaluate to a module reference. Proposed representation of module references:
 
         type GlobalModuleRef 
               = remote:(at:Location, ln:Localization)
               | staged:(lang:GlobalModuleRef, src:GlobalModuleRef, ln:Localization)
-              | inline:PlainOldData  
+              | inline:PlainOldData
 
-A remote module includes a Location and Localization. Both are abstract types for security reasons. The Location type may represent a file path on the local machine, or a URL to a remote DVCS repository. I intend to use the same Location type for importing configuration files. The Localization type relates to abstract assembly and the namespace model, and enables users to override dependencies of a module.
+The typical case is a remote module, consisting of Location and Localization. Both are abstract types for security reasons. The Location type may represent a file path on the local machine, or a URL to a remote DVCS repository. I intend to use the same Location type for importing configuration files. The Localization type relates to abstract assembly and the namespace model, and enables users to override dependencies of a module.
 
 A staged module will first load the language module and source module values, then 'compile' the source via the language under a given localization. An inline module will trivially return a value that is computed entirely within the configuration.
+
+In addition to the primary module reference, we might annotate modules with documentation to support browsing and searching of module systems.
 
 ## Security Concerns for Locations and Localizations
 
@@ -36,7 +38,7 @@ I imagine a grammar similar to this for parsing Locations:
                 | eval Expr in Namespace        # for abstraction, libraries of locations
                 | git ...                       # extensions as needed
 
-        expr Path = StringLiteral
+        expr Path = TextExpr                    # usually a text literal
 
 We'll use locations in context of configuration file imports:
 
@@ -54,6 +56,12 @@ When embedding locations as data in more general expressions, I propose prefix '
 The 'file' location will implicitly add the configuration file's location to the intermediate AST at parse time. This is very useful for relative paths, ensuring they are relative to the correct file even across imports. We can also detect problematic paths, such as a file path that steps outside a remote file's repository.
 
 The 'eval' location is useful for abstracting locations, or developing libraries of locations. It lets us describe locations before they are used or even in a separate file.
+
+## System and Environment Variables
+
+I propose to reserve `sys.*` for ad-hoc system provided configuration variables, analogous to applications. For example, we might define `sys.env.*` based on the OS environment, and perhaps `sys.os = "Linux"` and `sys.arch = "x86"` and `sys.cli.ver = "1.2.3"` and similar. 
+
+This allows for adaptive configurations, and simultaneously supports precise namespace-based control over dependencies. On one hand, a global module might be defined with reference to `sys.os`. On the other, we could translate this to `target.sys.os` to support cross compilation.
 
 ## Toplevel Syntax
 
@@ -96,11 +104,11 @@ We'll need to publish and discover RPC interfaces via intermediate matchmaking s
 
 Ultimately, a lot of configuration will be more ad-hoc, with de-facto standardization.
 
-## Application Specific Configuration
+## Application Settings and Dynamic Configuration
 
-Some properties cannot be shared between applications. One obvious case is the TCP port we open to receive HTTP and RPC requests. In these cases, it's best if we can leave configuration to the application itself. 
+Some properties cannot be shared between applications. In these cases, the application may define ad-hoc `settings.*` methods, to be evaluated by the runtime or late-stage compiler (with very limited access to effects). The compiler may warn if settings are unrecognized. Alternatively, the runtime may provide `sys.refl.*` methods for dynamic configuration where suitable. 
 
-Dynamic configuration is possible through a reflection API. For example, upon `start()` the application might configure the runtime through operations such as `sys.refl.bind("127.0.0.1:8080")`. Static configuration is feasible by extending the application's interface with a `config.*` section. For example, an application might define `config.bind` returning a list of TCP listen targets. In the latter case, we might constrain the effect type. 
+Settings are especially suitable for 'static' integration. A compiler can produce a specialized runtime based on settings. For many properties, a runtime could reasonably support both mechanisms, and a compiler might specialize only if settings are used and the reflection API is dead code.
 
 ## Data Expression Language
 
