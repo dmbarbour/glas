@@ -120,72 +120,11 @@ See [Glas Mirrors](GlasMirror.md).
 
 ## Defunctionalized Procedures and Processes
 
-Glas languages should provide a convenient syntax for partitioning large tasks into smaller transactional steps. Although this has some overhead, 
+Glas languages should provide a convenient syntax for partitioning large tasks into smaller transactional steps. Although this has significant overhead, it can be acceptable if each transactional step is doing enough work. Further, if we bind this state into the database (instead of constructing a large value), then it should be compatible with incremental computing optimizations.
 
+Anyhow, the main benefit of this is that it allows a more 'direct style' for programming. For example, synchronous request-response must be divided between transactions, but we could feasibly *express* this as a procedure with a yield point, i.e. request-yield-response. This is very convenient when working with network APIs, filesystem APIs, and FFI. 
 
-An operation would take some representation of the continuation as an argument, and after each step will return an updated representation. Performance should be acceptable if every transactional step does enough working or waiting to mask the overhead of analyzing and constructing the continuation.
-
-
-
-
-
-
-
-
- to some coarse-grained states it should be acceptable.
-
- a direct procedural implementation, but it might be adequate for 
-
-Performance will undoubtedly take a hit compared to a procedural implementation.
-
-
-wind-unwind will undoubtely be awful compared to a direct procedural implementation. 
-
-some representation of the continuation.
-
- Although performance will take a hit compare  Performance will suffer c
-
-Each operation would take an argument representing its current step, and will eventually yield some representation of where to continue the operation. This is inefficient compared to the conventional call stack and process counter of a procedural language, but the performance should be adequate for coarse-grained use.
-
-
-
-
-
-
-
-Essentially, we'll inefficiently model the call stack and process counter of a procedural language.
-
-
-
-Without a lot of work, this will be much less efficient than a conventional procedural language. 
-
-In context of live coding, we 
-
-
-
-In context of a transaction loop, the compiled operation would read the 'step' to determine where we are, perform some operations, then yield, returning a modified 'step' value that represents the continuation or final result.
-
-Ideally, the yield points are described in a manner that can help ensure stability in context of live coding. It isn't clear to me what this requires.
-
-Compared to a direct procedure
-
-
-
-this operbe reading the step to determine where we are, then 
-
-Each 'step' should  we would have some state representing how to continue to the next step. Embedding procedures within a transaction loop also provides a nice semantics for 
-
-This is especially valuable when interacting with filesystem APIs, network APIs, or FFI. It allows users to program these things in a more direct style.
-
- synchronous request-response that just happens to break down into 
-
-Embedding
-
-We might use `atomic {}` blocks within these procedures to indicate where multiple steps must complete within a single transaction. Thus, we model transactions within multi-step procedures within a transaction loop. B
-
- Seems a bit mad. But embedding procedures in the transaction loop is u
-
-quite useful because it provides a robust semantics for concurrency, waits, interrupts, reactivity, live coding, and so on. 
+A relevant concern is that these steps should be 'stable' in context of live coding. Most changes to code should let the procedure continue in a reasonable way.
 
 ## Implicit Parameters and Algebraic Effects
 
@@ -400,80 +339,5 @@ It is feasible to extend directory operations with option to 'watch' a directory
 
 ## Network APIs
 
-Network APIs are straightforward in 
+I'm uncertain whether I should try to provide TCP/UDP APIs directly, provide something closer to a sockets-based API (with bind, connect, etc.), or perhaps just provide XMLHttpRequest. 
 
-I propose to support TCP, UDP, and XMLHttpRequest. 
- awkward because we need multiple transactions to do anything useful: commit a request in one transaction, handle a response in another, etc.. 
-
-Synchronous request-response patterns aren't a good fit: a request must be committed in one transaction, then the response handled in a later transaction. 
-
- in a later transaction. 
-
-
-We must commit to the request in one transaction, then await a response in a future transaction.
-
-
-
-
-
-I propose three network APIs for common glas applications: TCP, UDP, and XMLHttpRequest. 
-
-
-
- the response will only become available in a future transaction (if ever). 
-
- is that we cannot send a request then await a response within the same transaction. We must commit the request before the response even has a possibility of arriving.
-
-The we must be careful to ensure that requests are committed
-
-. I propose TCP and UDP because they're ubiquitous
-
-
-that aligns well with transactional operations. We can develop TCP and UDP APIs. However, those are a bit awkward in context of mirrored applications. To support limited access to the network from mirrors, we might also support something like XMLHttpRequest.
-
-typical TCP or UDP network API is relatively awkward in context of mirroring. We might 
-
-However, the common request-response pattern must be awkwardly separated into two transactions. 
-
-* `sys.tcp.` - namespace for TCP operations.
-  * `listener.` - namespace for 
-
-
-
-* **tcp:TcpOp** - namespace for TCP operations
-  * **l:ListenerOp** - namespace for TCP listener operations.
-    * **create:(port?Port, addr?Addr)** - Listen for TCP connections. Returns a ListenerRef. The OS operation is deferred until after the current transaction commits; see 'status'.
-      * *port* - indicates which local TCP port to bind. If omitted, OS chooses port.
-      * *addr* - indicates which local network cards or ethernet interfaces to bind. Can be a string or bitstring. If omitted, attempts to bind all interfaces.
-    * **accept:(from:ListenerRef)** - Receive an incoming connection, and return a TcpRef. This operation will fail if there is no pending connection. 
-    * **status:ListenerRef** ~ same as file status
-    * **info:ListenerRef** - For active listener, returns a list of local `(port:Port, addr:Addr)` pairs for that are being listened on. Fails in case of 'init' or 'error' status.
-    * **close:ListenerRef** - Release listener reference and associated resources.
-  * **connect:(dst:(port:Port, addr:Addr), src?(port?Port, addr?Addr))** - Create a new connection to a remote TCP port. Returns a TcpRef. The connection may fail, but it will only be visible in a future transaction; use 'status' to verify successful connection. If 'src' is omitted, it can be dynamically determined.
-  * **read:(from:TcpRef, count:N, exact?)** - read 1 to N bytes, limited by available data, returned as a list. Fails if no bytes are available - see 'status' to diagnose error vs. end of input. 
-  * **write:(to:TcpRef, data:Binary)** - write binary data to the TCP connection. The binary is represented by a list of bytes. Use 'busy' status for heuristic pushback.
-  * **limit:(of:Ref, cap:Count)** - fails if number of bytes pending in the write buffer is greater than Count or if connection is closed, otherwise succeeds returning unit. Not necessarily accurate or precise. This method is useful for pushback, to limit a writer that is faster than a remote reader.
-  * **status:TcpRef** ~ same as file status
-  * **info:TcpRef** - Returns a `(dst:(port, addr), src:(port, addr))` pair after TCP connection is active. May fail in some cases (e.g. 'init' or 'error' status).
-  * **close:TcpRef**
-
-* **udp:UdpOp** - namespace for UDP operations. UDP messages use `(port, addr, data)` triples, with port and address refering to the remote endpoint.
-  * **connect:(port?Port, addr?Addr)** - Return a UdpRef. This doesn't wait on the OS, so view 'status' in future transactions to determine whether there are problems with the connection.
-    * *port* - normally a small natural number specifying which port to bind, but may be left to dynamic allocation. 
-    * *addr* - normally indicates which ethernet interface and IP address to bind; if unspecified, attempts to binds all interfaces.
-  * **read:(from:UdpRef)** - returns the next available UDP message value. 
-  * **write(to:UdpRef, data:Message)** - output a UDP message. Message uses same `(port, addr, data)` record as messages read. Returns unit, and buffers message to send upon commit.
-  * **status:UdpRef** ~ same as file status
-  * **info:UdpRef** - Returns a list of `(port:Port, addr:Addr)` pairs for the local endpoint.
-  * **close:UdpRef** - Return reference to unused state, releasing system resources.
-
-A port is a fixed-width 16-bit number. An addr is a fixed-width 32-bit or 128-bit bitstring (IPv4 or IPv6) or a text string such as "www.example.com" or "192.168.1.42" or "2001:db8::2:1". Later, I might add a dedicated API for DNS lookup, or perhaps for 'raw' Ethernet.
-
-*Aside:* No support for unix sockets at the moment, but could be introduced if needed.
-
-## Live Coding
-
-* reload config
-* reload source
-* SIGHUP?
-* reflection on source code
