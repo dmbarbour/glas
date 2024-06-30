@@ -16,7 +16,7 @@ A file is compiled based on its file extensions. To process a file named "foo.ex
 
 File extensions may be composed. For example, "example.json.m4.gz" would essentially apply a pipeline of three compilers: lang-gz then lang-m4 then lang-json. This might decompress the file binary, apply a text macro preprocessor, then parse the result as JSON. Conversely, if file extensions are elided the compiled value is the unmodified file binary.
 
-A folder is compiled to the value of its contained "export" file, which may have any recognized file extension. Folders are implicit dependency boundaries: a compiler can reference only local files or subfolders, or external modules referenced through the system configuration. Folders may contain ad-hoc auxilliary content such as tests, readme, license, or a signed manifest.
+A folder is compiled to the value of its contained "main" file, which may have any recognized file extension. Folders are implicit dependency boundaries: a compiler can reference only local files or subfolders, or external modules referenced through the system configuration. Folders may also contain ad-hoc auxilliary content such as tests, readme, signed manifest, or license file.
 
 ## Data
 
@@ -122,7 +122,7 @@ To ensure reproducible results, the compiler has very limited access to effects.
 
 * `sys.load(ModuleRef)` - On success, returns compiled value of the indicated module. On error, diverges if observing failure would be non-deterministic (e.g. dependency cycle, network fault, resource quota), otherwise fails deterministically. We'll broadly distinguish a few kinds of ModuleRef:
   * *local:Text* - refers to a local file or subfolder, found within the same folder as whatever file is currently being compiled. The Text must not include the dot file extension or folder path separator.
-  * *global:Text* - refers to an externally configured value by name. This may be localized, e.g. a configuration might override `global:"foo"` as referenced from a specific module. But the value will be consistent across local modules.
+  * *global:Text* - refers to an externally configured value by name. This may be localized within the global namespace, i.e. `global:"foo"` may mean different things to different global modules. However, all local modules would reference the same `global:"foo"`. 
   * *inline:Data* - trivially return Data. Equivalent to staging with an identity function. This is useful only in context of composite ModuleRef options, such as *stage*.
   * *stage:(LangRef, DataRef)* - here LangRef and DataRef are both ModuleRefs. In practice, LangRef might be `global:"lang.foo"` corresponding to file extension `".foo"`, while DataRef is `inline:Text` corresponding to a file body.
 

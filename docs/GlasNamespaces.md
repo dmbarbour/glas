@@ -8,27 +8,27 @@ This document assumes definitions are expressed using [abstract assembly](Abstra
 ## Proposed AST
 
         type NSOp 
-              = mx:(List of NSOp)                   # mixin 
-              | ns:NSOp                             # namespace
-              | df:(Map of Name to Def)             # definitions
-              | ln:(Map of Prefix to Prefix)        # link defs
-              | mv:(Map of Prefix to Prefix)        # move defs
-              | rm:(Map of Prefix to unit)          # remove defs
-              | tl:(NSOp, Map of Prefix to Prefix)  # translate
-
+              = ns:(Map of Name to Def, List of NSOp)   # namespace
+              | mx:(List of NSOp)                       # mixin 
+              | ln:(Map of Prefix to Prefix)            # link defs
+              | mv:(Map of Prefix to Prefix)            # move defs
+              | rm:(Map of Prefix to unit)              # remove defs
+              | tl:(Map of Prefix to Prefix, List of NSOp) # translate
+              
         type Name = Symbol                          # assumed prefix unique   
         type Prefix = Symbol                        # empty up to full name
         type Symbol = Bitstring                     # byte aligned, no NULL
         type Map = Dictionary                       # trie; NULL separators
         type Def = abstract assembly                
 
-* mixin (mx) - apply a sequence of operations to the tacit namespace
-* namespace (ns) - evaluate NSOp (usually mx) in context of empty namespace, evaluating to definitions (df). This could be evaluated eagerly at AST construction time, so this operation is mostly about deferring costs and lazy evaluation.
-* definitions (df) - add definitions to tacit namespace. It's an error if a name has two different definitions, but it's okay to assign the same definition many times.
-* link (ln) - modify names within definitions in tacit namespace, based on longest matching prefix  
-* move (mv) - move definitions in tacit namespace, based on longest matching prefix
-* remove (rm) - remove or delete definitions from the tacit namespace. 
-* translate (tl) - rewrite names in an operation before it is applied; useful for abstracting mixins.
+* namespace (ns) - describes a dictionary as a set of definitions (df) together with a sequence of operations to modify that set. When applied as an operator, we'll evaluate the final dictionary then unify it with the tacit namespace.
+* mixin (mx) - a sequence of operations that we can apply to a tacit namespace. This is our primary joiner for NSOps, i.e. it's how we express a sequence. Also encodes the identity operation (no-op) as `mx:[]`. 
+* link (ln) - modify names within definitions in tacit namespace, based on longest matching prefix.
+* move (mv) - move definitions in tacit namespace, based on longest matching prefix, without modifying the actual definition.
+* remove (rm) - remove (delete) definitions from the tacit namespace.
+* translate (tl) - a variation of mixin that also rewrites a sequence of operations to apply to different locations. This includes renames on introduced definitions, but the trickier bit is translating moves, links, and removes (see *Translation of Move, Link, Remove*). The primary use case for translation is to abstract application of mixins.
+
+I have some tentative extensions in mind, such as copy and mapping a function over definitions. But I believe the above is sufficient for glas systems.
 
 ## Prefix Unique Names
 
@@ -54,6 +54,8 @@ However, it is unambiguous if the same definition is assigned to a name many tim
 *Note:* I think it's best if the programming language explicitly represents user expectations, i.e. whether we are introducing, overriding, or shadowing a definition.
 
 ## Computation
+
+I think that basic application of link, move, and remove is obvious enough. Unification of definitions
 
 ### Simplifying Move, Link, and Translate Maps
 
@@ -81,10 +83,7 @@ However, as with the followed-by composition, there are cases where we must firs
 
 ### Translation of Definitions and Namespaces 
 
-When applied to final definitions (or a namespace, which eventually evaluates to such definitions) we can simply convert translate to a rename. 
-
-        tl:(df:Defs, TLMap) => tl:(ns:df:Defs, TLMap)       
-        tl:(ns:Op, TLMap) => ns:mx:[Op, ln:TLMap, mv:TLMap]
+When applied to final definitions we can simply convert translate to a rename (move and link) on those definitions.
 
 That is, if we define `dst.xyzzy` and our translation is `dst. => bar.` then we actually defined `bar.xyzzy`. If `dst.xyzzy` depends on `src.qux` and we translate `src. => foo.` then `dst.xyzzy` actually depends on `foo.qux`. 
 
@@ -97,72 +96,6 @@ Composition of removes is relatively trivial: take the union of prefixes. We can
 It is feasible to push removes ahead of moves. In this case, our maps are asymmetric: `mv:{ bar => fo } fby rm:{ foo }`. As with the previous forms, we would first un-simplify the move map to include prefixes that we'll be removing: `{ bar => fo, baro => foo, foo => foo }`. Then we identify which prefixes are removed from the right-hand side. The main difference is that we'll have two maps at the end, one for removes and one for moves: `rm:{ baro, foo } fby mv:{ bar => fo }`. 
 
 This is potentially useful as a simplification. By performing removes ahead of other operations, especially ahead of link (ln), we can reduce the number of definitions we'll eventually walk. 
-
-### Rewrite Semantics
-
-We can simplify a mixin or evaluate a namespace based on a rewrite semantics. All rewrites are bidirectional, but are written in a direction that leads towards simplifications or evaluations.
-
-    mx:(A ++ (mx:Ops, B)) => mx:(A ++ (Ops ++ B))     # flatten mx
-    mx:[Op] => Op                                     # singleton mx
-
-    ns:mx:(ln:_, Ops) => ns:mx:Ops                    # rewrite on empty
-    ns:mx:(rm:_, Ops) => ns:mx:Ops                    # remove on empty
-    ns:mx:(mv:_, Ops) => ns:mx:Ops                    # move on empty
-    ns:df:Defs => df:Defs                             # eval ns
-
-    df:{} => mx:[]                                    # empty df
-    ns:mx:[] => mx:[]                                 # empty ns
-    rm:{} => mx:[]                                    # no-op rm
-    ln:{} => mx:[]                                    # no-op ln
-    mv:{} => mx:[]                                    # no-op mv
-    tl:(Op, {}) => Op                                 # no-op tl
- 
-    # translations
-    tl:(mx:(Op, Ops), TLMap) =>                                 # distribute tl
-        mx:[ tl:(Op, TLMap), tl:(mx:Ops, TLMap)]
-    tl:(mx:[], _) => mx:[]                                      # empty tl
-    tl:(df:Defs, TLMap) => ns:mx:[df:Defs, mv:TLMap, ln:TLMap]  # translate def
-    tl:(ns:Op, TLMap) => ns:mx:[Op, mv:TLMap, ln:TLMap]         # translate lazy def
-    tl:(tl:(Op, A), B) => tl:(Op, A `fby` B)                    # sequence tl
-        # see *Followed By (fby) Composition of Move, Link, Translate Maps*
-    tl:(rm:M, TLMap) => rm:M'                                   # translate rm
-    tl:(mv:M, TLMap) => mv:M'                                   # translate mv
-    tl:(ln:M, TLMap) => ln:M'                                   # translate ln
-        # for M' in each case see *Translation of Move, Link, Remove*       
-
-    # in context of mx
-      # shorthand 'A B C' = 'mx:(LHS++[A,B,C]++RHS)'
-
-      # namespace partial eval
-      ns:(Ops ++ [df:Defs]) => ns:Ops df:Defs
-      ns:(Ops ++ [ns:Ops']) => ns:Ops ns:Ops'
-        # basically, if we aren't modifying defs, they're done.
-
-      # common merges
-      df:A df:B => df:(union A B)
-        # need to deal with ambiguity  
-      ln:A ln:B => ln:(A `fby` B)
-      mv:A mv:B => mv:(A `fby` B)
-        # see *Followed By (fby) Composition of Move, Link, Translate Maps*
-      rm:A rm:B => rm:(union A B)
-        # see *Composition and Simplification of Removes*
-
-      # links and moves commute. Convenient for simplifications.
-      ln:A mv:B => mv:B ln:A
-      ln:A rm:B => rm:B ln:A
-
-      # removes can be pushed ahead of moves.
-      mv:A rm:B => rm:B' mv:A'
-        # see *Pushing Removes ahead of Moves*
-
-      # apply rewrites! not detailed here.
-      df:Defs ln:Links   => ln:Links   df:(update links in Defs)
-      df:Defs mv:Moves   => mv:Moves   df:(move Defs in map)
-      df:Defs rm:Removes => rm:Removes df:(remove indicated Defs)
-
-These rewrite rules can serve as pseudo-code. 
-
-One minor issue is that, in case of `df:A df:B rm:M` where `df:(union A B)` has an ambiguity error that is subsequently removed by `rm:M`, it is non-deterministic (compiler dependent) whether we'll report the ambiguity error. I would prefer to resolve this in the direction of reporting errors aggressively.
 
 ### Identifying Definitions
 
@@ -190,15 +123,18 @@ Support for globals is familiar and can improve concision when integrating compo
 
 ## Potential Extensions
 
-### Copy Operation? Tentative.
+### Copy
 
-It is feasible to introduce a copy (cp) operator analogous to the namespace (ns) operator:
+We could introduce a copy operation, `cp:NSOp`, that will operate on a copy of the tacit namespace.
 
-        cp:NSOp     # copy then manipulate tacit namespace
+        ns:(df:Defs, mx:(cp:Op, ...)) =>
+            ns:(df:Defs, mx:(ns:(df:Defs, mx:[Op])))
 
-In this case, we would apply the given NSOp to a *copy* of the tacit namespace, then merge the final definitions. If the operation does nothing, the copied definitions would unify. Often, the operation will rename or move the copied namespace to a fresh Prefix.
 
-However, I lack a clear use case for copy. Instead, we develop a library of resuable namespace components and mixins at the glas module layer. Reuse of components is effectively 'copy' at an earlier stage. Before I introduce copy, I should seek non-contrived scenarios where reuse is awkward.
+* copy (cp) *(tentative)* - apply an operation to a *copy* of the tacit namespace, then unify with the tacit namespace. This would provide a basis for copy-modify patterns within a namespace. I think most models could avoid it, instead preferring to directly re-apply the namespace values.
+
+I'm also contemplating some ways to modify definitions other than 'link'. For example, it might be useful to have some way to rewrite definitions, or at least apply a named function to the definitions. This could feasibly be applied to the tacit namespace, or similar to a translation.
+
 
 ### Mapping over Definitions? Tentative.
 

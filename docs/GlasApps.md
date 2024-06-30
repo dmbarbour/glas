@@ -44,7 +44,7 @@ In context of live coding or continuous deployment, we'll call the updated appli
 
 A transaction loop application may voluntarily halt by calling and committing `sys.halt()`. To support graceful shutdown, the glas runtime will bind OS events such as SIGTERM or WM_CLOSE to call a `stop()` method. However, if an application does not voluntarily halt, we'll simply leave it to more aggressive mechanisms such as SIGKILL, Task Manager, or cycling power.
 
-*Note:* An application may define `settings.run-mode` to indicate alternative life cycles, such as staged applications. However, transaction loops are the default for glas systems.
+*Note:* An application may define `settings.run-mode` to indicate alternative life cycles, such as staged applications, or a basic procedural application. However, transaction loops should be the default for glas systems.
 
 ## Data Lifespans, Live Coding, and Higher Order Programming
 
@@ -132,13 +132,6 @@ Implicit parameters can be modeled as a special case of algebraic effects or vic
 
 In the initial glas language, function passing will likely be one way, i.e. a procedure can pass a method to a subprocedure but not vice versa. This is convenient for closures over stack variables and avoiding heap allocations. Algebraic effects can be understood as one-way function passing.
 
-## Automatic Testing and Consistency
-
-Methods defined under `test.*` are implicitly understood as test methods. If testing is not disabled, the runtime might automatically evaluate tests just before committing to each transaction, i.e. after start, each step, http events, and so on. Tests would be evaluated in a hierarchical transaction so most side-effects can be aborted. 
-
-If tests fail, the transaction can be aborted. This allows tests to protect ad-hoc invariants of the application and let programmers control consistency.
-
-Of course, tests inevitably incur performance overheads. A runtime can potentially apply incremental computing and reactivity features of transaction loops to minimize rework. Alternatively, configurations can reduce testing, trading confidence for performance. Even infrequent tests could help track system health.
 
 ## HTTP Interface
 
@@ -206,9 +199,17 @@ Log messages should initially be accessible via `sys.refl.http`. Eventually, we 
 
 ### Profiling
 
-Profiling can be modeled as a configuration option for logging, focused on performance metadata around 'operation' instead of the message. The message remains useful for indexing: we might aggregate stats on `(channel, message)` pairs, where channel is static and message is dynamic.
+Profiling can be modeled as a configuration option for logging, focused on performance metadata around 'operation' instead of the message. The message remains useful for indexing: we might aggregate stats on `(channel, message)` pairs, where channel is static and message is dynamic (such as identifying a specific object).
 
 To simplify configuration and support reasonable defaults, we might use a distinct naming conventions for profiling channels. This might involve a simple variant header on the channel name. We could also use a separate syntax for profiling, to more clearly express intent.
+
+### Testing
+
+We can add assertions to our programs as annotations. Similar to logging and profiling, we might specify a channel so we can selectively enable and disable specific tests, or configure random testing. Something like: `(%assert Channel TestExpr MessageExpr)`. 
+
+In context of transactions, I might also want the ability to express that some property should hold upon final commit. It might be feasible to express this as `(%require Channel MethodName DataExpr)` or similar, evaluating `MethodName(Data)` as an assertion just prior to commit. Multiple requests for the same test can be combined. However, it's difficult to efficiently include a message because we no longer have access to the original call stack at the time of test. We might instead insist that MethodName should be descriptive.
+
+If assertions fail, the transaction can be aborted. But, in some debugging contexts, it might be useful to continue evaluating the transaction even after failure rather than aborting immediately.
 
 ### Tracing? Tentative.
 

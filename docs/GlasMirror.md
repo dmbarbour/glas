@@ -8,7 +8,33 @@ The [transaction loop application model](GlasApps.md) supports near perfect mirr
 
 ## Configuration
 
-Not every application needs to be mirrored, thus configuration of mirroring must be
+Not every application needs to be mirrored, thus applications should be able to explicitly enable mirroring. However, details for mirroring should be within the configuration file. The simplest option might be to define `mirrors = List of Dict` 
+
+
+i.e. `mirror.(mirror-nickname).(attribute*)`, or 
+
+, within the configuration. Each mirror might describe a remote machine, including information needed for access, setup, localization, etc..
+
+ architecture, common setup requirements, etc..
+
+
+Additionally, it could be useful to support multiple, named mirroring configurations to allow different app
+
+
+
+
+
+We can potentially support, named mirroring configurations. 
+
+The use of mirroring can be 
+
+Something like: `settings.mirroring = enabled:()` and ` 
+
+
+
+
+
+configuration of mirroring must be application specific. However, the details for mirroring should be managed within the configuration
 
 To configure mirroring, we might define `mirror.*` in the [glas configuration file](GlasConfigLang.md). Among other ad-hoc properties, this might describe a list or named collection of remote virtual machine services in enough detail that the runtime can use them: protocols, addresses, access tokens, architecture descriptions, and so on. The details can be handled later.
 
@@ -49,6 +75,10 @@ In case of network partitioning, a subset of threads that would require a distri
 If we have permanent failure, we will lose data 'owned' by the remote partition. Perhaps worse, if we have a long term non-permanent failure, we might try to continue with a recent back-up or cached versions of the database, then the system eventually reconnects and we cannot easily combine data that has evolved independently on the different partitions. 
 
 If this is an expected problem, the right place to solve it is the database layer. We can extend the database with more types that don't assume 'ownership' by a single partition, where the data can be merged. I've already proposed one: the bag type. But [CRDTs](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) and [variants](https://dl.acm.org/doi/10.1145/3360580) are also a reasonable direction.
+
+## Live Coding and Mirrors
+
+Live coding is compatible with mirrors, but we'll probably need to specify that code updates propagate from origin, i.e. origin is responsible for the 'switch'.
 
 ## Concurrent Use of Mirrors
 

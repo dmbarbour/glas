@@ -1,10 +1,14 @@
 # Glas Configuration Language
 
-The glas configuration language is lightweight and generic. Support for computation is very limited, but there is ample support for modular composition and extension. This supports very large configurations. Instead of search paths or package managers, we'll tend to import a configuration file representing a community distribution of modules.
+The glas configuration language is lightweight and generic. Computation is limited, but there is ample support for modular composition and extension based on [namespaces](GlasNamespaces.md).
+
+Configurations can grow very large, especially with how the glas system uses them. Large configuration files replace the conventional package managers and search paths, explicitly defining every global module. A user configuration will usually inherit and extend a large configuration representing community distributions, company mixins, project specific overlays. This might be represented as referring to a remote file maintained in a DVCS repository. 
+
+An unusual feature of the glas configuration language is that it reifies *localizations*. This lets us preserve scope during compilation of global modules, which in turn supports parameterization, overrides, and working with multiple versions of the system. 
 
 ## Data
 
-This language is dynamically typed, and supports very few data types. 
+The data language is dynamically typed, and supports very few data types. 
 
 * integers
 * lists - including texts and tables 
@@ -13,185 +17,63 @@ This language is dynamically typed, and supports very few data types.
 * locations - files, git repos, etc.
 * localizations - for latent binding
 
-The basic data is integers, lists, dictionaries, and variants. Basic data will translate to glas data, but only to a subset: we cannot represent arbitrary glas data in configurations.
+The 'plain old data' is integers, lists, dictionaries, and variants. This translates directly to glas data via the conventional representation, i.e. bitstrings for integers and dicts as tries. 
 
-For example, there is no support for representing primitive pairs.
+Locations and localizations require keywords to construct and are abstract after construction. I'm not committed to this, but a viable syntax:
 
+        loc Expr                # create a location
+        link local              # basic localization
+        link with Aliases       # translated localization
 
+Under the hood, the abstract types might look like:
 
+        type Location 
+                = (origin:ConfigFileLocation
+                  ,target:Expr
+                  )
+        type Localization 
+                = (env:Namespace
+                  ,tl:Map of Prefix to Prefix
+                  )
 
-
-Locations and localizations are kept abstract within configurations for security reasons, 
-
-
-This will translate directly to glas data, though converting rationals is a little awkward because they don't have a standard representation in glas.
-
-Special data includes locations and localizations.
-
-
-* namespaces - functions, configurations
-
-
-
-
-
-
-
-
-
-rational numbers, lists,  and 
-
-dictionaries, variants (as singleton dictionaries), and lists
-
- limited support for data types. 
-
-
-
-may grow very large: we'll often define every global module rather than define a generic search path. 
-
- However, there is ample support for modularity, given we expect to work with very *large* configurations.
-
-
-
-
-Every configuration file 
-
-There is a simple language for expressing data. 
-
-but every configuration file compiles to a [mixin](GlasNamespaces.md) that can manipulate the tacit namespace upon import.
-
- that may introduce new definitions, rename or override prior definitions, and generally mess with 
-
- prior override, and  prior definitions.
-
-A configuration file
-
-
-A configuration file represents a collection of [namespaces and mixins](GlasNamespaces.md). Configuration files can modularly import other configuration files. 
-
-. The primary configuration is the namespace 'config'. Each definition in
-
-, but other namespaces may represent reusable components, mixins, or functions. The definitions within each namespace must be acyclic, and there are no general loops, thus termination is guaranteed.
-
-Configured features are ultimately represented by names and data within the namespace.
-
-## Global Modules
-
-Global modules will be individually defined under 'module.' prefix, i.e. in case of `glas --run foo Args` the runtime will search for 'module.foo' within the configuration namespace. This should evaluate to a module reference. Proposed representation of module references:
-
-        type GlobalModuleRef 
-              = remote:(at:Location, ln:Localization)
-              | staged:(lang:GlobalModuleRef, src:GlobalModuleRef, ln:Localization)
-              | inline:PlainOldData
-
-The typical case is a remote module, consisting of Location and Localization. Both are abstract types for security reasons. The Location type may represent a file path on the local machine, or a URL to a remote DVCS repository. I intend to use the same Location type for importing configuration files. The Localization type relates to abstract assembly and the namespace model, and enables users to override dependencies of a module.
-
-A staged module will first load the language module and source module values, then 'compile' the source via the language under a given localization. An inline module will trivially return a value that is computed entirely within the configuration.
-
-In addition to the primary module reference, we might annotate modules with documentation to support browsing and searching of module systems.
-
-## Security Concerns for Locations and Localizations
-
-The main security threat related to configuration of glas systems involves unpredictable dependencies. For example, it's okay if a local file references another local file, or for a remote file to reference another remote file, but not for a remote file to reference a local file. We'll similarly want to control dependencies within the configuration namespace.
-
-To resolve these concerns, the types for Location, Localization, and Names will be abstract within the configuration. These types can only be produced and composed by keyword, and would use specialized AST constructors in the intermediate [abstract assembly](AbstractAssembly.md).
-
-That said, I don't see a use case for Names as data within a configuration. So, Locations and Localizations would be the primary abstract types in configurations.
-
-## Locations
-
-Locations need special attention for security reasons. This mostly applies later, when we start using remote locations (e.g. a configuration file in a DVCS repository). We can get started with just local files, keeping extensions in mind.
-
-I imagine a grammar similar to this for parsing Locations:
-
-        expr Location 
-                = file Path                     # absolute or relative to current file
-                | eval Expr in Namespace        # for abstraction, libraries of locations
-                | git ...                       # extensions as needed
-
-        expr Path = TextExpr                    # usually a text literal
-
-We'll use locations in context of configuration file imports:
-
-        open Location                           # single inheritance
-        from Location import ImportList         # selective imports
-        import Location as LocalName            # qualified import (hierarchical)
-
-When embedding locations as data in more general expressions, I propose prefix '@' to indicate that we should parse a location.
-
-        ns foo {
-          fooFile = @file "./foo"
-        }
-        from (eval fooFile in foo) import ...
-
-The 'file' location will implicitly add the configuration file's location to the intermediate AST at parse time. This is very useful for relative paths, ensuring they are relative to the correct file even across imports. We can also detect problematic paths, such as a file path that steps outside a remote file's repository.
-
-The 'eval' location is useful for abstracting locations, or developing libraries of locations. It lets us describe locations before they are used or even in a separate file.
-
-## System and Environment Variables
-
-I propose to reserve `sys.*` for ad-hoc system provided configuration variables, analogous to applications. For example, we might define `sys.env.*` based on the OS environment, and perhaps `sys.os = "Linux"` and `sys.arch = "x86"` and a collection of named runtime features. 
-
-This allows for adaptive configurations, and simultaneously supports precise namespace-based control over dependencies. On one hand, a global module might be defined with reference to `sys.os`. On the other, we could translate this to `target.sys.os` to support cross compilation.
-
-## Toplevel Syntax
-
-
+Locations capture the configuration file's location to support relative paths. This also guards against problematic locations, such as a remote configuration file referencing an absolute file path. Localizations capture an environment so we can later evaluate some names. This includes an entire namespace in context of *Namespaces as Functions*.
 
 ## Namespaces as Functions
 
-A namespace of simple data expressions can represent a function. For example, we can develop a namespace where the client is expected to override 'x' and 'y' then read 'result'. To apply this function, we would dedicate a fresh hierarchical 'scratch' space for evaluation, while overriding a few arguments.
+Namespaces are the basis for functions in the configuration language. At the namespace level, we can define 'mixins' that operate on a tacit namespace, producing a modified namespace. At the data level, a function can be expressed as a namespace where the caller overrides 'arg.x' and 'arg.y' then evaluates 'result'.
 
-A direct encoding might look something like:
+Namespaces are not first-class within the configuration language. However, composition of namespaces is more flexible than basic function composition. This can support some limited examples of higher order programming.
 
-        import foo as tmp    # tl:(def(foo), { "" => "tmp." })
-        override tmp.x = expr1
-        override tmp.y = expr2
-        rename tmp.result to bar
-        hide tmp  # rename 'tmp' to a fresh private namespace
+Because we're using namespaces as functions, localizations must capture the 'closure', i.e. the captured namespace must include overrides to arguments.
 
-This is a bit bulky, so we'll need some syntactic sugar. Perhaps something like:
+## Configuration File Structure
 
-        import foo as tmp with
-          x = expr1
-          y = expr2
-          result -> bar
-        hide tmp
+The toplevel of a configuration file consists of imports and namespace definitions. The actual configuration will be a namespace called 'config'. The other namespaces may serve as a library of components, mixins, and functions.
 
-        eval foo with
-          x = expr2
-          y = expr2
-          result -> bar
+Imports are carefully designed to be unambiguous. It is locally possible to determine where an imported namespace should be defined before loading anything. This allows for lazy loading, which is convenient for performance. This is achieved by permitting only one 'unqualified' import, while all other imports are explicit import lists or hierarchical. Imports may reference namespaces to express configuration file locations. 
 
-        apply foo(x=expr1, y=expr2, result->bar)
+Each namespace may contain many definitions that should evaluate to data. The data expression language is not Turing complete, but is capable of simple arithmetic, pattern matching, and [primitive recursion](https://en.wikipedia.org/wiki/Primitive_recursive_function). The definitions themselves must form a directed acyclic graph.
 
-More generally, we could support shorthand 'z->z' as 'z', and perhaps prefix rewrites at '.' boundaries such as 'z. -> xyz.'. We could also understand 'eval' as a form of import and `(x = expr1, y = expr2, result->bar)` as similar to an import list. This would extend to qualified imports, `import as with`. 
+The configuration language syntax is designed to reduce need for indentation. At the toplevel, this involves using an alternative, visually distinctive separators for imports and namespace definitions. I'm still deciding on the aesthetic. One viable option is something like `[name]` and `[import ... as ...]`. Another is to use `@name` or `@ns name` or similar. Data expressions will need something else.
 
-I propose namespace layer functions as the primary way to to abstract over both configurations and data. This allows for a relatively simple data expression language. 
+## Adaptive Configurations
 
-## Configuring RPC Registries, Databases, Etc..
+As a convention, `sys.*` in the configuration namespace should be reserved for system inputs. For example, the system might introduce operating system environment variables as `sys.env.*`. These extra inputs allow configurations themselves to serve as functions.
 
-We'll need to publish and discover RPC interfaces via intermediate matchmaking service, or to a shared database. Initially, this might only support one case, such as publishing through a local folder in the filesystem. Similar for the key-value database.
+## Toplevel Syntax
 
-Ultimately, a lot of configuration will be more ad-hoc, with de-facto standardization.
-
-## Application Settings and Dynamic Configuration
-
-Some properties cannot be shared between applications. In these cases, the application may define ad-hoc `settings.*` methods, to be evaluated by the runtime or late-stage compiler, with very limited access to effects. Alternatively, a runtime may provide `sys.refl.*` methods for dynamic configuration where suitable. 
-
-Application specific settings should generally support indirection through the configuration. For example, instead of an application directly specifying a network port for HTTP and RPC requests, we might name an option detailed in the configuration file. This doesn't preclude direct configuration.
-
-Settings are especially suitable for 'static' integration. A compiler can produce a specialized runtime based on settings. For many properties, a runtime could reasonably support both mechanisms, and a compiler might specialize only if settings are used and the reflection API is dead code.
+Imports, namespace definitions. I'd like to minimize indentation, so we might need to signal structure by other means - blank spaces, visually obvious boundaries (perhaps `[name]` or `@name`?), and so on.
 
 ## Data Expression Language
 
+
+There is a sublanguage for 
+
 I want to keep this language very simple. There are no user-defined functions at this layer, but we might, only user-defined data. We'll freely use keywords and dedicated syntax for arithmetic, conditions, etc.
 
-### Conditional Expressions
+### Conditional Expression
 
-We could support `iflet x = Expr1 then Expr2 else Expr3` where only Expr2 has `x` in scope as a local variable. This corresponds to `try/then/else`, allowing us to 'commit' to Expr2 after evaluating Expr1. A simple variant `Expr1 | Expr2` might correspond to `iflet x = Expr1 in x else Expr2`. And we could have `if Expr1 then Expr2 else Expr3` where we don't actually capture Expr1, only test whether it is well defined.
-
-For an expression to be well defined, it must depend only on well-defined names, and it must evaluate successfully. We might have some comparison expressions, e.g. where `("a" = "a")` evaluates to `"a"` while `("a" = "b")` simply fails. Also, any name that is part of a dependency cycle is considered undefined; we won't even attempt to evaluate the definitions.
+Might be based mostly on pattern matching.
 
 ### Arithmetic
 
@@ -205,13 +87,34 @@ I don't plan to support full loops, but it might be convenient to support some o
 
 Support for pairs, lists, and and labeled variants or dictionaries is essential. We could also make it feasible to lift a configuration namespace into data.
 
-## RPC Registry Configuration
+
+
+## Glas Configuration Details
+
+### Global Modules
+
+Global modules are defined individually within the configuration namespace, usually under the `module.*` prefix. Each module definition should evaluate to a specification and extended description:
+
+        type GlobalModuleDesc 
+              = (spec:GlobalModuleSpec
+                ,desc:TextBlurb
+                ,... # ad-hoc annotations
+                )
+
+        type GlobalModuleSpec 
+              = folder:(at:Location, ln:Localization)
+              | staged:(lang:GlobalModuleDesc, src:GlobalModuleDesc, ln:Localization)
+              | inline:PlainOldData
+
+The full description is there to support browsing, searching, debugging, and so on. Most modules will be specified as a folder, located in the filesystem or a DVCS repository. The staged and inline specifications are useful for small or simple modules. All global modules referenced during compilation will be localized, including language modules implicitly referenced by file extension.
+
+### RPC Registry Configuration
 
 The simplest registry might be configured as a remote service (URL and access tokens), shared database, or distributed hashtable. We also need composite registries, and support for filtering and editing 'tags' for both publish and subscribe.
 
 Fortunately, other than often including a Location in a registry, we don't need any additional support for registries.
 
-## Database Configuration
+### Database Configuration
 
 At least one database should be configured to support persistent data. We might initially use LMDB or RocksDB, which would require configuring a filesystem location. Eventually, we might also want to support distributed databases with special handling of vars, queues, bags, etc..
 
