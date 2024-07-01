@@ -48,19 +48,35 @@ Because we're using namespaces as functions, localizations must capture the 'clo
 
 ## Configuration File Structure
 
-The toplevel of a configuration file consists of imports and namespace definitions. The actual configuration will be a namespace called 'config'. The other namespaces may serve as a library of components, mixins, and functions.
+The toplevel of a configuration file consists of imports and namespace definitions. The actual configuration is represented by the namespace called 'config'. Other namespaces may serve as a library of components, mixins, and functions.
 
 Imports are carefully designed to be unambiguous. It is locally possible to determine where an imported namespace should be defined before loading anything. This allows for lazy loading, which is convenient for performance. This is achieved by permitting only one 'unqualified' import, while all other imports are explicit import lists or hierarchical. Imports may reference namespaces to express configuration file locations. 
 
-Each namespace may contain many definitions that should evaluate to data. The data expression language is not Turing complete, but is capable of simple arithmetic, pattern matching, and [primitive recursion](https://en.wikipedia.org/wiki/Primitive_recursive_function). The definitions themselves must form a directed acyclic graph.
-
-The configuration language syntax is designed to reduce need for indentation. At the toplevel, this involves using an alternative, visually distinctive separators for imports and namespace definitions. I'm still deciding on the aesthetic. One viable option is something like `[name]` and `[import ... as ...]`. Another is to use `@name` or `@ns name` or similar. Data expressions will need something else.
+Each namespace contains definitions that should evaluate to data. The data expression language is not Turing complete, but is capable of simple arithmetic, pattern matching, and [primitive recursion](https://en.wikipedia.org/wiki/Primitive_recursive_function). Data definitions must be acyclic, forming a directed acyclic graph.
 
 ## Adaptive Configurations
 
-As a convention, `sys.*` in the configuration namespace should be reserved for system inputs. For example, the system might introduce operating system environment variables as `sys.env.*`. These extra inputs allow configurations themselves to serve as functions.
+As a convention, `sys.*` in the configuration namespace should be reserved for system parameters. For example, the system might introduce operating system environment variables as `sys.env.*`. This enables flexible adaptation of the configuration to the host.
 
-## Toplevel Syntax
+The extent to which this environment is exposed to the module system is left to the user. The system arguments are not accessible within hierarchical configuration components unless explicitly propagated.
+
+## Configuration Syntax
+
+I take some inspiration from [TOML](https://toml.io/en/), which I find more readable than most configuration languages. However, compared to TOML the glas configuration language is complicated by need to support imports, inheritance, and overrides.
+
+A viable presentation is to use a distinct form of section header for the file level versus the 
+
+
+However, I do need some extra syntax to work with
+
+However, the glas configuration language must also deal with imports and overrides, which complicates things a little. 
+
+
+
+
+
+
+
 
 Imports, namespace definitions. I'd like to minimize indentation, so we might need to signal structure by other means - blank spaces, visually obvious boundaries (perhaps `[name]` or `@name`?), and so on.
 

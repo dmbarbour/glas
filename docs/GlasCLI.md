@@ -10,7 +10,22 @@ This combines with a lightweight syntactic sugar:
             # rewrites to
         glas --run cli.opname a b c
 
-The referenced module may directly describe an application or may describe a staged compiler, treating the remaining arguments as a program in a user-defined language. The intention is to shift most logic into the glas module system, and to keep the command line simple and free of clutter.
+The referenced module may directly describe an application or may describe a staged compiler, treating the remaining arguments as a program in a user-defined language. Aside from running a module, we'll provide a few alternative run modes and toolkits via commands other than `--run`. 
+
+        # running files and inline scripts
+        glas --script(.Lang)* ScriptFile Args
+        glas --cmd(.Lang)+ ScriptText Args
+
+        # built-in toolkits 
+        glas --config (Operation)
+        glas --module (Operation)
+        glas --cache (Operation)
+
+        # conventions
+        glas --version
+        glas --help
+
+But the executable shouldn't have too much more built-in logic than is required to compile and run a module. Ideally, most logic is eventually shifted into the module system. For example, the `--module` toolkit should eventually be extended and improved by a `cli.module` application in the module system.
 
 ## Configuration
 
@@ -33,69 +48,13 @@ However, the expected use case is to share the same configuration file between m
 
 Ultimately, all settings are provided either through the configuration file or through the application, and nothing is directly configured by command line switches or environment variables. If users want configure `settings.*` via command line, it is possible to develop a staged application for that role.
 
-### Configuration Tooling
-
-The glas command line interface can provide a toolbox under `--config`. 
-
-        glas --config Operation
-
-A few potentially useful operations include:
-
-* *init* - help users create a configuration file, perhaps interactively
-* *check* - look for obvious errors or concerns in the configuration file 
-* *print Expr* - evaluate and pretty-print an expression in config namespace
-* *debug Expr* - like print, but add verbose debugging information.
-* *extract Expr* - like print, but limited to strings Expr, direct to stdout
-* *help* - describe available operations
-
-However, I hope to avoid built-in features that would significantly grow the 'glas' executable. In my vision for glas systems, users should push most logic into the module system itself, including the logic for an extended toolbox.
-
-        glas config Operation
-            # rewrites to
-        glas --run cli.config Operation
-
-This can support flexible, user-defined extensions to the tooling.
-
 ## Naming Modules
 
 For the primary run operation, we must name a module:
 
         glas --run ModuleName Args
 
-For simplicity, ModuleName is syntactically restricted:
-
-        ModuleName <= (Word)('.'Word)*
-        Word <= [a-z][a-z0-9]+
-
-This module must be defined within the configuration as 'module.ModuleName', otherwise the operation will fail. Due to localization, the same ModuleName might refer to a different global module when loaded from a module. Effectively, we're applying implicit localization `{ "" => "module." }` to the user. 
-
-*Note:* Files cannot be referenced by '--run', but you can use '--script' instead.
-
-## Module System Tooling
-
-Every global module is explicitly defined within the configuration. In addition to a specification, which roughly describes how to compile a module into a value, each definition may include ad-hoc annotations, such as a text blurb describing the module, or a list of tags to support search.
-
-To help users work with this module system, and debug problems, we might introduce various command line tools to list, search, and filter modules, to examine dependencies, check whether a module compiles, and so on. 
-
-        glas --module Operation
-
-Some useful operations:
-
-* *list ModuleNames* - print list of toplevel modules and descriptions (if defined) matching given names.
-* *check ModuleNames* - try to compile the listed modules, reporting pass/fail for each, including any logged warnings or errors.
-* *deps ModuleNames* - compile modules and produce a summary of transitive dependencies, down to the file granularity. Maybe include secure hashes.
-
-Here ModuleNames is a plural of ModuleName. It might be expressed as a non-empty list of ModuleName extended with '*' wildcards. We might eventually want variations that can filter on tags and other properties.
-
-As with '--config', I don't want to add too much logic to the glas executable to support this, but if it's just a little extra on top of what is already needed for '--run' then that's fine.
-
-## Cache Tooling
-
-We might also want a `--cache` toolkit for examining how much space we're using, clearing out stuff we haven't used in a while, forcing review of DVCS repositories, and so on. This would apply to both compiling modules and processing configuration files.
-
-## Testing
-
-By convention, automated tests are added to the system by defining `test-*` local modules within the folders used by global modules. Each test application may define multiple tests and also use `sys.fork` for fuzz testing. Ideally, we'll have some command line tools to help run tests, and also maintain a database of test results. We might need a `--test` option to cover some basics, but I hope to push most logic for testing into the module system.
+The ModuleName is restricted syntactically to a public name in the configuration. The glas executable will implicitly add a 'module.' prefix then evaluate this name within the configuration. The glas executable will report an error if the referenced module is undefined or its definition is not recognized as a global module.
 
 ## Running Applications
 
@@ -148,6 +107,55 @@ An obvious variation on the above is to embed the script text into the command l
 
 This allows familiar file-based languages to be used without a separate file. The most likely use case is if constructing ScriptText within another program. In this case, there is no automatic removal of a shebang line.
 
+## Tooling
+
+The glas executable may contain a few built-in tools, but anything that would significantly increase executable size should instead represented in the module system. For example, we might have a `glas config` tool (defined by 'module.cli.config') that extends operations available via `glas --config`. 
+
+In practice, the glas command line executable will support a fair bit of debugging logic to support `sys.refl.http` and similar APIs. It would be convenient if tooling can provide access to much of this.
+
+### Configuration Tooling
+
+Tools to debug the configuration in general, or to use a configuration as a simple language.
+
+        glas --config Operation
+
+Useful operations:
+
+* *init* - help users create a configuration file, perhaps interactively
+* *check* - look for obvious errors or concerns in the configuration file 
+* *print Expr* - evaluate and pretty-print an expression in config namespace
+* *debug Expr* - like print, but add verbose debugging and profiling information.
+* *extract Expr* - require Expr evaluates to a binary, write it raw to stdout.
+* *help* - describe available operations
+
+### Module System Tooling
+
+This should be extra tooling to discover modules and to debug modules.
+
+        glas --module Operation
+
+Useful operations:
+
+* *list Filters* - scan the configuration then print a list of available modules. The default might include the module name and a short text description. Filters could allow for restricting the scan and controlling which annotations are displayed.
+* *check ModuleName* - pass/fail for compiling a module without running it. Will print any compile-time log messages.
+* *deps ModuleName* - print transitive dependencies of a module in detail.
+* *test Filters* - run tests on modules in the module system
+* *help* - describe available operations
+
+### Cache Tooling
+
+Provide some user access and control to what is being stored for performance.
+
+        glas --cache Operation
+
+Useful operations:
+
+* *debug Filters* - describe what is held in cache
+* *clear Filters* - delete the cache or perhaps parts of it (e.g. DVCS, files)
+* *help* - describe available operations
+
+Other operations will likely depend on exactly how cache is represented.
+
 ## Exit Codes
 
 Keeping it simple. 
@@ -159,7 +167,7 @@ We'll rely on log messages for detailed warnings or errors. But we might allow a
 
 ## Bootstrap
 
-The bootstrap implementation of 'glas' might support only a limited subset of effects, such as CLI output and process local state. We can bootstrap by writing the executable and redirecting to a file.
+Pre-bootstrap implementations of the glas executable might support only a limited subset of the effects API, such as read-write to console and access to an in-memory database. To work within these limits, I propose to bootstrap by writing an executable binary to standard output then redirecting to a file.
 
     # build
     /usr/bin/glas --run glas-binary > /tmp/glas
@@ -171,26 +179,5 @@ The bootstrap implementation of 'glas' might support only a limited subset of ef
     # install
     sudo mv /tmp/glas /usr/bin/
 
-The target architecture could be provided as an argument or by defining a 'target' module.
-
-*Note:* It is feasible to support early bootstrap via intermediate ".c" file or similar, to leverage a mature optimizing compiler. But I hope to eventually express all optimizations within the glas module system!
-
-## Misc
-
-### Early Applications
-
-The executable should have minimum logic, but where should I focus initial attention for user-defined apps?
-
-* Bootstrap
-* Browsing module system.
-* Automated Testing
-* Command line calculator
-* REPLs
-* [Language Server Protocol](https://en.wikipedia.org/wiki/Language_Server_Protocol)
-* FUSE filesystem support
-* IDE projectional editors, programmable wikis
-* Web apps? (Compile to JavaScript or WebAssembly + DOM)
-* Notebook apps? (something oriented around reactive, live coding with graphics?)
-
-
+It is feasible to support multiple targets through the configuration. Also, very early bootstrap might instead write to an intermediate C file or LLVM that we then compile further. However, I do hope to eventually bootstrap directly to OS-recognized executable binary.
 
