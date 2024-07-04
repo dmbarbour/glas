@@ -65,7 +65,7 @@ Integers in glas systems are typically encoded as variable length bitstrings, ms
         -3        00
         -4       011
 
-See also *Rational Numbers* and *Floating Point*.
+See also *Numbers*, below.
 
 ### Lists, Arrays, Queues, Binaries
 
@@ -80,19 +80,15 @@ Sequential structure in glas is usually encoded as a list. A list is as a binary
 
 Direct representation of lists is inefficient for many use-cases, such as random access arrays, double-ended queues, or binaries. To enable lists to serve many sequential data roles, lists are often represented using [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_%28data_structure%29) under-the-hood. This involves extending the 'Node' type described earlier with logical concatenation and array or binary fragments.
 
-Binaries receive special treatment because they are a popular data representation for filesystems and networks. Within glas systems, a binary is canonically represented as a list of small integers (0..255), but the finger-tree rope might allocate binary fragments of many kilobytes or megabytes. Program annotations can provide guidance, e.g. ask a runtime to 'flatten' a binary to control chunk size.
+Binaries receive special handling because they're a very popular type at system boundaries (reading files, network communication, etc.). Logically, a binary is a list of small integers (0..255). For byte 14, we'd use `0b1110` not `0b00001110`. But under the hood, binaries will be encoded as compact byte arrays.
 
-### Accelerated Representations
+### Numbers, Vectors, and Matrices
 
-We can generalize the idea of representing lists as finger-tree ropes to other optimized representations. For example, a compiler could convert known dictionary and variant types into 'structs' and 'enums'. We could optimize vectors and matrices of unboxed floating point numbers. Unordered data types, such as sets or unlabeled graphs, can be assigned a canonical representation as a binary tree (see [graph canonization](https://en.wikipedia.org/wiki/Graph_canonization)) then we can develop accelerated representations that logically reduce to the canonical form.
+A rational can be modeled as a dict `(n, d)` of integers with non-zero denominator 'd'. The rational subset of complex or hypercomplex numbers can be modeled as dicts `(r, i)` or `(r, i, j, k)` of integers or rationals. A vector is a list of numbers. A matrix is a list of vectors of identical lengths.
 
-The runtime can potentially maintain accelerated representations even when serializing data for RPC communication or a persistent key-value database. In case of [glas object](GlasObject.md), this leverages the external reference type. Use of runtime reflection APIs may allow programs to observe actual under-the-hood representations.
+Arithmetic operators on glas data should be overloaded to support these extended number representations, at least where it makes sense to do so. 
 
-### Very Large Values
-
-To support larger-than-memory data, glas systems may leverage content-addressed storage to offload subtrees to network or disk. This optimization should be transparent modulo explicit use of runtime reflection effects. However, it can be guided by program annotations. 
-
-Content-addressed references simplify memoization, communication, and orthogonal persistence with large values. By leveraging this, entire databases can be presented as massive values. The [glas object (glob)](GlasObject.md) representation is designed to serve as the primary serialization format.
+Under the hood, the runtime can potentially introduce optimized representations. For example, it is feasible to introduce a bignum floating point representation for rationals whose denominator is a power of two (or ten, or sixty). Or represent a matrix as a large array with logical dimension tracking.
 
 ### Abstract Data Types
 
@@ -146,11 +142,15 @@ The test system is free to leverage abstract interpretation, heuristics, and mem
 
 ### Acceleration
 
-If a function is giving us poor performance, it is feasible to replace that function with a compiler built-in or hardware. To resist silent performance degradation, this replacement should be explicit, guided by annotations. Usefully, this can be understood as an optimization instead of a semantic extension.
+I touch on the notion of acceleration when describing the *List* and *Number* types for glas data. For example, we might represent lists as finger-tree ropes to support efficient slicing and appending of large lists. This generalizes.
 
-It is feasible to accelerate simulation of an abstract CPU or GPGPU, running on actual hardware. This simulation must be restricted to a memory-safe subset of behaviors, though this could be achieved through proof-carrying code and static analysis. When the code argument is static, much work can be performed ahead of time.
+When a function is giving us poor performance, it is feasible to replace that function with a compiler built-in or hardware. When a concrete data representation is giving poor performance, we can introduce logical representations that support more efficient operation.
 
-Acceleration influences under-the-hood representations of data. I describe representation of lists as finger-tree ropes and *accelerated representations* more generally under *Data*. Accelerated programs or built-in functions are necessary to take full advantage of accelerated representations.
+To resist silent performance degradation, acceleration should be explicit, guided by annotations. Ideally, this can be understood as an optimization instead of a semantic extension.
+
+Intriguingly, it is feasible to accelerate simulation of an abstract CPU or GPGPU, compiling the simulation to run on actual hardware. There may be some memory safety constraints, but those can be checked statically if we're careful in our designs. This is a primary direction to pursue for high-performance computation in glas systems.
+
+In general, we should avoid any application-specific acceleration in favor of types (sets, graphs, matrices, abstract machines) that are likely to be useful across a wide range of problem domains.
 
 ### Laziness and Parallelism
 
@@ -162,11 +162,11 @@ In a distributed computation, lazy data might be serialized as an external refer
 
 ### Content Addressed Data
 
-Glas systems will leverage content-addressed storage (addressed by secure hash) to manage larger-than-memory data in context of orthogonal persistence and distributed evaluation. This might roughly be viewed as a variation on virtual memory paging, but it's simplified by immutability and hierarchical structure.
+To support larger-than-memory data, glas systems may leverage content-addressed storage to offload subtrees to network or disk. This optimization can be guided by program annotations, but should be transparent modulo use of runtime reflection APIs.
 
-In a distributed system, content addressed data allows for incremental communication of large data structures, especially in case of structure sharing. Further, a [content distribution network (CDN)](https://en.wikipedia.org/wiki/Content_delivery_network) can mitigate costs of repeatedly communicating large values.
+Compared to virtual memory backed by disk, content addressing has side benefits for incremental computation, orthogonal persistence, and structure sharing. A lot of work doesn't need to be repeated when a hash is known. When communicating large values, it also works nicely with [content delivery networks (CDN)](https://en.wikipedia.org/wiki/Content_delivery_network).
 
-Use of content addressing should be semi-transparent: guided by annotations, invisible except via controllable reflection APIs. 
+The [glas object (glob)](GlasObject.md) representation is designed to serve as the primary serialization format.
 
 ### Memoization
 
@@ -188,10 +188,6 @@ I'd like to start supporting proof carrying code and tactics relatively early. T
 
 We could develop a language where the file is essentially a database, and there are graphical tools to render and modify the database. This would simplify integration with tables and structured data, graphical representations of behavior, and so on. Incremental compilation over large databases is possible by leveraging *caching* carefully.
 
-### Macro Preprocessing
-
-We could develop generic Text->Text languages, perhaps based on a macro preprocessor with dedicated headers (at the preprocessor layer). I've hinted at this with the ".m4" extension previously. Developing a good preprocessor language could simplify embedded DSLs and syntactic sugars.
-
 ### Extensible IDEs
 
 Glas uses a pattern of naming modules to extend the glas system, e.g. 'lang-ext' or 'glas-cli-opname'. This pattern could further be leveraged to support projectional editors, REPLs, internal wikis, module system browsers, and other features of an integrated development environment. 
@@ -212,41 +208,4 @@ The glas module system currently hinders manual provenance tracking, thus any ef
 
 I've often considered extending glas data to support graph structures or unordered sets. I think these could give some benefits to users, but it isn't clear to me how to effectively and efficiently work with them yet. For now, perhaps keep it to accelerated models.
 
-## Tentative Data Representations
 
-Not really committed to anything here yet.
-
-### Rational Numbers 
-
-Ratios are easily represented as a pair of integers, not necessarily in reduced form. In many cases, such as within a program AST, it is convenient to model rational numbers precisely without conversion to floating point or imprecise types. Where needed, math can include explicit operations in our computations to 'round' rational numbers to another rational.
-
-### Floating Point (Tentative)
-
-This proposed floating point number representation for glas is based on [posits](https://en.wikipedia.org/wiki/Unum_(number_format)#Posit_(Type_III_Unum)) but adjusted for arbitrary length bitstrings. In this modified encoding, every bitstring encodes a unique rational number. Any rational number whose denominator is a power of two can be precisely represented. The zero value is conveniently represented by the empty bitstring. 
-
-To interpret any non-empty bitstring, we'll first add logically a `1000..` suffix (that is a 1 bit followed by infinite 0 bits) then interpret the result as `(sign)(regime)(exponent)(fraction)`. Adding a 0 to the fraction doesn't modify the encoded number, thus in practice we need only add bits up to the fraction. 
-
-Further, to improve how posits scale to much larger numbers, I increase exponent size (es) with regime using a simple pattern:
-
-        regime  es      exponent
-        10      2       0..3  
-        110     2       4..7
-        1110    3       8..15
-        11110   4       16..31
-        111110  5       32..63
-        (1*N)0  N       (2^N)..(2^(N+1)-1)
-
-        01      2       -4..-1
-        001     2       -8..-5
-        0001    3       -16..-9
-        00001   4       -32..-17
-        000001  5       -64..-33
-        (0*N)1  N       -(2^(N+1))..-((2^N)+1)
-
-The final number is computed as `(-1)^(sign) * 2^(exponent) * (1.(binary fraction))`.
-
-However, I'm not convinced this is a good fit for my vision of glas systems. One significant weakness of arbitrary width floating point is that it becomes unclear how many bits should be kept at any given step. Even initial representation is troublesome: no matter how many bits, we cannot exactly represent decimal number `0.3`. We would need precision arguments on many operations. Also, floating point math is often expected to leverage hardware. 
-
-My vision for glas systems might be better served by favoring rational numbers in glas data, then separately accelerate IEEE 754 floating point arithmetic and matrix computations. Leave conversions to the users.
-
-*Aside:* Floating point arithmetic isn't fully deterministic in the sense that different hardware can have different results for the same operation. This complicates acceleration. We might instead introduce floating point operations as an abstract AST extension or an effect.

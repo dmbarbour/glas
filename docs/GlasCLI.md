@@ -29,7 +29,7 @@ But the executable shouldn't have too much more built-in logic than is required 
 
 ## Configuration
 
-The glas executable will look for environment variable `GLAS_CONF`, which should name a configuration file. If this environment variable is undefined, the default file path is OS specific: `"~/.config/glas/default.conf"` on Linux or `"%AppData%\glas\default.conf"` on Windows. 
+The glas executable will look for environment variable `GLAS_CONF`, which should name a configuration file. If this environment variable is undefined, the default file path is OS specific: `"~/.config/glas/default.g0"` on Linux or `"%AppData%\glas\default.g0"` on Windows. 
 
 This configuration file should use the [glas configuration language](GlasConfigLang.md). Although this language aims to be simple, there is a lot to configure. For example, instead of search paths, every global module will be independently named in the configuration. Use of ModuleRef 'cli.opname' on the command line will map to 'module.cli.opname' in the configuration. To mitigate this, the configuration language supports imports, inheritance, and overrides. A user's configuration might inherit a distribution maintained by a company or community.
 
