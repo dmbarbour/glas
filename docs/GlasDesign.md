@@ -208,4 +208,7 @@ The glas module system currently hinders manual provenance tracking, thus any ef
 
 I've often considered extending glas data to support graph structures or unordered sets. I think these could give some benefits to users, but it isn't clear to me how to effectively and efficiently work with them yet. For now, perhaps keep it to accelerated models.
 
+### Number Units
+
+I like the idea of units for numbers, i.e. such that we know it's `3.0 Volts` instead of `3.0 kilograms`. But I haven't found a good way to present this dynamically. Too much overhead, too messy. Statically, shadow types seem a reasonable approach.
 

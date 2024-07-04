@@ -24,7 +24,7 @@ The data expression language is dynamically typed and supports very few data typ
 * locations - files, git repos, etc.
 * environments - for latent binding
 
-The 'plain old data' is numbers, lists, dictionaries, and variants. These translates directly to glas data using the conventional representations, e.g. bitstrings for integers, dicts as tries with a null separator, etc.. The configuration language abstracts over representations, but it is possible to convert between a rational and an `(n, d)` dict of integers, for example.
+The 'plain old data' is numbers, lists, dictionaries, and variants. These translates directly to glas data using the conventional representations, e.g. bitstrings for integers, dicts as tries with a null separator, etc.. The configuration language abstracts over representations, but it is possible to convert between a rational and an `(n, d)` dict of integers.
 
 Locations and environments are constructed by keywords then treated as abstract types. Viable representations under the hood:
 

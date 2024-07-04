@@ -135,21 +135,23 @@ In the initial glas language, function passing will likely be one way, i.e. a pr
 
 ## HTTP Interface
 
-Most applications should define a `http : Request -> Response` method. If nothing else, the application might route `"/sys"` to `sys.refl.http` to let users access to logs, profiles, and debug views. HTTP will also be our primary basis for GUI until glas systems - especially support for incremental computing - has matured a fair bit. 
+Implementing the `http : Request -> Response` method is highly recommended for all applications. It provides a more extensible basis for user interaction with a running application than console IO, and it's easier to implement than GUI. 
 
-After a successful start, the runtime will open a TCP port (subject to configuration), print a URL to standard error, and begin accepting requests. The same TCP port may be shared between HTTP, RPC, mirroring protocols, and so on. 
+However, even if an application ignores this opportunity, the `"/sys"` path is reserved by the runtime and routed to `sys.refl.http`. Through this standard interface, a runtime can provide access to logging, profiling, debug views, administrative controls, and other generic features.
 
-Each 'http' request is handled in a separate transaction. If the transaction aborts, the request is implicitly retried until it succeeds or times out. This provides a simple basis for long polling and reactive web applications. It does seem feasible to develop custom HTTP headers to let multiple HTTP requests participate in a transaction, accessible via XMLHttpRequest, but that's a problem for the distant future.
+The Request and Response types are binaries, including HTTP headers. However, they will often be accelerated to avoid redundant parsing and validation as we route the request or process the response.  
 
-The Request and Response types are binaries representing a complete request or response. However, the runtime may accelerate functions to access and manipulate this this data, providing indexed access to the URL, headers, status codes, and so on. In general, requests are preprocessed and responses are postprocessed and validated by the runtime. Headers may be added, removed, and reordered.
+Each HTTP request is handled in a separate transaction. If the transaction aborts, it is implicitly retried until success or timeout. This provides a basis for long polling and reactive web applications. Eventually, we might develop custom HTTP headers to support multiple requests in one transaction for use with XMLHttpRequest.
+
+The HTTP interface will usually share the same network ports as RPC requests and mirroring protocols. Authorization and authentication can be configured almost independently of the application. 
 
 ## Graphical User Interface? Defer.
 
-The big idea for [glas GUI](GlasGUI.md) is that users participate in transactions through reflection on a user agent. That is, users can see data and queries presented to the user agent, and adjust how the agent responds to queries on their behalf. This combines nicely with live coding, but in conventional cases the response to a query can be modeled as a variable bound to a toggle, text-box, or slider.
+My vision for [glas GUI](GlasGUI.md) is that users indirectly participate in transactions through reflection on a user agent. This allows observing failed transactions and tweaking agent responses until the user is satisfied and ready to commit. This aligns nicely with live coding and projectional editing. 
 
-Analogous to `sys.refl.http` a runtime could define `sys.refl.gui` to provide a generic debug interface. The application 'gui' method could route some requests to this location based on navigation vars.
+Analogous to `sys.refl.http` a runtime might also define `sys.refl.gui` to provide generic GUI access to logs and debug views.
 
-Anyhow, this will be difficult to implement efficiently before the glas system matures, and is adequately substituted by HTTP interface in the short term. So, I don't plan to develop GUI until later.
+But I think it would be better to develop those transaction loop optimizations before implementing the GUI framework. There's a lot of feature interaction to consider with incremental computing and non-deterministic choice.
 
 ## Non-Deterministic Choice
 
@@ -165,23 +167,20 @@ Fair choice isn't random. Rather, given sufficient opportunities, we'll eventual
 
 ## Random Data
 
-Conventional APIs for random data are awkward in context of *transaction loops*, overlapping with PRNG state or non-deterministic choice. But there is at least one simple API concept that works very well: sample a cryptographically random field. To simplify persistence, mirroring, and partitioning of the random field, it is convenient to align this field with the database. Proposed API:
+Stateful APIs for random data are awkward in context of transaction loops and incremental computing. However, we can sample a cryptographically random field. Indexing this field can conveniently be aligned to database keys to implicitly support lifespans and access control. Viable API:
 
-* `sys.db.rand(Key, N)` - returns a natural number less than N (diverges as type error if N is not a positive natural number), cryptographically randomized with a uniform distribution across different `(Key, N)` requests. Repeated requests will return the same value.
+* `sys.db.rand(Key, N)` - returns a natural number less than N. Diverges with a type error if N is not a positive integer. Always returns the same value for the same request.
 
-This API is very easily implemented using [HMAC](https://en.wikipedia.org/wiki/HMAC). However, HMAC is relatively slow and inefficient. Where an application needs many random values, might be better to model a conventional PRNG and seed it from `sys.db.rand`.
-
-*Note:* Users may also access random data from the OS or network. 
+If users need multiple random numbers, they can construct a database key per request. However, the implementation may be slow, perhaps involving [HMAC](https://en.wikipedia.org/wiki/HMAC). The alternative is to seed a more conventional PRNG from the cryptographically random field.
 
 ## Time
 
 Transactions may observe time and abort if time isn't right. In context of a transaction loop, this can be leveraged to model timeouts or waiting on the clock. To support incremental computing, we add a variant API:
 
-* `sys.time.now()` - Returns a TimeStamp representing a best estimate of current time as a number of 100 nanosecond intervals since Jan 1, 1601 UTC (aka Windows NT time format, albeit not limited to 64 bits). Multiple queries to the clock should return the same value within a transaction. A runtime may adjust for estimated time of commit.
+* `sys.time.now()` - Returns a TimeStamp representing a best estimate of current time as a rational number of seconds since Jan 1, 1601 UTC. This corresponds to Windows NT time, but doesn't specify precision. Multiple queries to the clock within a transaction must return the same value. 
 * `sys.time.after(TimeStamp)` - Observes `sys.time.now() >= TimeStamp`. This is more convenient for incremental computing and reactivity, allowing the runtime to schedule waiting on the clock.
-* `sys.time.clock` (tentative) - an implicit parameter to select between clocks.
 
-In this API, all calls to `sys.time.now()` within a given transaction will return the same value. Thus, this API is completely useless for profiling. Profiling is instead handled via annotations and accessed via reflection APIs.
+This API is useful for adding timestamps to received messages or waiting on the clock, but useless for profiling. *Profiling* will instead be supported via annotations.
 
 ## Debugging
 
