@@ -8,82 +8,43 @@ The [transaction loop application model](GlasApps.md) supports near perfect mirr
 
 ## Configuration
 
-Not every application needs to be mirrored, thus applications should be able to explicitly enable mirroring. However, details for mirroring should be within the configuration file. The simplest option might be to define `mirrors = List of Dict` 
+The details for mirrors should be expressed within a configuration file. But not every application needs mirroring. Thus, I propose to model mirroring options as part of a configurable 'package' of options selected based on application settings. This could be selected together with the port range for HTTP and RPC interfaces and similar features.
 
-
-i.e. `mirror.(mirror-nickname).(attribute*)`, or 
-
-, within the configuration. Each mirror might describe a remote machine, including information needed for access, setup, localization, etc..
-
- architecture, common setup requirements, etc..
-
-
-Additionally, it could be useful to support multiple, named mirroring configurations to allow different app
-
-
-
-
-
-We can potentially support, named mirroring configurations. 
-
-The use of mirroring can be 
-
-Something like: `settings.mirroring = enabled:()` and ` 
-
-
-
-
-
-configuration of mirroring must be application specific. However, the details for mirroring should be managed within the configuration
-
-To configure mirroring, we might define `mirror.*` in the [glas configuration file](GlasConfigLang.md). Among other ad-hoc properties, this might describe a list or named collection of remote virtual machine services in enough detail that the runtime can use them: protocols, addresses, access tokens, architecture descriptions, and so on. The details can be handled later.
-
-Not every application needs full use of mirroring. Thus, we must also provide application settings or runtime reflection APIs to control mirroring per application. It might be useful to support multiple mirroring configurations, allowing the application to select one by name.
-
-It is convenient, though not strictly necessary, to configure a *Distributed Database* for persistent data between mirrors. Without this, there is a greater risk of losing information when a mirror fails. 
+Each mirror might describe a remote machine, including information needed for access, setup, localization, etc.. such as network addresses, architecture, access tokens, protocols, etc..
 
 ## Distributed Runtime
 
-In general, all mirrors of an application, together with origin, are understood as one distributed 'runtime'. This implies mirrors share the same key-value database and RPC registries, and abstract data with 'runtime' lifespan can be shared freely. Also, communication between origin and mirrors is communication within a runtime thus may be implementation specific.
+I find it useful to understand mirroring as implmenting a distributed runtime for the application. That is, we have one distributed application that happens to shares a database, has access to multiple network interfaces, and where the runtime itself is partitioning tolerant. Communication between mirrors may be specialized to the runtime version or even to the application (with compiler support).
 
-In context of network partitioning, mirrors can access a database in limited ways: reading cached variables, read-write to 'owned' variables, buffering writes to queues (with enough metadata for causal ordering), and full read-write access to local elements of a bag. Similarly, mirrors can each access the RPC registries accessible on the same partition. 
+Some 'effects' may be supported on multiple mirrors. Notably, access to `sys.time.*` could use the mirror-local clock, and the network API could support binding to mirror-local network interfaces. Other effects, such as filesystem access, would implicitly bind to origin.
 
-When an RPC registry is visible from multiple locations, it will receive multiple 'copies' of a published RPC object, albeit with reference to different mirrors. In general, runtimes should be smart enough to combine these objects and select a mirror based on latency, load, and other heuristics.
-
-## Mirror Local Effects
-
-Every mirror has the same effects API as origin. Moreover, this API must have the same *meaning* on every mirror that it has on origin. For example, the filesystem API is implicitly bound to the local filesystem on origin. Thus, if a mirror attempts to read file "./foo.txt", this will involve a distributed transaction talking to origin.
-
-Of course, it isn't *impossible* to access the mirror's local filesystem. However, to do so, we'll need to make this also work for origin, preferably without breaking the API. One viable and general approach is to introduce an implicit parameter representing location or perspective, and let this default to origin. 
-
-Access to the mirror's local filesystem isn't very useful, but there are at least two areas where localizing effects is useful for performance and partitioning tolerance: the clock and the network.
-
-For the clock, we might introduce an implicit parameter `sys.time.clock` that can select the clock used in `sys.time.now`. We might default to use 'any' clock, implicitly favoring the local clock. Assuming clocks are synchronized via NTP or PTP, the choice of clock might make very little difference.
-
-Regarding the network, RPC access is implicitly localized. But for TCP and UDP, we might also want to use a specific mirror's local network interface, or we might be willing to use 'any' internet capable interface. If we provide a sockets-based network API, 'bind' to a local interface is already an explicit step, so no API change is needed. Otherwise, we might need another implicit parameter to select a network interface.
+Every mirror would publish to the same RPC registries, but glas runtimes should be mirroring-aware, able to merge the same RPC object from multiple mirrors into one. Which RPC instance is favored can be based on heuristics such as latency and load balancing.
 
 ## Performance 
 
-Every mirror is implicitly repeating the same transactional step function, but I assume this 'forks' into many threads. As a heuristic rule, if the first location-specific effect in a thread refers to another node, we could let the other node handle that transaction. This trims down the number of threads each mirror is handling and avoids unnecessary distributed transactions.
+Every mirror logically runs the same 'step' transactions, but we might heuristically abort any transaction whose first location-specific effect would require a distributed transaction with another mirror. The premise is that it's better to initiate that transaction on the other mirror, where it *might* run locally, avoiding the expensive distributed transaction.
 
-Threads where it doesn't matter where they run can potentially be moved for load balancing. Variables in the distributed database can also be migrated, moving them closer to the threads that use them. There is probably a lot of math we could do to optimize distributions.
+For the database, 'ownership' of some variables may also be migrated. This would influence which steps require distributed transactions.
 
-In case of network partitioning, a subset of threads that would require a distributed transaction between partitions will simply be blocked until the network recovers. Another subset, which was running on a now remote partition for load balancing, might start running on the local partition to provide degraded service locally. Those that can run on a mirror without a distributed transaction can simply continue to run, albeit subject to congestion control if they write to a queue that is now blocked by the network partition.
+I expect a whole mess of math would be required to optimize the distribution of variables to maximize performance. Rather than relying entirely on math, we might express a programmer's assumptions about proximity and partitioning behavior via annotations within the program.
 
-## Long Term Partition Failure
+## Long Term Partition Failure and Recovery
 
-If we have permanent failure, we will lose data 'owned' by the remote partition. Perhaps worse, if we have a long term non-permanent failure, we might try to continue with a recent back-up or cached versions of the database, then the system eventually reconnects and we cannot easily combine data that has evolved independently on the different partitions. 
+The notion of 'ownership' of state is acceptable for short-term partitioning, but becomes awkward for long-term partition failures. To support long-term partitioning, we should instead favor state types that are ownerless, i.e. where each partition can continue performing reads and writes locally on its own instance, and where mirrored instances interact in a simple way while connected.
 
-If this is an expected problem, the right place to solve it is the database layer. We can extend the database with more types that don't assume 'ownership' by a single partition, where the data can be merged. I've already proposed one: the bag type. But [CRDTs](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) and [variants](https://dl.acm.org/doi/10.1145/3360580) are also a reasonable direction.
+The 'bag' type is one case of this: every partition can have its own local instance of the bag, and while partitions are connected we're free to heuristically migrate data between instances. [CRDTs](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) are another viable class of types.
+
+In any case, this is mostly a problem to solve via database APIs.
 
 ## Live Coding and Mirrors
 
-Live coding is compatible with mirrors, but we'll probably need to specify that code updates propagate from origin, i.e. origin is responsible for the 'switch'.
+The 'switch' transaction only commits once for a given code change, so it's probably more convenient if a specific mirror - usually origin - 'owns' that responsibility.  All code updates would propagate from that mirror. Similarly, the origin would be responsible for 'start'.
 
-## Concurrent Use of Mirrors
+## HTTP and Mirrors
 
-A single glas configuration might be used by multiple applications concurrently. So, what should happen with the mirroring? One option is to share remote virtual machines between multiple applications, analogous to how multiple processes are created on origin. Another is to insist that mirroring is application specific, report an error if a configured mirror is already in use.
+Usefully, every mirror could provide the HTTP service locally, and we could integrate with conventional load balancers and such.
 
-I slightly favor the shared mirrors, but I think this might depend on the 'type' of mirrors we configured. In general, we already want to configure mirrors as application specific because not every application needs this expensive feature.
+## Multi-Application Mirrors
 
+Similar to how we might run multiple glas applications concurrently on 'origin', it would be convenient if we can easily support multiple applications concurrently on the mirrors. This might be supported by modeling mirroring as a remote service, perhaps based on virtual machines, that can run multiple processes.
 

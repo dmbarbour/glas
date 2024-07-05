@@ -1,17 +1,17 @@
-# Glas Configuration Language
+# Glas Inheritable Initialization, Integration, and Configuration Language
 
-The glas configuration language, preferred file extension ".g0", has limited support for computation and ample support for modular composition and extension.
+After some discussion, I've decided to call this language 'glint', which hints at 'glas integration' or 'glas initialization'. Proposed file extension is ".gin".
 
-The glas configuration is responsible for defining the global module namespace. Thus, configuration imports are instead based around reference to the local filesystem or remote DVCS repositories. 
+Notable features:
 
-In my vision, users will import configuration files representing community distributions, company overlays, project-specific mixins and merge these elements into a 'config' namespace. The user might apply a few final tweaks, e.g. overriding a global module to reference a local filesystem workspace. The final configuration namespace may be very large, but the configuration file as maintained by the user can be small.
+* *Imports and inheritance.* The configuration file can import other files from the local filesystem, remote DVCS repositories, or HTTP. Some definitions are subject to overrides, influencing computation of inherited definitions. 
+* *Guaranteed termination.* Computation is limited to arithmetic, pattern matching, and primitive recursive loops. This makes it relatively easy to reason about refactoring and performance.
+* *Object Capability Security.* Locations are relative to the originating configuration file, restricting relationships between files. The configuration namespace can control access to specific definitions. The namespace can be reified into an environment, to support staging.
+* *Block Structured Syntax.* Minimizes use of indentation even for deep hierarchical structure.
 
-## Compatibility
+There are other configuration languages with several of these features, but the reified environment is relatively specialized and essential for my primary use case: specification of global modules.
 
-It is feasible to evaluate a hierarchical configuration into one very large JSON object, but there is no attempt at full compatibility. Relevantly, the configuration language doesn't support all JSON types such as floating point numbers and 
-
- (notably, floating point numbers aren't supported)
-
+In my vision, users import files representing company or community distributions, perhaps apply project-specific overlays, then integrate a few tweaks representing user-specific resources and authorities. Although the full configuration may be very large, the user's configuration file woudl be small.
 
 ## Data
 
@@ -37,9 +37,11 @@ Locations and environments are constructed by keywords then treated as abstract 
             ,tl:Map of Prefix to Prefix   # from renames
             )
 
-Locations capture the configuration file's location. This supports relative paths. It also lets us easily detect some problems, such as a remote DVCS configuration file referencing regular files outside the repository.
+Locations capture the configuration file's location. This supports relative paths. It also lets us easily recognize problems, such as a remote DVCS configuration file referencing regular files outside the repository.
 
 Environments capture enough information to evalute a name as understood within some scope. Environments require support across multiple layers: the name localization map is maintained in [abstract assembly](AbstractAssembly.md) across renames, while a namespace must be captured as a closure in context of *Namespaces as Functions*.
+
+*Tentative:* I might add support for date-time fields. These would convert to a rational number of seconds since the Windows NT epoch (Jan 1, 1601 UTC) in glas. At the moment, however, it might be best to use a string to describe date-time fields and leave conversion to the application.
 
 ## Namespaces as Functions
 
@@ -96,6 +98,10 @@ Regarding import sources, it is common to use a text such as `"../foobar.g0"` to
 ### Data Imports
 
 As a special case, we can also express limited import of file binaries at the data expression layer. This is a convenient alternative to embedding a file's content as a multi-line string.
+
+## Explicit Introduction
+
+By default, definitions will be overrides. If we want to assume we 'introduce' a definition for the first time, we might specify 'intro ListOfNames'. I think this will better fit the normal use case.
 
 ## Computation Limits
 

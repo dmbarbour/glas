@@ -29,32 +29,28 @@ But the executable shouldn't have too much more built-in logic than is required 
 
 ## Configuration
 
-The glas executable will look for environment variable `GLAS_CONF`, which should name a configuration file. If this environment variable is undefined, the default file path is OS specific: `"~/.config/glas/default.g0"` on Linux or `"%AppData%\glas\default.g0"` on Windows. 
+The `GLAS_CONF` environment variable should reference a file expressed in the [glas initialization language](GlintLang.md), `".gin"` file extension. If undefined, we'll try an OS-specific default such as `"~/.config/glas/default.gin"` on Linux or `"%AppData%\glas\default.gin"` on Windows. If that does not exist, the glas command will fail and might suggest attempting `"glas --config init"`.
 
-This configuration file should use the [glas configuration language](GlasConfigLang.md). Although this language aims to be simple, there is a lot to configure. For example, instead of search paths, every global module will be independently named in the configuration. Use of ModuleRef 'cli.opname' on the command line will map to 'module.cli.opname' in the configuration. To mitigate this, the configuration language supports imports, inheritance, and overrides. A user's configuration might inherit a distribution maintained by a company or community.
+A typical glas configuration for an individual will import and inherit from community or company configuration then apply a few overrides for user-specific requirements, resources, and authorities.
 
-Some things we might configure via file:
+Some features we'll configure:
 
-* *global modules* - Mapping global module names to locations. Also supports constants and staged modules. No support for search paths, but we can eventually import community 'distributions'.
-* *key-value database* - For orthogonal persistence and asynchronous communication. We'll probably start with a file-based database, perhaps LMDB or LSM tree. We might eventually want distributed databases.
-* *RPC registries* - Where to publish and discover RPC objects. In general will route to multiple registries with varying trust levels using tag-based filters.
-* *mirroring* - Automatically deploy applications to remote nodes for performance and network partitioning tolerance.
-* *config vars* - environment vars via the config
-* *ad-hoc runtime options* - such as logging and profiling
-* *content delivery networks* - For large values, communicated frequently.
-* *proxy compiler and cache* - For large computations, performed frequently.
+* *Global modules.* Instead of search paths or package managers, every global module is explicitly specified in the configuration. We'll typically import community or company 'distributions' of packages into the configuration.
+* *RPC registries.* Describe where to publish and subscribe to RPC objects, together with simple publish or subscribe filters. This serves as a content-addressed routing model for RPC.
+* *Persistent data.* A transactional key-value database that can be shared between 'glas' commands. Often user or project specific. Glas systems will generally favor RPC over shared state.
+* *Mirroring.* For performance and partitioning tolerance, some applications might want to run in a distributed runtime. We might describe multiple mirroring for those applications.
+* *Logging and profiling.* We could configure where this information is stored.
+* *Application configuration.* It can be convenient to supply applications some extra configuration or calibration data through the configuration, similar to environment variables. We might support packages of specialized configuration options that can be selected based on application `settings.*` methods.
 
-However, the expected use case is to share the same configuration file between many glas commands line operations. Some properties cannot (or should not) be shared between operations. In these cases, applications may define ad-hoc `settings.*` methods to be evaluated by a late stage compiler or runtime, with limited access to effects. Alternatively, the application might call `sys.refl.*` methods to dynamically configure a runtime, potentially limited to `start()` and `switch()` operations.
-
-Ultimately, all settings are provided either through the configuration file or through the application, and nothing is directly configured by command line switches or environment variables. If users want configure `settings.*` via command line, it is possible to develop a staged application for that role.
+A configuration can indirectly reference other environment variables, but this is easily sandboxed to support cross compilation. An application can potentially adjust runtime behavior dynamically via `sys.refl.*` methods. In any case, I specifically aim to avoid introducing a mess of command line options to configure the runtime.
 
 ## Naming Modules
 
-For the primary run operation, we must name a module:
+A ModuleName is a direct reference to `module.ModuleName` in the configuration, and must meet the normal configuration syntax for a dotted path. The configuration must specify every global module as a local or DVCS folder, an inline value, or a staged computation.
 
-        glas --run ModuleName Args
+The global module namespace isn't flat. That is, `sys.load(global:"math")` might not always refer to `module.math` when compiling a module. This is handled by including a module *Environment* in the specification of compiled global modules. 
 
-The ModuleName is restricted syntactically to a public name in the configuration. The glas executable will implicitly add a 'module.' prefix then evaluate this name within the configuration. The glas executable will report an error if the referenced module is undefined or its definition is not recognized as a global module.
+This is a great boon for flexible integration and testing, but it can also be confusing for users to navigate. To mitigate the latter, we might configure the level of detail when compiling modules, or develop tools to detail the dependency graph for a module. 
 
 ## Running Applications
 
@@ -62,12 +58,12 @@ As mentioned in the start, the primary operation is to run an application.
 
         glas --run ModuleName Args
 
-In this case, we first load the configuration, then we compile the module, then we attempt to interpret the module's compiled value as an application. Depending on the definition of `settings.mode` within the application, we might run in various modes:
+In this case, we first load the configuration, then we compile the module, then we attempt to interpret the module's compiled value as an application. Depending on the definition of `settings.mode` within the application, we might run in various modes. At the moment, only two modes are recognized:
 
-* *step* - transaction loop, also the default
-* *lang* - language module, 'compile' some arguments to another app (see below)
+* *step* - transaction loop, the default
+* *stage* - compile arguments to another app (see below)
 
-The run mode may influence which effects are provided, the application life cycle, and other things. I might eventually introduce a more conventional procedural mode, perhaps called *main*. 
+The run mode may influence which effects are provided, the application life cycle, and other things.
 
 ### Staged Applications
 
@@ -75,9 +71,11 @@ A staged application will be interpreted as a language module. That is, it shoul
 
         glas --run StagedApp Args To App Constructor -- Args To Next Stage
 
-In this case, the SourceCode is a list of command line arguments `["Args", "To", "App", "Constructor"]`. The returned value must be recognized as a compiled application module, e.g. `glas:app:Application`. This is then run with remaining arguments `["Args", "To", "Next", "Stage"]`. The `"--"` separator is optional; if omitted, it is inserted implicitly as the final argument.
+In this case, the SourceCode is a list of command line arguments `["Args", "To", "App", "Constructor"]`. The returned value must be recognized as a compiled application module value. This is then run with remaining arguments `["Args", "To", "Next", "Stage"]`. The `"--"` separator is optional; if omitted, one is implicitly inserted as the final argument.
 
-Between staged applications and the syntactic sugar for user-defined operations, users can effectively extend the glas command line language just by defining modules. The main alternative is *Inline Scripting* (see below) but it is relatively awkward to work with large argument strings in most command shells.
+Staged applications are intended for use together with the `glas opname => glas --run cli.opname` syntactic sugar, allowing users to generally treat `opname` as specifying a language for the remainder of the glas command, with `--` as a consistent stage separator.
+
+Use of `--cmd.FileExt (ScriptText) Args` can serve a similar role, using normal file language for the inline scripts, but it's inconvenient to directly edit a large ScriptText in most comand shells. See *Inline Scripting*. 
 
 ### Scripting
 
@@ -105,21 +103,22 @@ An obvious variation on the above is to embed the script text into the command l
 
         glas --cmd.FileExt ScriptText Args
 
-This allows familiar file-based languages to be used without a separate file. The most likely use case is if constructing ScriptText within another program. In this case, there is no automatic removal of a shebang line.
+This allows familiar file-based languages to be used without a separate file. The most likely use case is if constructing ScriptText within another program. *Note:* There is no implicit erasure of an initial shebang line from ScriptText.
 
 ## Tooling
 
-The glas executable may contain a few built-in tools, but anything that would significantly increase executable size should instead represented in the module system. For example, we might have a `glas config` tool (defined by 'module.cli.config') that extends operations available via `glas --config`. 
+The glas may contain a few built-in tools. Anything that would significantly increase executable size should be avoided as a built-in. By convention, we should also support an extended suite in the module system.
 
-In practice, the glas command line executable will support a fair bit of debugging logic to support `sys.refl.http` and similar APIs. It would be convenient if tooling can provide access to much of this.
+        glas --config Operation     # built-ins
+        glas config Operation       # full suite
+
+The two should be consistent in meaning and intention for all Operations that are implemented for both.
 
 ### Configuration Tooling
 
-Tools to debug the configuration in general, or to use a configuration as a simple language.
-
         glas --config Operation
 
-Useful operations:
+Tools to debug the configuration in general, or to use a configuration as a simple language. Useful operations:
 
 * *init* - help users create a configuration file, perhaps interactively
 * *check* - look for obvious errors or concerns in the configuration file 
@@ -130,25 +129,21 @@ Useful operations:
 
 ### Module System Tooling
 
-This should be extra tooling to discover modules and to debug modules.
-
         glas --module Operation
 
-Useful operations:
+This should be extra tooling to discover modules and to debug modules. Useful operations:
 
 * *list Filters* - scan the configuration then print a list of available modules. The default might include the module name and a short text description. Filters could allow for restricting the scan and controlling which annotations are displayed.
 * *check ModuleName* - pass/fail for compiling a module without running it. Will print any compile-time log messages.
-* *deps ModuleName* - print transitive dependencies of a module in detail.
+* *deps ModuleName* - print transitive dependencies of a module in exacting detail.
 * *test Filters* - run tests on modules in the module system
 * *help* - describe available operations
 
 ### Cache Tooling
 
-Provide some user access and control to what is being stored for performance.
-
         glas --cache Operation
 
-Useful operations:
+Provide users some visibility and control for what is stored for performance. Useful operations:
 
 * *debug Filters* - describe what is held in cache
 * *clear Filters* - delete the cache or perhaps parts of it (e.g. DVCS, files)
@@ -167,7 +162,7 @@ We'll rely on log messages for detailed warnings or errors. But we might allow a
 
 ## Bootstrap
 
-Pre-bootstrap implementations of the glas executable might support only a limited subset of the effects API, such as read-write to console and access to an in-memory database. To work within these limits, I propose to bootstrap by writing an executable binary to standard output then redirecting to a file.
+Pre-bootstrap implementations of the glas executable might support only a limited subset of the effects API, such as console IO, an in-memory database, and perhaps the HTTP interface. To work within these limits, I propose to bootstrap by writing an executable binary to standard output then redirecting to a file.
 
     # build
     /usr/bin/glas --run glas-binary > /tmp/glas

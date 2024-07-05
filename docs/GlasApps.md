@@ -132,12 +132,11 @@ Implicit parameters can be modeled as a special case of algebraic effects or vic
 
 In the initial glas language, function passing will likely be one way, i.e. a procedure can pass a method to a subprocedure but not vice versa. This is convenient for closures over stack variables and avoiding heap allocations. Algebraic effects can be understood as one-way function passing.
 
-
 ## HTTP Interface
 
 Implementing the `http : Request -> Response` method is highly recommended for all applications. It provides a more extensible basis for user interaction with a running application than console IO, and it's easier to implement than GUI. 
 
-However, even if an application ignores this opportunity, the `"/sys"` path is reserved by the runtime and routed to `sys.refl.http`. Through this standard interface, a runtime can provide access to logging, profiling, debug views, administrative controls, and other generic features.
+However, even if the application ignores this opportunity, the `"/sys"` path is reserved by the runtime and implicitly routed to `sys.refl.http`. Through this standard interface, a runtime can provide access to logging, profiling, debug views, administrative controls, and other generic features.
 
 The Request and Response types are binaries, including HTTP headers. However, they will often be accelerated to avoid redundant parsing and validation as we route the request or process the response.  
 
