@@ -1,22 +1,10 @@
 # Glas Design
 
-Glas was named in allusion to transparency of glass, human mastery over glass as a material, and phased or 'staged' creation with glass (liquid and solid). 
+Glas was named in allusion to transparency of glass, human mastery over glass as a material, and staged creation with glass (liquid and solid). 
 
-Design goals for glas include compositionality, extensibility, reproducibility, modularity, metaprogramming, and live coding. Compared to conventional languages, there is much more focus on compile-time computation and staging. To support live coding, the default [application model](GlasApps.md) is also non-conventional.
+Design goals for glas include compositionality, extensibility, reproducibility, modularity, metaprogramming, and live coding. Compared to conventional languages, there is much more focus on compile-time computation and staging. 
 
-## Command Line Interface (CLI)
-
-The glas system starts with a command line tool 'glas'. This tool has built-in knowledge for compiling glas modules and running glas applications. Relevant to my design goals, the command line language is also very extensible through staged computing and definition of 'glas-cli-\*' modules. Users can effectively define their own command line languages. See [Glas CLI](GlasCLI.md) for details.
-
-## Modules and Syntax Extension
-
-Modules are represented by files and folders. Every valid module compiles to a glas value (see *Data*). In most cases these values represent *Programs and Applications*, but data modules are also useful and can be referenced as constants.
-
-A file is compiled based on its file extensions. To process a file named "foo.ext", the glas command line will first compile a global module named lang-ext, which must define a compilation function, then apply this compilation function to the file binary. To ensure a reproducible outcome, the compiler function has very limited access to effects. To bootstrap this system, a compiler for ".glas" files is built-in to the CLI, and we'll first compile lang-glas if possible.
-
-File extensions may be composed. For example, "example.json.m4.gz" would essentially apply a pipeline of three compilers: lang-gz then lang-m4 then lang-json. This might decompress the file binary, apply a text macro preprocessor, then parse the result as JSON. Conversely, if file extensions are elided the compiled value is the unmodified file binary.
-
-A folder is compiled to the value of its contained "main" file, which may have any recognized file extension. Folders are implicit dependency boundaries: a compiler can reference only local files or subfolders, or external modules referenced through the system configuration. Folders may also contain ad-hoc auxilliary content such as tests, readme, signed manifest, or license file.
+Interaction with a glas system is initially through a command line 'glas' executable. See [Glas CLI](GlasCLI.md) for details.
 
 ## Data
 
@@ -86,57 +74,66 @@ Binaries receive special handling because they're a very popular type at system 
 
 A rational can be modeled as a dict `(n, d)` of integers with non-zero denominator 'd'. The rational subset of complex or hypercomplex numbers can be modeled as dicts `(r, i)` or `(r, i, j, k)` of integers or rationals. A vector is a list of numbers. A matrix is a list of vectors of identical lengths.
 
-Arithmetic operators on glas data should be overloaded to support these extended number representations, at least where it makes sense to do so. 
+Arithmetic operators on glas data will generally be overloaded to support these number representations, at least where it makes sense to do so. Implicit conversions between number types would be performed as needed, restricted to lossless conversions.
 
 Under the hood, the runtime can potentially introduce optimized representations. For example, it is feasible to introduce a bignum floating point representation for rationals whose denominator is a power of two (or ten, or sixty). Or represent a matrix as a large array with logical dimension tracking.
-
-### Abstract Data Types
-
-Data abstraction is an extrinsic property of data, i.e. data is abstract *in context* of a given subprogram. In case of abstract runtime types (such as open file handles), the scope of abstraction might be an entire application. Ideally, data abstraction is enforced by static analysis, eliminating runtime overheads. However, static analysis is difficult in many cases. 
-
-We can extend the data representation with barriers to efficiently detect violation of type assumptions at runtime. These barriers might be manipulated by 'annotations' that wrap and unwrap values with type headers at runtime. This has unavoidable overhead, but it can be acceptable depending on granularity. A compiler might eliminate many wrap-unwrap pairs based on static analysis.
-
-In case of [substructural types](https://en.wikipedia.org/wiki/Substructural_type_system) we might further restrict a subprogram's ability to 'copy' or 'drop' data. Again, this is best enforced by static analysis, but we could 
-
-### Nominative Types
-
-A runtime can support [nominative types](https://en.wikipedia.org/wiki/Nominal_type_system) as an abstract type. Essentially, instead of using bitstrings as 'labels' for a dictionary or variant, we can use database keys or names from a [namespace](GlasNamespaces.md), abstracting over representation details. In context of live coding, orthogonal persistence, and distribution, nominative types must be carefully scoped.
 
 ## Programs and Applications
 
 A program is a value with a known interpretation. An application is a program with a known integration.
 
-The glas system specifies [glas language](GlasLang.md) with file extension ".glas". A glas module compiles to a dictionary of partial [namespaces](GlasNamespaces.md). An application module should define the 'app' namespace, representing an [application object](GlasApps.md). The app namespace should leave abstract a subset of methods `%*` and `sys.*` to be provided by the runtime, corresponding to [abstract assembly](AbstractAssembly.md) and system functions. Application state is bound to an external key-value database with support from the language.
+The glas system proposes an unconventional [application model](GlasApps.md) that is very suitable for live coding, reactive systems, distributed network overlays, and projectional editors. This is based on a transaction loop: run the same atomic, isolated 'step' transaction repeatedly, with non-deterministic choice as a basis for multi-threading. A few other methods may support HTTP, RPC, and live code switch.
 
-The glas system is extensible via language modules, acceleration, and staging. The initial program and application model is intended to provide a good foundation, but I assume programmers will eventually use problem-specific languages for various parts of a large application.
+The glas system develops general purpose models for [namespaces](GlasNamespaces.md) and an [abstract assembly](AbstractAssembly.md) as structured intermediate representations for glas programs. Program modules generally compile into a dict of namespaces (or mixins) of abstract assembly definitions. The namespace model supports hierarchical composition, inheritance, and overrides. The abstract assembly can control language features and support late binding of embedded DSLs and macros.
 
-### Language Modules
+The glas system specifies the [glas init language](GlasInitLang.md) for modular configurations, a primary [glas language](GlasLang.md) for the program layer, and a [glas object language](GlasObject.md) for serialization of structured data. These favor file extensions ".gin", ".g", and ".glob" respectively. Users can define additional languages with user-defined file extensions in the program layer.
 
-As a simple naming convention, global module `lang.xyz` should detail how to compile files with extension ".xyz". The 'app' namespace should define `compile : SourceCode -> ModuleValue`. The SourceCode is usually a file binary, but may in general may be any glas data. The general case appears easily in context of composing file extensions. The compiled module value may be any glas data, but is most often an intermediate representation for a compiled program. 
+## Modules
 
-To ensure reproducible results, the compiler has very limited access to effects. The only observable effect is to is to 'load' compiled values from external modules. For convenience, this extends to staged compilation, treating it as a special module reference.
+The glas system uses a two level module system:
 
-* `sys.load(ModuleRef)` - On success, returns compiled value of the indicated module. On error, diverges if observing failure would be non-deterministic (e.g. dependency cycle, network fault, resource quota), otherwise fails deterministically. We'll broadly distinguish a few kinds of ModuleRef:
-  * *local:Text* - refers to a local file or subfolder, found within the same folder as whatever file is currently being compiled. The Text must not include the dot file extension or folder path separator.
-  * *global:Text* - refers to an externally configured value by name. This may be localized within the global namespace, i.e. `global:"foo"` may mean different things to different global modules. However, all local modules would reference the same `global:"foo"`. 
-  * *inline:Data* - trivially return Data. Equivalent to staging with an identity function. This is useful only in context of composite ModuleRef options, such as *stage*.
-  * *stage:(LangRef, DataRef)* - here LangRef and DataRef are both ModuleRefs. In practice, LangRef might be `global:"lang.foo"` corresponding to file extension `".foo"`, while DataRef is `inline:Text` corresponding to a file body.
+* *modular configurations* - Configuration files may import from the local filesystem, remote DVCS repositories, and perhaps HTTP resources.  
+* *modular programs* - Program files may access abstract names from a configured environment, or local files from the same folder or subfolders.
 
-Annotations within the compiler can further support logging, profiling, tracing, caching, parallelism, quotas, and hardware acceleration. These effect-like features are not observable by the compiler but may help with performance and debugging.
+This separation isolates many concerns to the configuration layer including authorization, migration, and version control. The locality constraint between program files ensures folders are self-contained, which simplifies refactoring and sharing. The configured environment for a program module may represent both namespaces and specific parameters, subject to convention and configuration.
 
-Long term, I also want to support REPL, linter, syntax highlighting, [language server protocol](https://en.wikipedia.org/wiki/Language_Server_Protocol), interactive tutorials, etc.. In context of staging, it is most convenient to support these features as additional interfaces on language modules. But I'm not in a hurry to develop these integration APIs.
+In my vision for glas systems, a user will typically inherit from a community or company configuration then override a few definitions representing authorizations, resources, or preferences. The community configuration will specify individual modules, eliminating need for a separate package manager. A configured module might be described as:
 
-### Automated Testing
+        type ModuleDesc 
+              = (spec:ModuleSpec
+                ,desc:"text blurb"
+                ,... # ad-hoc annotations
+                )
 
-As a simple naming convention, local modules whose names start with "test-" will be recognized as tests. Tests can be compiled and evaluated by the glas system to produce or maintain a health report. Each test application may define multiple test methods as `test.*`. A test method should have a simple `unit -> unit | FAIL` type. 
+        type ModuleSpec
+              = file:(at:Location, ln:Localization)
+              | data:PlainOldData
 
-Effects in automated tests are restricted to ensure reproducibility and replayability. In addition to annotations for logging, profiling, caching, etc. we can use `sys.fork` for fuzz testing and search.
+Most global modules would be specified as files. This may refer to remote DVCS resources depending on Location. The 'data' option is convenient for parameterizing modules.
 
-* `sys.fork(N)` - returns an integer in the range `0..(N-1)`. Diverges if N is not a positive integer.
+Compilation of a file is based on file extension. To compile a file with extension ".ext", we first load *Language Module* 'lang.ext', which should define a 'compile' function (see below). Support for ".g" files is built-in, but the glas system will nonetheless attempt to bootstrap 'lang.g' if defined. A file with multiple extensions such as ".json.gz" is implicitly pipelined as 'lang.gz' then 'lang.json'. Conversely, a file without extensions trivially 'compiles' to its binary content. 
 
-The test system is free to leverage abstract interpretation, heuristics, and memory to focus on 'fork' choices that are more likely to result in test failure, such as edge cases or regression tests.
+Dependencies between modules must form a directed acyclic graph. Dependency cycles will be detected when compiling modules and treated as an error.
 
-*Note:* Due to limited effects, the test system requires explicit simulation of test environments in many cases. Additionally, true integration testing must use test applications instead of regular test modules.
+## Language Modules
+
+A language module defines a 'lang' namespace that defines `compile : SourceCode -> ModuleValue`. To ensure a reproducible outcome, language modules have limited access to effects: they can only ask the system to 'load' compiled data from other modules. However, to simplify embedding of user-defined languages or development of macros, this extends to staged evaluation.
+
+* `sys.load(ModuleRef)` - On success, returns compiled value of the indicated module. On error, diverges if observing failure would be non-deterministic (e.g. dependency cycle, network fault, resource quota), otherwise fails observably (e.g. backtracking or exception). We'll broadly distinguish a few kinds of ModuleRef:
+  * *file:Name* - Reference a local file in the current folder or subfolder. No "../" paths! Compilation is based on file extension, selecting "lang.ext" from the configured environment. 
+  * *env:Name* - Load data by name from the configured environment. Depending on conventions, this might represent a specific parameter or localized access to a configured module namespace.
+  * *data:Data* - returns given Data. Intended for use with composite module refs like *eval*.
+  * *eval:(lang:ModuleRef, src:ModuleRef)* - staged compilation, useful for embedding user-defined languages or DSLs.
+
+Although there are no other formal effects, annotations can support logging, profiling, tracing, caching, parallelism, and hardware acceleration.
+
+## Automated Testing
+
+As a simple convention, modules named `test.*` in scope when compiling a module (relative to Localization) could be treated as a test suite. These modules should export namespaces that define one or more pass-fail `test.*` methods. 
+
+Tests have limited access to effects: non-deterministic choice for fuzz testing or property testing, ephemeral state for environment simulation. State might be expressed via implicit parameters and algebraic effects. The sequence of choices would be included in the test report. Detailed test reports might further include log outputs or profiling information.
+
+To reduce rework, it is feasible to configure shared services to cache test reports, or proxy compilation services might also run and cache tests.
 
 ## Performance
 
@@ -172,17 +169,37 @@ The [glas object (glob)](GlasObject.md) representation is designed to serve as t
 
 Any computation that could run lazily or in parallel can potentially be memoized. Persistent memoization would be especially relevant for incremental compilation of the module system. Content addressing can support memoization by reducing the cost to compare persistent values.
 
-Memoization is most easily applied to tree structures, where we can compute some monoidal value for each tree node based on the value in each child. Unfortunately, it does not easily apply to lists because the underlying finger-tree structure is not visible. This can be mitigated by applying some other stable chunking system to the list, cf. [prolly trees](https://docs.dolthub.com/architecture/storage-engine/prolly-tree).
+Memoization is most easily applied to tree structures, where we can compute some monoidal value for each tree node based on the value in each child. To memoize over lists, we might take inspiration from [prolly trees](https://docs.dolthub.com/architecture/storage-engine/prolly-tree) where a list can be 'chunked' in a stable way based on a rolling hash.
 
 ## Thoughts
 
-### Type Checking
+### Abstract Data 
 
-Type annotations can be included in the application namespace and perhaps also within program definitions. Ideally, we can immediately begin to perform some checks on programmer assumptions and expectations based on these types. However, I hope for types to be 'partial' in the sense that we can leave them partially unspecified and incrementally refine them. Types with holes in them.
+Data abstraction is formally a property of a program, not of data. But dynamic enforcement of abstraction assumptions does benefit from including some annotations in the data representation. We could extend the Node type to support abstract data:
+
+        type Node =
+            | ...
+            | Abstract of TypeName * Tree
+
+A concept of 'linear' abstract types are useful for modeling resources that should be copied or dropped except through specific interfaces. This would be useful for file handles, network sockets, channels. Linear abstract types could be enforced statically, but like other abstract types we could use some metadata to track linearity - perhaps a bit packed into the pointer, or reserving one bit from the Stem encoding.
+
+A concept of 'scoped' abstract types are useful for ensuring references don't escape their domain, e.g. a file handle or network socket shouldn't be transferred via RPC or stored in a persistent database. Similar to linearity, a few metadata bits could support efficient dynamic enforcement of scopes, e.g. identifying when a value is transitively plain-old-data.
+
+Glas systems should use data abstraction where appropriate, but with attention to how it interacts with live coding, orthogonal persistence, and inter-process communication. 
+
+### Type Annotations and Checking
+
+Type annotations can be represented in [abstract assembly](AbstractAssembly.md). Front-end languages can have built-in syntax and naming conventions to further support such annotations. We can potentially analyze namespaces to verify some types ahead of time, while others might be enforced dynamically using runtime annotations in the data representation. For performance, we might also be explicit about which types we assume to be statically checkable.
+
+Due to the namespace context, it is feasible to wrap existing modules, adding type annotations, and it is feasible to override or refine type annotations for a software component. 
+
+Further, type annotations should not directly contribute to formal behavior of glas programs, which enables gradual typing. In my vision for glas systems, partial typing should be the common case, with users expressing rough assumptions about the shapes of things without always providing the fine details.
 
 ### Proof Carrying Code
 
-I'd like to start supporting proof carrying code and tactics relatively early. This should involve annotations within code, e.g. `(%proof Property Tactics Subprog)`, where both properties and proof tactics can be abstracted via the namespace. Ideally, this is defined in a way that allows for namespace overrides to add proofs modularly to a library or application.
+In addition to types, we could support expression of more ad-hoc properties about code within the abstract assembly, along with a proof or adequate proof tactics. Like types, these proofs could be supported via front-end syntax and naming conventions, and would be subject to tweaks or overrides through the namespace. Proofs and types might ultimately be the same thing, just with types favoring implicit proof tactics.
+
+Similar to logging and profiling, proofs could be associated with static 'channels' to simplify enabling or disabling specific proofs. 
 
 ### Graphical Programming
 
@@ -210,5 +227,5 @@ I've often considered extending glas data to support graph structures or unorder
 
 ### Number Units
 
-I like the idea of units for numbers, i.e. such that we know it's `3.0 Volts` instead of `3.0 kilograms`. But I haven't found a good way to present this dynamically. Too much overhead, too messy. Statically, shadow types seem a reasonable approach.
+I like the idea of units for numbers, i.e. such that we know it's `3.0 Volts` instead of `3.0 kilograms`. But I haven't found a good way to represent this dynamically. Shadow types might be viable, statically, or perhaps some conventions for static computation of units. 
 

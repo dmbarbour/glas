@@ -36,7 +36,7 @@ The proposed API:
 
         gui : UserAgent -> ()
 
-The 'gui' method calls back to the user both to render data and to ask for information including navigation variables, window sizes, feature support, preferences, etc. relevant to constructing a view. The application may write user agent variables, too, but this might be presented to the user as a recommendation.
+The 'gui' method calls back to the user both to render data and to ask for information including navigation variables, window sizes, feature support, preferences, etc. relevant to constructing a view. The application may write user agent variables, too, e.g. writing navigation variables would (upon commit) cause the user to view different resources in future transactions.
 
 Under premise of user participation in transactions, we render aborted transactions. Further, we leverage aborted transactions as a basis for read-only views. Exactly what is rendered is left to the user agent, i.e. access to failed hierarchical transactions might only be visible in a debug view. We can render what-if scenarios by performing some other operations before rendering the GUI in an aborted transaction. 
 
@@ -44,19 +44,23 @@ Under premise of user participation in transactions, we render aborted transacti
 
 ### Integration
 
-Implementation of the 'gui' interface is not limited to the toplevel application object. It could be implemented on arbitrary application components - perhaps even individual variables - to support live coding and debugging. We could also define 'gui' for RPC objects published to the registry.
+Implementation of the 'gui' interface is not limited to the toplevel application object. It could be implemented on arbitrary application components - perhaps even individual variables - to support live coding and debugging. We could even define 'gui' for RPC objects published to the registry.
 
 By default, we might render the toplevel application 'gui' using a runtime integrated user agent. In this case, ad-hoc access to that user agent should also be accessible through the runtime reflection API (perhaps `sys.refl.gui`). 
 
-### Web Applications
+## HTTP over GUI
 
-Users might route `/sys` requests to `sys.refl.http`, a runtime-provided HTTP interface. This interface is intended for administration and debugging, but a runtime could also provide the application GUI through this interface, e.g. `/sys/gui/NavVars`, leveraging JavaScript, DOM, CSS, and XMLHttpRequest. The URL suffix and some cookies could be abstracted as navigation vars. In general, multiple HTTP requests will participate in each GUI transaction.
+We can trivially encode some user variables as HTTP requests or even lists thereof, supporting any request method. I don't intend to build GUIs in this way, primarily, but a few conventions around this could provide a 'gui' view for many 'http' resources and operations and supports a smooth transition the two models.
 
-The initial page and JavaScript 'continuation' could be partially evaluated and 'compiled'. Stable navigation variables can be represented in the URL to maximize partial evaluation. This should be related to compiling fragments of RPC methods to run on the caller.
+## GUI over HTTP? Defer.
+
+The runtime implicitly routes `/sys` to the runtime provided `sys.refl.http`. The runtime or compiler could feasibly implement 'gui' over HTTP via `/sys/gui` or similar, implementing a UserAgent based on HTML, CSS, JS, DOM, and XMLHttpRequest. However, this isn't a trivial feature, and we'll need custom HTTP headers for multi-request transactions. Something to consider developing much later.
 
 ## Navigation Variables
 
-We can generalize from URLs and query strings to a concept of fine-grained 'navigation variables'. Navigation variables let us avoid parsing, can be observed in arbitrary order, and let applications hint at or recommend opportunities for exploration. Like URLs, navigation variables can be kept in history for backtracking, or users could open multiple views concurrently.
+UserAgents might broadly distinguish a few 'roles' for variables. Navigation variables would serve a role similar to HTTP URLs, with the user agent maintaining a history and providing a 'back' button. Writing to navigation variables would essentially represent navigating to a new location upon commit, albeit limited to the same 'gui' interface.
+
+Other potential roles would be inventory or equipment, influencing how the user interacts with the world. In any case, I think we could and should develop a more coherent metaphor than clipboards and cookies. 
 
 ## Rendering Temporal Media and Large Objects
 

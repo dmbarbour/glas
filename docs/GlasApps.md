@@ -18,13 +18,13 @@ In a transaction loop, we repeatedly evaluate the same atomic, isolated transact
 
 * *Reactive.* In some cases, repeating a transaction is obviously unproductive. For example, if the transaction aborts, or if it repeatedly writes the same values to the same variables. In these cases, the system can simply wait for relevant changes in the environment before retrying. With some careful API design (and perhaps a few annotations), programmers can ensure wait conditions are obvious to the runtime without ever explicitly waiting.
 
-* *Concurrent.* For isolated transactions, there is no observable distinction between repetition and replication. This becomes useful in context of incremental computing and fair non-deterministic choice. For example, a `fork(N)` effect might logically return a natural number less than N, but might be implemented by creating N copies of the transaction and evaluating them in parallel. Assuming those transactions do not have a read-write conflict, they may even commit in parallel. This effectively models multi-threaded systems without explicit threads.
+* *Live Coding.* The behavior of a repeating transaction can be safely modified between transactions. Application state, schema update, and IDE integration also need attention, which might be expressed by inserting a handoff transaction. 
 
-* *Live Coding.* Transaction loops simplify the problem. The behavior of a repeating transaction can be easily modified between transactions. We can test changes and obtain feedback before committing to ensure a predictable transition. However, application state, schema update, and IDE integration also need attention. 
+* *Concurrent.* For isolated transactions, there is no observable distinction between repetition and replication. This becomes useful in context of incremental computing and fair non-deterministic choice. For example, a `fork(N)` effect might logically return a natural number less than N, but can be implemented by creating N copies of the transaction and evaluating them in parallel. Assuming those transactions do not have a read-write conflict, they can commit in parallel. This effectively models multi-threaded systems without reifying threads, which greatly simplifies interaction with live coding.
 
-* *Distribution.* Distributed transactions are expensive in general, but there are ways to mitigate costs. For example, a queue can have multiple concurrent writers and a single reader without a read-write conflict between transactions. In case of network disruption, writes to a queue can be buffered locally then delivered when the systems reconnect. Read-mostly state can be locally cached. Programmers can design concurrent operations such that only a few are blocked by lack of network connectivity. 
+* *Distribution.* The properties of transaction loops also apply to repeating distributed transactions. However, distributed transactions are expensive! To minimize need for distributed transactions, we might locally cache read-mostly data and introduce specialized state types such as queues, bags, or CRDTs. Multiple transactions can write to the same queue without risk of read-write conflict, and a distributed queue could buffer writes locally.
 
-* *Mirroring.* In a fully connected network, a distributed transaction can be processed anywhere, and location affects only performance. But when the network is fails, location suddenly matters. It is feasible to replicate a repeating transaction across nodes to improve network partitioning tolerance. Upon network disruption, each partition can maintain partial access to the distributed database and RPC registries. As the network is recovered, the transaction loop would regain full functionality.
+* *Mirroring.* It is feasible to configure a distributed runtime where multiple remote nodes logically repeat the same transaction. While the network is connected, where the transaction runs influences only performance. There is no need to run a distributed transaction if another node will run the same transaction locally. Concurrent 'threads' have implicit affinity to nodes based locality. Some resources, such as state, may be cached or migrated to improve locality or load balancing. If the network is disrupted, some distributed transactions will fail, but each node can continue to provide degraded services locally and the system will recover resiliently by default.
 
 * *Congestion Control.* If a repeating transaction writes to a queue that already contains many items, the runtime might reduce priority for evaluating that transaction again. Conversely, we could increase priority of transactions that we expect will write to a near-empty queue. A few heuristics like this can mitigate scenarios where work builds up or runs dry. This combines nicely with more explicit controls.
 
@@ -38,27 +38,62 @@ Unfortunately, we need a mature optimizer and runtime system for these opportuni
 
 ## Application Life Cycle
 
-For a transaction loop application, the first effectful operation is `start()`. This will be retried indefinitely until it commits successfully. After a successful start, the runtime will begin evaluating `step()` repeatedly in separate transactions. The runtime will also bind the application to external interfaces to receive RPC and HTTP requests, GUI connections, and so on.
+For a transaction loop application, the first effectful operation is `start()`. This will be retried indefinitely until it commits successfully or the application is killed externally. If undefined, 'start' implicitly succeeds.
 
-In context of live coding or continuous deployment, we'll call the updated application's `switch()` method to help smoothly transition between versions of code at runtime. We'll continue running a prior version of `step()` and other methods until we switch successfully, at which point we'll transition atomically to the new code. Of course, if the prior version never successfully started, we may instead try the updated `start()`.
+After a successful start, the runtime will begin evaluating `step()` repeatedly in separate transactions. The runtime may also call methods to handle RPC and HTTP requests, GUI connections, and so on based on the interfaces implemented by the application.
 
-A transaction loop application may voluntarily halt by calling and committing `sys.halt()`. To support graceful shutdown, the glas runtime will bind OS events such as SIGTERM or WM_CLOSE to call a `stop()` method. However, if an application does not voluntarily halt, we'll simply leave it to more aggressive mechanisms such as SIGKILL, Task Manager, or cycling power.
+The application may voluntarily halt via `sys.halt()`, marking the final transaction. To support graceful shutdown, a `stop()` method will be called in case of OS events such as SIGTERM on Linux or WM_CLOSE in Windows, but this won't necessarily halt the application. 
 
-*Note:* An application may define `settings.run-mode` to indicate alternative life cycles, such as staged applications, or a basic procedural application. However, transaction loops should be the default for glas systems.
+An applications may voluntarily restart via `sys.restart()`. This should be consistent with halting the application then starting again in a new OS process. That is, the runtime is fully restarted: the runtime database is cleared, open files or network sockets are closed, etc.. Only persistent state bound to the external database is preserved.
 
-## Data Lifespans, Live Coding, and Higher Order Programming
+### Live Coding Extensions
 
-Consider a few broad lifespans for data:
+Upon noticing an update to a running application, the updated application is compiled then we evaluate `switch()` - the updated implementation thereof - repeatedly until it succeeds. If undefined, switch implicitly succeeds. In contrast to start, switch must assume there are open files and network connections, that the runtime database is already in use, etc..
 
-* *persistent* - plain old data and possibly abstract *accelerated representations* (e.g. for sets, unlabeled graphs, and unboxed matrices). Persistent data can be stored persistently and shared between apps.
-* *runtime* - includes abstract reference to open file handles, network sockets, or the OS process. Runtime data is stored in memory between transactions within a single OS process.  
-* *ephemeral* - bound to the current transaction or perhaps to a specific frame on the call stack. Cannot be stored between transactions, yet ephemeral types may be *stable* for purpose of partial evaluation or caching.
+Upon a successful switch, we'll begin using the new code's version of step, RPC, HTTP, and GUI interfaces, and so on. Until then, the runtime will continue to use the prior definition. If an application is edited many times, a runtime may directly switch to the latest version.
 
-In context of potential live coding, it is best to model method names as ephemeral types because we might switch the entire namespace between transactions. 
+*Note:* Support for live coding is expensive and is subject to configuration. In general it could be disabled or configured to an external trigger (such as Linux SIGHUP or a named Windows event object).
 
-However, this implies we cannot pass first-class functions or objects between transactions. To mitigate this, glas front-end languages should support stable and efficient [defunctionalization](https://en.wikipedia.org/wiki/Defunctionalization) of multi-step procedures or processes, enabling evaluation of long-running tasks over multiple transactions. Further, it should be easy for programs to cache compilation of stable data into ephemeral functions.
+## Application Settings and Configurations
 
-## Transactional Remote Procedure Calls
+In glas systems, configurations are generally centralized to [a ".gin" file](GlasInitLang.md) indicated by `GLAS_CONF`. This file can modularly compose configurations from multiple sources. 
+
+To support application-specific settings, applications may define ad-hoc data under `settings.*`. These methods should be statically computable and might later be presented as implicit parameters when computing configuration settings such as quotas or ports. The configuration ultimately decides how settings influence runtime behavior, but in practice this is subject to de-facto standardization.
+
+As a guiding principle, a glas configurations should be able to sandbox applications where there is no major detriment to performance. For example, it is feasible to rewrite file paths or choice of network ports, but not the actual contents of a file or network packet. Relatedly, many effects APIs might assume that resources are named and detailed in the configuration.
+
+## Application Mirroring
+
+I intend to model mirroring in terms of configuring a distributed runtime. See [Glas Mirrors](GlasMirror.md). I'm still thinking about exactly how to handle system clocks in context of mirroring. 
+
+In general, system effects APIs may be mirror-aware, perhaps based on an implicit parameter `*sys.time.clock` or similar. Applications may be mirror aware based on reflection `sys.refl.*`. Perhaps it is sufficient to let users select and configure clocks by name.
+
+## Data Lifespans and Abstraction
+
+Abstract data isn't universally meaningful. There is a spatial-temporal 'scope' where meaning is accessible. Careful attention to this scope is needed, especially in context of live coding and orthogonal persistence.
+
+Some observations:
+
+* A 'database' lifespan would be convenient for channels, references, or data abstraction within a database. But it introduces significant risk of [path dependence](https://en.wikipedia.org/wiki/Path_dependence), where a past choice of abstractions constrains future update opportunities. I'd prefer to avoid this in glas systems, limiting the database to plain old data. We can still abstract based on controlling access to regions of the database.
+* We might want a 'runtime' scope larger than a transaction for open file handles, network sockets, an 'in-memory' database, etc.. This shouldn't be a problem because we aren't live coding the runtime and there is no persisting of these types in any case. 
+* There is also a use for 'ephemeral' data, scoped to the transaction or even to a subroutine. This might be useful for referencing objects on the data stack, for example. But it might be easier to avoid such references as first-class, instead focusing on implicit parameters and algebraic effects.
+* In context of live coding, the application namespace should be treated as ephemeral because we may `switch()` between transactions.
+* Ephemeral computations are still subject to partial evaluation and incremental computing. The only requirement here is stability. In contrast, allocation of runtime resources such as open files is generally not stable.
+
+For glas systems, I want to avoid the 'database' lifespan and instead restrict databases to storing plain-old-data. I'm uncertain about 'ephemeral' types - I must consider how to robustly and efficiently implement APIs like database access without ephemeral 'keys' or other elements.
+
+Due to runtime types without a corresponding 'database' lifespan, we cannot have fully orthogonal persistence, but semi-transparent persistence is feasible, i.e. software components that don't use runtime types may bind transparently to a persistent volume of the key-value database.
+
+### Database API Without First-Class Keys?
+
+I'd like to eliminate use of first-class 'ephemeral' references. I also want robust partitioning of the database. What can be done? Thoughts:
+
+* implicit parameters or algebraic effects are awkward in this role. We want certain names in the namespace to bind to certain objects in the database, implicit parameters would lose this binding.
+* we could feasibly model key construction as second-class, relying on macro-layer computations instead of return values, i.e. objects or functions are not first-class values but can be expressed and held on the stack. 
+
+The latter option seems feasible, though we may need to treat database access as keywords instead of generic methods. That said, maybe this is a reasonable constraint.
+
+## Remote Procedure Calls
 
 Applications may be able to publish and subscribe to RPC 'objects' through a configurable registry. An application may send and receive multiple remote calls within a distributed transaction. The distributed transaction protocol should ideally support the *transaction loop* optimizations described earlier, such as incremental computing, reactivity, replication on non-deterministic choice, and loop fusion.
 
@@ -72,7 +107,7 @@ The configured registry is generally a composite with varying trust levels. In a
 
 When publishing an RPC object, we could also publish some code for each method to support fully or partially local evaluation and reduce network traffic. Conversely, when calling a remote method, the caller could include some code representing the next few steps in the continuation, which would support pipelining of multiple remote calls.
 
-When an RPC method refers to a cacheable computation, we can potentially mirror that cache to support low-latency access between nodes. This allows RPC registry to fully serve the role as a publish-subscribe system.
+When an RPC method refers to a cacheable computation, we can potentially mirror that cache to support low-latency access between nodes. This allows RPC registry to serve a role as a [publish-subscribe](https://en.wikipedia.org/wiki/Publish%E2%80%93subscribe_pattern) system, but where published objects aren't limited to plain old data.
 
 Large values might be delivered via proxy [CDN](https://en.wikipedia.org/wiki/Content_delivery_network) instead of communicated directly, leveraging content-addressed references. This can reduce network burdens in context of persistent data structures, large videos, or libraries of code.
 
@@ -114,9 +149,6 @@ Applications that share a database may interact asynchronously through shared, p
 
 In practice, instead of directly using shared state, two applications may interact asynchronously through a shared, stateful service. This has most benefits of shared state and further allows the service to abstract over representation details. However, it does require effective authentication models for RPC registries. 
 
-## Mirroring for Performance and Partitioning Tolerance
-
-See [Glas Mirrors](GlasMirror.md).
 
 ## Defunctionalized Procedures and Processes
 
@@ -128,9 +160,11 @@ A relevant concern is that these steps should be 'stable' in context of live cod
 
 ## Implicit Parameters and Algebraic Effects
 
-Implicit parameters can be modeled as a special case of algebraic effects or vice versa (with function passing). I propose to tie implicits to the namespace. This resists accidental name capture or conflict, allows for private or capability secure implicits, and simplifies interaction between implicits and remote procedure calls.
+Implicit parameters can be modeled as a special case of algebraic effects. I intend to tie implicit parameters and algebraic effects to the namespace. This supports namespace-based access control, prevents name collisions, and supports static analysis and reasoning. 
 
-In the initial glas language, function passing will likely be one way, i.e. a procedure can pass a method to a subprocedure but not vice versa. This is convenient for closures over stack variables and avoiding heap allocations. Algebraic effects can be understood as one-way function passing.
+In my vision for glas systems, algebraic effects and staged computing are favored over first-class functions or objects. This restricts the more dynamic design patterns around higher order programming, but support for maps and folds aren't a problem. This restriction has benefits for both reasoning and performance, e.g. no need to consider variable capture, and a compiler can allocate functions on the data stack.
+
+*Note:* It should be possible to model `sys.*` methods as wrappers around algebraic effects, where the abstracted algebraic effect performs the actual interaction with the runtime. This might constrain some API designs.
 
 ## HTTP Interface
 
@@ -152,25 +186,21 @@ Analogous to `sys.refl.http` a runtime might also define `sys.refl.gui` to provi
 
 But I think it would be better to develop those transaction loop optimizations before implementing the GUI framework. There's a lot of feature interaction to consider with incremental computing and non-deterministic choice.
 
-## Non-Deterministic Choice
+## Non-Deterministic Choice for Concurrency and Search
 
-In context of a transaction loop, fair non-deterministic choice serves as a foundation for task-based concurrency. The idea is that if the choice is part of the stable prefix for a transaction, we can replicate the transaction to take each choice and evaluate in parallel. Further, where choice isn't stable, we can effectively 'search' for a choice that results in successful commit.
-
-Proposed APIs:
+In context of a transaction loop, fair non-deterministic choice serves as a foundation for task-based concurrency. Proposed API:
 
 * `sys.fork(N)` - blindly but fairly chooses and returns an integer in the range 0..(N-1). Diverges if N is not a positive integer.
 
-Fair choice isn't random. Rather, given sufficient opportunities, we'll eventually try everything. Naturally, fairness is weakened insofar as a committed choice constrains future opportunities. More generally, 'fair' choice will also be subject to external reflection and influence to support conflict avoidance in scheduling, replay for automated testing or debugging, or user attention in a GUI. The sequence of choices might be modeled as an implicit parameter to a transaction. 
+Fair choice means that, given sufficient opportunities, we'll eventually try all of them. If `sys.fork(N)` is part of the 'stable' prefix for incremental computing, it effectively selects a thread. We can optimize to evaluate multiple stable threads in parallel, and even commit them in parallel.  
 
-*Note:* Reading from a 'bag' would implicitly involve `sys.fork()`. 
+Meanwhile, even where 'fork' is not part of the stable prefix, it can still be useful to model search. We would implicitly retry with different responses from 'fork', seeking one that leads to a committing transaction. 
+
+However, fair choice isn't random. Never use `sys.fork()` to roll dice. It's perfectly legit for an implementation of fair choice to schedule threads or search in a predictable order.
 
 ## Random Data
 
-Stateful APIs for random data are awkward in context of transaction loops and incremental computing. However, we can sample a cryptographically random field. Indexing this field can conveniently be aligned to database keys to implicitly support lifespans and access control. Viable API:
-
-* `sys.db.rand(Key, N)` - returns a natural number less than N. Diverges with a type error if N is not a positive integer. Always returns the same value for the same request.
-
-If users need multiple random numbers, they can construct a database key per request. However, the implementation may be slow, perhaps involving [HMAC](https://en.wikipedia.org/wiki/HMAC). The alternative is to seed a more conventional PRNG from the cryptographically random field.
+Stateful APIs for random data are awkward in context of transaction loops and incremental computing. A good alternative is to sample a cryptographically random field. This could be implemented using HMAC or similar methods. To robustly partition the field of random numbers while respecting orthogonal persistence, we might align the field to the database.
 
 ## Time
 
@@ -178,46 +208,10 @@ Transactions may observe time and abort if time isn't right. In context of a tra
 
 * `sys.time.now()` - Returns a TimeStamp representing a best estimate of current time as a rational number of seconds since Jan 1, 1601 UTC. This corresponds to Windows NT time, but doesn't specify precision. Multiple queries to the clock within a transaction must return the same value. 
 * `sys.time.after(TimeStamp)` - Observes `sys.time.now() >= TimeStamp`. This is more convenient for incremental computing and reactivity, allowing the runtime to schedule waiting on the clock.
+* `sys.time.clock` - (potential) implicit clock variable, a reference to the configuration 
 
 This API is useful for adding timestamps to received messages or waiting on the clock, but useless for profiling. *Profiling* will instead be supported via annotations.
 
-## Debugging
-
-In general, debugger integration should be supported using annotations rather than effects. That is, it should be easy to insert or remove and enable or disable debugging features without influencing formal behavior modulo reflection. Runtime reflection can potentially observe performance or debug outputs, and should be modeled effectfully through APIs in `sys.refl.*`. 
-
-### Logging
-
-In context of transaction loops, I find it useful to model logging as a form of debugger integration instead of an output stream. This enables observation of aborted transactions and presentation of logs as a time-varying structure, aligned with incremental computing and branching on `sys.fork`. 
-
-Conventional logging can be improved considerably by introducing a `log(channel, message) { operation }` syntax (or `%log Channel Message Operation` AST). This allows the system to maintain a message as it changes over the course of an operation, or integrate log messages with a call stack. Further, the system can augment log messages with general metadata about the operation, such as time spent or memory allocations. 
-
-The channel provides a handle for fine-grained configuration of logging behavior. This should include ability to disable logging statically or conditionally. To simplify configuration, channels should be compile time expressions (optionally including static parameters). Disabling logs should be transparent, thus message expressions must not modify state; alternatively, we might evaluate each message in an implicit transaction then abort. We can feasibly configure logging of method calls, i.e. each method name an implicit channel, parameters a message, body as operation.
-
-Log messages should initially be accessible via `sys.refl.http`. Eventually, we might introduce an API under `sys.refl.log.*` for structured access and dynamic configuration. Also, it should be possible to configure a runtime to write logs to file or standard error.
-
-### Profiling
-
-Profiling can be modeled as a configuration option for logging, focused on performance metadata around 'operation' instead of the message. The message remains useful for indexing: we might aggregate stats on `(channel, message)` pairs, where channel is static and message is dynamic (such as identifying a specific object).
-
-To simplify configuration and support reasonable defaults, we might use a distinct naming conventions for profiling channels. This might involve a simple variant header on the channel name. We could also use a separate syntax for profiling, to more clearly express intent.
-
-### Testing
-
-We can add assertions to our programs as annotations. Similar to logging and profiling, we might specify a channel so we can selectively enable and disable specific tests, or configure random testing. Something like: `(%assert Channel TestExpr MessageExpr)`. 
-
-In context of transactions, I might also want the ability to express that some property should hold upon final commit. It might be feasible to express this as `(%require Channel MethodName DataExpr)` or similar, evaluating `MethodName(Data)` as an assertion just prior to commit. Multiple requests for the same test can be combined. However, it's difficult to efficiently include a message because we no longer have access to the original call stack at the time of test. We might instead insist that MethodName should be descriptive.
-
-If assertions fail, the transaction can be aborted. But, in some debugging contexts, it might be useful to continue evaluating the transaction even after failure rather than aborting immediately.
-
-### Tracing? Tentative.
-
-In some cases, it is useful to track dataflows through a system including across remote procedure calls and transactions. This can be partially supported by including provenance annotations within data representations. The [glas object](GlasObject.md) representation supports such annotations, for example. We will need something more to efficiently maintain provenance when processing data. I suspect this will need an ad-hoc solution for now.
-
-### Mapping
-
-For live coding, projectional editing, debugging, etc. we often want to map program behavior back to source texts. In context of staged metaprogramming, this might best be modeled as *Tracing* source texts all the way to compiled outputs. This implies provenance annotations are represented at the data layer, not the program layer. 
-
-For performance, a late stage compiler might extract and preprocess annotations in order to more efficiently maintain provenance metadata (e.g. as if tracing an interpreter). But this should be understood as an optimization.
 
 ## Data Representation? Defer.
 
@@ -242,7 +236,9 @@ Aside from cacheable read-only operations, we can safely apply background eval f
 
 ## Long Running Transactions
 
-If we want to model 
+A reflection API could provide a method to initiate a transaction, returning a linear reference that may survive multiple transactions. Further operations could ask the runtime to perform some operations within the transaction, perhaps returning some feedback immediately. Eventually, we could try to commit or abort the transaction. 
+
+Of course, the transaction might also abort due to to external interference, e.g. a read-write conflict. So we might also need methods to check the status of the remote transaction.
 
 
 ## Module System Access? Partial. Defer. 
@@ -339,4 +335,66 @@ It is feasible to extend directory operations with option to 'watch' a directory
 ## Network APIs
 
 I'm uncertain whether I should try to provide TCP/UDP APIs directly, provide something closer to a sockets-based API (with bind, connect, etc.), or perhaps just provide XMLHttpRequest. 
+
+
+## Debugging
+
+In general, debugger integration should be supported using annotations rather than effects. That is, it should be easy to insert or remove and enable or disable debugging features without influencing formal behavior modulo reflection. Runtime reflection can potentially observe performance or debug outputs, and should be modeled effectfully through APIs in `sys.refl.*`. 
+
+### Logging
+
+In context of hierarchical transactions and incremental computing, the conventional model of logging as a stream of messages is very awkward. It's more useful to understand logging in terms of reflection and debugger integration.
+
+        # a useful syntax for logging
+        log(chan, message) { operation }
+
+This model for logging allows us to track a time-varying 'message' as it changes over the course of 'operation', and we can statically configure logging per 'chan'. The 'chan' description must be static, the 'message' expression is implicitly evaluated in a hierarchical transaction. It may fail. Modulo reflection, the log expression is equivalent to 'operation'. 
+
+An implementation to efficiently capture every change to a message is non-trivial. But users can feasibly configure logging per chan to trigger on operation boundaries, periodic, random, or perhaps only when extracting the call stack to debug the operation.
+
+For extensibility, I propose a convention that most log messages are expressed as dictionaries, e.g. `(text:"Message", type:warn, ...)`. The compiler and runtime system can potentially add some metadata based on where the log message defined. To support structured data and progressive disclosure, it is feasible to log an `(ns:Namespace)` of definitions including 'http' or 'gui' interfaces. For larger log messages, we must rely on structure sharing for performance.
+
+Recent log messages may be accessible to an application through `sys.refl.http` and perhaps via structured reflection methods `sys.refl.log.*`. There may also be some opportunities for dynamic configuration of logging. 
+
+### Profiling
+
+Profiling might be understood as a specialized form of logging.
+
+        # a useful syntax for profiling
+        prof(chan, dynId) { operation }
+
+Here we have a static chan, and a dynamic identifier to aggregate performance statistics while performing the operation. Gathered statistics could include entry counts, time spent, allocations, etc.. 
+
+*Aside:* Log channels might also be configured to capture these statistics. Use of 'log' vs 'prof' is mostly about capturing user intention and simplifying the default configuration.
+
+### Testing
+
+Aside from automated testing described in [the design doc](GlasDesign.md), we can add assertions to programs as annotations. Similar to logging and profiling, tests could be associated with static channels to support configuration (e.g. enable, disable, random testing), and it can be useful to support continuous testing over the course of an operation.
+
+        # viable syntax
+        test(chan, property, message) { operation }
+
+In this case we might evaluate a property as pass/fail, and then evaluate the message expression only when the property fails. This might also be interpreted as a form of logging, except the default configuration would be to abort the current transaction on a failed test.
+
+Other than inline testing, it might be feasible to express ad-hoc assumptions about final conditions just before commit. 
+
+### Tracing? Tentative.
+
+In some cases, it is useful to track dataflows through a system including across remote procedure calls and transactions. This can be partially supported by including provenance annotations within data representations. The [glas object](GlasObject.md) representation supports such annotations, for example. We will need something more to efficiently maintain provenance when processing data. I suspect this will need an ad-hoc solution for now.
+
+### Mapping
+
+For live coding, projectional editing, debugging, etc. we often want to map program behavior back to source texts. In context of staged metaprogramming, this might best be modeled as *Tracing* source texts all the way to compiled outputs. This implies provenance annotations are represented at the data layer, not the program layer. 
+
+For performance, a late stage compiler might extract and preprocess annotations in order to more efficiently maintain provenance metadata (e.g. as if tracing an interpreter). But this should be understood as an optimization.
+
+### Quotas
+
+To simplify reasoning about performance, it's often useful to choke an application to use fewer resources than are available. This might be expressed as quotas, e.g. limiting how much CPU is used in a given task. It should be feasible to support quotas on both CPU use and memory use. Quotas can be managed in two layers: External quotas would be expressed in the configuration, perhaps adjusted by application settings. Internal quotas would be expressed as annotations within the program.
+
+## Rejected Features
+
+It is feasible to introduce some `sys.disable()` and `sys.enable()` operations, perhaps parameterized for specific events such as 'step' and 'rpc'. However, I'm not convinced this is a good idea. Runtime state is less visible to users than application state, and more likely to be forgotten. It's also imprecise. In comparison, users can easily add some application state and add some explicit conditions to specific 'step' threads or RPC calls.
+
+It is feasible to introduce periodic operations that evaluate at some configurable frequency, perhaps a `status()` health check. However, I think it better to let users manage this more explicitly, using `sys.time` to control the frequency of some operations and using HTTP requests to get information about health. 
 
