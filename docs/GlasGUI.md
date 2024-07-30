@@ -32,21 +32,29 @@ An adjacent issue is that *asynchronous* interactions - where feedback is not lo
 
 ## Proposed API
 
-The proposed API:
+A proposed API:
 
         gui : UserAgent -> ()
 
-The 'gui' method calls back to the user both to render data and to ask for information including navigation variables, window sizes, feature support, preferences, etc. relevant to constructing a view. The application may write user agent variables, too, e.g. writing navigation variables would (upon commit) cause the user to view different resources in future transactions.
+The user calls the application 'gui' method, providing access to some callback methods. Through these callbacks, the application can both query the user agent (for preferences, authorization tokens, window sizes, URL-like navigation variables, etc.) and ask the user agent to present data to the user. In general, the application may also try to write user variables, which could apply upon commit.
 
-Under premise of user participation in transactions, we render aborted transactions. Further, we leverage aborted transactions as a basis for read-only views. Exactly what is rendered is left to the user agent, i.e. access to failed hierarchical transactions might only be visible in a debug view. We can render what-if scenarios by performing some other operations before rendering the GUI in an aborted transaction. 
+Exactly how a UserAgent is presented may vary based on language. It could be a first-class object in a language that supports this, or it could be a collection of algebraic effects. In any case, I'm hoping to avoid constructing intermediate documents with 'frames' for images or hierarchical documents that are filled by further requests.
 
-*Aside:* The proposed API also aims to localize input validation and avoid construction or parsing of large intermediate values. The user agent can directly operate on its internal abstract scene graph.
+Under premise of user participation in transactions, we will render aborted transactions. We can intentionally abort transactions intentionally as a basis for read-only views or effectful 'what if' computations within a transaction. Exactly what is rendered is left to the user agent. 
 
 ### Integration
 
 Implementation of the 'gui' interface is not limited to the toplevel application object. It could be implemented on arbitrary application components - perhaps even individual variables - to support live coding and debugging. We could even define 'gui' for RPC objects published to the registry.
 
 By default, we might render the toplevel application 'gui' using a runtime integrated user agent. In this case, ad-hoc access to that user agent should also be accessible through the runtime reflection API (perhaps `sys.refl.gui`). 
+
+### Alternative APIs
+
+It is feasible to approach this more like HTTP, where the user requests a document view of a resource then might make further requests for graphics, hierarchical frames, and so on. This pushes more initiative to the user agent. 
+
+
+
+It requires more construction and parsing of intermediate representations, and more naming of intermediate resources. Might revisit this if the proposed model doesn't work out.
 
 ## HTTP over GUI
 

@@ -8,9 +8,11 @@ The [transaction loop application model](GlasApps.md) supports near perfect mirr
 
 ## Configuration
 
-The details for mirrors should be expressed within a configuration file. But not every application needs mirroring. Thus, I propose to model mirroring options as part of a configurable 'package' of options selected based on application settings. This could be selected together with the port range for HTTP and RPC interfaces and similar features.
+The details for mirrors should be expressed within the configuration file, and the configuration may be application specific (i.e. has access to `settings.*`). 
 
-Each mirror might describe a remote machine, including information needed for access, setup, localization, etc.. such as network addresses, architecture, access tokens, protocols, etc..
+In general, the configuration would need to include a list of mirrors. And for each mirror we would need enough information to activate a remote node, authorize and authenticate, cross-compile, push code, and so on. 
+
+Details TBD.
 
 ## Distributed Runtime
 

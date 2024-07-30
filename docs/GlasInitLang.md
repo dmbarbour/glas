@@ -1,6 +1,6 @@
 # Glas Initialization, Integration, Input, and Configuration Language
 
-This is a language for modular configurations. It's also the bootstrap language for language modules. Preferred file extension: ".gin".
+This is a language for modular configurations. It's also the bootstrap language for language modules. Preferred file extension: ".gin".  
 
 Notable features:
 
@@ -8,7 +8,8 @@ Notable features:
 * *Object Capability Security.* The language carefully controls construction of locations and names to support robust reasoning about relationships and access control. For example, a remote file cannot directly reference a local file, imported definitions can be sandboxed, and dependencies between global modules are localized in the configuration namespace.
 * *Grammar Inspired Expression.* Functions are expressed as grammar rules. Loops are expressed in terms of recursive pattern matching between functions. This is especially convenient for parsing and processing of texts and intermediate representations.
 * *Termination Guarantee.* Computation is guaranteed to eventually terminate even without use of quotas. This is based on restricting recursion: recursion is supported only within the grammar match rule, and some data must be matched prior to recursion. The language is designed to simplify analysis of these constraints.
-* *Pure and Deterministic.* The only 'effect' in this language is to import definitions or binary data. Computation is fully deterministic up to imported dependencies.
+* *Pure and Deterministic.* The only 'effect' in this language is to import definitions or binary data. Computation is fully deterministic up to imported dependencies. 
+* *Lazy Evaluation.* Most computation can be avoided if it isn't necessary for the configuration. This includes loading imports.
 * *Block Structured Syntax.* The syntax avoids use of indentation for deep hierarchical structure. 
 
 Glas systems will fully specify the global module namespace within the configuration. Compared to filesystem search paths or package managers and lockfiles, this supports many nice properties: Overriding dependencies supports abstraction of global modules. Hierarchical structure lets users work with multiple versions of global modules in the same system. Export control allows a package of global modules to share 'private' dependencies. However, this results in large configurations.
@@ -34,9 +35,9 @@ For security reasons, locations and localizations are constructed by keyword the
             (origin:ConfigFileLocation    # from parser
             ,target:Data                  # from user
             )
-        type Localization =
+        type Localization = 
             (tl:Map of Prefix to Prefix   # from renames
-            ,df:Map of Name to Def        # from runtime
+            ,df:Map of Name to Def        # from eval
             )
 
 Locations capture the configuration file's location. This supports relative paths and also lets us easily recognize problems such as a remote DVCS configuration file referencing regular file paths outside the repository. 
@@ -60,13 +61,14 @@ A configuration file consists of a header of import and export statements, follo
         export config, locations
 
         @ns config
+        # syntax tbd
         include old-config
         :server.foo
-        include foo                 # include into server.foo
-        address = "192.168.1.2"     # server.foo.address
+        include foo                     # include into server.foo
+        set address = "192.168.1.2"     # server.foo.address
         :server.bar
-        include bar                 # include into server.bar
-        address = "192.168.1.3"     # server.bar.address
+        include bar                     # include into server.bar
+        set address = "192.168.1.3"     # server.bar.address
 
 The relative order of imports and definitions is ignored. Instead, we'll enforce that definitions are unambiguous and that dependencies are acyclic. This gives a 'declarative' feel to the configuration language.
 
@@ -94,16 +96,21 @@ Explicit imports forbid name shadowing and are always prioritized over implicit 
 
 The Source is currently limited to files or a dotted path that should evaluate to a Location. The Location type may specify computed file paths, DVCS resources with access tokens and version tags, and so on. 
 
-## Function Definitions
+## Implicit Parameters and Algebraic Effects
+
 
 
 ## Limited Higher Order Programming
 
-The language will support limited higher order programming in terms of overriding functions within a namespace. This is static, thus doesn't interfere with static analysis. Common higher order loops may be built-in to the syntax.
+The language will support limited higher order programming in terms of overriding functions within a namespace, and in terms of algebraic effects. These are structurally restricted to simplify termination analysis.
 
-However, it does require syntactic sugar to make it comfortable to use. Support for a few common higher order loops might be built-in to the syntax.
+These are always static, thus won't interfere with termination analysis. Some higher order loops may be built-in to the syntax for convenience.
 
-*Note:* The Localization type isn't used for higher order programming. It is used only for translating global module names back into the configuration namespace.
+The Localization type isn't used for higher order programming in this language because dynamic . It is used only for translating global module names back into the configuration namespace.
+
+
+## Function Definitions
+
 
 ## Namespace Blocks
 

@@ -129,11 +129,11 @@ Although there are no other formal effects, annotations can support logging, pro
 
 ## Automated Testing
 
-As a simple convention, modules named `test.*` in scope when compiling a module (relative to Localization) could be treated as a test suite. These modules should export namespaces that define one or more pass-fail `test.*` methods. 
+As a simple convention, modules named `test.*` in scope when compiling a module (relative to Localization) could be treated as a test suite. These modules might export any number of namespaces that define pass-fail `test.*` methods. 
 
-Tests have limited access to effects: non-deterministic choice for fuzz testing or property testing, ephemeral state for environment simulation. State might be expressed via implicit parameters and algebraic effects. The sequence of choices would be included in the test report. Detailed test reports might further include log outputs or profiling information.
+These test methods have limited access to effects: non-deterministic choice for fuzz testing or property testing, ephemeral state for environment simulation. To support detailed output and structured test reports, the tests may include logging or profiling annotations, and test namespaces may also implement 'http' views of final test state.
 
-To reduce rework, it is feasible to configure shared services to cache test reports, or proxy compilation services might also run and cache tests.
+It should be feasible to share test efforts in many cases via configuring a cache.
 
 ## Performance
 
@@ -181,11 +181,9 @@ Data abstraction is formally a property of a program, not of data. But dynamic e
             | ...
             | Abstract of TypeName * Tree
 
-A concept of 'linear' abstract types are useful for modeling resources that should be copied or dropped except through specific interfaces. This would be useful for file handles, network sockets, channels. Linear abstract types could be enforced statically, but like other abstract types we could use some metadata to track linearity - perhaps a bit packed into the pointer, or reserving one bit from the Stem encoding.
+A TypeName would need to be stable in context of orthogonal persistence or live coding, but we could feasibly bind to database paths.
 
-A concept of 'scoped' abstract types are useful for ensuring references don't escape their domain, e.g. a file handle or network socket shouldn't be transferred via RPC or stored in a persistent database. Similar to linearity, a few metadata bits could support efficient dynamic enforcement of scopes, e.g. identifying when a value is transitively plain-old-data.
-
-Glas systems should use data abstraction where appropriate, but with attention to how it interacts with live coding, orthogonal persistence, and inter-process communication. 
+Aside from abstract structure, we might consider substructural types such as scope (e.g. don't let open file handles be stored in the persistent database or pass through RPC calls), or linearity (enforce that file handles are closed exactly once after open, require explicit dup). For glas systems, I'm inclined to conflate runtime scope and linearity, then restrict the database to plain old data. Thus, we would only need one extra bit per node or value, perhaps via packed pointers or reserving a stem bit.
 
 ### Type Annotations and Checking
 
@@ -227,5 +225,5 @@ I've often considered extending glas data to support graph structures or unorder
 
 ### Number Units
 
-I like the idea of units for numbers, i.e. such that we know it's `3.0 Volts` instead of `3.0 kilograms`. But I haven't found a good way to represent this dynamically. Shadow types might be viable, statically, or perhaps some conventions for static computation of units. 
+I like the idea of units for numbers, i.e. such that we know it's `3.0 Volts` instead of `3.0 kilograms`. But I haven't found a nice way to represent this dynamically. Perhaps it could be supported via shadow types, or generally a concept of tagging numeric types with logical metadata via annotations, and also checking this metadata via annotations.
 
