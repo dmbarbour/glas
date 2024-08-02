@@ -72,9 +72,9 @@ The `sys.*` namespace component is generally reserved for runtime-provided metho
 
 ## Stable Database Bindings
 
-A subset of names with a specific prefix in the application namespace, perhaps `$*`, will be mapped to keys in a key-value database. This provides a simple basis for application state that is friendly for live coding, orthogonal persistence, and debug views. It also enables namespace-based control over access to the state effect. 
+To simplify live coding, orthogonal persistence, and debug views, application state is mapped from the application namespace to a key-value database. To support namespace-based control over access to the state effect, and manual stabilization names as we edit code, only names with a specific prefix - perhaps `sys.db.*` or `$*` - will represent variables.
 
-The front-end language should be aware of state and translate names appropriately by default. For example, when introducing hierarchical component 'foo' the language might add default translations `{ "" => "foo.", "$" => "$foo.", "$global." => "$global." }`, supporting local state under `$varname` and global state (shared between components) under `$global.varname`.  
+The front-end language should be aware of state and translate names appropriately by default. For example, when introducing hierarchical component 'foo' the language might add default translations `{ "" => "foo.", "$" => "$foo.", "$global." => "$global." }`, supporting local state under `$varname` and global state (shared between components) under `$global.varname`.
 
 Ultimately, the runtime is responsible for mapping names to database keys. This may be configurable and application specific, allowing different apps to automatically bind different regions of a database. Assumptions about state may be expressed as annotations, while specialized operations (e.g. for queues, bags, CRDTs) can improve performance in context of parallelism or mirroring.
 
@@ -110,25 +110,21 @@ I feel this feature would be useful as a bridge between glas and host systems.
 
 ## Implicit Parameters and Algebraic Effects
 
-Implicit parameters can be modeled as a special case of algebraic effects. I intend to tie implicit parameters and algebraic effects to the namespace. This supports namespace-based access control, prevents name collisions, and supports static analysis and reasoning. 
+It is useful to tie algebraic effects to the application namespace, such that we can control access to effects through the namespace. This also reduces risk of accidental name collisions. Implicit parameters might be modeled as a special case of algebraic effects.
 
-In my vision for glas systems, algebraic effects and staged computing are favored over first-class functions or objects. This restricts the more dynamic design patterns around higher order programming, but support for maps and folds aren't a problem. This restriction has benefits for both reasoning and performance, e.g. no need to consider variable capture, and a compiler can allocate functions on the data stack.
-
-*Note:* It should be possible to model `sys.*` methods as wrappers around algebraic effects, where the abstracted algebraic effect performs the actual interaction with the runtime. This might constrain some API designs.
+First-class functions and objects are relatively awkward in context of live coding and orthogonal persistence. This could be mitigated by escape analysis, e.g. runtime or ephemeral types might restrict which variables are used. But for glas systems I'd like to push most higher order programming to an ad-hoc combination of staging and algebraic effects, reducing need for analysis.
 
 ## HTTP Interface
 
-Implementing the HTTP interface `http : Request -> Response` allows users to interact with an application through a browser or other external tools in a flexible way. The Request and Response types are binaries, including HTTP headers and body, but may be accelerated to minimize redundant processing. 
+An application can implement an interface `http : Request -> Response` to receive HTTP requests through a configurable port, which is also shared with RPC. By defining 'http', users can support ad-hoc views and user interactions with an application, much more flexible than console IO. Regardless, the `"/sys"` path is reserved by the runtime and implicitly routed to `sys.refl.http` to support access to logs, debugger integration, administrative controls, and so on. 
 
-Even if the application ignores this opportunity, the `"/sys"` path is reserved by the runtime and implicitly routed to `sys.refl.http` (with configurable authorization requirements). This is intended to simplify tooling, e.g. access to logs, debugger integration, and administrative controls. Defining 'http' interfaces on hierarchical application components and RPC objects might be useful for debug views or projectional editors.
+The Request and Response types are binaries that include the full HTTP headers and body. However, they will often be accelerated under the hood to minimize need for redundant parsing and validation. Some HTTP features and headers, such as HTTP pipelining, will be handled by the runtime and are not visible to the application. Authorization and authentication should be configurable.
 
-Initially, every HTTP request is handled in a separate transaction. If this transaction aborts, it is implicitly retried until success or timeout, providing a simple basis for long polling. Eventually, we might develop custom HTTP headers to support multi-request transactions and incremental computing.
-
-*Misc:* Authorization and authentication are configurable and may be application specific. The HTTP port usually overloads the RPC port. The runtime is responsible for HTTP pipelining and similar meta-level HTTP features. There are no plans to support WebSockets at this time.
+By default, every HTTP request is handled in a separate transaction. If this transaction aborts, it is implicitly retried until success or timeout, providing a simple basis for long polling. Eventually, custom HTTP headers might support multi-request transactions. 
 
 ## Graphical User Interface? Defer.
 
-My vision for [glas GUI](GlasGUI.md) is that users indirectly participate in transactions through reflection on a user agent. This allows observing failed transactions and tweaking agent responses until the user is satisfied and ready to commit. This aligns nicely with live coding and projectional editing. 
+My vision for [glas GUI](GlasGUI.md) is that users  participate in transactions indirectly via user agent. This allows observing failed transactions and tweaking agent responses until the user is satisfied and ready to commit. This aligns nicely with live coding and projectional editing, and also allows for users to 'search' for preferred outcomes in case of non-determinism.
 
 Analogous to `sys.refl.http` a runtime might also define `sys.refl.gui` to provide generic GUI access to logs and debug views.
 
@@ -140,11 +136,7 @@ In context of a transaction loop, fair non-deterministic choice serves as a foun
 
 * `sys.fork(N)` - blindly but fairly chooses and returns an integer in the range 0..(N-1). Diverges if N is not a positive integer.
 
-Fair choice means that, given sufficient opportunities, we'll eventually try all of them. If `sys.fork(N)` is part of the 'stable' prefix for incremental computing, it effectively selects a thread. We can optimize to evaluate multiple stable threads in parallel, and even commit them in parallel.  
-
-Meanwhile, even where 'fork' is not part of the stable prefix, it can still be useful to model search. We would implicitly retry with different responses from 'fork', seeking one that leads to a committing transaction. 
-
-However, fair choice isn't random. Scheduling may be predictable for performance reasons. Never use `sys.fork()` to roll dice. 
+Fair choice means that, given sufficient opportunities, we'll eventually try all of them. However, it doesn't mean random choice. An optimizer could copy the thread and try multiple choices in parallel. A scheduler could systematically select forks in a predictable pattern. 
 
 ## Random Data
 
@@ -152,150 +144,96 @@ Random data needs attention for stability and performance in context of incremen
 
 * `sys.random(Index, N)` - on the first call for any pair of arguments, returns a cryptographically unpredictable number in range `[0,N)` with a uniform distribution. Subsequent calls with the same arguments will return the same number within a runtime.
 
-To ensure robust partitioning, Index might be a database name. This API can be implemented statelessly via HMAC, with configuration of initial entropy. Users may always roll their own stateful PRNGs or CPRNGs.
+This API can be implemented statelessly via HMAC, with configuration of initial entropy. Users may always roll their own stateful PRNGs or CPRNGs. 
 
 ## Time
 
-Transactions may observe time and abort if time isn't right. In context of a transaction loop, this can be leveraged to model timeouts or waiting on the clock. To support incremental computing, we add a variant API:
+Transactions are logically instantaneous, but they may observe the estimated time of commit. However, directly observing time is unstable. To simplify reactive and real-time systems, we can introduce an API to await a given timestamp. 
 
-* `sys.time.now()` - Returns a TimeStamp representing a best estimate of current time as a rational number of seconds since Jan 1, 1601 UTC. This corresponds to Windows NT time, but doesn't specify precision. Multiple queries to the clock within a transaction must return the same value. 
-* `sys.time.after(TimeStamp)` - Observes `sys.time.now() >= TimeStamp`. This is more convenient for incremental computing and reactivity, allowing the runtime to schedule waiting on the clock.
-* `sys.time.clock` - (potential) implicit clock variable, a reference to the configuration 
+* `sys.time.now()` - Returns a TimeStamp for estimated commit time. By default, this timestamp is a rational number of seconds since Jan 1, 1601 UTC, i.e. Windows NT epoch with arbitrary precision. Multiple queries to the same clock within a transaction should return the same value. 
+* `sys.time.await(TimeStamp)` - Diverge unless `sys.time.now() >= TimeStamp`. Intriguingly, it is feasible to evaluate the transaction slightly ahead of time then hold it ready to commit. This is convenient for modeling scheduled operations in real-time systems.
+* `sys.time.clock` - implicit parameter, reference to a configured clock source by name. If unspecified, will use the configured default clock source.
 
-This API is useful for adding timestamps to received messages or waiting on the clock, but useless for profiling. *Profiling* will instead be supported via annotations.
+In context of mirroring, we might configure a non-deterministic choice of network clocks to simplify interaction with network partitioning.  
 
-## Environment Variables
+Note that `sys.time.*` should not be used for profiling. We'll introduce dedicated annotations for profiling, and access profiles indirectly through reflection APIs such as `sys.refl.http`. 
 
-The configuration controls an application's view of host resources, including OS environment variables. However, this isn't all bad: the configuration can easily support an environment of structured data instead of flat strings, and conveniently supports application-specific environments.
+## Environment and Configuration Variables
 
-A minimum viable API:
+The configuration controls the environment presented to the application. The configuration has access to OS environment variables and application settings. A viable API:
 
-* `sys.env.get(Query)` - asks the configuration to evaluate a function in the configured environment with a given Query parameter. This will either fail or return some data.
+* `sys.env.get(Query)` - The configuration should define a function representing the environment presented to the application. This operation will evaluate that function with an ad-hoc Query. This should deterministically return some data or fail.
 
-The configuration would have access to OS environment variables and application settings. The application cannot directly access OS environment variables, but the configuration may choose to forward them under some conventions. It isn't possible to set environment variables, but the application namespace can easily control the environment exposed to a hierarchical subprogram.
-
-A weakness of this API is that we cannot directly browse environment variables. This might be mitigated by developing some conventions for browsing, e.g. querying an index.
+There is no finite list of query variables, but we can develop conventions for querying an 'index' that returns a list of useful queries. There is no support for setting environment variables statefully, but we could override `sys.env.get` in context of composing namespaces, and reference application state.
 
 ## Command Line Arguments
 
-I propose to present arguments together with the environment. Unlike the OS environment variables, the configuration does not observe or intercept these arguments.
+I propose to present arguments together with the environment. Unlike the OS environment variables, the configuration does not observe or interfere with arguments.
 
-* `sys.env.args` - a list of strings, the arguments to the application. 
+* `sys.env.args` - runtime arguments to the application, usually a list of strings
 
-One area where I break tradition is that the arguments don't include executable names. Including executable names would be awkward and break abstractions in context of staged applications. However, applications may have access to this information via reflection APIs.
+*Note:* These arguments don't include executable name. That property might be accessible indirectly via reflection APIs, but it's a little awkward in context of staged computing.
 
-## Data Representation? Defer.
+## Globs of Data? Defer.
 
-We can manually serialize data to and from binaries. However, in some cases we might prefer to preserve underlying data representations used by the runtime. This potentially allows for greater performance, but it requires reflection methods to observe runtime representations or interact with content addressed storage. Viable sketch:
+RPC can support content-addressed data implicitly, but if we want to integrate content addressing manually with TCP or UDP messages we'll instead need suitable reflection APIs. To avoid troublesome interactions with a garbage collector, we'll also locally maintain a Context that associates content-addressed hashes to values. 
 
-* Interaction with content-addressed storage. This might be organized into 'storage sessions', where a session can serve as a local GC root for content-addressed data.
-* Convert glas data to and from [glob](GlasObject.md) binary. This requires some interaction with content-addressed storage, e.g. taking a 'storage session' parameter.
+* `sys.refl.glob.write(&Context, Value)` - returns a binary representation of Value together with an updated reference Context that records necessary hashes. 
+* `sys.refl.glob.read(Context, Binary)` - returns a Value, computed with access to a Context of external references. Fails if the binary contains any references not described in Context.
 
-The details need some work, but I think this is sufficient for many use-cases. It might be convenient to introduce a few additional methods for peeking at representation details without full serialization.
+The exact representation of Context is runtime specific, but should be plain old data and open to extension and versioning.
 
 ## Background Eval
 
-It is inconvenient to require multiple transactions for heuristically 'safe' operations, such as reading a file or HTTP GET. Also, if a transaction is waiting on background operations, it might be convenient to force resolution. In these cases, background eval can be a useful escape hatch from the transaction system. 
+For heuristically 'safe' operations, such as reading a file or HTTP GET, or manually triggering background processing, it is convenient to have an escape hatch from the transaction system. Background eval can serve this role.
 
-* `sys.refl.bgeval(MethodName, Args)` - evaluate `MethodName(Args)` in a background transaction logically prior to the calling transaction, commit, then continue in the caller with the returned value. If the caller is aborted due to read-write interference, so is any incomplete background transaction. The argument and return value types must be plain old data. MethodName should reference the local namespace.
+* `sys.refl.bgeval(MethodName, Args)` - evaluate `MethodName(Args)` in a background transaction logically prior to the calling transaction, commit, then continue in the caller with the returned value. If the caller is aborted due to read-write interference, so is any incomplete background transaction. Args must be plain old data, and the return value cannot be ephemeral. MethodName should reference the local namespace.
 
-Transferring method names between transactions usually interferes with live coding, but this is a special case because we're sending the name backwards in time (logically) and because we'd also abort the background operation upon 'switch'.
+MethodName is usually ephemeral due to potential for live coding, it's safe for bgeval because it's transferring backwards to a point in time where MethodName is known to have the same meaning. There is risk of thrashing if the background transaction conflicts with the caller, but this is easily detected and debugged. Background eval is compatible with transaction loop optimizations.
 
-*Note:* Background eval is compatible with all transaction loop optimizations - incremental computing, reactivity, concurrency based on non-deterministic choice, etc..
+## Sagas, or Long Running Transactions? Defer.
 
-## Long Running Transactions
+It is feasible to request a runtime to create long-running transactions, called sagas, that we manually extend over multiple steps then eventually commit or abort. Between steps, a saga may be aborted implicitly due to read-write conflicts with other transactions or live code switch. 
 
-A reflection API could provide a method to initiate a transaction, returning a linear reference that may survive multiple transactions. Further operations could ask the runtime to perform some operations within the transaction, perhaps returning some feedback immediately. Eventually, we could try to commit or abort the transaction. 
+The main use case for sagas is to implement transactional operations above custom network protocols. The main challenge is integrating with transaction loop optimizations. Ideally, this API should be adequate to reimplement RPC or custom HTTP headers for multi-request transactions. It might be best to develop this API later, after we have RPC as a working example.
 
-Of course, the transaction might also abort due to to external interference, e.g. a read-write conflict. So we might also need methods to check the status of the remote transaction.
+## Module System Access? Defer.
 
+I would like a good API for browsing and querying the module system, preferably with support for localization (perhaps relative to another module). This might be expressed as browsing the configured graph of modules, loading modules abstractly, starting with public modules.
 
-## Module System Access? Partial. Defer. 
+## Foreign Function Interface
 
-Users might want APIs for browsing and querying the module system, listing which global modules contributed to the current application, access to automated test results, loading modules, and so on.
+A foreign function interface (FFI) is convenient for integration with existing systems. Of greatest interest is a C language FFI. But FFI isn't trivial due to differences in data models, error handling, memory management, and so on. It seems infeasible to embed arbitrary C function calls into transactions! However, we could schedule a C function call to run between transactions after commit.
 
-We can immediately implement the `sys.load` API used by language modules. In this case, the implicit localization might be `{ "" => "distro." }`, i.e. assuming names come from the end user. A more complete API can deferred until we have a better understanding of use cases and what is easily implemented.
+It is convenient to push most complexities of FFI to the configuration layer. A viable API:
 
-## Foreign Function Interface? Tentative.
+* `sys.ffi.lib.method(Args)` - call a foreign function specified in the configuration
 
-A foreign function interface (FFI) is convenient for integration with existing systems. Of greatest interest is a C language FFI. But FFI can be non-trivial due to differences in data models, error handling, memory management, and so on. I haven't discovered any simple and effective means to reconcile a C FFI with hierarchical transactions or transaction loop optimizations (incremental computing, logical replication on fork, reactivity, etc.). 
+The configuration will specify library file locations, library initialization, method bindings, and integration such as running the method inline or scheduling an operation and returning a future. The specification type must be recognized by the runtime, but may generalize to composite methods, scripts, or inline assembly. We can view FFI as a configurable extension to runtime capabilities.
 
-The best solution I've found is to instead schedule non-transactional C operations to run between transactions. A viable API:
-
-* `sys.ffi.cfunc(LibName, FunctionName, AdapterHint)` - returns abstract FnRef for a C function in a dynamically loaded library. The AdapterHint should minimally indicate argument and result types, but might further include calling conventions, parallelism options, cacheability or idempotence, and other features. Also, we won't necessarily support all C functions, but we should support common integer and binary array types.
-* `sys.ffi.sched(FnRef, Args)` - schedules a call to a foreign function and returns an abstract OpRef. This will run shortly after the current transaction commits. For convenience, calls will usually run in a single thread in the same order they are scheduled unless configured otherwise via AdapterHint.
-* `sys.ffi.result(OpRef)` - returns result of a completed operation, otherwise diverge. If called from the same transaction that scheduled the operation, divergence is guaranteed.
-
-We can later introduce methods to observe detailed status of OpRef, or support limited scripts in place of FnRef. However, as a general rule, transaction loops should avoid scheduling long running scripts or operations because doing so interferes with live coding and orthogonal persistence.
-
-*Note:* Where it's just a performance question, glas systems should favor *acceleration* over FFI if it's just for performance. Acceleration is a lot more friendly than FFI (safe, secure, portable, reproducible, scalable, etc.) but does not solve integration with the outside world.
-
-## Configuration Variables? Tentative.
-
-A runtime configuration might include ad-hoc variables. However, I'm not sure I want this to be a separate feature from environment variables. We could instead express configurations as applying a mixin to the environment, allowing ad-hoc extensions and overrides.
-
+*Note:* FFI should be used primarily for system integration, but can also serve a performance role. In my vision for glas systems, the latter should eventually be replaced by *acceleration*.
 
 ## Console IO
 
 Access to standard input and output streams is provided through `sys.tty.*`.
 
-* `sys.tty.read(Count)` - return list of Count bytes from standard input; diverge if data insufficient. (*Note:* the input buffer will be treated as empty during 'start'.)
+* `sys.tty.read(Count)` - return list of Count bytes from standard input; diverge if data insufficient.
+* `sys.tty.read(Binary)` - remove Binary from input buffer or fail; diverge if more input is required.
 * `sys.tty.write(Binary)` - write given binary to standard output, buffered until commit. Returns unit.
 
-This API ensures that `sys.tty.*` does not itself introduce any non-determinism, e.g. due to race conditions on step. There is also no option to close TTY because doing so is awkward in context of live coding. Input echo and line buffering are subject to application-specific configuration, and perhaps also via `sys.refl.tty.*`. 
+Divergence on insufficient data ensures this API does not observe race conditions. For some console applications, we might disable line buffering or input echo. Those features should be configurable. 
 
-Console IO is suitable for some command line tools, but I believe building upon the 'http' interface would be superior for most applications. The 'standard error' stream is left to the runtime and may output some log messages or profiling data, contingent on configuration . 
+*Note:* I'd recommend the 'http' interface over console IO in most cases where users need a simple interface. However, console IO is the best choice in some cases for integration reasons.
 
 ## Filesystem
 
-The filesystem structure is somewhat abstracted through the configuration. Relevantly, an application must specify a configured 'root' together with each file path. This allows for user home, application data, and actual OS filesystem roots. It also simplifies configuration of overlays or integration of logical filesystems. 
+Instead of an implicit global filesystem, the configuration will define a number of 'roots' that may represent folders, services, or composite overlays recognized by the runtime. A file will be specified by a file path together with a named root. 
 
+An open file handle can be an abstract, linear, runtime type. The filesystem API can be close to conventional, except with several operations being asynchronous (awaiting commit) and we might have report pending or uncommitted operations with status.
 
+## Network
 
-Proposed API:
-
-* **file:FileOp** - namespace for file operations. An open file is essentially a cursor into a file resource, with access to buffered data. 
-  * **open:(name:FileName, for:Interaction)** - Open a file, returning a fresh FileRef. This operation returns immediately; the user can check 'status' in a future transaction to determine whether the file is opened successfully. However, you can begin writing immediately. Interactions:
-    * *read* - read file as stream. Status is set to 'done' when last byte is available, even if it hasn't been read yet.
-    * *write* - open file and write from beginning. Will delete content in existing file.
-    * *append* - open file and write start writing at end. Will create a new file if needed.
-    * *delete* - remove a file. Use status to observe potential error.
-    * *move:NewFileName* - rename a file. Use status to observe error.
-  * **close:FileRef** - Release the file reference.
-  * **read:(from:FileRef, count:N, exact?)** - Tries to read N bytes, returning a list. May return fewer than N bytes if input buffer is low. Fails if 0 bytes would be read, or if 'exact' flag is included and fewer than N bytes would be read.
-  * **write:(to:FileRef, data:Binary)** - write a list of bytes to file. Fails if not opened for write or append. Use 'busy' status for heuristic pushback.
-  * **status:FileRef** - Returns a record that may contain one or more flags and values describing the status of an open file.
-    * *init* - the 'open' request has not yet been seen by OS.
-    * *ready* - further interaction is possible, e.g. read buffer has data available, or you're free to write.
-    * *busy* - has an active background task.
-    * *done* - successful termination of interaction.
-    * *error:Message* - reports an error, with some extra description.
-  * **std:out** - returns FileRef for standard output
-  * **std:in** - returns FileRef for standard input
-
-**dir:DirOp** - namespace for directory/folder operations. This includes browsing files, watching files. 
-  * **open:(name:DirName, for:Interaction)** - create new system objects to interact with the specified directory resource in a requested manner. Returns a DirRef.
-    * *list* - read a list of entries from the directory. Reaches Done state after all items are read.
-    * *move:NewDirName* - rename or move a directory. Use status to observe error.
-    * *delete:(recursive?)* - remove an empty directory, or flag for recursive deletion.
-  * **close:DirRef** - release the directory reference.
-  * **read:DirRef** - read a file system entry, or fail if input buffer is empty. This is a record with ad-hoc fields including at least 'type' and 'name'. Some potential fields:
-    * *type:Symbol* (always) - usually a symbol 'file' or 'dir'
-    * *name:Path* (always) - a full filename or directory name, usually a string
-    * *mtime:TimeStamp* (optional) - modify time 
-    * *ctime:TimeStamp* (optional) - creation time 
-    * *size:Nat* (optional) - number of bytes
-  * **status:DirRef** ~ same as file status
-  * **cwd** - return current working directory. Non-rooted file references are relative to this.
-  * **sep** - return preferred directory separator substring for current OS, usually "/" or "\".
-
-It is feasible to extend directory operations with option to 'watch' a directory for updates.
-
-
-## Network APIs
-
-I'm uncertain whether I should try to provide TCP/UDP APIs directly, provide something closer to a sockets-based API (with bind, connect, etc.), or perhaps just provide XMLHttpRequest. 
-
+It is feasible to support something similar to the sockets API, perhaps initially limited to TCP and UDP. However, network interfaces (and possibly port bindings) should be restricted and abstracted by the configuration. 
 
 ## Debugging
 
@@ -347,10 +285,6 @@ In some cases, it is useful to track dataflows through a system including across
 For live coding, projectional editing, debugging, etc. we often want to map program behavior back to source texts. In context of staged metaprogramming, this might best be modeled as *Tracing* source texts all the way to compiled outputs. This implies provenance annotations are represented at the data layer, not the program layer. 
 
 For performance, a late stage compiler might extract and preprocess annotations in order to more efficiently maintain provenance metadata (e.g. as if tracing an interpreter). But this should be understood as an optimization.
-
-### Quotas
-
-To simplify reasoning about performance, it's often useful to choke an application to use fewer resources than are available. This might be expressed as quotas, e.g. limiting how much CPU is used in a given task. It should be feasible to support quotas on both CPU use and memory use. Quotas can be managed in two layers: External quotas would be expressed in the configuration, perhaps adjusted by application settings. Internal quotas would be expressed as annotations within the program.
 
 ## Rejected Features
 

@@ -173,7 +173,7 @@ Memoization is most easily applied to tree structures, where we can compute some
 
 ## Thoughts
 
-### Abstract Data 
+### Abstract Data and Substructural Types 
 
 Data abstraction is formally a property of a program, not of data. But dynamic enforcement of abstraction assumptions does benefit from including some annotations in the data representation. We could extend the Node type to support abstract data:
 
@@ -183,7 +183,14 @@ Data abstraction is formally a property of a program, not of data. But dynamic e
 
 A TypeName would need to be stable in context of orthogonal persistence or live coding, but we could feasibly bind to database paths.
 
-Aside from abstract structure, we might consider substructural types such as scope (e.g. don't let open file handles be stored in the persistent database or pass through RPC calls), or linearity (enforce that file handles are closed exactly once after open, require explicit dup). For glas systems, I'm inclined to conflate runtime scope and linearity, then restrict the database to plain old data. Thus, we would only need one extra bit per node or value, perhaps via packed pointers or reserving a stem bit.
+Abstract data might further be restricted in how and where it is used. Some useful restrictions include:
+
+* linearity - The data cannot be duplicated or dropped like normal data. It can only be created or destroyed through provided interfaces. This is useful when data represents resources such as open files or network channels, ensuring that protocols are implemented correctly.
+* scope - The data is only meaningful in a given context and cannot be arbitrarily shared. For example, we could have 'runtime' types that cannot be shared via RPC or stored in the persistent database, and 'ephemeral' types that cannot be stored between transactions.
+
+As with abstract types, it's best if these substructural types are enforced by static analysis, but we can tweak representations to support dynamic enforcement. In this case, a few metadata bits per node could be represented using packed pointers, or we could reserve a few Stem bits.
+
+*Note:* Data abstraction introduces some risk of path dependence and opportunity costs, e.g. schema update can be hindered. To mitigate this, we might generally restrict abstract types to runtime or ephemeral scope.
 
 ### Type Annotations and Checking
 
