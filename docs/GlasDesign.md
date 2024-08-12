@@ -84,9 +84,9 @@ A program is a value with a known interpretation. An application is a program wi
 
 The glas system proposes an unconventional [application model](GlasApps.md) that is very suitable for live coding, reactive systems, distributed network overlays, and projectional editors. This is based on a transaction loop: run the same atomic, isolated 'step' transaction repeatedly, with non-deterministic choice as a basis for multi-threading. A few other methods may support HTTP, RPC, and live code switch.
 
-The glas system develops general purpose models for [namespaces](GlasNamespaces.md) and an [abstract assembly](AbstractAssembly.md) as structured intermediate representations for glas programs. Program modules generally compile into a dict of namespaces (or mixins) of abstract assembly definitions. The namespace model supports hierarchical composition, inheritance, and overrides. The abstract assembly can control language features and support late binding of embedded DSLs and macros.
+The glas system specifies a value type for [namespaces](GlasNamespaces.md) and [abstract assembly](AbstractAssembly.md) as an intermediate representations for glas programs. In general, a module that represents a program will compile into a namespace. The namespace model supports hierarchical composition, inheritance, overrides, and 'load' expressions for staged computation and integration with the module system.
 
-The glas system specifies the [glas init language](GlasInitLang.md) for modular configurations, a primary [glas language](GlasLang.md) for the program layer, and a [glas object language](GlasObject.md) for serialization of structured data. These favor file extensions ".gin", ".g", and ".glob" respectively. Users can define additional languages with user-defined file extensions in the program layer.
+The glas system specifies the [glas init language](GlasInitLang.md) for modular configurations, a primary [glas language](GlasLang.md) for the program layer, and a [glas object language](GlasObject.md) for serialization of structured data. These favor file extensions ".gin", ".g", and ".glob" respectively. Users may define additional languages with user-defined file extensions in the program layer.
 
 ## Modules
 
@@ -117,15 +117,19 @@ Dependencies between modules must form a directed acyclic graph. Dependency cycl
 
 ## Language Modules
 
-A language module defines a 'lang' namespace that defines `compile : SourceCode -> ModuleValue`. To ensure a reproducible outcome, language modules have limited access to effects: they can only ask the system to 'load' compiled data from other modules. However, to simplify embedding of user-defined languages or development of macros, this extends to staged evaluation.
+A language module should compile to a program namespace that defines `compile : SourceCode -> ModuleValue`. In most cases, the ModuleValue should represent another program namespace. However, it may represent any structured value, which can be useful when working with 'data' modules or composing multiple file extensions.
+
+To support a more deterministically reproducible outcome, language modules have limited access to effects. Mostly, we can 'load' other compiled module values. For convenience, this extends to staged compilation. Effects API:
 
 * `sys.load(ModuleRef)` - On success, returns compiled value of the indicated module. On error, diverges if observing failure would be non-deterministic (e.g. dependency cycle, network fault, resource quota), otherwise fails observably (e.g. backtracking or exception). We'll broadly distinguish a few kinds of ModuleRef:
   * *file:Name* - Reference a local file in the current folder or subfolder. No "../" paths! Compilation is based on file extension, selecting "lang.ext" from the configured environment. 
   * *env:Name* - Load data by name from the configured environment. Depending on conventions, this might represent a specific parameter or localized access to a configured module namespace.
   * *data:Data* - returns given Data. Intended for use with composite module refs like *eval*.
-  * *eval:(lang:ModuleRef, src:ModuleRef)* - staged compilation, useful for embedding user-defined languages or DSLs.
+  * *eval:(lang:ModuleRef, src:ModuleRef)* - staged compilation, for embedding user-defined languages or DSLs.
 
-Although there are no other formal effects, annotations can support logging, profiling, tracing, caching, parallelism, and hardware acceleration.
+In addition to loading dependencies, a language module can use annotations to implement logging, profiling, tracing, quotas, caching, parallelism, and hardware acceleration.
+
+*Note:* I might eventually let compilers capture module localizations to explicitly support lazy load. I hesitate because localizations capture non-local configuration details, which hurts reproducibility. That said, it is still feasible for `sys.load()` to implicitly be lazy, leveraging external references when caching compilation to [glas object](GlasObject.md).
 
 ## Automated Testing
 

@@ -1,7 +1,7 @@
 
 // The Glas command line utility API has a proper design now.
 //
-//   glas --run ProgramRef -- Args
+//   glas --run ProgramRef Args
 //   glas --help
 //   glas --version
 //   glas --extract BinaryRef
@@ -29,14 +29,11 @@ let helpMsg = String.concat "\n" [
     ""
     "Built-in Commands:"
     ""
-    "    glas --extract ValueRef"
-    "        Print referenced binary value to standard output."
-    "        Currently limited to produce binaries below 2GB."
-    ""
-    "    glas --run ValueRef -- Args"
+    "    glas --run ValueRef Args"
     "        Evaluate an application process, which represents"
-    "        a transactional step function. Incomplete effects!"
-    "        Currently limited to 'log' and 'load' effects."
+    "        a transactional step function. Limited effects:"
+    "           sys.tty.read/write  "
+    "           'http' interface    "
     ""
     "    glas --version"
     "        Print a version string."

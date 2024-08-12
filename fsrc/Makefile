@@ -4,7 +4,7 @@
 all: glas test install
 
 glas:
-	dotnet publish -c release -r linux-x64 --self-contained true -o bin/ -p:PublishSingleFile=true src/
+	dotnet publish -c release -r linux-x64 --self-contained true -p:PublishTrimmed=true -o bin/ src/
 
 test:
 	dotnet test test/

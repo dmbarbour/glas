@@ -42,13 +42,26 @@ For security reasons, locations and localizations are constructed by keyword the
 
 Locations capture the configuration file's location. This supports relative paths and also lets us easily recognize problems such as a remote DVCS configuration file referencing regular file paths outside the repository. 
 
-Localization might capture a local scope of definitions, including name translations. Minimally, this consists of prefix-to-prefix name translations into the configuration namespace (see localizations in [abstract assembly](AbstractAssembly.md)). But in context of closures, we might need a more general solution.
+Localization might capture a scope of definitions, including name translations. Minimally, this consists of prefix-to-prefix name translations into the configuration namespace (see localizations in [abstract assembly](AbstractAssembly.md)). In context of closures, we might need a more general solution. It might be useful to also capture configuration Names as data, but this could be represented as a localization paired with a Name string.
 
 ## Config Namespace
 
-A configuration is expressed as a [namespace](GlasNamespaces.md) of terminating functions and data expressions. A namespace is like an OOP 'class' without the state: it supports inheritance and override, hierarchical structure, and access control to names. A configuration file may define multiple namespaces as libraries of reusable components and mixins. The actual configuration is the namespace called 'config'.
+A configuration file defines one [namespace](GlasNamespaces.md) of functions and data expressions. This can inherit and override other configuration files. It is possible to develop template-like abstract configuration files where overrides are expected. For example, by convention definitions under `sys.*` are left abstract for later system-provided overrides, such as access to OS environment variables.
 
-To support adaptive configurations, the configuration namespace might reserve `sys.*` for late binding of system data into the configuration namespace, such as OS environment variables or host architecture. There may also be some limited support for implicit parameters, e.g. to access application settings.
+## Import Expressions
+
+A configuration will generally contain some import statements that introduce definitions from other configuration files. In general, it is possible to import the same file multiple times in different translation contexts, or with different overrides. 
+
+Import expressions may be arbitrary expressions that evaluate to a glas input file Location. This might be wrapped and represented as an 'ld' operation when compiling the configuration file. Obviously, an import expression must not depend on any definitions provided by the imported resource, but it may depend on definitions later provided or overridden by the *client* of a module.
+
+A relevant design goal for glas configuration is *lazy* imports. Instead of multiple inheritance and conflict detection, we'll generally restrict imports to one 'open' import (e.g. to inherit from another config) plus any number of non-overlapping explicit or qualified imports. This ensures it is always locally obvious within a file where a given name is defined, which import expressions must be evaluated.
+
+*Note:* There is no support for 'mixins' for higher-order abstraction.
+
+## Toplevel Syntax
+
+I'm aiming for a syntax similar to [toml](https://toml.io/en/), though not an exact match. This is complicated a little by support for import expressions and functions.
+
 
 ## Toplevel Syntax
 

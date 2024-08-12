@@ -28,7 +28,7 @@ In a transaction loop, we repeatedly evaluate the same atomic, isolated transact
 
 * *Real-time.* A repeating transaction can wait on a clock by becoming unproductive when the time is not right. This combines nicely with *reactivity* for scheduling future actions. Intriguingly, the system can precompute a pending transaction slightly ahead of time and hold it ready to commit at the earliest moment. This can form a simple and robust basis for real-time systems.
 
-* *Auto-tune.* Even without transactions, a system control loop can read calibration parameters and heuristically adjust them based on feedback. However, transactions make this pattern much safer, allowing aggressive experimentation without committing to anything. This creates new opportunities for adaptive software.
+* *Adaptation.* Even without transactions, a system control loop can read calibration parameters and heuristically adjust them based on feedback. However, transactions make this pattern much safer, allowing experimentation without committing. This creates new opportunities for adaptive software.
 
 * *Loop Fusion.* The system is always free to merge smaller transactions into a larger transaction. Potential motivations include debugging of multi-step interactions, validation of live coding or auto-tuning across multiple steps, and loop fusion optimizations.
 
@@ -70,35 +70,27 @@ An essential property for mirroring is that all mirrors use the same effects API
 
 The `sys.*` namespace component is generally reserved for runtime-provided methods, and `%*` for the abstract assembly intermediate AST. 
 
-## Stable Database Bindings
+## Database Bindings
 
-To simplify live coding, orthogonal persistence, and debug views, application state is mapped from the application namespace to a key-value database. To support namespace-based control over access to the state effect, and manual stabilization names as we edit code, only names with a specific prefix - perhaps `sys.db.*` or `$*` - will represent variables.
+To simplify live coding and orthogonal persistence, application state is mapped to an external key-value database. Ideally, it should be easy to stabilize this binding across code changes, and to constrain a program subcomponent's access to certain regions of the database or to state in general.
 
-The front-end language should be aware of state and translate names appropriately by default. For example, when introducing hierarchical component 'foo' the language might add default translations `{ "" => "foo.", "$" => "$foo.", "$global." => "$global." }`, supporting local state under `$varname` and global state (shared between components) under `$global.varname`.
+One viable solution is to reserve names with a specific prefix for database keys, perhaps `sys.db.*`. Each name could refer to a variable, and the front-end language could by default map hierarchical components to hierarchical state, e.g. `{ "" => "foo.", "sys.db." => "sys.db.foo." }` for component 'foo'. But this solution requires awkwardly interpreting names to work with multiple lifespans, fine-grained permissions, or indexed collections.
 
-Ultimately, the runtime is responsible for mapping names to database keys. This may be configurable and application specific, allowing different apps to automatically bind different regions of a database. Assumptions about state may be expressed as annotations, while specialized operations (e.g. for queues, bags, CRDTs) can improve performance in context of parallelism or mirroring.
+An alternative is to incrementally construct an abstract database key. A few abstract key constructors are provided through `sys.db` and implicitly wrapped for hierarchical components. This pushes more work to an optimizer, but we can embed more information into keys (such as lifespans, permissions, associations) and we can easily support indexed collections. 
 
-### Lifespan and Scope
+In addition to basic read-write variables, the database can support queues, bags, CRDTs, and other built-in types. A careful choice of built-in types could improve performance and partitioning tolerance in context of concurrency and mirroring.
 
-The database is persistent by default, but there may be regions with 'runtime' lifespan bound to an in-memory database, and ephemeral state with 'transaction' lifespan is also feasible. This might be indicated by naming convention (e.g. `$xy.tmp.zzy` or special char `$xy%zzy`). Runtime types, such as open file handles, may also be limited to the in-memory database. This constraint would prevent fully orthogonal persistence, but semi-transparent persistence is possible.
+## Remote Procedure Calls? Defer.
 
-### Dynamically Indexed Collections? Low Priority.
+Transactional remote procedure calls with publish-subscribe of RPC resources is an excellent fit for my vision of glas systems. With careful design of the distributed transaction, transaction loop features such as incremental computing and replication on non-deterministic choice can be supported across application boundaries. The publish-subscribe aspect simplifies live coding and orthogonal persistence.
 
-It is feasible to express indexed collections of components in the namespace via something like `$foo[].bar` together with `$foo[@]` as an implicit parameter or ephemeral variable for indexing the collection. We will also want support for browsing indices in use. The details need work! 
+Concretely, applications will define a few methods such as `rpc.event` to receive incoming requests and `rpc.api` to support registration and search. The system might define `sys.rpc.find` to search the registry and `sys.rpc.call` to perform a remote call. We might introduce `sys.rpc.cb` callbacks to support algebraic effects and higher order programming over RPC boundaries. A single transaction may involve many requests to each of many applications.
 
-## Remote Procedure Calls? Low Priority.
+Security should mostly be handled at the configuration layer. One viable solution is to configure a composite registry, composed of fine-grained registries for different trust groups or trust levels (and also for different topics). An application can publish RPC objects that are routed based on metadata to different registries. Metadata can be rewritten as objects are routed, allowing for search based on trusted origin.
 
-Most network protocols force asynchronous interactions, i.e. writes are buffered until commit, and responses are received in a future transaction. This is usable, but there are opportunity costs. 
+For performance, it is feasible to perform partial evaluation of given RPC events and distribute this code for local evaluation. Conversely, when performing a remote call, we could send a continuation to remotely handle the result, avoiding unnecessary network traffic.
 
-Transaction-aware remote procedure calls (RPC) are a better fit, allowing synchronous interactions within a transaction. With some careful design of the transaction model, it is feasible to support transaction loop optimizations such as incremental computing, reactivity, even parallellism and search on non-deterministic choice.
-
-I propose to model applications as publishing and subscribing to RPC 'objects' through a configured registry. Each object could have stable metadata that a composite registry filters and rewrites, effectively routing RPC objects to component registries. Compared to point-to-point connections, publish-subscribe improves reactivity and adaptivity of applications to their environment.
-
-As I'd prefer to avoid relying on first-class objects or functions, an application might publish RPC objects by defining `rpc.(ObjectName).(Method*)`, and subscribe to RPC objects by declaring methods under `sys.rpc.(Interface).(Method*)`. In case there is more than one instance of a subscribed interface, we could implicitly 'fork' to select one for the remaining transaction, or we might extend RPC interfaces to support indexed collections.
-
-For performance, it is feasible for RPC objects to distribute some code for local evaluation on the caller, and to also maintain some cached computations. Conversely, the caller can potentially pass a continuation object that can be processed remotely to reduce network traffic. Further, it is feasible to integrate RPC with a [content delivery network](https://en.wikipedia.org/wiki/Content_delivery_network) to distribute large values.
-
-*Note:* The runtime will maintain its own TCP/UDP listener for RPC requests. The same TCP listener would also support the 'http' interface. This binding should be configurable and application specific. 
+*Note:* The runtime will maintain its own TCP/UDP listener for RPC requests, usually shared with the 'http' interface. This is configurable and may be application specific.
 
 ## Defunctionalized Procedures and Processes? Low Priority.
 
@@ -203,15 +195,17 @@ I would like a good API for browsing and querying the module system, preferably 
 
 ## Foreign Function Interface
 
-A foreign function interface (FFI) is convenient for integration with existing systems. Of greatest interest is a C language FFI. But FFI isn't trivial due to differences in data models, error handling, memory management, and so on. It seems infeasible to embed arbitrary C function calls into transactions! However, we could schedule a C function call to run between transactions after commit.
+A foreign function interface (FFI) is convenient for integration with existing systems. Of greatest interest is a C language FFI. But FFI isn't trivial due to differences in data models, error handling, memory management, type safety, and so on. For example, it is infeasible to directly integrate C library functions with transactions, but a transaction could schedule a C function to run in a background thread.
 
-It is convenient to push most complexities of FFI to the configuration layer. A viable API:
+A viable API:
 
-* `sys.ffi.lib.method(Args)` - call a foreign function specified in the configuration
+* `sys.ffi(StaticArg, DynamicArgs)` - call a foreign function specified in the configuration. 
 
-The configuration will specify library file locations, library initialization, method bindings, and integration such as running the method inline or scheduling an operation and returning a future. The specification type must be recognized by the runtime, but may generalize to composite methods, scripts, or inline assembly. We can view FFI as a configurable extension to runtime capabilities.
+In this case, the configuration reads StaticArgs and returns a specification recognized by the runtime. This might represent a library file location, a specific method name, and integration hints such as queuing the request and returning a future. This may generalize to a script or inline assembly. 
 
-*Note:* FFI should be used primarily for system integration, but can also serve a performance role. In my vision for glas systems, the latter should eventually be replaced by *acceleration*.
+This API provides a high degree of flexibility for how much specification is represented within the application versus the configuration, and for development of ad-hoc conventions. But essentially we can view FFI as configured runtime extension.
+
+*Note:* FFI should be used primarily for system integration, but it can also serve a role in system performance until suitable accelerators are developed.
 
 ## Console IO
 
@@ -227,9 +221,9 @@ Divergence on insufficient data ensures this API does not observe race condition
 
 ## Filesystem
 
-Instead of an implicit global filesystem, the configuration will define a number of 'roots' that may represent folders, services, or composite overlays recognized by the runtime. A file will be specified by a file path together with a named root. 
+Instead of an implicit global filesystem, a file path will be specified by two values: a static 'root' that is processed by the configuration, and a conventional file path relative to this root. Roots may refer to specific folders or filesystem-like services recognized by the runtime.
 
-An open file handle can be an abstract, linear, runtime type. The filesystem API can be close to conventional, except with several operations being asynchronous (awaiting commit) and we might have report pending or uncommitted operations with status.
+An open file handle should be an abstract, linear, runtime-scoped type. The filesystem API can be close to conventional, except with more operations being asynchronous (awaiting commit) and more status values to represent pending operations.
 
 ## Network
 

@@ -1,5 +1,5 @@
 .ionide/
 .vscode/
 bin/
-
+build/
 .fake
