@@ -18,7 +18,7 @@ This document assumes definitions are expressed using [abstract assembly](Abstra
         type Prefix = Symbol                        # empty up to full name
         type Symbol = Bitstring                     # byte aligned, no NULL
         type Map = Dictionary                       # trie; NULL separators
-        type Defs = List of Def                     # allows ambiguous defs 
+        type Defs = List of Def                     # accept ambiguous defs 
         type Def = abstract assembly
 
 I originally had a few more operations, but I eventually chose to conflate namespace+defs, mixin+translate, and move+remove.
@@ -40,17 +40,19 @@ For the remainder of this document, the compiler added suffix is implicit.
 ## Common Usage Patterns
 
 * A 'rename' involves both 'mv' and 'ln' operations with the same Map. We'll almost never use 'ln' except as part of a full rename, but it's separated to simplify optimizations and rewrite rules.
-* To 'override' `foo`, we rename prefix `foo^ => foo^^` to open space, move `foo => foo^` so we can access the prior (aka 'super') definition, then define `foo` with optional reference to `foo^`. Alternatively, we could remove then redefine `foo` if we don't need the old version.
-* To 'shadow' `foo`, it's essentially same as 'override' except we *rename* `foo => foo^` instead of just moving it. This preserves existing relationships to the prior definition, whereas override binds existing references to the new definition.
+* To 'override' `foo#` (see *Prefix Unique Names*), we might rename prefix `foo# => foo^#` so we can access the prior (aka 'super') definition, then redefine `foo#` with optional reference to `foo^#`. We must also rename `foo^ => foo^^` to shadow prior overrides.
+* To 'shadow' `foo#`, it's essentially same as 'override' except we *rename* `foo# => foo^#` instead of moving it. This preserves existing relationships to the prior definition, where override binds existing references to the new definition.
 * To model 'private' definitions, we could prefix private definitions with '~', then systematically rename '~' to a fresh namespace in context of inheritance. 
 * To model hierarchical composition, add a prefix to everything (e.g. via 'tl' of empty prefix) then provide missing dependencies via rename or delegation. This is object capability secure, i.e. the hierarchical component cannot access anything that is not provided to it.
 * To treat mixins as functions, we can define the mixin against abstract 'components' such as 'arg' and 'result', then apply a translation map the mixin to its context. We might translate the empty prefix to a fresh scratch space to lock down what a mixin can touch.
 
 ## Multiple Definitions
 
-The namespace model maintains a list of definitions for each name. To simplify declarative reasoning, this list is usually processed as a set. For example, we might sort arbitrarily and drop duplicates before the list is observed through a reflection API.
+The namespace model maintains a list of definitions for each name. 
 
-In context of glas systems, most names should have a single, unambiguous definition. Programs can use overrides, shadowing, and import/export control to avoid accidental ambiguity. However, it is feasible to use larger sets to express tables, constraints, or multimethods. Meanwhile, an empty set declares a name without defining it.
+To simplify declarative reasoning, the list of definitions is usually processed as a set: we might sort the list and drop duplicates before further processing. After removing duplicates, most names should have a single, unambiguous definition. The front-end syntax can resist ambiguity via name shadowing and access control.
+
+However, it is feasible to leverage a larger set of definitions to express tables, constraints, or multimethods. Some use cases might eventually be built-in, but glas system can also support ad-hoc use cases via `(%defs Name)` (in abstract assembly) evaluating at compile time to set of AST nodes. Meanwhile, an empty set is useful to declare a name without defining it.
 
 ## Computation
 
@@ -84,17 +86,33 @@ As with fby composition, in general we must 'un-simplify' our move or link maps 
 
 ### Translation of Definitions and Namespaces
 
-When applied to final definitions we can simply convert translate to a rename, i.e. move and link with same map. For example, if we define `dst.xyzzy` and our translation is `dst. => bar.` then we actually defined `bar.xyzzy`. If this depends on `src.qux` and we translate `src. => foo.` then we actually depend on `foo.qux`. 
+When applied to final definitions we can simply convert translate to a rename, i.e. move and link with same map. For example, if we define `dst.xyzzy` and our translation is `"dst." => "bar."` then we actually defined `bar.xyzzy`. If this depends on `src.qux` and we translate `"src." => "foo."` then we actually depend on `foo.qux`. 
 
 ## Private Definitions
 
-The notion of 'private' methods is not strongly enforced in glas systems. It's too easy to bypass with metaprogramming, e.g. the 'load' NSOp. However, we can easily resist accidental violations. By convention, we might use '~' prefix for private methods or subcomponents, and provide special, searchable syntax for intentional violations.
+In context of modular subcomponents, a private definition is an implementation detail and should not be referenced from outside the module. Protection of private definitions can simplify future changes. Although the proposed namespace model doesn't have a built-in notion of privacy, it can be supported between simple conventions and lightweight static analysis:
 
-## Global Namespace
+* We reserve a byte, proposed '~', to indicate private symbols.
+* We introduce '~' only in the rhs of link, move, or translate.
+* If '~' appears in lhs of rewrite, it must also appear in rhs.
+* We analyze for improper '~' prior to evaluation of namespace.
+* We may also analyze to forbid ambiguity between private defs.
 
-We can easily introduce a convention for a 'global' namespace, e.g. such that `global.*` is shared by default between hierarchical subcomponents of an application. This can be convenient for integration, reducing need for manual threading of dependencies.
+Effectively, these rules enforce a contagion model: a symbol never starts private, but becomes private through a rewrite then remains private indefinitely. 
 
-I think it might be wiser to manually thread some purpose-specific shared spaces instead of one generic 'global' space. But we could provide the global space without encouraging its use.
+In addition to the analysis, we need front-end-syntax for introducing privacy. One viable solution is to rewrite an 'export' list such as `export foo*, bar, qux as q` into a rename or translation such as `{ "" => "~", "foo." => "foo.", "bar#" => "bar#", "qux#" => "q#" }`.
+
+*Note:* In practice, analysis of the namespace seems unnecessary. It is sufficient to resist accidental violations by forbidding '~' within names in the program syntax. 
+
+## Global Definitions
+
+A namespace ultimately evaluates into one global map of names to defs, but the mixin+translate NSOp makes it easy to isolate and control relationships between subcomponents, e.g. via `{ "" => "foo." }` rewrite for component 'foo'. In this context, it might be useful to introduce some conventions for shared or global namespaces, something easily implemented by the front-end glas language compiler. 
+
+For example, a glas language could take `g.*` as the implicit global namespace, and by default rewrite `{ "" => "foo.", "g." => "g." }` for hierarchical component 'foo'. This would allow the 'foo' component to both publish some definitions into the global space and access definitions provided. The front-end syntax can also let users override the default `g.*` rewrite, letting users sandbox the global namespace.
+
+Note that the component can both access definitions in the global namespace and add methods to it. There is a significant risk of name conflicts when adding definitions to the global namespace, but it can be resolved via manual translations.
+
+*Note:* We're already doing something like the global namespace for abstract assembly under prefix '%'. We could place the global namespace under `%g.*`, but it seems cleaner to keep it separate.
 
 ## Potential Extensions
 
@@ -102,7 +120,7 @@ I think it might be wiser to manually thread some purpose-specific shared spaces
 
 Currently, our only operation that touches existing definitions is link (ln). I'm contemplating an extension that would modify definitions in some way, e.g. to apply a function to every definition in a namespace, or perhaps rewrite the tacit namespace as a whole using only definitions from that namespace.
 
-I've decided to hold off on this feature because I don't have a strong use case. Also, I think 'ld' covers most use cases I'm interested in, even though it is limited to introducing definitions.
+I've decided to hold off on this feature because I don't have a strong use case. Also, I think 'ld' adequately covers most use cases I'm interested in, even if it's a little awkward.
 
 ### Conditional Definitions? Rejected.
 
@@ -112,8 +130,3 @@ It is feasible to extend namespaces with conditional definitions, i.e. some equi
 
 It is feasible to introduce an NSOp for annotations, but I don't see any need for it. The simplicity and guaranteed termination when evaluating NSOp reduces need for annotations to control, precisely optimize, or debug the intermediate states. Annotations are instead represented within definition or namespace layers.
 
-### Lists? Other Layers.
-
-We can model lists as namespace components that define 'head' and 'tail', where 'tail' is either empty or another list. Access to to the third element in the list would be `.tail.tail.head`. An underlying data representation could feasibly compress long bitstring paths such as `(.tail)^N`. But this is very awkward and undermines most benefits of namespaces (e.g. cannot override an unstable location). 
-
-Instead, where we want lists of definitions, it might be better to rely on the ability to construct a list via repeated overrides of a definition, each referencing the prior definition. Alternatively, we could construct an ambiguous definition then reflect on the final List of Def with a little support from the abstract assembly. 
