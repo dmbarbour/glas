@@ -72,35 +72,27 @@ However, it is feasible to compose sequential rewrites and moves. For example, `
 
 To implement this, we first extend `{ bar => fo }` with redundant rules such that the rhs contains all possible prefixes matched in `{ f => xy, foo => z }`: `{ bar => fo, baro => foo, f => f, foo => foo }`. Then we apply `{ f => xy, foo => z }` to the rhs, resulting in `{ bar => xyo, baro => z, f => xy, foo => z }`.  Effectively, we unsimplify, rewrite some rules, then simplify again.
 
-*Note:* Although moves have a special case with a NULL byte in the rhs, this doesn't impact implementation because we'll never match a symbol starting with NULL on a subsequent move.
+*Note:* No special rules for removes because we won't match a NULL.
 
 ### Translation of Move and Link
 
-Assume translation rule `{ "" => "scratch." , "src." => "foo." , "dst." => "bar." }`, representing that we apply a mixin to a scratch space with specified regions for input or output. In this case, we must translate a move or link to operate on the translated namespace locations. For example, moving `{ src.x => dst.y }` becomes `{ foo.x => bar.y }`. And moving `{ x => dst.z }` becomes `{ scratch.x => bar.z }`. Essentially, we apply the translation independently to each prefix in the move and link. 
+Assume translation rule `{ "" => "scratch." , "src." => "foo." , "dst." => "bar." }`, representing that we apply a mixin to a scratch space with specified regions for input or output. In this case, we must translate a move or link to operate on the translated namespace locations. For example, moving `{ src.x => dst.y }` becomes `{ foo.x => bar.y }`. And moving `{ x => dst.z }` becomes `{ scratch.x => bar.z }`. Essentially, we must apply the translation independently to lhs and rhs of move and link.
 
-As with fby composition, in general we must 'un-simplify' our move or link maps to include longer matching prefixes where possible. For example, moving `{ sr => ds }` will first un-simplify to `{ sr => ds , "src." => "dsc." , "srt." => "dst." }`, then we can translate to `{ scratch.sr => scratch.ds , "foo." => "scratch.dsc." , "scratch.srt." => "bar." }`. 
+As with fby composition, in general we must 'un-simplify' our move or link maps to include longer matching prefixes where possible. For example, moving `{ sr => ds }` will first un-simplify to `{ sr => ds , "src." => "dsc." , "srt." => "dst." }`, then we can translate to `{ scratch.sr => scratch.ds , "foo." => "scratch.dsc." , "scratch.srt." => "bar." }`. As a special case, 'unsimplify' of removes doesn't add a suffix to the rhs.
 
 *Note:* In practice, it should be rare that we must significantly expand rewrites. Most examples I can think of either require weird alignment with meaningful name fragments (like `sr => ds` above) or violate the [law of Demeter](https://en.wikipedia.org/wiki/Law_of_Demeter). 
 
 ### Translation of Definitions and Namespaces
 
-When applied to final definitions we can simply convert translate to a rename, i.e. move and link with same map. For example, if we define `dst.xyzzy` and our translation is `"dst." => "bar."` then we actually defined `bar.xyzzy`. If this depends on `src.qux` and we translate `"src." => "foo."` then we actually depend on `foo.qux`. 
+When applied to a final 'ns', we can trivially convert a translate to a rename. This might be represented by addending move + link operators to ns with the translation map. For example, if we define `dst.xyzzy` and our translation is `"dst." => "bar."` then we actually defined `bar.xyzzy`. If the definition depends on `src.qux` and we translate `"src." => "foo."` then we actually depend on `foo.qux`. We're always rewriting full names on the ns.
 
 ## Private Definitions
 
-In context of modular subcomponents, a private definition is an implementation detail and should not be referenced from outside the module. Protection of private definitions can simplify future changes. Although the proposed namespace model doesn't have a built-in notion of privacy, it can be supported between simple conventions and lightweight static analysis:
+In context of modular components, a private definition is an implementation detail and should not be referenced from outside the component. Effective support for private definitions can simplify local reasoning and future changes. 
 
-* We reserve a byte, proposed '~', to indicate private symbols.
-* We introduce '~' only in the rhs of link, move, or translate.
-* If '~' appears in lhs of rewrite, it must also appear in rhs.
-* We analyze for improper '~' prior to evaluation of namespace.
-* We may also analyze to forbid ambiguity between private defs.
+Assume byte '~', used anywhere in a name, marks it private. The front-end syntax introduces access control features that result in private definitions. For an accept list we might compile `export foo*, bar, qux as q` into translation `{ "" => "~", "foo." => "foo.", "bar#" => "bar#", "qux#" => "q#" }`. For a deny list we might compile `hide foo, bar.*` into translation `{ "foo#" => "~foo^#", "~foo^" => "~foo^^", "bar." => "~bar^.", "~bar^" => "~bar^^" }`. Users never directly write a private name.
 
-Effectively, these rules enforce a contagion model: a symbol never starts private, but becomes private through a rewrite then remains private indefinitely. 
-
-In addition to the analysis, we need front-end-syntax for introducing privacy. Two useful patterns for access control are an accept list and a deny list. For an accept list we might compile `export foo*, bar, qux as q` into translation `{ "" => "~", "foo." => "foo.", "bar#" => "bar#", "qux#" => "q#" }`. For a deny list we might compile `hide foo, bar.*` into translation `{ "foo#" => "~foo^#", "~foo^" => "~foo^^", "bar." => "~bar^.", "~bar^" => "~bar^^" }`.
-
-*Note:* In practice, we can resist accidental privacy violations by simply forbidding '~' in the front-end syntax for names. Analysis at the namespace layer offers additional protection in context of metaprogramming, but we can easily do without.
+Syntactic protections are relatively weak in context of user-defined syntax. We can strengthen privacy protections by analyzing a namespace before it is evaluated: check that 'ns' defs don't initially reference private names, and that all rewrites (prefix to prefix maps) preserve privacy: if '~' is in lhs, it must also appear in rhs. 
 
 ## Global Definitions
 
