@@ -35,8 +35,6 @@ This current choice of operations combines move and remove, namespace and defs, 
 
 The current NSOp type makes it difficult to rename or delete 'food' without also renaming or deleting 'foodie'. To prevent this problem, we'll assume 'prefix unique' names: no full name is a prefix of another name. An evaluator of NSOp might issue a warning when it detects names are not prefix unique. A front-end compiler might reserve '#' then implicitly define 'food#' and 'foodie#' under the hood, ensuring prefix uniqueness by default.
 
-For the remainder of this document, the compiler added suffix is implicit.
-
 ## Common Usage Patterns
 
 * A 'rename' involves both 'mv' and 'ln' operations with the same Map. We'll almost never use 'ln' except as part of a full rename, but it's separated to simplify optimizations and rewrite rules.
