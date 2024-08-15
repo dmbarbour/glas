@@ -106,9 +106,9 @@ In addition to the analysis, we need front-end-syntax for introducing privacy. T
 
 ## Global Definitions
 
-A global namespace can be modeled by implicitly forwarding a namespace such as `g.*` into hierarchical components. For example, if we have hierarchical component 'foo' we might use translation `{ "" => "foo.", "g." => "g." }`. This allows components to share and access definitions with without manual threading, albeit at greater risk of conflict. Usefully, this isn't a true global namespace. By overriding the default behavior, users can sandbox globals or resolve conflicts.
+A global namespace is modeled by implicitly forwarding a namespace such as `g.*` into hierarchical components. For example, if we have hierarchical component 'foo' we might use translation `{ "" => "foo.", "g." => "g." }`. This allows components to share and access definitions with without manual threading, albeit at greater risk of conflict. By explicitly overriding the default behavior, users can sandbox globals or resolve conflicts.
 
-Abstract assembly proposes global namespace `%*` for AST constructors. We can reduce overheads a little by reserving space under '%' for user-defined globals. This would work best with some specialized syntax for globals. 
+Abstract assembly proposes global namespace `%*` for AST constructors. I am tempted to reserve a region under '%' for user-defined globals, but doing so dilutes purity of purpose and the performance benefits are negligible.
 
 ## Potential Extensions
 
