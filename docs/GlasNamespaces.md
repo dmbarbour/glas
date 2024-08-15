@@ -100,19 +100,15 @@ In context of modular subcomponents, a private definition is an implementation d
 
 Effectively, these rules enforce a contagion model: a symbol never starts private, but becomes private through a rewrite then remains private indefinitely. 
 
-In addition to the analysis, we need front-end-syntax for introducing privacy. One viable solution is to rewrite an 'export' list such as `export foo*, bar, qux as q` into a rename or translation such as `{ "" => "~", "foo." => "foo.", "bar#" => "bar#", "qux#" => "q#" }`.
+In addition to the analysis, we need front-end-syntax for introducing privacy. Two useful patterns for access control are an accept list and a deny list. For an accept list we might compile `export foo*, bar, qux as q` into translation `{ "" => "~", "foo." => "foo.", "bar#" => "bar#", "qux#" => "q#" }`. For a deny list we might compile `hide foo, bar.*` into translation `{ "foo#" => "~foo^#", "~foo^" => "~foo^^", "bar." => "~bar^.", "~bar^" => "~bar^^" }`.
 
-*Note:* In practice, analysis of the namespace seems unnecessary. It is sufficient to resist accidental violations by forbidding '~' within names in the program syntax. 
+*Note:* In practice, we can resist accidental privacy violations by simply forbidding '~' in the front-end syntax for names. Analysis at the namespace layer offers additional protection in context of metaprogramming, but we can easily do without.
 
 ## Global Definitions
 
-A namespace ultimately evaluates into one global map of names to defs, but the mixin+translate NSOp makes it easy to isolate and control relationships between subcomponents, e.g. via `{ "" => "foo." }` rewrite for component 'foo'. In this context, it might be useful to introduce some conventions for shared or global namespaces, something easily implemented by the front-end glas language compiler. 
+A global namespace can be modeled by implicitly forwarding a namespace such as `g.*` into hierarchical components. For example, if we have hierarchical component 'foo' we might use translation `{ "" => "foo.", "g." => "g." }`. This allows components to share and access definitions with without manual threading, albeit at greater risk of conflict. Usefully, this isn't a true global namespace. By overriding the default behavior, users can sandbox globals or resolve conflicts.
 
-For example, a glas language could take `g.*` as the implicit global namespace, and by default rewrite `{ "" => "foo.", "g." => "g." }` for hierarchical component 'foo'. This would allow the 'foo' component to both publish some definitions into the global space and access definitions provided. The front-end syntax can also let users override the default `g.*` rewrite, letting users sandbox the global namespace.
-
-Note that the component can both access definitions in the global namespace and add methods to it. There is a significant risk of name conflicts when adding definitions to the global namespace, but it can be resolved via manual translations.
-
-*Note:* We're already doing something like the global namespace for abstract assembly under prefix '%'. We could place the global namespace under `%g.*`, but it seems cleaner to keep it separate.
+Abstract assembly proposes global namespace `%*` for AST constructors. We can reduce overheads a little by reserving space under '%' for user-defined globals. This would work best with some specialized syntax for globals. 
 
 ## Potential Extensions
 
