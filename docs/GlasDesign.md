@@ -13,16 +13,12 @@ The 'plain old data' type for glas is the finite, immutable binary tree. Trees c
         type Tree = ((1 + Tree) * (1 + Tree))   
             a binary tree is pair of optional binary trees
 
-A binary tree can easily represent a pair `(a, b)`, either type `(a + b)`, or unit `()`. 
+A binary tree can easily represent a pair `(a, b)`, either type `(a + b)`, or unit `()`. However, glas systems will favor labeled data as more human meaningful and extensible. We will encode labels as a left-right-left path into a binary tree. Words such as 'height' and 'weight' can be encoded into the path using UTF-8, allowing dictionaries such as `(height:180, weight:200)` to be encoded as [radix tree](https://en.wikipedia.org/wiki/Radix_tree). An open variant can be encoded as a singleton dictionary. 
 
-However, glas systems often favor labeled data as more human meaningful and openly extensible. Labels can be encoded into a *path* into the tree. For example, 'data' might be encoded as UTF-8 into the path '01100100 01100001 01110100 01100001' where '0' and '1' represent left and right branches into a binary tree. 
-
-A dictionary such as `(height:180, weight:200, ...)` contains many labeled values, implementing a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). To support iteration over dictionary keys, we'll add a NULL separator '00000000' between the label and data. That is, the ':' is actually encoded as a NULL, and NULL should not appear within labels. A labeled variant type is effectively a dictionary that contains exactly one label from a known set.
-
-To efficiently represent dictionaries and variants, we must compactly encode non-branching sequences of bits. A viable runtime representation is closer to:
+To efficiently represent dictionaries and variants, we must compactly encode non-branching sequences. A viable runtime representation is closer to:
 
         type Tree = (Stem * Node)       // as a struct
-        type Stem = uint64              // encoding 0..63 bits
+        type Stem = uint64              // encodes 0..63 bits
         type Node = 
             | Leaf 
             | Branch of Tree * Tree     // branch point
@@ -36,7 +32,7 @@ To efficiently represent dictionaries and variants, we must compactly encode non
             abcde..1    63 bits
             00000..0     unused
 
-This provides a base encoding. We'll further extend the Node type to detect violation of runtime type assumptions, to support debug tracing, and to enhance performance (see *Accelerated Representations* below). But glas data should generally be understood as binary trees.
+This can also efficiently encode bitstrings of arbitrary length as a Stem terminating in a Leaf, which is useful when encoding integers. 
 
 ### Integers
 
@@ -57,7 +53,7 @@ See also *Numbers*, below.
 
 ### Lists, Arrays, Queues, Binaries
 
-Sequential structure in glas is usually encoded as a list. A list is as a binary tree where every left node is an element and every right node is a remaining list, and the empty list is a simple leaf node.
+Sequential structure in glas is usually encoded as a list. A list is either a `(head, tail)` pair or a leaf node, similar in style to Lisp or Scheme lists.
 
         type List a = (a * List a) | () 
 
@@ -66,38 +62,167 @@ Sequential structure in glas is usually encoded as a list. A list is as a binary
          2 /\
           3  ()  
 
-Direct representation of lists is inefficient for many use-cases, such as random access arrays, double-ended queues, or binaries. To enable lists to serve many sequential data roles, lists are often represented using [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_%28data_structure%29) under-the-hood. This involves extending the 'Node' type described earlier with logical concatenation and array or binary fragments.
+Direct representation of lists is inefficient for many use-cases, such as random access, double-ended queues, or binaries. To enable lists to serve many sequential data roles, lists are often represented under-the-hood using [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_%28data_structure%29). This involves extending the 'Node' type described earlier with logical concatenation and array or binary fragments.
 
 Binaries receive special handling because they're a very popular type at system boundaries (reading files, network communication, etc.). Logically, a binary is a list of small integers (0..255). For byte 14, we'd use `0b1110` not `0b00001110`. But under the hood, binaries will be encoded as compact byte arrays.
 
 ### Numbers, Vectors, and Matrices
 
-A rational can be modeled as a dict `(n, d)` of integers with non-zero denominator 'd'. The rational subset of complex or hypercomplex numbers can be modeled as dicts `(r, i)` or `(r, i, j, k)` of integers or rationals. A vector is a list of numbers. A matrix is a list of vectors of identical lengths.
+Arbitrary rational numbers can be encoded as a dict `(n, d)` of integers. The rational subset of complex or hypercomplex numbers can be modeled as dicts `(r, i)` or `(r, i, j, k)` of rationals or integers. A vector is encoded as a list of numbers. A matrix is encoded as list of vectors or matrices of identical dimensions. Arithmetic operators in glas systems should be overloaded to handle these different number types where it makes sense to do so. 
 
-Arithmetic operators on glas data will generally be overloaded to support these number representations, at least where it makes sense to do so. Implicit conversions between number types would be performed as needed, restricted to lossless conversions.
+For performance, a runtime may support optimized internal representations then convert to a dict or list only where the encoding is directly observed. For example, a useful subset of rationals might be represented and processed as floating point numbers, or matrices could be represented as an array with dimension metadata.
 
-Under the hood, the runtime can potentially introduce optimized representations. For example, it is feasible to introduce a bignum floating point representation for rationals whose denominator is a power of two (or ten, or sixty). Or represent a matrix as a large array with logical dimension tracking.
+*Note:* Arithmetic in glas should be exact by default, but there should also be options to trade precision for performance. This is a problem left to language design.
 
 ## Programs and Applications
 
 A program is a value with a known interpretation. An application is a program with a known integration.
 
-The glas system proposes an unconventional [application model](GlasApps.md) that is very suitable for live coding, reactive systems, distributed network overlays, and projectional editors. This is based on a transaction loop: run the same atomic, isolated 'step' transaction repeatedly, with non-deterministic choice as a basis for multi-threading. A few other methods may support HTTP, RPC, and live code switch.
+The glas system proposes an unconventional [application model](GlasApps.md) based on repeated evaluation of a 'step' transaction between other events. This has nice properties for live coding, concurrency, distribution, and reactive systems. However, to fully leverage this requires non-trivial optimizations. To simplify these optimizations, we must constrain the program model.
 
-The glas system specifies a value type for [namespaces](GlasNamespaces.md) and [abstract assembly](AbstractAssembly.md) as an intermediate representations for glas programs. In general, a module that represents a program will compile into a namespace. The namespace model supports hierarchical composition, inheritance, overrides, and 'load' expressions for staged computation and integration with the module system.
+To support user-defined syntax and expressive metaprogramming, the glas program model consists primarily of a generic intermediate representation. We define [namespaces](GlasNamespaces.md), an [abstract assembly](AbstractAssembly.md) for definitions, and a [program model](GlasProg.md)
+
+
+ specific program model
+
+ (the `%*` constructors) in a manner conducive to modularity, extension, staging, caching, and the desired optimizations.
+
+In general, users will define a namespace while leaving those 
+
+
+A subset of names in `%*` and `sys.*` should be left undefined, to be provided by the runtime.
+
+### Modularity
+
+Modules in the glas system are aligned with the filesystem. Instead of convent
+
+Modularity starts with configuration. In my vision for glas systems, each user will typically inherit from a community or company configuration via DVCS then override definitions representing user-specific authorizations, resources, preferences, and extensions.
+
+To simplify tooling and support user-defined syntax, processing of files is aligned with file extensions by default. 
+
+
+To simplify packaging and sharing, glas systems forbid use of "../" and absolute file paths for dependencies between files. A file may refer only to other files in the same folder, remote files via DVCS, or the local namespace of the cli
+
+
+To process a file with extension ".x.y" we'll search the scope for functions "lang.y" and "lang.x" and apply them as compilers. As a special case, we assume a built-in compiler for ".g" files, and we'll implicitly attempt to bootstrap "lang.g" if it depends on itself.
+
+ACTIVE DESIGN DECISION:
+
+* *layered namespace* - Configuration and applications are separated structurally. Applications might be specified concretely by `file:(Location, Localization)` within the configuration, with localization determining language modules and access to configured modules. Reference to a configured module is by value, which constrains dependency structure.
+* *one big namespace* - Application definitions are visible in the configuration namespace. An application is a hierarchical component with its own 'step' and 'start' definitions and so on. This relies heavily on lazy evaluation.
+* *eval to namespace* - An application is an expression that evaluates to a namespace 'object'. Depending on the expression language, this may include binding definitions in scope, expressing applications as closures, etc.
+
+Initially, I pursued a layered namespace. It's simple, but inflexible. I suspect that one big namespace is too far in the other direction.
+
+
+The entire 'package system' is encoded in the configuration namespace.
+
+
+
+
+
+ file may only reference files contained in the same folder, remote files via DVCS. 
+
+for a file, we may only load that file
+
+
+
+At this point, I have an important design choice: 
+
+* *one big namespace* - The configuration namespace directly contains application definitions. This leans heavily on lazy evaluation and caching of the configuration namespace. User-defined syntax must be expressed in terms of metaprogramming.
+* *layered namespace* - The configuration 
+
+the configuration directly contains application definitions, or 
+
+, or applications are indirectly specified in the configuration (e.g. as `file:(Location, Localization)`). 
+
+The configuration is responsible for integrating modules. 
+
+ between modules. 
+
+
+
+
+
+
+Configurations are initially expressed using the [glas init language](GlasInitLang.md) with the ".gin" file extension, but this language provides some opportunities to integrate user-defined syntax.
+
+
+
+
+
+
+Modularity starts at the configuration layer. In my vision for glas systems, each user will typically inherit from a community or company configuration (via DVCS), then override a few definitions representing authorizations, resources, or preferences. 
+
+
+
+
+
+
+Based on command line arguments, the 'glas' executable will lazily evaluate the user's configured namespace, logically extend it with `sys.*` methods for effects, then compile or interpret the definitions.
+
+
+
+
+
+ extend this namespace with standard `sys.*` method
+
+
+and `%*` methods to bind the 
+
+
+
+ of a few generic  together with some assumptions
+
+proposes a generic []
+
+
+
+
+
+
+
+
+
+
+
+
+
+The glas system specifies encodings for [namespaces](GlasNamespaces.md) and [abstract assembly](AbstractAssembly.md), in addition to a *program model*, which is essentially 
+
+ as an intermediate representations for glas programs. In general, a module that represents a program will compile into a namespace. The namespace model supports hierarchical composition, inheritance, overrides, and 'load' expressions for staged computation and integration with the module system.
 
 The glas system specifies the [glas init language](GlasInitLang.md) for modular configurations, a primary [glas language](GlasLang.md) for the program layer, and a [glas object language](GlasObject.md) for serialization of structured data. These favor file extensions ".gin", ".g", and ".glob" respectively. Users may define additional languages with user-defined file extensions in the program layer.
 
-## Modules
+### User Namespace
 
-The glas system uses a two level module system:
+Each user has a `GLAS_CONF` configuration 
 
-* *modular configurations* - Configuration files may import from the local filesystem, remote DVCS repositories, and perhaps HTTP resources.  
-* *modular programs* - Program files may access abstract names from a configured environment, or local files from the same folder or subfolders.
 
-This separation isolates many concerns to the configuration layer including authorization, migration, and version control. The locality constraint between program files ensures folders are self-contained, which simplifies refactoring and sharing. The configured environment for a program module may represent both namespaces and specific parameters, subject to convention and configuration.
+## Module System
 
-In my vision for glas systems, a user will typically inherit from a community or company configuration then override a few definitions representing authorizations, resources, or preferences. The community configuration will specify individual modules, eliminating need for a separate package manager. A configured module might be described as:
+The module system is an another area where glas in
+
+The 'glas' executable implicitly extends the configuration namespace with some definitions under `sys.*` to support effects. 
+
+ The configuration may reference OS environment variables
+
+
+ The total configuration namespace may be very large, but this is mitigated by memoization and lazy evaluation.
+
+The c
+
+The glas system proposes a two level module system:
+
+* *modular configurations* - Configuration files may import from the filesystem and remote DVCS repositories.
+* *modular applications* - Applications may refer to local files or modules defined within the configuration.
+
+
+The final configuration namespace may be very large even if the user's personal configuration file is very small.
+
+ . To simplify sharing, application layer modules are organized into folders that depend only on contained files and configured modules (no "../" or absolute file paths), and cannot observe their own location.
+
+The configuration will typically define application modules under `module.*`, with each module definition including a description and specification recognized by the 'glas' executable. Perhaps:
 
         type ModuleDesc 
               = (spec:ModuleSpec
@@ -109,21 +234,49 @@ In my vision for glas systems, a user will typically inherit from a community or
               = file:(at:Location, ln:Localization)
               | data:PlainOldData
 
-Most global modules would be specified as files. This may refer to remote DVCS resources depending on Location. The 'data' option is convenient for parameterizing modules.
+In most cases, application modules will specify files in the filesystem or remote DVCS with a simple localization. The localization allows us to specify the same file multiple times with different dependency contexts. 
+
+parameterize the same file with multi
+
+apply aliases (e.g. so we could load a file with `math => my-math`.
+
+alias
+
+parameterize the file with a namespace of configured dependencies. 
+
+ configured module
+
+ allows us to treat the configuration namespace as the module namespace. 
+
+" to "module
+
+determines which configured modules loaded when compiling the file. 
+
+Although most global modules are specified as files, support for inline 'data' is convenient when parameterizing modules through a configuration. For files, Location might specify local filesystem or a remote DVCS, while Localization modifies which configured files are loaded. 
+
+The glas system supports user-defined syntax for application modules. To compile a file with extension ".x.y" we'll first load modules "lang.y" and "lang.x", subject to localization.  
+
+
+## Language Modules
+
+
+
 
 Compilation of a file is based on file extension. To compile a file with extension ".ext", we first load *Language Module* 'lang.ext', which should define a 'compile' function (see below). Support for ".g" files is built-in, but the glas system will nonetheless attempt to bootstrap 'lang.g' if defined. A file with multiple extensions such as ".json.gz" is implicitly pipelined as 'lang.gz' then 'lang.json'. Conversely, a file without extensions trivially 'compiles' to its binary content. 
 
-Dependencies between modules must form a directed acyclic graph. Dependency cycles will be detected when compiling modules and treated as an error.
 
-## Language Modules
+To support user-defined syntax, application modules implicitly depend on configured *language modules* based on file extensions. To compile a file with extension ".x.y" we first load modules "lang.y" and "lang.x", each of which should define a `compile : Source -> ModuleValue` function. 
+
+To bootstrap this system, support for ".g" files is built-in. If "lang.g" is defined
 
 A language module should compile to a program namespace that defines `compile : SourceCode -> ModuleValue`. In most cases, the ModuleValue should represent another program namespace. However, it may represent any structured value, which can be useful when working with 'data' modules or composing multiple file extensions.
 
 To support a more deterministically reproducible outcome, language modules have limited access to effects. Mostly, we can 'load' other compiled module values. For convenience, this extends to staged compilation. Effects API:
 
 * `sys.load(ModuleRef)` - On success, returns compiled value of the indicated module. On error, diverges if observing failure would be non-deterministic (e.g. dependency cycle, network fault, resource quota), otherwise fails observably (e.g. backtracking or exception). We'll broadly distinguish a few kinds of ModuleRef:
-  * *file:Name* - Reference a local file in the current folder or subfolder. No "../" paths! Compilation is based on file extension, selecting "lang.ext" from the configured environment. 
-  * *env:Name* - Load data by name from the configured environment. Depending on conventions, this might represent a specific parameter or localized access to a configured module namespace.
+  * *file:Name* - Load a local file from the same folder as the file currently being compiled. Uses the same localization as the origin file. 
+  * *dvcs:Resource* - Load a remote resource.
+  * *conf:Name* - Load by name from the configured environment. Depending on conventions, this might represent a specific parameter or localized access to a configured module namespace.
   * *data:Data* - returns given Data. Intended for use with composite module refs like *eval*.
   * *eval:(lang:ModuleRef, src:ModuleRef)* - staged compilation, for embedding user-defined languages or DSLs.
 
@@ -237,4 +390,22 @@ I've often considered extending glas data to support graph structures or unorder
 ### Number Units
 
 I like the idea of units for numbers, i.e. such that we know it's `3.0 Volts` instead of `3.0 kilograms`. But I haven't found a nice way to represent this dynamically. Perhaps it could be supported via shadow types, or generally a concept of tagging numeric types with logical metadata via annotations, and also checking this metadata via annotations.
+
+### Compact Dictionaries
+
+Use of UTF-8 for encoding dictionaries is awkward in many ways. An alternative is to use a 32-bit encoding for dictionary labels with 'a'-'z' and six extra characters, perhaps: data separator (':'), hyphen, dot, privacy separator ('~'), a number escape (with sign and length to preserve lexicographic order), and a user escape. 
+
+        lexicograph order:
+           x, x-t, x1, x1-t, x2, x10, xa, xb, x.a
+
+        00000               data sep (':')
+        00001               word joiner ('-')
+        00010               number escape
+        00011 to 11100      characters 'a' - 'z'
+        11101               path separator ('.')         
+        11110               privacy separator ('~')
+        11111               reserved for user extension
+
+Although this is feasible, I think the savings won't be very significant. The specification overhead must be considered. A better solution for saving space is to have a compiler recognize static types and use a specialized representation closer to 'structs' and tagged unions.
+
 
