@@ -1,56 +1,72 @@
+# Glas Namespaces
 
-# Extensible Namespaces
+For glas configurations and applications, we need modular namespaces with support for overrides, name shadowing, and robust access control. Other desiderata include lazy evaluation with indexed access, canonical form as a flat dictionary, and flexible metaprogramming.
 
-A namespace is essentially a dictionary with late binding of definitions, allowing for overrides and recursion. Defined elements may reference each other, and composition generally requires translation of names to avoid conflict or integrate names abstracted by a component. The namespace model described in this document supports mixin inheritance, hierarchical components, and robust access control to names. 
-
-This document assumes definitions are expressed using [abstract assembly](AbstractAssembly.md), but it can be adapted to any type where names are precisely recognized and efficiently rewritten.
+This document develops a simple namespace model to support these goals, based primarily on prefix-oriented translations of names. I assume definitions and import expressions are both represented using an [abstract assembly](AbstractAssembly.md). This enables us to precisely recognize and rewrite names within definitions, and also capture translations for localization or redirects. We can reduce translations to a single lazy pass to control overhead for rewrites.
 
 ## Proposed AST
 
-        type NSOp 
-              = ns:(Map of Name to Defs, List of NSOp)  # namespace
-              | mx:(Map of Prefix to Prefix, List of NSOp) # mixin 
-              | ln:(Map of Prefix to Prefix)            # link defs
-              | mv:(Map of Prefix to (Prefix|NULL))     # move or remove
-              | ld:Def                                  # load
-              
-        type Name = Symbol                          # assumed prefix unique   
-        type Prefix = Symbol                        # empty up to full name
-        type Symbol = Bitstring                     # byte aligned, no NULL
-        type Map = Dictionary                       # trie; NULL separators
-        type Defs = List of Def                     # accept ambiguous defs 
-        type Def = abstract assembly
+        type NSDef
+            = df:(Map of Name to (Set of Expr))             # define
+            | mx:(TLMap, Set of NSDef)                      # mixin
+            | ld:(TLMap, Expr)                              # load 
+        type TLMap =
+            ( mv?(Map of Prefix to (Prefix | NULL | WARN))  # move
+            , ln?(Map of Prefix to Prefix)                  # link
+            )
 
-I originally had a few more operations, but I eventually chose to conflate namespace+defs, mixin+translate, and move+remove.
+        type Name = Symbol                  # assumed prefix unique   
+        type Prefix = Symbol                # empty up to full name
+        type Symbol = Bitstring             # byte aligned, no NULL
+        type WARN = NULL 'w' (0x00 0x77)    # remove with a warning
+        type Map = Trie                     # a NULL byte separator
+        type Set = List                     # ignore order and dups
+        type Expr = abstract assembly       # something we evaluate
 
-* namespace (ns) - introduce definitions, expressed as a dictionary of definitions together with a sequence of operations to this dictionary. As an operation on a tacit namespace, extends lists of definitions for every defined word.
-* link (ln) - modify names within definitions in tacit namespace, based on longest matching prefix.
-* move (mv) - move definitions in tacit namespace, based on longest matching prefix, without modifying the actual definition. We express 'remove' by using a NULL byte as the destination; this isn't permitted in a valid Prefix.
-* mixin (mx) - apply a sequence of operations to the tacit namespace, with logical translation of each operation based on longest matching prefix. See *Translation of Move and Link*. 
-* load (ld) - The Def must evaluate to an NSOp at compile time, and is replaced by this NSOp. This supports staged computing, metaprogramming, and latent modularity (e.g. literal 'load file') of the namespace. It's a staging error if the resulting NSOp touches any definitions its evaluation relied upon.
+Description of namespace constructors:
 
-This current choice of operations combines move and remove, namespace and defs, mixin and translate. I originally had separated these, but conflating them simplifies evaluation. 
+* *define (df)* - Introduce a set of definitions as a dictionary. Also is the canonical form for a fully evaluated namespace. Each name may have a set of definitions, but this *usually* must be a singleton set. See *Multiple Definitions*. 
+* *mixin (mx)* - Express a namespace as a set of smaller namespaces and some latent translations. This supports composition and deferred evaluation. 
+* *load (ld)* - Evaluate an import expression (Expr), then apply an import list (TL) to the resulting namespace (NSDef). Supports modularity and metaprogramming. It's a staging error for load to influence its own evaluation. 
+
+We'll generally want lazy partial evaluation for 'load' operations within a namespace. I develop a suitable *Evaluation Strategy* below. We might lazily guard against self definition via 'remove with warning' for the transitive dependencies of Expr.
+
+Description of namespace translations:
+
+* *link (ln)* - rewrites names and localizations within Exprs. This does not affect keys in 'df'. Default is empty.
+* *move (mv)* - rewrites keys in 'df' without touching Exprs. Default is empty. Two special destinations:
+  * move to NULL - quietly remove definitions
+  * move to WARN (NULL 'w') - loudly remove definitions (warning or error)
+
+All rewrites in a translation are applied atomically, based on longest matching prefix. Translations are the basis for name shadowing, overrides, hierarchical composition, and robust access control. We'll also look at translations to guide lazy evaluation. However, multiple translation passes over definitions can be too expensive. This is mitigated by *Composition of Translations*. That is, we can heuristically choose to compose the translations then apply a single, lazy translation pass.
 
 ## Prefix Unique Names
 
-The current NSOp type makes it difficult to rename or delete 'food' without also renaming or deleting 'foodie'. To resist this problem, a front-end compiler might reserve '#' then implicitly define 'food#' and 'foodie#' under the hood. During evaluation of the namespace, we might also warn when we notice names aren't prefix unique.
+The proposed 'df' type makes it difficult to rename or delete 'food' without also renaming or deleting 'foodie'. To resist this problem, a front-end compiler should add a suffix to each name that ensures every name has its own unique prefix. For example, if we add '#' then we'd define 'food#' vs. 'foodie#'.
 
-That said, it isn't a problem that affects evaluation of the namespace. We can relax prefix uniqueness in some cases. For example, to support associative 'slots' on a name like `food#x`, we might heuristically warn for names that exclude '#' instead of actually checking prefix uniqueness.
+That said, this isn't a hard requirement. We might report some warnings if prefix uniqueness of names is violated, yet allow it under known naming conventions where renaming or deleting the whole group is acceptable (e.g. both 'food#' and 'food#type').
 
-## Common Usage Patterns
+## Translation Patterns
 
-* A 'rename' involves both 'mv' and 'ln' operations with the same Map. We'll almost never use 'ln' except as part of a full rename, but it's separated to simplify optimizations and rewrite rules.
-* To 'override' `foo#` (see *Prefix Unique Names*), we might rename prefix `foo# => foo^#` so we can access the prior (aka 'super') definition, then redefine `foo#` with optional reference to `foo^#`. We must also rename `foo^ => foo^^` to shadow prior overrides.
-* To 'shadow' `foo#`, it's essentially same as 'override' except we *rename* `foo# => foo^#` instead of moving it. This preserves existing relationships to the prior definition, where override binds existing references to the new definition.
-* To model 'private' definitions, we could prefix private definitions with '~', then systematically rename '~' to a fresh namespace in context of inheritance. 
-* To model hierarchical composition, add a prefix to everything (e.g. via 'tl' of empty prefix) then provide missing dependencies via rename or delegation. This is object capability secure, i.e. the hierarchical component cannot access anything that is not provided to it.
-* To treat mixins as functions, we can define the mixin against abstract 'components' such as 'arg' and 'result', then apply a translation map the mixin to its context. We might translate the empty prefix to a fresh scratch space to lock down what a mixin can touch.
+* A rename involves 'mv' and 'ln' operations with the same Map. In practice, we'll usually use 'ln' only as part of a rename, but 'mv' may diverge.  
+* To override `foo#` (see *Prefix Unique Names*), we can move `foo# => foo^#`, and simultaneously rename `foo^ => foo^^` to avoid introducing name conflicts. Then users can re-define `foo#` with reference to the prior `foo^#` (perhaps via keyword like 'prior' or 'super').
+* To shadow `foo#`, it's essentially same as 'override' except we *rename* `foo# => foo^#` instead of moving it. This preserves existing relationships to the prior definition, where override binds existing references to the new definition.
+* To model private definitions, we could reserve '~' for private names, use only rewrites that preserve privacy, and optionally warn if a name directly used in an Expr would violate privacy.
+* To model hierarchical components, we can simply add a prefix to everything `{ "" => "foo." }` but also alias some shared components as needed, such as global definitions.
+* To model global definitions, we could take a prefix such as "g." and propagate it by default into hierarchical components, e.g. component 'foo' might have a rewrite rule `{ "" => "foo.", "g." => "g." }`. This implicit rewrite is already assumed for AST constructors in abstract assembly.
+* To express assumptions about where names are defined in a modular namespace, we can leverage remove with warnings, e.g. move `{ "" => WARN, "foo." => "foo." }` says that the target namespace only introduces `foo.*`, while a move `{ "bar." => WARN }` says the tacit namespace does not introduce `bar.*`. Lazy evaluation of namespaces can benefit from precise expression of assumptions.
 
 ## Multiple Definitions
 
-The namespace model maintains a list of definitions for each name. To simplify declarative reasoning, this list of definitions is usually processed as a set, i.e. sort and drop duplicates before further processing. After dropping duplicates, most names should have a single, unambiguous definition. The front-end syntax should help users avoid ambiguity via name shadowing and qualified imports.
+The namespace model maintains a set of definitions for each name. In many cases, this must be a singleton set, but larger sets are potentially convenient when modeling multimethods, constraint systems, or logic-relational tables. If a name has multiple distinct definitions where one is expected, we'll generally raise an ambiguity error at compile time.
 
-However, we aren't restricted to singleton sets with unambiguous definitions. It is feasible to leverage a larger set of definitions to express tables, constraints, or multimethods. Some use cases might eventually be built-in, but glas system can also support ad-hoc use cases via `(%defs Name)` returning a set of definitions (as abstract AST nodes). Meanwhile, an empty set is useful to declare a name without defining it.
+Although the set of definitions is represented as a list, we're free to sort and eliminate duplicates at any step. I recommend doing so at reflection API boundaries to ensure a deterministic outcome when the set is observed by arbitrary user code.
+
+*Note:* Even without multiple definitions, we can support something similar via careful use of overrides. But overrides are awkward to integrate from multiple sources. Use of multiple definitions may prove more convenient in some use cases.
+
+## Composition of Translations
+
+
 
 ## Computation
 
@@ -86,7 +102,17 @@ As with fby composition, in general we must 'un-simplify' our move or link maps 
 
 When applied to a final 'ns', we can trivially convert a translate to a rename. This might be represented by addending move + link operators to ns with the translation map. For example, if we define `dst.xyzzy` and our translation is `"dst." => "bar."` then we actually defined `bar.xyzzy`. If the definition depends on `src.qux` and we translate `"src." => "foo."` then we actually depend on `foo.qux`. We're always rewriting full names on the ns.
 
-## Private Definitions
+### Lazy Evaluation
+
+An NSOp that isn't observed can be lazily evaluated depending on evaluation context. This is useful for lazy loading of files or lazy evaluation of namespace layer metaprogramming. So, a useful consideration is how to extract a subset of definitions from a namespace without observing every NSOp. 
+
+The 'ns' operator can be evaluated backwards, extracting 'ns' defs from end of list. If we recognize a move ('mv') that would prevent us from introducing the relevant definition, we don't need to evaluate further. Similarly, a subset of mixin 'mx' operators can be skipped depending on the translation. If they cannot be skipped, we can lazily apply the translation to every mixin operator then flatten into the parent scope.
+
+Of course, definitions can also be lazily evaluated.
+
+## Some Useful Patterns
+
+### Private Definitions
 
 In context of modular components, a private definition is an implementation detail and should not be referenced from outside the component. Effective support for private definitions can simplify local reasoning and future changes. 
 
@@ -94,34 +120,46 @@ Assume byte '~', used anywhere in a name, marks it private. The front-end syntax
 
 Syntactic protections are relatively weak in context of user-defined syntax. We can strengthen privacy protections by analyzing a namespace before it is evaluated: check that 'ns' defs don't initially reference private names, and that all rewrites (prefix to prefix maps) preserve privacy: if '~' is in lhs, it must also appear in rhs. 
 
-## Global Definitions
+### Global Definitions
 
 A global namespace is modeled by implicitly forwarding a namespace such as `g.*` into hierarchical components. For example, if we have hierarchical component 'foo' we might use translation `{ "" => "foo.", "g." => "g." }`. This allows components to share and access definitions with without manual threading, albeit at greater risk of conflict. By explicitly overriding the default behavior, users can sandbox globals or resolve conflicts.
 
 Abstract assembly proposes global namespace `%*` for AST constructors. I am tempted to reserve a region under '%' for user-defined globals, but doing so dilutes purity of purpose and the performance benefits are negligible.
 
-## Abstraction of Call Graphs
+### Abstraction of Call Graphs
 
-For conventional procedural programming, we can hard-code most names in the call-graph between functions. Our abstract assembly would contain structures like `(%call Name ArgExpr)`. The namespace model makes this elastic, allowing users to translate names to support hierarchical structure and overrides names. We can leverage this elasticity for limited abstraction, e.g. to redirect or sandbox a name. However, this approach to abstraction is very expensive in cases where we need multiple variations deep within a call graph.
+For first-order procedural programming, we can hard-code names in the call-graph between functions. Our abstract assembly would contain structures like `(%call Name ArgExpr)`. The namespace model makes this elastic, allowing users to translate names to support hierarchical structure and overrides names. We can leverage this elasticity for limited abstraction, e.g. to redirect or sandbox a name. However, this approach to abstraction is very expensive where we want many variations of a large call graph. 
 
-A more efficient solution is to introduce higher order programming at the definition layer. Even if we don't want functions as first-class values (due to awkward feature interaction with live coding, orthogonal persistence, remote procedure calls, etc.) we can support function arguments as implicit parameters (e.g. algebraic effects), or function results via staged programming. In any case, this reduces need for duplication in the namespace layer. Insofar as the higher order program is static or stable, an optimizer can heuristically trade space for speed via partial evaluation. 
+To solve this, we can support staged higher order programming directly in the program definition layer. Further, it is feasible to restrict higher order programming to static parameters. An optimizer can heuristically perform partial evaluation and inlining.
 
-Taken to an extreme, we can abstract all the calls. We might allow `(%call StaticDataExpr ArgExpr)` where `%call` looks at an implicit parameter to determine how data is converted to a function name (or callable AST). This supports ad-hoc late binding similar to OOP inheritance and overrides. This implicit parameter could be a function that returns a name or callable AST, likely involving *localizations* (see abstract assembly) so we can securely translate data to an open-ended set of names. Alternatively, a list of functions so we can model layers of logical overlays with 'super' calls in context of overrides.
+An intriguing opportunity is to apply indirection to all call targets, i.e. let all edges in a call graph become arcs through an implicit 'call context' parameter, possibly static. Instead of calling a name directly, we might use `(%call "foo" ArgExpr)` then the call context maps `"foo"` to a function name or other callable AST. To support bindings to an open namespace (without breaking namespace security assumptions), the call context can can leverage *Localizations* as described in [abstract assembly](AbstractAssembly.md). To support logical overlays and overrides with 'super' calls, call context can be structured as a list of layers.
 
-In any case, the proposed namespace model and abstract assembly are adequate foundations for abstraction, and provide means for the program model to take it further without violating security or performance assumptions.
+There is probably some awkward feature interaction, e.g. private utility definitions probably shouldn't be subject to override, so we might need some special attention to that. But we don't need a new NSOp for this role, just careful design of the front-end syntax and intermediate AST.
 
 ## Potential Extensions
-
-### Improving Lazy Eval
-
-At the moment, the 'ld' operator hinders lazy evaluation of the namespace because we cannot easily determine or restrict which names 'ld' introduces. Translation can help, but it doesn't prevent 'ld' from introducing names into `sys.*` or `%`. We'll need some form of annotations on namespaces to express assumptions about where definitions are introduced. 
-
-One viable solution is to extend the 'remove' encoding (move to NULL) to support a test assumption, i.e. that nothing was actually removed. This could be encoded as a special remove destination, with a NULL byte. Then we could express that `sys.*` is not defined by 'ld' by adding a remove `sys.` prefix and also warning if something was removed. Lazy eval would easily notice the remove and wouldn't need to include `sys.*` in its considerations for introduction of definitions. Still, this is awkward to encode at every point where it might be needed. 
-
-It may be better to explicitly constrain which definitions may be introduced than to specify where definitions are not introduced. This is feasible, but may require an extra operator to annotate the assumption.
 
 ### Copy Operator? Unlikely.
 
 It is feasible to introduce operations to copy all or part of the tacit namespace into a new location. This might be expressed as a `cp:(Map of Prefix to Prefix)` operation, copying definitions based on longest matching prefix, and also moving them to the target prefix and perhaps also performing a link on the copied defs with the same map (for internal consistency). 
 
 However, I don't have a strong use case for this. For the potential use cases I've found it seems better to either abstract construction of a namespace then directly instantiate multiple variations (already supported via 'ld'), or use the layers of overlays mentioned for call graph abstraction. 
+
+### Load Operator? Tentative Redesign.
+
+We could introduce a 'load' operator `ld:Def` that evaluates Def to an NSOp within the namespace context (subject to late binding and overrides) then rewrites to the returned NSOp. The challenge is ensuring this Def doesn't affect any names that it depends upon. This feature would be very convenient for lazy loading of dependencies and metaprogramming subject to overrides and parameterization via the host namespace.
+
+I might need a different namespace model to make this feasible.
+
+## Alternative Namespace Model
+
+Some desired areas of improvement: 
+
+* assume syntactic avoidance of name conflicts but detect errors early
+* stable structure: don't 'modify' the tacit namespace, only add to it 
+* support for load expressions that are evaluated within the namespace
+
+I think this is doable, and it should even be simpler than the older model. Since we aren't touching the namespace layer, we don't need 'mv' or 'ln', but we do need to translate our load expressions. 
+
+We do lose the 'remove with warnings' feature to help resist conflicts and guide lazy evaluation, but I that's a minor issue given it never really helped with user-defined globals in any case, and we don't need to consider it for `%*` or `sys.*` when we're implicitly receiving those from the runtime. The problem before had a lot to do with composing multiple definitions per word, and we're assuming that's a non-issue.
+
+
