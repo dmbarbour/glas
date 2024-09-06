@@ -5,7 +5,7 @@ This is a language for modular configurations. Preferred file extension: ".gin" 
 An unusual feature of glas system configuration is that we'll represent the entire 'package system' within the configuration. This results in very large configurations, thus we require ample support for modularity. Notable features:
 
 * *Modularity and Abstraction.* The language is designed to support *very large* configurations with multiple files and abstraction via late binding and override.
-* *Laziness and Caching.* The configuration language is designed to support lazy loading of imports and implicit memoization of computations, to reduce rework. 
+* *Laziness and Caching.* To support the expected use cases, the configuration language must support lazy loading of imports and persistent caching of computations. 
 * *Grammar Inspired Functions* Functions are expressed as deterministic grammar rules, based loosely on [parsing expression grammars (PEGs)](https://en.wikipedia.org/wiki/Parsing_expression_grammar). 
 * *Termination Guarantee.* Computation is ideally restricted to [primitive recursive functions](https://en.wikipedia.org/wiki/Primitive_recursive_function). This should be enforced by analysis of mutually recursive definitions.
 * *Simple Syntax.* The toplevel syntax is inspired from [toml](https://toml.io/en/), with minimal extensions for modularity and functions. 
@@ -16,41 +16,21 @@ In general, user configurations will inherit from much larger community or compa
 
 ## Data
 
-The language supports only a few data types. 
-
-* numbers - integers, rationals, complex
-* lists - texts, tables, vectors, matrices
-* dictionaries with symbolic keys
-* variants (as singleton dictionaries)
-
-* locations - files, git repos, etc.
-* localizations - for late binding
-
-The 'plain old data' is numbers, lists, dictionaries, and variants. These translates directly to glas data using the conventional representations, e.g. bitstrings for integers, dicts as tries with a null separator, rational and complex numbers as dicts, etc.. The configuration language abstracts over representations, but built-in conversions are supported.
-
-For security reasons, locations, localizations, and names are constructed by keyword then left abstract. Viable representations under-the-hood:
-
-        type Location =
-            (origin:ConfigFileLocation    # from parser
-            ,target:Data                  # from user
-            )
-        type Localization = Map of Prefix to Prefix
-
-Locations capture the configuration file's location. This supports relative paths and also lets us easily recognize problems such as a remote DVCS configuration file referencing regular file paths outside the repository. Localization might capture a scope of definitions, including name translations. Minimally, this consists of prefix-to-prefix name translations into the configuration namespace (see localizations in [abstract assembly](AbstractAssembly.md)). 
+We'll support only plain old glas data. Syntactic support will focus on lists, numbers, and labeled data. Computation may also involve some tacit parameters for abstract locations, localizations, or higher-order functions. But these won't be presented as first-class values.
 
 ## Config Namespace
 
 A configuration file defines one [namespace](GlasNamespaces.md) of functions and data expressions. This can inherit and override other configuration files. It is possible to develop template-like abstract configuration files where overrides are expected. For example, by convention definitions under `sys.*` are left abstract for later system-provided overrides, such as access to OS environment variables.
 
-## Import Expressions
+Regarding dependencies when loading a file as a module, we might apply a call context to represent the logical environment for the compiler. 
 
-A configuration will generally contain some import statements that introduce definitions from other configuration files. In general, it is possible to import the same file multiple times in different translation contexts, or with different overrides. 
+## Import Expressions?
 
-Import expressions may be arbitrary expressions that evaluate to a glas input file Location. This might be wrapped and represented as an 'ld' operation when compiling the configuration file. Obviously, an import expression must not depend on any definitions provided by the imported resource, but it may depend on definitions later provided or overridden by the *client* of a module.
+A configuration file may reference other configuration files or remote resources. The question is how much computation is needed to represent these files or resources. We could permit arbitrary expressions, to be evaluated at parse time. This would allow for late binding and overrides, but it greatly complicates processing of the configuration. Alternatively, we could restrict to inline expressions, e.g. relative file paths or URLs. This simplifies processing but is a bit less flexible.
 
-A relevant design goal for glas configuration is *lazy* imports. Instead of multiple inheritance and conflict detection, we'll generally restrict imports to one 'open' import (e.g. to inherit from another config) plus any number of non-overlapping explicit or qualified imports. This ensures it is always locally obvious within a file where a given name is defined, which import expressions must be evaluated.
+I'm leaning towards the static inline expressions. It isn't clear to me where flexibility of locations would be useful for configurations, instead I suspect it would be confusing if we used it at all.
 
-*Note:* There is no support for 'mixins' for higher-order abstraction.
+To simplify lazy imports, we'll ensure in the syntax layer that we never have more than one definition for a word, at most one 'open' dependency for implicit imports, and that we only use one definition for a word within a configuration file.
 
 ## Toplevel Syntax
 
@@ -102,6 +82,8 @@ Imports and exports must be placed at the head the configuration file, prior to 
 Explicit imports forbid name shadowing and are always prioritized over implicit imports using 'open'. We can always determine *where* every import is coming from without searching outside the configuration file. This supports lazy loading and processing of imports.
 
 The Source is currently limited to files or a dotted path that should evaluate to a Location. The Location type may specify computed file paths, DVCS resources with access tokens and version tags, and so on. 
+
+*Note:* When importing definitions, we might want the option to override instead of shadow definitions. This might need to be represented explicitly in the import list, and is ideally consistent with how we distinguish override versus shadowing outside the list. Of course, this is a non-issue if we omit 'open' imports.
 
 ## Implicit Parameters and Algebraic Effects
 

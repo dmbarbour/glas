@@ -25,26 +25,26 @@ This document develops a simple namespace model to support these goals, based pr
 
 Description of namespace constructors:
 
-* *define (df)* - Introduce a set of definitions as a dictionary. Also is the canonical form for a fully evaluated namespace. Each name may have a set of definitions, but this *usually* must be a singleton set. See *Multiple Definitions*. 
-* *mixin (mx)* - Express a namespace as a set of smaller namespaces and some latent translations. This supports composition and deferred evaluation. 
-* *load (ld)* - Evaluate an import expression (Expr), then apply an import list (TL) to the resulting namespace (NSDef). Supports modularity and metaprogramming. It's a staging error for load to influence its own evaluation. 
+* *define (df)* - Introduce a set of definitions as a dictionary. This is the canonical form for a fully evaluated namespace. Each name may have *Multiple Definitions*, but is often restricted to the singleton set. 
+* *mixin (mx)* - Express a namespace as a set of smaller namespaces and latent translations. This supports composition and deferred evaluation of the namespace.
+* *load (ld)* - Express a namespace as an import expression (Expr) and import list (as TLMap). Evaluate Expr then apply TLMap to the returned NSDef. This supports modularity and metaprogramming, but is subject to potential evaluation and staging errors.
 
 We'll generally want lazy partial evaluation for 'load' operations within a namespace. I develop a suitable *Evaluation Strategy* below. We might lazily guard against self definition via 'remove with warning' for the transitive dependencies of Expr.
 
 Description of namespace translations:
 
 * *link (ln)* - rewrites names and localizations within Exprs. This does not affect keys in 'df'. Default is empty.
-* *move (mv)* - rewrites keys in 'df' without touching Exprs. Default is empty. Two special destinations:
-  * move to NULL - quietly remove definitions
-  * move to WARN (NULL 'w') - loudly remove definitions (warning or error)
+* *move (mv)* - rewrites keys in 'df' without touching Exprs. Default is empty. Special destinations:
+  * NULL - quietly remove definitions. 
+  * WARN (NULL 'w') - loudly remove definitions, emitting warning or error. This is useful to enforce assumptions about where definitions are introduced in a mixin.
 
-All rewrites in a translation are applied atomically, based on longest matching prefix. Translations are the basis for name shadowing, overrides, hierarchical composition, and robust access control. We'll also look at translations to guide lazy evaluation. However, multiple translation passes over definitions can be too expensive. This is mitigated by *Composition of Translations*. That is, we can heuristically choose to compose the translations then apply a single, lazy translation pass.
+All rewrites in a translation are applied atomically, favoring the longest matching prefix. Translations are the basis for name shadowing, overrides, hierarchical composition, and robust access control. We'll also look at translations to guide lazy evaluation. However, multiple translation passes over definitions can be too expensive. This is mitigated by *Composition of Translations*. That is, we can heuristically choose to compose the translations then apply a single, lazy translation pass.
 
 ## Prefix Unique Names
 
-The proposed 'df' type makes it difficult to rename or delete 'food' without also renaming or deleting 'foodie'. To resist this problem, a front-end compiler should add a suffix to each name that ensures every name has its own unique prefix. For example, if we add '#' then we'd define 'food#' vs. 'foodie#'.
+The proposed namespace model makes it difficult to translate 'food' without also translating 'foodie'. To resist this problem, a front-end compiler should slightly modify names, e.g. adding a suffix that ensures a unique prefix. For example, if we add '#' then we'd define 'food#' vs. 'foodie#', and the two names can now be translated independently. 
 
-That said, this isn't a hard requirement. We might report some warnings if prefix uniqueness of names is violated, yet allow it under known naming conventions where renaming or deleting the whole group is acceptable (e.g. both 'food#' and 'food#type').
+However, this isn't a hard requirement of the namespace model. There may be special circumstances where it makes sense to translate a cluster of names together by default, e.g. 'food#' and 'food#type#' or 'food#doc#' where the later items represent associated metadata.
 
 ## Translation Patterns
 
@@ -58,7 +58,7 @@ That said, this isn't a hard requirement. We might report some warnings if prefi
 
 ## Multiple Definitions
 
-The namespace model maintains a set of definitions for each name. In many cases, this must be a singleton set, but larger sets are potentially convenient when modeling multimethods, constraint systems, or logic-relational tables. If a name has multiple distinct definitions where one is expected, we'll generally raise an ambiguity error at compile time.
+The namespace model maintains a set of definitions for each name. Larger sets are potentially useful for modeling multimethods, tables, or constraint systems. If a program expects a single definition for a name with multiple definitions, we might raise an ambiguity error at compile time. Or we could try to disambiguate based on type and context. This is left to program semantics. 
 
 Although the set of definitions is represented as a list, we're free to sort and eliminate duplicates at any step. I recommend doing so at reflection API boundaries to ensure a deterministic outcome when the set is observed by arbitrary user code.
 
@@ -66,7 +66,44 @@ Although the set of definitions is represented as a list, we're free to sort and
 
 ## Composition of Translations
 
+We can compose translations sequentially, where one translation is followed by another. It can be useful for performance to compose translations instead of applying multiple sequential translations to Exprs, especially when the Exprs are large or when the composed translation is applied to many Exprs. Of course, composition of translations also has a cost, so there are some heuristic decisions involved.
 
+To clarify, by composition of translations, I mean to compose the 'TLMap' type, producing a new TLMap. 
+
+             TLMapA      fby     TLMapB       =>      TLMapAB
+        (mv:MVA, ln:LNA) fby (mv:MVB, ln:LNB) => (mv:MVAB, ln:LNAB)
+
+The 'mv' and 'ln' components of a TLMap can be composed independently. The basic approach for 'A fby B' is to extend implicit suffixes on both sides of A so the output for A matches input for B, then apply B's rules to the RHS of of the modified A, using the longest matching prefix in B in each case.
+
+        { "bar" => "fo" } fby { "f" => "xy", "foo" => "z"  }                    # start
+
+        # note that we also extend suffixes of the implicit "" => "" rule
+        { "bar" => "fo", "baro" => "foo", "f" => "f", "foo" => "foo" }          # extend suffixes 
+            fby { "f" => "xy", "foo" => "z"}     
+
+        { "bar" => "xyo", "baro" => "z", "f" => "xy", "foo" => "z" }            # end
+
+Suffixes may be extended insofar as the resulting rule is implied by a rewrite rule on a shorter prefix, and doesn't conflict with an existing rewrite on a longer prefix. Conversely, we can simplify a translation map by erasing implied rewrites, e.g. we don't need `"fad" => "bad"` if our next longest matching prefix rule is `"fa" => "ba"`, and we don't need `"xyz" => NULL` if we have `"xy" => NULL`. So what we're really doing by extending suffixes is un-simplifying the left hand map.
+
+Conveniently, the NULL and WARN cases in 'mv' don't need any special handling because they cannot be matched by any valid prefix. Thus, we won't extend any suffixes, and we'll simply preserve remove rules from MVA, and potentially add new remove rules based on what MVB does match in the expanded MVA. The only thing we might do is simplify remove rules that are implied by a shorter rule in the composition.
+
+*Note:* In context of the NSDef, the translation closer to the leaf node is 'followed by' the translation closer to the root node. 
+
+### Alt: List of Translations
+
+Instead of properly composing TLMap, we could produce an intermediate representation that maintains lists of rewrite rules.
+
+        type TLMapExt = ( lln:List of (Map of Prefix to Prefix)
+                        , lmv:List of (Map of Prefix to (Prefix | NULL | WARN))
+                        )
+
+With this, we can still walk each Expr only once to perform the rewrite, it's only the individual `n:Name` elements in the abstract assembly that must iterate through the list of link rewrites. (Localizations could also maintain the list of link rules, with runtime support.) The 
+
+This should perform adeq
+
+This avoids the cost and complexity of composition and still prevents the overhead of walking Exprs multiple times. Instead, when rewriting a name, we'll need to iterate through every TLMap in the list. This should perform well enough if our chain of dependencies isn't too large. 
+
+ unless our translations are absurdly deep. But I think proper composition of TLMap isn't so complicated or expensive as to justify this.
 
 ## Computation
 
@@ -74,17 +111,12 @@ Aside from 'load', which is left to the program semantics, the most complicated 
 
 Composing 'link' operations rather than walking large definitions many times is especially useful for performance.
 
-### Simplifying Move, Link, and Translate Maps
-
-We can eliminate redundant rewrites. For example, if we have a rewrite `fa => ba` then we don't need a longer rewrite `fad => bad` because that is already implied. In general, we can remove a rule that's implied by the next longest matching prefix.
-
-Ignoring this simplification won't hurt performance much, but it isn't difficult to implement. Importantly, the simplification can also be reversed, i.e. we can add redundant rules to a rewrite map. This is used when composing rewrites with fby and translation.
 
 ### Followed By (fby) Composition of Move, Link, Translate Maps
 
 The prefix maps in 'mv', 'ln', and 'mx' represent an atomic sets of rewrites. This atomicity is mostly relevant for cyclic renames, i.e. we could rename `{ foo => bar, bar => baz, baz => foo }` in a single step to avoid name collisions. For every name, we find the longest matching prefix in the map then apply it. This does imply we cannot casually separate operations into smaller steps.
 
-However, it is feasible to compose sequential rewrites and moves. For example, `{ bar => fo } fby { f => xy, foo => z }` can compose to `{ bar => xyo, baro => z, f => xy, foo => z }`. 
+However, it is feasible to compose sequential rewrites and moves. For example, `
 
 To implement this, we first extend `{ bar => fo }` with redundant rules such that the rhs contains all possible prefixes matched in `{ f => xy, foo => z }`: `{ bar => fo, baro => foo, f => f, foo => foo }`. Then we apply `{ f => xy, foo => z }` to the rhs, resulting in `{ bar => xyo, baro => z, f => xy, foo => z }`.  Effectively, we unsimplify, rewrite some rules, then simplify again.
 

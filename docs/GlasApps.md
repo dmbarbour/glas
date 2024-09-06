@@ -36,39 +36,25 @@ Unfortunately, we need a mature optimizer and runtime system for these opportuni
 
 ## Application Life Cycle
 
-For a transaction loop application, the first effectful operation is `start()`. This will be retried indefinitely until it commits successfully or the application is killed externally. If undefined, 'start' implicitly succeeds.
+An application is represented by a namespace. For a transaction loop application, the first effectful operation is `start()`. This will be retried indefinitely until it commits successfully or the application is killed externally. If undefined, defaults to a no-op. 
 
 After a successful start, the runtime will begin evaluating `step()` repeatedly in separate transactions. The runtime may also call methods to handle RPC and HTTP requests, GUI connections, and so on based on the interfaces implemented by the application.
 
-The application may voluntarily halt via `sys.halt()`, marking the final transaction. To support graceful shutdown, a `stop()` method will be called in case of OS events such as SIGTERM on Linux or WM_CLOSE in Windows, but this won't necessarily halt the application. 
-
-An applications may voluntarily restart via `sys.restart()`. This should be consistent with halting the application then starting again in a new OS process. That is, the runtime is fully restarted: the runtime database is cleared, open files or network sockets are closed, etc.. Only persistent state bound to the external database is preserved.
+The application may voluntarily halt via `sys.halt()`, marking the final transaction. To support graceful shutdown, a `stop()` method will be called in case of OS events such as SIGTERM on Linux or WM_CLOSE in Windows, but the application must still explicitly halt itself. An applications may voluntarily restart via `sys.restart()`, which resets runtime state (including open files, network sockets, etc.) and the next operation becomes `start()`. 
 
 ### Live Coding Extensions
 
-Upon noticing an update to a running application, the updated application is compiled then we evaluate `switch()` - the updated implementation thereof - repeatedly until it succeeds. If undefined, switch implicitly succeeds. In contrast to start, switch must assume there are open files and network connections, that the runtime database is already in use, etc..
+To support live coding, we introduce a `sys.reload()` method to scan for updates in the configuration or source code and apply changes. For true live coding, an application would reload repeatedly in a stable transaction loop. But in some cases, we might reload only on specific events, such as a user pushing a button.
 
-Upon a successful switch, we'll begin using the new code's version of step, RPC, HTTP, and GUI interfaces, and so on. Until then, the runtime will continue to use the prior definition. If an application is edited many times, a runtime may directly switch to the latest version.
+To support a smooth transition, the runtime will evaluate `switch()` (if defined) as the first operation in the updated code. This will be evaluated repeatedly until it succeeds, allowing the application to control when transitions occur. Meanwhile, the runtime continues running the prior version of the application. Unlike start, switch should assume the runtime state has open file handles, network sockets, and other ad-hoc state.
 
-*Note:* Support for live coding is expensive and is subject to configuration. In general it could be disabled or configured to an external trigger (such as Linux SIGHUP or a named Windows event object).
+### Application Settings
 
-## Application Settings and Configurations
-
-In glas systems, configurations are generally centralized to [a ".gin" file](GlasInitLang.md) indicated by `GLAS_CONF`. In general, this configures the global module system, the runtime, and access to host resources. The latter includes override environment variables, which may be structured. 
-
-Excepting the global module namespace, most configuration options may be application specific by depending on `settings.*` properties defined in the application namespace. Settings are subject to convention and de-facto standardization. 
-
-Configurations will manage any relationship between applications and host resources. For example, filesystem access requires an extra parameter referring to a configured root, and sockets are bound to configured network interfaces, and even access to time may depend on a configured clock.
+Applications may define ad-hoc `settings.*` methods. Settings methods are purely functional and accessible when evaluating any 'application specific' configuration option, such as the HTTP/RPC port, mirroring, or FFI bindings. The runtime never directly observes application settings. Instead, the runtime observes a configuration, which may refer to application settings according to community conventions.
 
 ## Application Mirroring
 
-I intend to model mirroring in terms of configuring a distributed runtime. Due to the unique properties of transaction loops, we can logically run the same transaction repeatedly on multiple nodes, then optimize based on locality. Configuration of mirroring would be application specific. See [Glas Mirrors](GlasMirror.md) for details. 
-
-An essential property for mirroring is that all mirrors use the same effects API, with the same meaning regardless of where the transaction is run. This influences bindings to host resources such as network interfaces, filesystems, and clocks. However, it is feasible to support a distributed API in general based on implicit parameters representing a cursor for 'where' an effect is applied, or based on explicit parameters identifying resources
-
-## System APIs
-
-The `sys.*` namespace component is generally reserved for runtime-provided methods, and `%*` for the abstract assembly intermediate AST. 
+See [Glas Mirrors](GlasMirror.md). The essential idea is that we'll configure a distributed runtime for some applications. Leveraging the *transaction loop* features, one application can be distributed across multiple nodes. But to support this, effects APIs must be developed with the possibility for mirroring in mind.
 
 ## Database Bindings
 
@@ -261,7 +247,7 @@ Here we have a static chan, and a dynamic identifier to aggregate performance st
 
 ### Testing
 
-Aside from automated testing described in [the design doc](GlasDesign.md), we can add assertions to programs as annotations. Similar to logging and profiling, tests could be associated with static channels to support configuration (e.g. enable, disable, random testing), and it can be useful to support continuous testing over the course of an operation.
+Aside from automated testing described in [the design doc](GlasDesign.md), it can be useful to add assertions to programs as annotations. Similar to logging and profiling, tests could be associated with static channels to support configuration (e.g. test frequency, disable after so many tests, etc.), and it can be useful to support continuous testing over the course of an operation.
 
         # viable syntax
         test(chan, property, message) { operation }
