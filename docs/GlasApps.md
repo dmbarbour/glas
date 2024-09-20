@@ -44,17 +44,27 @@ The application may voluntarily halt via `sys.halt()`, marking the final transac
 
 ### Live Coding Extensions
 
-To support live coding, we introduce a `sys.reload()` method to scan for updates in the configuration or source code and apply changes. For true live coding, an application would reload repeatedly in a stable transaction loop. But in some cases, we might reload only on specific events, such as a user pushing a button.
+To support live coding, a runtime might introduce a `sys.refl.reload(Filters)` method. This asks the runtime to scan for updates in the configuration and transitive source dependencies, recompile, and apply changes. If called within the stable prefix of a transaction loop, this becomes a continuous request. Aside from reloading external files, perhaps we could introduce a `sys.refl.patch.*` API to rewrite the application namespace, or let code be sourced partially from application state. This provides a controlled form of self-modifying code.
 
-To support a smooth transition, the runtime will evaluate `switch()` (if defined) as the first operation in the updated code. This will be evaluated repeatedly until it succeeds, allowing the application to control when transitions occur. Meanwhile, the runtime continues running the prior version of the application. Unlike start, switch should assume the runtime state has open file handles, network sockets, and other ad-hoc state.
+To support a smooth transition, the runtime will evaluate a `switch()` method as the first operation in the updated code. The will be retried until it succeeds, allowing the application to run tests and control the handoff. While updates are ongoing, the runtime may heuristically skip intermediate versions. With access to edit history, a runtime can heuristically search backwards for the most recent version that switches successfully. Unlike start, switch must assume the application has open file handles, network sockets, etc..
 
-### Application Settings
+### Application Specific Settings
 
 Applications may define ad-hoc `settings.*` methods. Settings methods are purely functional and accessible when evaluating any 'application specific' configuration option, such as the HTTP/RPC port, mirroring, or FFI bindings. The runtime never directly observes application settings. Instead, the runtime observes a configuration, which may refer to application settings according to community conventions.
 
 ## Application Mirroring
 
-See [Glas Mirrors](GlasMirror.md). The essential idea is that we'll configure a distributed runtime for some applications. Leveraging the *transaction loop* features, one application can be distributed across multiple nodes. But to support this, effects APIs must be developed with the possibility for mirroring in mind.
+The essential idea is that we'll configure a distributed runtime for some applications. Leveraging the *transaction loop* model, we can run the same transaction loop on multiple nodes, and heuristically filter which concurrent 'threads' run where based on the first node-specific effect or load balancing. See [*Mirroring in Glas*](GlasMirror.md) for more. 
+
+Configurations and effects APIs must be designed with mirroring in mind.
+
+Mirroring is application specific. Some configuration options should be mirror specific. Similar to application settings, mirror specific configuration options could be evaluated once for each mirror with implicit parameters for mirror settings. Some mirror settings might come from the configuration, others from observing mirror nodes after establishing the distributed runtime.
+
+Network interfaces abstracted through the configuration and are obviously mirror specific. If we open a TCP listener on network interface "xyzzy", we might ask the configuration what this means to each mirror. For each mirror we might return a list of actual hardware interfaces. Perhaps "xyzzy" is a specific interface on a specific mirror, and we only listen at one location. Or perhaps multiple mirrors will have an "xyzzy" interface, requiring a distributed transaction to open the distributed TCP listener. 
+
+Of course, each incoming TCP connection would still be bound to a specific network interface on a specific mirror. If we initiate a connection, having multiple hardware interfaces might be interpreted as a non-deterministic choice. Though, it might be convenient to let the configuration distinguish "xyzzy-in" vs "xyzzy-out". 
+
+Anyhow, we should think carefully about how a distributed runtime interacts with every effects API, not just network interfaces. A little attention here could greatly simplify distributed programming.
 
 ## Database Bindings
 
@@ -86,6 +96,13 @@ A relevant concern is stability of these procedures in context of live coding. T
 
 I feel this feature would be useful as a bridge between glas and host systems.
 
+## Dynamic Code (TODO)
+
+Where we need dynamic code, we'll want mechanisms that interact nicely with live coding and the other features. One option is to interpret a program namespace in context of a localization. If paired with memoization or accelerated representations, we could cache safety checks and JIT compiled machine code. 
+
+Another useful option is to let the runtime maintain an in-memory 'patch' on the application namespace, effectively live coding with controlled self-modifying code.
+
+
 ## Implicit Parameters and Algebraic Effects
 
 It is useful to tie algebraic effects to the application namespace, such that we can control access to effects through the namespace. This also reduces risk of accidental name collisions. Implicit parameters might be modeled as a special case of algebraic effects.
@@ -98,7 +115,7 @@ An application can implement an interface `http : Request -> Response` to receiv
 
 The Request and Response types are binaries that include the full HTTP headers and body. However, they will often be accelerated under the hood to minimize need for redundant parsing and validation. Some HTTP features and headers, such as HTTP pipelining, will be handled by the runtime and are not visible to the application. Authorization and authentication should be configurable.
 
-By default, every HTTP request is handled in a separate transaction. If this transaction aborts, it is implicitly retried until success or timeout, providing a simple basis for long polling. Eventually, custom HTTP headers might support multi-request transactions. 
+By default, every HTTP request is handled in a separate transaction. If this transaction aborts due to system state or read-write conflict, it is implicitly retried until success or timeout, providing a basis for long polling. I propose custom response header 'Commit: false' to return the response - minus this header - without committing. This is potentially useful for safe HTTP GET requests or invalid HTTP POST requests. Default commit behavior may be configurable. Eventually, custom headers could support multi-request transactions. 
 
 ## Graphical User Interface? Defer.
 
@@ -207,9 +224,13 @@ Divergence on insufficient data ensures this API does not observe race condition
 
 ## Filesystem
 
-Instead of an implicit global filesystem, a file path will be specified by two values: a static 'root' that is processed by the configuration, and a conventional file path relative to this root. Roots may refer to specific folders or filesystem-like services recognized by the runtime.
+Instead of an implicit global filesystem, our configuration will specify multiple named roots. File access is always relative to a configured root. This provides a simple basis to sandbox applications. It's also convenient in context of mirroring that we don't start with an assumption of a global filesystem.
 
-An open file handle should be an abstract, linear, runtime-scoped type. The filesystem API can be close to conventional, except with more operations being asynchronous (awaiting commit) and more status values to represent pending operations.
+The set of named roots is application and mirror specific. For example, to operate on "AppData", we'll first evaluate the configuration for each mirror whether it has paths for "AppData". This can be cached. In the simplest cases, at most one mirror reports a path, likely the origin mirror. Otherwise, behavior may depend on the operation and mirroring flags. We could read from one location non-deterministically, or write to multiple locations concurrently, or simply abort due to ambiguity.
+
+Also, although we can support conventional streaming APIs on files, support for patch-based APIs would better support multiple users in the absence of a transactional filesystem. It's something to consider. Of course, a transactional filesystem would also be very nice, but would require significant redesigns.
+
+*Note:* An open file handle should be an abstract, linear, and scoped to the runtime. There may be a period between 'open' and commit where we buffer some writes even before we receive feedback on potential permissions issues. But by buffering writes, we could save ourselves a transaction in most cases.
 
 ## Network
 

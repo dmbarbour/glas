@@ -6,11 +6,15 @@ The intermediate language for glas systems is structured as a [namespace](GlasNa
 
 * AST constructors should evaluate to abstract AST nodes. The primitive `%*` constructors are provided by the runtime. This provides a useful staging layer, and permits user-defined metaprogramming of AST constructors in a simple way. Also, in case of multiple definitions for a word, this provides another opportunity to eliminate duplicate definitions.
 
-* Calls should be indirect through an implicit 'call context' parameter, e.g. `(%call "foo" ArgExpr)` will pass `"foo"` to the call context to be interpreted. This supports flexible abstraction of the call graph. 
-  * Call context should be structured, e.g. a list of functions and index, such that we can support layers of logical overlays and overrides. It's worth contemplating alternative structures, such as a dict (or namespace).
-  * Initial or 'default' call context for an application should either be trivial or configurable.
+* Support for local closures and overlays of the application namespace within a given method call. I wonder if we can override methods for purpose of a specific call? That would require applying a logical translation to the host namespace to generate the method's local version. Seems awkward, but viable. Or we could build logical overlays in terms of translating data to names via localization.
 
-* Support for annotations in general, but also specifically for type abstraction, logging, profiling, and type checks or proof carrying code would be very useful. Basically, all proofs need to occur at the AST layer to avoid interfering with extreme late binding (e.g. call contexts) and metaprogramming. What sort of proofs and proof tactics can we express on call graphs?
+* Call graphs should be adaptive, in the sense that we can coordinate construction of a call based on downstream context. This might be achieved based on explicit coordination, grammar-logic, or constraint systems. Use of namespace-like 'translations' per `(%call ... TL)` could bind shared names between calls. 
+
+* I want support for units or shadow types, some extra computation that can be threaded statically through a computation. This could feasibly be integrated with the adaptive call graph mechanism. 
+
+* Support for annotations in general, but also specifically for type abstraction, logging, profiling, and type checks. 
+
+* A flexible system for expressing proof tactics and assumptions about code that are tied to intermediate code and can be roughly checked by a late stage compiler after all overrides are applied.
 
 * I want to unify the configuration and application layers, such that users live within one big namespace and can use the namespace and call contexts to support sandboxing and portability of applications to different user environments. Modularity is supported at the namespace layer via 'ld' in addition to staging. In addition to Localizations, I must handle Locations carefully (and abstractly).
 
@@ -19,6 +23,4 @@ The intermediate language for glas systems is structured as a [namespace](GlasNa
 * I like the idea of functions based on grammars, similar to OMeta. This is a good fit for glas systems because we need a lot of support for metaprogramming. Also, grammars can be run backwards to generate sentences. This is both convenient for debugging and understanding code, and for deterministic concurrency based on recognizing and generating the same sentence in different parts of code. 
 
 * I'm interested in code that adapts to context, not just to the obvious parameters but also intentions, assumptions, expected types or outcomes, etc.. The main requirement here is a more flexible, bi-directional dataflow between upstream and downstream calls. This dataflow should be staged, evaluating prior to function arguments. We might try grammar-logic unification or constraint variables in this role. I'm uncertain what is needed, so will keep an open mind for ideas and opportunities here.
-
-
 

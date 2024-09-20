@@ -18,28 +18,28 @@ We avoid command line switches for runtime configuration options. Instead, confi
 
 ## Configuration
 
-The `GLAS_CONF` environment variable should specify a configuration file, usually in the [glas init language (".gin")](GlasInitLang.md). If undefined, we'll use an OS-specific default such as `"~/.config/glas/conf.gin"` in Linux or `"%AppData%\glas\conf.gin"` on Windows. If this configuration file doesn't exist, users may be asked to create one via `glas --config init` or similar.
+The `GLAS_CONF` environment variable should specify an initial configuration file with a file extension and associated syntax understood by the 'glas' executable. If the environment variable is not defined, we'll try an OS-specific default such as `"~/.config/glas/conf.g"` in Linux or `"%AppData%\glas\conf.g"` on Windows. If the configuration file doesn't exist, users may be asked to create one, perhaps via `glas --config init`.
 
-Configurations are modular. A user's configuration will generally reference a community or company 'distribution' then apply overrides relevant to user-specific preferences, authorities, and resources. The full configuration namespace might be very large, but this can be mitigated by lazy loading and evaluation. 
+Configurations are modular. A typical user's configuration will generally extend a community or company configuration from DVCS, overriding a few definitions for user preferences, projects, authorities, or resources. The community configuration may define a massive library of applications and reusable application components. This is mitigated by lazy loading and caching.
 
-In addition to defining a massive application-layer module system, a configuration will define ad-hoc properties to configure the runtime. 
+In addition to defining a applications, the configuration will define runtime options. 
 
-* *persistent database and cache* - Glas applications are well suited for orthogonal persistence, but if we want persistence we'll also need to configure storage locations. This must be runtime specific, because a runtime only recognizes some databases.
-* *access to host resources* - Applications won't directly reference host resources, but instead reference configured filesystem 'roots', network interfaces by name, clocks, and FFI libraries. This is useful for both mirroring and sandboxing.
-* *mirroring* - It is convenient to configure a distributed runtime to run distributed applications. This will also impact how host resources are referenced. 
-* *logging, profiling, assertions* - Applications may contain annotations for features with static 'channels' that can be enabled, disabled, or otherwise configured. Obviously, the configuration would determine what's actually enabled. This should be application specific.
-* *application environment* - instead of a runtime directly providing access to OS environment variables, it can let the configuration intervene.
-* *RPC registries* - Applications may publish and subscribe to remote procedure call (RPC) 'objects'. The configuration specifies a registry where objects are published or discovered. A composite registry can filter and route RPC objects based on metadata, and can also rewrite metadata, providing an effective basis for security.
+* *persistent database and cache* - Glas applications are well suited for orthogonal persistence, but we'll need to configure this.
+* *reference host resources* - most effects APIs (network, filesystem, clock, FFI, etc.) will have some indirection through the configuration when binding resources. 
+* *mirroring* - it's easiest to define a distributed application in context of a distributed runtime environment.
+* *logging, profiling, assertions* - enable and disable channels, redirect streams, random sampling, max counts, etc.. 
+* *application environment* - instead of directly providing access to OS environment variables, it can let the configuration intervene.
+* *RPC registries* - publish and subscribe to remote 'objects', routing and filtering smaller registries for security.
 
-Many configuration options will be application specific. This is supported by allowing the configuration to access ad-hoc `settings.*` defined in the application namespace when evaluating these options. The configuration may also have access to OS environment variables and other cacheable properties.
+Many configuration options, such as logging, will be application specific. This is supported indirectly: the application defines `settings.*`, and these are made accessible as implicit parameters when evaluating some expressions in the configuration. Similarly, configuration options such as network interfaces and clocks may be mirror specific.
 
-*Note:* There is a tradeoff between flexibility and tooling. For example, it is more convenient to develop `glas --db` or `glas --cache` tools if we don't need to know application settings. 
+All configuration options are ultimately runtime specific. Runtimes must document which configuration names they recognize, their expected types, and their meaning. Of course, in practice we'll develop de-facto standards across 'glas' implementations. To support a more adaptive configuration, a runtime can potentially supply some stable information about itself through the `sys.*` namespace. 
+
+*Note:* There is a tradeoff between flexibility and tooling. For example, it is inconvenient to develop general `glas --db` or `glas --rpc` tools if persistence and RPC are application specific.
 
 ## Application Module Namespace
 
-At the toplevel, applications and application-layer modules will generally be defined under `module.*`. In case of `glas --run cli.opname` we'd be looking for `module.cli.opname` in the configuration. The 'module' prefix is mostly to prevent name collisions between modules and configuration options. 
-
-However, this isn't a 'flat' namespace. Users will have sufficient means to control scope of a module's dependencies, i.e. such that "foo" might refer to `module.foo` in one case and `module.xyzzy.bar` in another. It is feasible to support 'private' utility modules shared between a subset of public modules. In addition to simplifying integration of modules from multiple communities, this lets us parameterize modules, or compile the same modules under multiple conditions.
+At the toplevel, applications and application-layer modules will generally be defined under `module.*`. In case of `glas --run cli.opname` we'd be looking for `module.cli.opname` in the configuration. The 'module' prefix prevents accidental name collisions between modules and configuration options. Dependencies can be localized, i.e. `"import math"` might refer to different modules in context of compiling different applications. But aside from conventions for compilation flags, we'll usually favor consistent names within a community.
 
 ### RPC Registry Configuration
 
@@ -57,13 +57,13 @@ Possibly just specify a folder in the filesystem, let the runtime decide file fo
 
 The `--run`, `--cmd`, and `--script` operations each compile an application module then run that application with provided command line arguments. The main difference for these three is how the module is introduced:
 
-* `--run ConfiguredApp Args` - look for `module.ConfiguredApp` in the configuration, which should evaluate to an application namespace.
-* `--cmd(.FileExt)+ ScriptText Args` - module is provided as script text, and we compile it as if it were a file with the given file extensions using `module.lang.ext` to process each extension. The script may load global modules. 
-* `--script(.FileExt)* ScriptFile Args` - module is provided as a file outside the module system, interpreted based on given file extension (or actual extension if unspecified). The script may load global modules or local files.
+* `--run ConfiguredApp Args` - look up `module.ConfiguredApp` in the configuration. This should evaluate to an application namespace.
+* `--cmd(.FileExt)+ ScriptText Args` - module is provided as script text, and we compile it as if it were a file with the given file extension in context of `module.*`.  
+* `--script(.FileExt)* ScriptFile Args` - module is provided as a file outside the module system, interpreted based on given file extension, or actual file extension none is given.  
 
-Regardless of how the module is introduced, it should compile into an application program. This is usually a [transaction loop application](GlasApps.md), but it may be a *Staged Application* (see below), or some alternative mode recognized by the runtime. The run mode will be modeled as an application specific configuration option, perhaps via `settings.mode`.
+Regardless of how the module is introduced, it should compile into a recognized program value. This usually represents a [transaction loop application](GlasApps.md), but the configuration can look at `settings.*` and decide it's a *Staged Application* or something else. 
 
-*Note:* For performance, compilation may be cached by the runtime, subject to heuristics.
+Many computations may be cached such that running the same application a second time is a lot more efficient.
 
 ### Arguments Processing
 
@@ -107,8 +107,12 @@ It is feasible to support multiple targets through the configuration. Also, very
 
 ## Glas Command Shell
 
-I envision users eventually 'living within' a live coded glas system. Instead of running individual applications, the user might (via command line or GUI) define `run.PID = App` and maintain a set of active applications via live coding. Instead of a GUI for a single app, we model a composite GUI for the composite app that renders subwindows for each `run.PID` app. 
+I envision users eventually 'living within' a live-coded glas system. Instead of running specific applications on the command line, user actions through a desktop-like GUI could manipulate a collection of active applications. It seems feasible to model this as a composite application, such that 'gui' and 'http' route screen regions and user inputs to corresponding methods of component applications. 
 
-I believe such a command shell can be modeled as an application with clever use of a reflection API. For example, we might model self-modifying code in terms of `sys.refl.patch.*` methods, adding a final bit of code to adjust the application namespace. Usefully, a patch could influence `settings.*` and integration, and automatically apply to modified source code in context of live coding.
+The main requirement is an effective reflection API. But manipulation of application settings requires special attention. 
 
-Anyhow, this is a long term future goal, a direction to pursue after the command line interface is mature.
+Additionally, if we want to manipulate the runtime configuration through user actions (such as mirroring) we might need some built-in support for live coding, i.e. such that some code can be bound to state. 
+
+
+
+I believe such a command shell can be modeled as an application maintaining an in-memory runtime patch to its own namespace. Live coding with self-modifying code. But this is a long term future goal, a direction to pursue after the command line interface is mature.

@@ -1,4 +1,4 @@
-# Initial Language for Glas
+# Initial Language for Glas (TODO!)
 
 The glas system can support multiple programming languages, but there 
 
