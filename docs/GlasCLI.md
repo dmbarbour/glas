@@ -58,16 +58,18 @@ Possibly just specify a folder in the filesystem, let the runtime decide file fo
 The `--run`, `--cmd`, and `--script` operations each compile an application module then run that application with provided command line arguments. The main difference for these three is how the module is introduced:
 
 * `--run ConfiguredApp Args` - look up `module.ConfiguredApp` in the configuration. This should evaluate to an application namespace.
-* `--cmd(.FileExt)+ ScriptText Args` - module is provided as script text, and we compile it as if it were a file with the given file extension in context of `module.*`.  
-* `--script(.FileExt)* ScriptFile Args` - module is provided as a file outside the module system, interpreted based on given file extension, or actual file extension none is given.  
+* `--cmd.FileExt ScriptText Args` - module is provided as script text. We'll compile it using the default `module.*` compilation context, then run. 
+* `--script(.FileExt)? ScriptFile Args` - module is a script file outside the module system. If this file starts with a shebang line, it's logically removed before processing. If a file extension is given, the actual file extension is ignored.
 
-Regardless of how the module is introduced, it should compile into a recognized program value. This usually represents a [transaction loop application](GlasApps.md), but the configuration can look at `settings.*` and decide it's a *Staged Application* or something else. 
+Regardless of how the module is introduced, it should compile into a recognized program value. This usually represents a [transaction loop application](GlasApps.md), but the configuration can look at `settings.*` and decide it's a *Staged Application* or something else.
 
 Many computations may be cached such that running the same application a second time is a lot more efficient.
 
-### Arguments Processing
+### Arguments Processing 
 
-Command line arguments are conventionally provided to an application as a list of strings. However, I find this awkward, hindering compositionality of applications. In many cases, it would be more convenient to separate arguments processing from the application logic. We can support this in the configuration, e.g. an application-specific 'compiler' for Args. If approached carefully, it is feasible to integrate with tab completion.
+Command line arguments are conventionally provided to an application as a list of strings. We could easily do the same here, but I've always found this awkward, especially when we begin to compose applications. I think it would be better if arguments were parsed before the application sees them. Even better if this parsing supports tab completions, help documentation, and so on such before the application is run.
+
+A viable solution is to extend the configuration with an application specific argument parser.
 
 ### Staged Applications
 
@@ -76,6 +78,12 @@ Command line arguments are conventionally provided to an application as a list o
 Staged applications allow us to treat the command-line as a user-defined language. A staged application might define `compile : Args -> App` similar to a language module, and perhaps `settings.mode = "staged"` to support runtime configuration. In this case, argument processing might also be expected to return a pair, representing which arguments are visible in each stage. The default arguments processor might split on `"--"`.
 
 In context of live coding (via `sys.reload()`), staged applications can recompute all the stages. 
+
+## Command Shells and Interactive Development
+
+I envision users mostly 'living within' a live-coded glas system instead of using lots of 'glas' commands on a command line. Instead of running specific applications on the command line, user actions would manipulate a live coding environment, adding and removing active 'applications' at runtime. This seems feasible via [REPL or Notebook interface](GlasNotebooks.md). 
+
+
 
 ## Built-in Tooling
 
@@ -104,15 +112,3 @@ Pre-bootstrap implementations of the glas executable might support only a limite
     sudo mv /tmp/glas /usr/bin/
 
 It is feasible to support multiple targets through the configuration. Also, very early bootstrap might instead write to an intermediate C file or LLVM that we then compile further. However, I do hope to eventually bootstrap directly to OS-recognized executable binary.
-
-## Glas Command Shell
-
-I envision users eventually 'living within' a live-coded glas system. Instead of running specific applications on the command line, user actions through a desktop-like GUI could manipulate a collection of active applications. It seems feasible to model this as a composite application, such that 'gui' and 'http' route screen regions and user inputs to corresponding methods of component applications. 
-
-The main requirement is an effective reflection API. But manipulation of application settings requires special attention. 
-
-Additionally, if we want to manipulate the runtime configuration through user actions (such as mirroring) we might need some built-in support for live coding, i.e. such that some code can be bound to state. 
-
-
-
-I believe such a command shell can be modeled as an application maintaining an in-memory runtime patch to its own namespace. Live coding with self-modifying code. But this is a long term future goal, a direction to pursue after the command line interface is mature.

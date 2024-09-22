@@ -44,7 +44,7 @@ The application may voluntarily halt via `sys.halt()`, marking the final transac
 
 ### Live Coding Extensions
 
-To support live coding, a runtime might introduce a `sys.refl.reload(Filters)` method. This asks the runtime to scan for updates in the configuration and transitive source dependencies, recompile, and apply changes. If called within the stable prefix of a transaction loop, this becomes a continuous request. Aside from reloading external files, perhaps we could introduce a `sys.refl.patch.*` API to rewrite the application namespace, or let code be sourced partially from application state. This provides a controlled form of self-modifying code.
+To support live coding, a runtime might introduce a `sys.reload()` method. This asks the runtime to scan for updates in the configuration and transitive source dependencies, recompile, and apply changes. If called within the stable prefix of a transaction loop, this becomes a continuous request. 
 
 To support a smooth transition, the runtime will evaluate a `switch()` method as the first operation in the updated code. The will be retried until it succeeds, allowing the application to run tests and control the handoff. While updates are ongoing, the runtime may heuristically skip intermediate versions. With access to edit history, a runtime can heuristically search backwards for the most recent version that switches successfully. Unlike start, switch must assume the application has open file handles, network sockets, etc..
 
@@ -56,15 +56,9 @@ Applications may define ad-hoc `settings.*` methods. Settings methods are purely
 
 The essential idea is that we'll configure a distributed runtime for some applications. Leveraging the *transaction loop* model, we can run the same transaction loop on multiple nodes, and heuristically filter which concurrent 'threads' run where based on the first node-specific effect or load balancing. See [*Mirroring in Glas*](GlasMirror.md) for more. 
 
-Configurations and effects APIs must be designed with mirroring in mind.
+Configurations and effects APIs must be designed with mirroring in mind. 
 
-Mirroring is application specific. Some configuration options should be mirror specific. Similar to application settings, mirror specific configuration options could be evaluated once for each mirror with implicit parameters for mirror settings. Some mirror settings might come from the configuration, others from observing mirror nodes after establishing the distributed runtime.
-
-Network interfaces abstracted through the configuration and are obviously mirror specific. If we open a TCP listener on network interface "xyzzy", we might ask the configuration what this means to each mirror. For each mirror we might return a list of actual hardware interfaces. Perhaps "xyzzy" is a specific interface on a specific mirror, and we only listen at one location. Or perhaps multiple mirrors will have an "xyzzy" interface, requiring a distributed transaction to open the distributed TCP listener. 
-
-Of course, each incoming TCP connection would still be bound to a specific network interface on a specific mirror. If we initiate a connection, having multiple hardware interfaces might be interpreted as a non-deterministic choice. Though, it might be convenient to let the configuration distinguish "xyzzy-in" vs "xyzzy-out". 
-
-Anyhow, we should think carefully about how a distributed runtime interacts with every effects API, not just network interfaces. A little attention here could greatly simplify distributed programming.
+Mirroring is application specific, meaning the query is parameterized by application settings. Some configuration options will be mirror specific, meaning we query the option once per mirror, parameterized by that mirror's settings. Some resources may be specific to a mirror, in which case we model an application-specific property where we specify that mirror by name.
 
 ## Database Bindings
 
@@ -119,11 +113,11 @@ By default, every HTTP request is handled in a separate transaction. If this tra
 
 ## Graphical User Interface? Defer.
 
-My vision for [glas GUI](GlasGUI.md) is that users  participate in transactions indirectly via user agent. This allows observing failed transactions and tweaking agent responses until the user is satisfied and ready to commit. This aligns nicely with live coding and projectional editing, and also allows for users to 'search' for preferred outcomes in case of non-determinism.
+My vision for [glas GUI](GlasGUI.md) is that users participate in transactions indirectly via user agent. This allows observing failed transactions and tweaking agent responses until the user is satisfied and ready to commit. This aligns nicely with live coding and projectional editing, and also allows for users to 'search' for preferred outcomes in case of non-determinism. 
 
-Analogous to `sys.refl.http` a runtime might also define `sys.refl.gui` to provide generic GUI access to logs and debug views.
+Analogous to `sys.refl.http` a runtime might also define `sys.refl.gui` to provide generic GUI access to logs, profiles, and debug tools.
 
-But I think it would be better to develop those transaction loop optimizations before implementing the GUI framework. There's a lot of feature interaction to consider with incremental computing and non-deterministic choice.
+Anyhow, before developing GUI we should implement the transaction loop optimizations and incremental computing it depends upon. 
 
 ## Non-Deterministic Choice for Concurrency and Search
 
@@ -186,6 +180,20 @@ For heuristically 'safe' operations, such as reading a file or HTTP GET, or manu
 
 MethodName is usually ephemeral due to potential for live coding, it's safe for bgeval because it's transferring backwards to a point in time where MethodName is known to have the same meaning. There is risk of thrashing if the background transaction conflicts with the caller, but this is easily detected and debugged. Background eval is compatible with transaction loop optimizations.
 
+## Foreign Function Interface
+
+A foreign function interface (FFI) is convenient for integration with existing systems. Of greatest interest is a C language FFI. But FFI isn't trivial due to differences in data models, error handling, memory management, type safety, concurrency, and so on. For example, most C functions are not safe for use within a transaction, and some must be called from consistent threads.
+
+A viable API:
+
+* `sys.ffi(StaticArg, DynamicArgs)` - call a foreign function specified in the configuration by StaticArg. The StaticArg may in general represent a custom function or script involving multiple FFI calls.
+
+This avoids cluttering application code with FFI semantics. The configuration is free to pass the StaticArg onwards to the runtime unmodified, but has an opportunity to rewrite it in an application specific way or adapt between runtimes with different feature sets. The runtime must understand from the rewritten StaticArg what to run *and* where. In most cases, we'll schedule the operation on a named FFI thread between transactions on a specific mirror.
+
+It is feasible to construct or distribute required, mirror specific ".so" or ".dll" files through the configuration, instead of relying on pre-installed libraries on each mirror. In some cases, we could also compile StaticArg operations directly into the runtime.
+
+*Note:* Where FFI serves a performance role, the StaticArg might indicate a non-deterministic choice of mirrors, providing opportunity for load balancing and partitioning tolerance. Naturally, this use case must carefully avoid mirror-specific pointers and resource references in arguments or results. Also, glas systems should ultimately favor *Acceleration* in performance roles, though FFI is a convenient stopgap.
+
 ## Sagas, or Long Running Transactions? Defer.
 
 It is feasible to request a runtime to create long-running transactions, called sagas, that we manually extend over multiple steps then eventually commit or abort. Between steps, a saga may be aborted implicitly due to read-write conflicts with other transactions or live code switch. 
@@ -196,45 +204,41 @@ The main use case for sagas is to implement transactional operations above custo
 
 I would like a good API for browsing and querying the module system, preferably with support for localization (perhaps relative to another module). This might be expressed as browsing the configured graph of modules, loading modules abstractly, starting with public modules.
 
-## Foreign Function Interface
-
-A foreign function interface (FFI) is convenient for integration with existing systems. Of greatest interest is a C language FFI. But FFI isn't trivial due to differences in data models, error handling, memory management, type safety, and so on. For example, it is infeasible to directly integrate C library functions with transactions, but a transaction could schedule a C function to run in a background thread.
-
-A viable API:
-
-* `sys.ffi(StaticArg, DynamicArgs)` - call a foreign function specified in the configuration. 
-
-In this case, the configuration reads StaticArgs and returns a specification recognized by the runtime. This might represent a library file location, a specific method name, and integration hints such as queuing the request and returning a future. This may generalize to a script or inline assembly. 
-
-This API provides a high degree of flexibility for how much specification is represented within the application versus the configuration, and for development of ad-hoc conventions. But essentially we can view FFI as configured runtime extension.
-
-*Note:* FFI should be used primarily for system integration, but it can also serve a role in system performance until suitable accelerators are developed.
-
 ## Console IO
 
-Access to standard input and output streams is provided through `sys.tty.*`.
+We could support console IO from applications via `sys.tty.*` methods. Simple streaming binaary reads and writes are probably adequate. Viable API:
 
-* `sys.tty.read(Count)` - return list of Count bytes from standard input; diverge if data insufficient.
-* `sys.tty.read(Binary)` - remove Binary from input buffer or fail; diverge if more input is required.
-* `sys.tty.write(Binary)` - write given binary to standard output, buffered until commit. Returns unit.
+* `sys.tty.write(Binary)` - add Binary to write buffer, written upon commit
+* `sys.tty.read(Count)` - read exactly Count bytes, diverge/wait if it's not available
+* `sys.tty.unread(Binary)` - add Binary to head of read buffer to influence future reads.
 
-Divergence on insufficient data ensures this API does not observe race conditions. For some console applications, we might disable line buffering or input echo. Those features should be configurable. 
+We could optionally add some methods to control line buffering and input echo.
 
-*Note:* I'd recommend the 'http' interface over console IO in most cases where users need a simple interface. However, console IO is the best choice in some cases for integration reasons.
+*Note:* I'd recommend the 'http' interface over console IO for any sophisticated user interaction. But console IO is still a good option for integration in some cases.
 
 ## Filesystem
 
-Instead of an implicit global filesystem, our configuration will specify multiple named roots. File access is always relative to a configured root. This provides a simple basis to sandbox applications. It's also convenient in context of mirroring that we don't start with an assumption of a global filesystem.
+Filesystem paths are abstract and unforgeable. 
 
-The set of named roots is application and mirror specific. For example, to operate on "AppData", we'll first evaluate the configuration for each mirror whether it has paths for "AppData". This can be cached. In the simplest cases, at most one mirror reports a path, likely the origin mirror. Otherwise, behavior may depend on the operation and mirroring flags. We could read from one location non-deterministically, or write to multiple locations concurrently, or simply abort due to ambiguity.
+The main source of initial filesystem paths is configuration of named roots. An application can query the configuration for where "AppData" is held. For regular filesystem access, this should be a specific folder on a specific mirror. However, depending on some runtime support, we could also bind "AppData" to the key-value database or even to a remote DVCS repository. Given an initial path, we can construct relative paths or restrict use, e.g. to treat a read-write file as read-only.
 
-Also, although we can support conventional streaming APIs on files, support for patch-based APIs would better support multiple users in the absence of a transactional filesystem. It's something to consider. Of course, a transactional filesystem would also be very nice, but would require significant redesigns.
+Another source of file paths is the compilation environment. An application may hold onto these paths to support self-modifying code or integrate an interactive live coding development environment such as a [REPL or notebook interface](GlasNotebooks.md). A runtime could support an application specific configuration option to disable use of these paths at runtime.
 
-*Note:* An open file handle should be an abstract, linear, and scoped to the runtime. There may be a period between 'open' and commit where we buffer some writes even before we receive feedback on potential permissions issues. But by buffering writes, we could save ourselves a transaction in most cases.
+Regarding filesystem operations, streaming reads and writes are a good fit for the transactional context. Writes can be buffered within a transaction until we commit, and data can be read from an input buffer. A few synchronous operations may need an extra step where they return a promise and the success/fail status is read in a future transaction.
+
+*Note:* In general, the key-value database API is much more convenient than the filesystem API. We should favor the key-value database for application persistence, and use the filesystem API only for system integration. 
 
 ## Network
 
 It is feasible to support something similar to the sockets API, perhaps initially limited to TCP and UDP. However, network interfaces (and possibly port bindings) should be restricted and abstracted by the configuration. 
+
+
+
+
+Network interfaces abstracted through the configuration and are obviously mirror specific. If we open a TCP listener on network interface "xyzzy", we might ask the configuration what this means to each mirror. For each mirror we might return a list of actual hardware interfaces. Perhaps "xyzzy" is a specific interface on a specific mirror, and we only listen at one location. Or perhaps multiple mirrors will have an "xyzzy" interface, requiring a distributed transaction to open the distributed TCP listener. 
+
+Of course, each incoming TCP connection would still be bound to a specific network interface on a specific mirror. If we initiate a connection, having multiple hardware interfaces might be interpreted as a non-deterministic choice. Though, it might be convenient to let the configuration distinguish "xyzzy-in" vs "xyzzy-out". 
+
 
 ## Debugging
 

@@ -82,7 +82,9 @@ Program semantics are specified for a structured plain old data intermediate rep
 
 Instead of a 'main' procedure, a [glas application](GlasApps.md) defines transactions for 'start', 'step', 'http', and other methods recognized by a runtime. The primary loop is to repeatedly evaluate 'step' in separate transactions. Assuming optimizations for incremental computing and replication on stable non-deterministic choice, a repeating transaction can represent reactive systems and multi-threading. With a mirrored runtime, applications may be distributed and resilient to network partitioning. By optionally binding state to an external database, we gain orthogonal persistence.
 
-Front-end syntax is user-defined, aligned with file-extensions to support external tooling. Eventually, we may develop syntaxes suitable for structured or graphical programming. We can also implement compilers for multi-media or resource files, integrating them as modules with compile-time checks and partial evaluation. To bootstrap this system, we specify a [".g" syntax](GlasLang.md) for general purpose programming. 
+Front-end syntax is user-defined, aligned with file-extensions to support external tooling. Eventually, we may develop syntaxes suitable for structured or graphical programming. We can also implement compilers for multi-media or resource files, integrating them as modules with compile-time checks and partial evaluation. To bootstrap this system, we specify a [".g" syntax](GlasLang.md) for general purpose programming.
+
+In my vision for development and user experience, glas applications may present an [interactive, live coding view](GlasNotebooks.md) on demand, allowing interested users to peek and poke under the hood. This should be the default, though could also disable this view if we want a more conventional application.
 
 ## Modularity
 
@@ -92,19 +94,17 @@ A typical user configuration will import a community or company configuration fr
 
 In addition to a file or other source, compilation is parameterized by an environment: a read-only, localized view of the configuration namespace. This environment provides access to reusable components. Utilities for maths, graphs, xml, datetimes, network protocols, and so on should be separately compiled and integrated through the configuration namespace. This environment can be localized per compile, and we can leverage this for implicit parameters like feature flags. But in practice we'll usually want a 'global' module namespace per project or community.
 
-Applications will usually consist of a few local files then mostly compose reusable components. To simplify packaging and sharing of code, program files are restricted to reference other files in the same folder or subfolders, forbidding "../" and absolute paths. Remote DVCS references are supported only at the configuration layer. To avoid security issues, we also restrict remote configuration files from referencing the client's local filesystem.
+We will control dependencies between files. For security reasons, a remote DVCS file must not reference local files. To simplify packaging and sharing of code, program files will generally be restricted to reference other files in the same folder or subfolders. To enforce these restrictions, we'll abstract over file locations and encode restrictions on constructing relative paths (see *Data Abstraction*).
 
-*Note:* It is possible to directly compute a program namespace value within the configuration. This can be convenient for simple composition, extraction, or extension of existing applications or components, avoiding a trivial source file. It is also feasible to 'compile' a non-file source.
+It is possible to compute application programs directly in the configuration without separate source files. Doing so might be convenient when the application is a trivial extension, refinement, or composition of other applications.
 
 ## User-Defined Syntax
 
-To process a file with extension ".x", we'll search for compiler "lang.x" in the compilation environment. File extensions compose: for ".x.y" we apply "lang.y" to the file binary, then "lang.x" to the prior result. As a special case, ".g" files may be processed using a built-in compiler even if "lang.g" is undefined, and we'll attempt to bootstrap "lang.g" if it is defined using the built-in. 
+To process a file with extension ".x.y", we'll search for compiler "lang.x.y" in the compilation environment. To simplify projectional editing or notebook interfaces, file extensions do not implicitly compose: a ".x.y" files uses "lang.x.y". As a special case, ".g" files may be processed using a built-in compiler even if "lang.g" is undefined, and we'll attempt to bootstrap "lang.g" if it is defined using the built-in. 
 
-A compiler is represented as a program (i.e. `g:(ns:ProgramNamespace, ...)`) with a partial namespace. It is possible to encode functions as partial namespaces with simple conventions. A typical integration provides `lhs = text:FileBinary`, binds `env.*` to the compilation environment, and assumes `rhs` represents the compiled result, often another program. We also provide computation primitives via `%*`. Both `env.*` and `%*` should be read-only, enforced via 'remove with warnings' translation. In the general case, both `lhs.*` and `rhs.*` are writable to support bi-directional dataflow with multiple inputs and outputs, we aren't restricted to plain old data. We might eventually support alternative integration based on program metadata in the dict beside 'ns'.
+A compiler is represented as a program (i.e. `g:(ns:ProgramNamespace, ...)`) with a partial namespace. It is possible to encode functions as partial namespaces with simple conventions. A typical integration provides `lhs = file:AbstractFile`, binds `env.*` to the compilation environment, and assumes `rhs` represents the compiled result, often another program. We also provide computation primitives via `%*`. Both `env.*` and `%*` should be read-only, enforced via 'remove with warnings' translation. In the general case, both `lhs.*` and `rhs.*` are writable to support bi-directional dataflow with multiple inputs and outputs, we aren't restricted to plain old data. We might eventually support alternative integration based on program metadata in the dict beside 'ns'.
 
 When importing a file, 'rhs' must define a program value, i.e. type `rhs : unit -> Program`. We'll evaluate `rhs()` in the compilation environment then integrate the program namespace into the client namespace (with translations and overrides). When compiling an application or reusable component, we usually also want a program value. Thus, in most cases, 'rhs' should define a program. Nonetheless, a compiler for ".json" files might simply output structured data, and it would simply be an error to directly import this file or run it as an application.
-
-Lazy loading is based on use of namespace 'load' constructors and primitive compile-time operators for filesystem access. This may be extended beyond the namespace using thunks in the underlying data representation. It is possible to confine compile-time filesystem access to the configuration layer by restricting access to some primitives, e.g. to support separate compilation. Restrictions on dependencies between files will be based on abstract data parameters to these compile-time operators. 
 
 ### Syntax Bootstrap
 
@@ -122,7 +122,7 @@ Programs in glas systems will generally embed annotations to support logging, pr
 
 In abstract assembly, annotations might be generally represented using `(%an AnnoAST ProgAST)`, scoping over a subprogram. The AnnoAST might be something like `(%log ChanExpr MessageExpr)`. Ignoring the annotation, this should be equivalent to ProgAST. 
 
-Annotations may also be embedded in the program, namespace, or data layers. At the program layer, we might use `g:(ns:Namespace, an:Annotations, ...)` to guide integration. In the namespace, we could define `foo#doc` (perhaps `"foo.#doc.!` after mangling) to support browsing. In the underlying data representation, a runtime may embed metadata to support tracing or data abstraction. However, I imagine most annotations will be based in the abstract assembly.
+Annotations may also be embedded in the program, namespace, or data layers. At the program layer, we might use `g:(ns:Namespace, an:Annotations, ...)` to guide integration. In the namespace, we can easily introduce a simple naming convention where `foo.#doc` is an annotation for 'foo', though this would only be useful for tools that browse the namespace. In the underlying data representation, we might embed hidden metadata to support data abstraction or tracing.
 
 ### Automated Testing
 
@@ -186,18 +186,15 @@ In addition to structural types and data abstraction, I'm very interested in sup
 
 Aside from types, I like the idea of annotating other properties and developing a system of 'proof hints' and 'proof tactics'. Ideally, types would be expressed within this system instead of separately from it. In case of shadow types, we'd add 'proof assumptions'. But at the moment, I don't have concrete ideas on how to approach this idea.
 
-### Graphical Programming
-
-We could develop a language where the file is essentially a database, and there are graphical tools to render and modify the database. This would simplify integration with tables and structured data, graphical representations of behavior, and so on. Incremental compilation over large databases is possible by leveraging *caching* carefully.
-
 ### Program Search
 
-I'm interested in a style of metaprogramming where programmers express hard and soft constraints, search spaces, and search tactics for programs. Type safety can be treated as a hard constraint to support type-driven overloading. But the emphasis will be modular, heuristic decisions expressed as soft constraints, with ability to prioritize some search paths over others. Incremental computing and caching are also essential.
+I'm interested in a style of metaprogramming where programmers express hard and soft constraints, search spaces, and search tactics for programs. In context of a namespace, these constraints would be subject to override through the namespace and should propagate through the 'call graph', perhaps as an extra compile-time evaluation stage. We could propagate type information to support type-driven overloading. But the emphasis will be modular, heuristic decisions expressed as soft constraints, with ability to prioritize some search paths over others. 
 
-Something like an [A-star search algorithm](https://en.wikipedia.org/wiki/A*_search_algorithm) might work, assuming we can express soft constraints as costs with a [consistent heuristic](https://en.wikipedia.org/wiki/Consistent_heuristic), i.e. monotonic costs for various choices, preferably with costs adjusted based on context (perhaps indicate costs via effect that takes an arbitrary value, which is interpreted by the context).
+Incremental computing and caching are also essential. It seems difficult to 'cache' search results in a way that we can deterministically determine whether we need to search again. We might need modular, confluent computations (flexible order, deterministic result) with a [consistent heuristic](https://en.wikipedia.org/wiki/Consistent_heuristic) to filter our options without without recomputing the full system.
 
-This will likely also require a specialized program model or extensions to the abstract assembly for constraints across the entire namespace.
+Could we build a language around this idea? It's an idea to explore further.
 
 ### Provenance Tracking
 
-The glas module system currently hinders manual provenance tracking, thus any efforts in this direction should be automated, i.e. with the compiler automatically maintaining maps for traceback. I think this is an important direction for future tooling. The [SHErrLoc project](https://research.cs.cornell.edu/SHErrLoc/) blame heuristics also seems relevant here.
+I need to explore how to debug problems and trace them back to their original sources. In glas systems, this is complicated by metaprogramming at multiple layers, but also somewhat simplified by disfavoring first-class functions or other 'mobile' code abstractions. I like the idea of [SHErrLoc project's](https://research.cs.cornell.edu/SHErrLoc/) blame heuristics.
+
