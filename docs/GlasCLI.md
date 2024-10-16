@@ -83,13 +83,11 @@ In context of live coding (via `sys.reload()`), staged applications can recomput
 
 I envision users mostly 'living within' a live-coded glas system instead of using lots of 'glas' commands on a command line. Instead of running specific applications on the command line, user actions would manipulate a live coding environment, adding and removing active 'applications' at runtime. This seems feasible via [REPL or Notebook interface](GlasNotebooks.md). 
 
-
-
 ## Built-in Tooling
 
 The glas executable might provide a variety of associated tools:
 
-* `--config` - initialize, inspect, or rewrite a configuration. Might support debug evaluation of configuration properties, pretty-printing results, or writing binary output to stdout.
+* `--config` - initialize, inspect, or rewrite a configuration. Might support debug evaluation of configuration properties, pretty-printing results, or extracting binary values to stdout.
 * `--module` - operations to inspect the module system, e.g. browse modules, or ensure a module compiles or passes tests without running it.
 * `--db` - browse the persistent key-value database, continuously watch for changes, or even perform changes manually.
 * `--cache` - summarize, inspect, invalidate, or clear the cache.
@@ -99,16 +97,23 @@ Built-in tooling should be balanced against bloat. A feature that requires more 
 
 ## Bootstrap
 
-Pre-bootstrap implementations of the glas executable might support only a limited subset of the effects API, such as console IO, an in-memory database, and perhaps the HTTP interface. To work within these limits, I propose to bootstrap by writing an executable binary to standard output then redirecting to a file.
+Pre-bootstrap implementations of the glas executable might support only a limited subset of the effects API, such as console IO, an in-memory database, and perhaps the HTTP interface. To work within these limits, I propose to bootstrap by writing an executable binary to standard output then redirecting to a file. 
+
+Assuming a suitable definition, we could develop the compiler within the glas system.
 
     # build
-    /usr/bin/glas --run glas-binary > /tmp/glas
-    chmod +x /tmp/glas
+    ~/.glas/bin/glas --run glas-bin > ~/.glas/tmp/glas
+    chmod +x ~/.glas/tmp/glas
 
     # verify
-    /tmp/glas --run glas-binary | cmp /tmp/glas
+    ~/.glas/tmp/glas --run glas-bin | cmp ~/.glas/tmp/glas
 
     # install
-    sudo mv /tmp/glas /usr/bin/
+    sudo mv ~/.glas/tmp/glas ~/.glas/bin/glas
 
 It is feasible to support multiple targets through the configuration. Also, very early bootstrap might instead write to an intermediate C file or LLVM that we then compile further. However, I do hope to eventually bootstrap directly to OS-recognized executable binary.
+
+## Filesystem Setup
+
+Although it is feasible to install glas globally, I think it would be better to install glas on a per-user basis, e.g. `~/.glas/bin/glas` in Linux with suitable PATH definitions.
+

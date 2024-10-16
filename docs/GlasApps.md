@@ -2,11 +2,13 @@
 
 ## Overview
 
-A glas application is similar to an abstract OOP class. A [namespace](GlasNamespaces.md) may be expressed in terms of multiple inheritance. This namespace should implement interfaces recognized by the runtime, such as 'step' to model background processing. Access to effects, such as filesystem or network APIs, is represented by abstract methods to be provided by the runtime.
+An application [namespace](GlasNamespaces.md) must define transactional procedures recognized by a runtime, such as 'step' to model background processing, or 'http' to handle an HTTP request. The 'step' procedure is called repeatedly by the runtime, which allows useful optimizations such as incremental computing, replication on non-deterministic choice, and reactivity. See *Transaction Loops* below.
 
-Application methods are transactional. Instead of a long-running 'main' loop, a transactional 'step' method is called repeatedly by the runtime. This allows interesting *transaction loop* features and optimizations between isolated transactions and non-deterministic choice. Other methods might handle HTTP requests, service remote procedure calls, or support a graphical user interface.
+These procedures exchange data with their environment via algebraic effects. Some effects may be specific to the 'step' versus 'http' methods, but most are shared. Application state is bound to an external key-value database, providing a simple basis for orthogonal persistence and live coding. Access to the filesystem, network, and other host resources is also via algebraic effects.
 
-To simplify live coding and orthogonal persistence, application state is mapped to an external key-value database. To simplify conventional direct-style programming, a front-end syntax might compile to multi-step procedures, capturing continuations into application state.
+Conventional request-response interactions with the host filesystem or network require at least two transactions: one to commit the request, another to read the response. This can be mitigated by dedicated front-end syntax for multi-step procedures. However, where feasible, glas applications should favor the key-value database for state and remote procedure calls (RPC) for networking, enabling direct support for transactions and other runtime features such as accelerated representations or content-addressed storage for large values.
+
+In general, the configuration serves as a layer of indirection between the application and host resources. The configuration will abstract filesystem roots, network interfaces, FFI resources, and RPC registries, among others. Application-specific features are supported by letting the configuration query an application's `settings.*` methods (as an algebraic effect).
 
 ## Transaction Loops
 
@@ -36,19 +38,17 @@ Unfortunately, we need a mature optimizer and runtime system for these opportuni
 
 ## Application Life Cycle
 
-An application is represented by a namespace. For a transaction loop application, the first effectful operation is `start()`. This will be retried indefinitely until it commits successfully or the application is killed externally. If undefined, defaults to a no-op. 
+An application is represented by a namespace. For a transaction loop application, the first effectful operation is `start()`. This will be retried indefinitely until it commits successfully or the application is killed externally. After a successful start, the runtime will begin evaluating `step()` repeatedly in separate transactions. The runtime may also call methods to handle RPC and HTTP requests, GUI connections, and so on based on the interfaces implemented by the application. If undefined, start and step default to pass.
 
-After a successful start, the runtime will begin evaluating `step()` repeatedly in separate transactions. The runtime may also call methods to handle RPC and HTTP requests, GUI connections, and so on based on the interfaces implemented by the application.
-
-The application may voluntarily halt via `sys.halt()`, marking the final transaction. To support graceful shutdown, a `stop()` method will be called in case of OS events such as SIGTERM on Linux or WM_CLOSE in Windows, but the application must still explicitly halt itself. An applications may voluntarily restart via `sys.restart()`, which resets runtime state (including open files, network sockets, etc.) and the next operation becomes `start()`. 
+The application may voluntarily halt via `sys.halt()`, marking a final transaction. To support graceful shutdown, a `stop()` method will be called in case of OS events such as SIGTERM on Linux or WM_CLOSE in Windows, but the application must still explicitly halt itself. An applications may voluntarily restart via `sys.restart()`, which upon commit resets runtime state (closing any open files, network sockets, etc.) then the next operation becomes `start()`. 
 
 ### Live Coding Extensions
 
-To support live coding, a runtime might introduce a `sys.reload()` method. This asks the runtime to scan for updates in the configuration and transitive source dependencies, recompile, and apply changes. If called within the stable prefix of a transaction loop, this becomes a continuous request. 
+To support live coding, a runtime can introduce methods to scan for updates, recompile, and transition to the new code. I'm uncertain exactly what is needed here, though we'll probably want some reflection so we can observe warnings or errors before transition, or make an informed choice between recent versions in an edit history. A minimum interface might be `sys.refl.reload()`.
 
-To support a smooth transition, the runtime will evaluate a `switch()` method as the first operation in the updated code. The will be retried until it succeeds, allowing the application to run tests and control the handoff. While updates are ongoing, the runtime may heuristically skip intermediate versions. With access to edit history, a runtime can heuristically search backwards for the most recent version that switches successfully. Unlike start, switch must assume the application has open file handles, network sockets, etc..
+To support a smooth transition, the runtime could evaluate `switch()` method as the first operation in the updated code. If switch fails it will usually be retried, allowing the transition to wait for the right conditions.
 
-### Application Specific Settings
+## Application Specific Settings
 
 Applications may define ad-hoc `settings.*` methods. Settings methods are purely functional and accessible when evaluating any 'application specific' configuration option, such as the HTTP/RPC port, mirroring, or FFI bindings. The runtime never directly observes application settings. Instead, the runtime observes a configuration, which may refer to application settings according to community conventions.
 
@@ -56,27 +56,41 @@ Applications may define ad-hoc `settings.*` methods. Settings methods are purely
 
 The essential idea is that we'll configure a distributed runtime for some applications. Leveraging the *transaction loop* model, we can run the same transaction loop on multiple nodes, and heuristically filter which concurrent 'threads' run where based on the first node-specific effect or load balancing. See [*Mirroring in Glas*](GlasMirror.md) for more. 
 
-Configurations and effects APIs must be designed with mirroring in mind. 
+Configurations and effects APIs must be designed with mirroring in mind. Mirroring is application specific, and many runtime resources will be mirror specific. This might be expressed by implicitly parameterizing such configuration options with a mirror identifier, or by including mirror identifiers in the configuration options.
 
-Mirroring is application specific, meaning the query is parameterized by application settings. Some configuration options will be mirror specific, meaning we query the option once per mirror, parameterized by that mirror's settings. Some resources may be specific to a mirror, in which case we model an application-specific property where we specify that mirror by name.
+## Application State
 
-## Database Bindings
+Application state is generally bound to a key-value database. Developers are encouraged to favor the database instead of the filesystem due to simpler interaction with transactions, content-addressed storage for very large values, and runtime support for mirroring of data. The database should provide a few specialized data types, such as queues, bags, and CRDTs, to further improve performance and partitioning tolerance.
 
-To simplify live coding and orthogonal persistence, application state is mapped to an external key-value database. Ideally, it should be easy to stabilize this binding across code changes, and to constrain a program subcomponent's access to certain regions of the database or to state in general.
+Keys are concretely represented as binaries. To support hierarchical composition and to mitigate problems of global state, these binaries are abstracted within the program. The abstraction will apply a prefix-to-prefix rewrite, similar to namespaces. The database may be persistent by default, but some keys may be scoped runtime or ephemeral. This might be indicated in the key names. 
 
-One viable solution is to reserve names with a specific prefix for database keys, perhaps `sys.db.*`. Each name could refer to a variable, and the front-end language could by default map hierarchical components to hierarchical state, e.g. `{ "" => "foo.", "sys.db." => "sys.db.foo." }` for component 'foo'. But this solution requires awkwardly interpreting names to work with multiple lifespans, fine-grained permissions, or indexed collections.
+Support for 'dynamic' keys for multiple instances of an object also deserves some attention. A viable direction is to bind ephemeral index variables to the abstract keys. 
 
-An alternative is to incrementally construct an abstract database key. A few abstract key constructors are provided through `sys.db` and implicitly wrapped for hierarchical components. This pushes more work to an optimizer, but we can embed more information into keys (such as lifespans, permissions, associations) and we can easily support indexed collections. 
+## Dynamic Code
 
-In addition to basic read-write variables, the database can support queues, bags, CRDTs, and other built-in types. A careful choice of built-in types could improve performance and partitioning tolerance in context of concurrency and mirroring.
+There are use cases for integrating code at runtime without modifying source files. However, in context of live coding, first-class functions should be ephemeral or eschewed. This limits our options.
 
-## Remote Procedure Calls? Defer.
+One viable option is `sys.refl.eval(Program, Method, Args) with Localization`. Users can memoize compilation of scripts to program values, and the runtime can further cache compilation of the program value based on the selected methods and actual branches. I suggest localization as an implicit parameter, but it could use ephemeral types instead. Reflection is useful to integrate runtime features such as type safety, logging, profiling, and assertions.
+
+Another approach is hot patching, perhaps expressed as `sys.refl.patch(List of Mixin)` to statefully set a patch list, using the Mixin (MX) type from [namespaces](GlasNamespaces.md). The actual transition is deferred until successful live code 'switch' after committing the patch. Hot patching can be understood as a form of live coding where this list of patches is in-memory source code, applied to the original application namespace.
+
+## Implicit Parameters and Algebraic Effects
+
+It is useful to tie algebraic effects to the application namespace, such that we can control access to effects through the namespace. This also reduces risk of accidental name collisions. Implicit parameters might be modeled as a special case of algebraic effects.
+
+First-class functions and objects are relatively awkward in context of live coding and orthogonal persistence. This could be mitigated by escape analysis, e.g. runtime or ephemeral types might restrict which variables are used. But for glas systems I'd like to push most higher order programming to an ad-hoc combination of staging and algebraic effects, reducing need for analysis.
+
+## Remote Procedure Calls? Defer. 
+
+TODO: needs revisit with much more attention to application composition
 
 Transactional remote procedure calls with publish-subscribe of RPC resources is an excellent fit for my vision of glas systems. With careful design of the distributed transaction, transaction loop features such as incremental computing and replication on non-deterministic choice can be supported across application boundaries. The publish-subscribe aspect simplifies live coding and orthogonal persistence.
 
 Concretely, applications will define a few methods such as `rpc.event` to receive incoming requests and `rpc.api` to support registration and search. The system might define `sys.rpc.find` to search the registry and `sys.rpc.call` to perform a remote call. We might introduce `sys.rpc.cb` callbacks to support algebraic effects and higher order programming over RPC boundaries. A single transaction may involve many requests to each of many applications.
 
-Security should mostly be handled at the configuration layer. One viable solution is to configure a composite registry, composed of fine-grained registries for different trust groups or trust levels (and also for different topics). An application can publish RPC objects that are routed based on metadata to different registries. Metadata can be rewritten as objects are routed, allowing for search based on trusted origin.
+I need to work on these details in context of application composition. It should be feasible for application components to construct an 'RPC' graph between eachother based on application overrides or implicit parameters. Probably requires support for defining runtime-scoped registries.
+
+Security should mostly be handled based on a compositional registry model, filtering, routing, and rewriting metadata based on trust, topic, and roles for each component registry. I'll need to consider this model carefully.
 
 For performance, it is feasible to perform partial evaluation of given RPC events and distribute this code for local evaluation. Conversely, when performing a remote call, we could send a continuation to remotely handle the result, avoiding unnecessary network traffic.
 
@@ -89,19 +103,6 @@ To support 'direct style' in programming of network connections, filesystem acce
 A relevant concern is stability of these procedures in context of live coding. To simplify manual stabilization, we might only yield at explicit, labeled 'yield' points. This also encourages coarse-grained steps, which mitigates performance overhead.
 
 I feel this feature would be useful as a bridge between glas and host systems.
-
-## Dynamic Code (TODO)
-
-Where we need dynamic code, we'll want mechanisms that interact nicely with live coding and the other features. One option is to interpret a program namespace in context of a localization. If paired with memoization or accelerated representations, we could cache safety checks and JIT compiled machine code. 
-
-Another useful option is to let the runtime maintain an in-memory 'patch' on the application namespace, effectively live coding with controlled self-modifying code.
-
-
-## Implicit Parameters and Algebraic Effects
-
-It is useful to tie algebraic effects to the application namespace, such that we can control access to effects through the namespace. This also reduces risk of accidental name collisions. Implicit parameters might be modeled as a special case of algebraic effects.
-
-First-class functions and objects are relatively awkward in context of live coding and orthogonal persistence. This could be mitigated by escape analysis, e.g. runtime or ephemeral types might restrict which variables are used. But for glas systems I'd like to push most higher order programming to an ad-hoc combination of staging and algebraic effects, reducing need for analysis.
 
 ## HTTP Interface
 
@@ -118,6 +119,29 @@ My vision for [glas GUI](GlasGUI.md) is that users participate in transactions i
 Analogous to `sys.refl.http` a runtime might also define `sys.refl.gui` to provide generic GUI access to logs, profiles, and debug tools.
 
 Anyhow, before developing GUI we should implement the transaction loop optimizations and incremental computing it depends upon. 
+
+## Background Eval
+
+For heuristically 'safe' operations, such as reading a file or HTTP GET, or manually triggering background processing, it is convenient to have an escape hatch from the transaction system. Background eval can serve this role, relaxing isolation.
+
+* `sys.refl.bgeval(MethodName, Args) with Localization` - evaluate `MethodName(Args)` in a background transaction, with implicit localization of MethodName. This background transaction logically runs prior to the current transaction, and inherits prior reads in the current transaction for purpose of read-write conflict analysis. Thus, in case of interruption, both the background operation and its caller will abort. Args are restricted to plain old data, and the return value cannot be ephemeral. 
+
+One transaction scheduling triggering another in the future is a bad idea because it's a form of inaccessible state, but going backwards in time with a shared interrupt avoids this problem. There is significant risk of *thrashing* if the background operation is unstable, i.e. if it writes data previously read by the caller and doesn't swiftly reach a fixpoint, but this is easy for developers to detect and debug. 
+
+## Foreign Function Interface
+
+A foreign function interface (FFI) is convenient for integration with existing systems. Of greatest interest is a C language FFI. But FFI isn't trivial due to differences in data models, error handling, memory management, type safety, concurrency, and so on. For example, most C functions are not safe for use within a transaction, and some must be called from consistent threads.
+
+A viable API:
+
+* `sys.ffi(StaticArg, DynamicArgs)` - call a foreign function specified in the configuration by StaticArg. The StaticArg may in general represent a custom function or script involving multiple FFI calls.
+
+This avoids cluttering application code with FFI semantics. The configuration is free to pass the StaticArg onwards to the runtime unmodified, but has an opportunity to rewrite it in an application specific way or adapt between runtimes with different feature sets. The runtime must understand from the rewritten StaticArg what to run *and* where. In most cases, we'll schedule the operation on a named FFI thread between transactions on a specific mirror.
+
+It is feasible to construct or distribute required, mirror specific ".so" or ".dll" files through the configuration, instead of relying on pre-installed libraries on each mirror. In some cases, we could also compile StaticArg operations directly into the runtime.
+
+*Note:* Where FFI serves a performance role, the StaticArg might indicate a non-deterministic choice of mirrors, providing opportunity for load balancing and partitioning tolerance. Naturally, this use case must carefully avoid mirror-specific pointers and resource references in arguments or results. Also, glas systems should ultimately favor *Acceleration* in performance roles, though FFI is a convenient stopgap.
+
 
 ## Non-Deterministic Choice for Concurrency and Search
 
@@ -172,38 +196,6 @@ RPC can support content-addressed data implicitly, but if we want to integrate c
 
 The exact representation of Context is runtime specific, but should be plain old data and open to extension and versioning.
 
-## Background Eval
-
-For heuristically 'safe' operations, such as reading a file or HTTP GET, or manually triggering background processing, it is convenient to have an escape hatch from the transaction system. Background eval can serve this role.
-
-* `sys.refl.bgeval(MethodName, Args)` - evaluate `MethodName(Args)` in a background transaction logically prior to the calling transaction, commit, then continue in the caller with the returned value. If the caller is aborted due to read-write interference, so is any incomplete background transaction. Args must be plain old data, and the return value cannot be ephemeral. MethodName should reference the local namespace.
-
-MethodName is usually ephemeral due to potential for live coding, it's safe for bgeval because it's transferring backwards to a point in time where MethodName is known to have the same meaning. There is risk of thrashing if the background transaction conflicts with the caller, but this is easily detected and debugged. Background eval is compatible with transaction loop optimizations.
-
-## Foreign Function Interface
-
-A foreign function interface (FFI) is convenient for integration with existing systems. Of greatest interest is a C language FFI. But FFI isn't trivial due to differences in data models, error handling, memory management, type safety, concurrency, and so on. For example, most C functions are not safe for use within a transaction, and some must be called from consistent threads.
-
-A viable API:
-
-* `sys.ffi(StaticArg, DynamicArgs)` - call a foreign function specified in the configuration by StaticArg. The StaticArg may in general represent a custom function or script involving multiple FFI calls.
-
-This avoids cluttering application code with FFI semantics. The configuration is free to pass the StaticArg onwards to the runtime unmodified, but has an opportunity to rewrite it in an application specific way or adapt between runtimes with different feature sets. The runtime must understand from the rewritten StaticArg what to run *and* where. In most cases, we'll schedule the operation on a named FFI thread between transactions on a specific mirror.
-
-It is feasible to construct or distribute required, mirror specific ".so" or ".dll" files through the configuration, instead of relying on pre-installed libraries on each mirror. In some cases, we could also compile StaticArg operations directly into the runtime.
-
-*Note:* Where FFI serves a performance role, the StaticArg might indicate a non-deterministic choice of mirrors, providing opportunity for load balancing and partitioning tolerance. Naturally, this use case must carefully avoid mirror-specific pointers and resource references in arguments or results. Also, glas systems should ultimately favor *Acceleration* in performance roles, though FFI is a convenient stopgap.
-
-## Sagas, or Long Running Transactions? Defer.
-
-It is feasible to request a runtime to create long-running transactions, called sagas, that we manually extend over multiple steps then eventually commit or abort. Between steps, a saga may be aborted implicitly due to read-write conflicts with other transactions or live code switch. 
-
-The main use case for sagas is to implement transactional operations above custom network protocols. The main challenge is integrating with transaction loop optimizations. Ideally, this API should be adequate to reimplement RPC or custom HTTP headers for multi-request transactions. It might be best to develop this API later, after we have RPC as a working example.
-
-## Module System Access? Defer.
-
-I would like a good API for browsing and querying the module system, preferably with support for localization (perhaps relative to another module). This might be expressed as browsing the configured graph of modules, loading modules abstractly, starting with public modules.
-
 ## Console IO
 
 We could support console IO from applications via `sys.tty.*` methods. Simple streaming binaary reads and writes are probably adequate. Viable API:
@@ -218,15 +210,11 @@ We could optionally add some methods to control line buffering and input echo.
 
 ## Filesystem
 
-Filesystem paths are abstract and unforgeable. 
+The filesystem API should mostly be used for system integration instead of persistence. For persistence, the database API is much more convenient with full support for transactions, structured data, content-addressed storage, and mirroring. In contrast, filesystem operations are mostly asynchronous, running between transactions after commit, returning the response through an abstract runtime reference.
 
-The main source of initial filesystem paths is configuration of named roots. An application can query the configuration for where "AppData" is held. For regular filesystem access, this should be a specific folder on a specific mirror. However, depending on some runtime support, we could also bind "AppData" to the key-value database or even to a remote DVCS repository. Given an initial path, we can construct relative paths or restrict use, e.g. to treat a read-write file as read-only.
+Instead of a single, global filesystem root, an application queries the configuration for abstract application named roots like "AppData". Filesystem paths are abstract to control construction of relative paths and enforce restrictions such as read-only access. In addition a user's filesystem, abstract paths may refer to mirrors, DVCS resources, or a simulated in-memory filesystem with some initial state. 
 
-Another source of file paths is the compilation environment. An application may hold onto these paths to support self-modifying code or integrate an interactive live coding development environment such as a [REPL or notebook interface](GlasNotebooks.md). A runtime could support an application specific configuration option to disable use of these paths at runtime.
-
-Regarding filesystem operations, streaming reads and writes are a good fit for the transactional context. Writes can be buffered within a transaction until we commit, and data can be read from an input buffer. A few synchronous operations may need an extra step where they return a promise and the success/fail status is read in a future transaction.
-
-*Note:* In general, the key-value database API is much more convenient than the filesystem API. We should favor the key-value database for application persistence, and use the filesystem API only for system integration. 
+*Note:* In my vision of [applications as notebook interfaces](GlasNotebooks.md), the compiler will also capture an abstract reference to application source files to integrate projectional editors and live coding environment. Thus, the compilation environment is another source of abstract file paths.
 
 ## Network
 

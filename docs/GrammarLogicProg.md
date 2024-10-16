@@ -6,14 +6,15 @@ My goal for this document is to general purpose programming in context of gramma
 
 Grammar and logic programs have similar semantics. The 'direction' of evaluation is flexible, i.e. the same program can flexibly *recognize* (accept) or *generate* values. Interactive computation is based on [logic unification](https://en.wikipedia.org/wiki/Unification_(computer_science)#Application:_unification_in_logic_programming) between components in a system, where each component is responsible for recognizing and generating different parts of a shared value.
 
-With logic programming we have `Proposition :- Derivation`. With grammar programming, the equivalent is possible via guarded patterns, i.e. `Pattern when Guard`. Similarly, logical negation might use `Pattern unless Guard`. Variables can be shared between proposition and derivation, or between pattern and guard.
+With logic programming we have `Proposition :- Derivation`. With grammar programming, the equivalent is possible via guarded patterns, i.e. `Pattern when Guard`. Similarly, logical negation might use `Pattern unless Guard`. Variables can be shared between proposition and derivation, or between pattern and guard. 
 
 A function can be modeled as a grammar or logic program that recognizes and generates a set of `(args, result)` pairs, and ensures structurally or typefully that results are deterministic given args. In context of grammar and logic programming, we can evaluate functions non-deterministically backwards from results to args, or with partial args where any unspecified variable represents non-deterministic choice. 
 
 A simplistic procedural interaction might be modeled as an `(args, io, result)` triple, where IO represents a request-response list of form `[(Request1, Response1), (Request2, Response2), ...]`. In this case, the procedure provides requests and results while the caller provides args and responses. To model processes, we could support ad-hoc channels within args and results, leveraging [substructural types](https://en.wikipedia.org/wiki/Substructural_type_system) to ensure each channel only has one writer. We can introduce temporal semantics to support logical time sharing of channels between writers.
 
-The proposed language has a procedural programming style by default via implicit 'env' argument, but first-class channels and temporal semantics so we can model concurrent processes within a computation. Backtracking computation is pervasive, but not a bad fit for [transaction loop applications](GlasApps.md) because we can support hierarchical transactions. I assume programs are expressed in an [extensible namespace](GlasNamespaces.md) as the basis for mutual recursion and flexible tuning of grammars.
+Grammars and logic can support constraint systems, e.g. a 'less-than' proposition can be expressed for integers and rational numbers, then used as a guard on generated or accepted sentences. For performance, this might be provided as a built-in. An intriguing possibility is to also extend grammars with 'soft' constraints via cost heuristics, weighted or probabilistic choices, to guide search.
 
+The proposed language has a procedural programming style by default via implicit 'env' argument, but first-class channels and temporal semantics so we can model concurrent processes within a computation. Backtracking computation is pervasive, but not a bad fit for [transaction loop applications](GlasApps.md) because we can support hierarchical transactions. I assume programs are expressed in an [extensible namespace](GlasNamespaces.md) as the basis for mutual recursion and flexible tuning of grammars.
 
 ## Brainstorming
 
@@ -24,7 +25,7 @@ We can easily model ordered choice in terms of unordered choice and pattern guar
         P or-else Q             =>      P or (Q unless P)
         if C then P else Q      =>      (P when C) or (Q unless C)
 
-I propose to build the grammar-logic entirely in terms of ordered choice, without direct use of unordered choice. This supports deterministic functions as the standard program type. Non-deterministic choice can still be supported indirectly via effects or partial inputs.
+I propose to provide ordered-choice as a built-in. This reduces need for redundant analysis, and simplifies structural analysis of determinism, i.e. such that we can easily identify a subset of programs as using only ordered choice in the 'forward' (`args -> result`) direction. We can relax determinism in some contexts.
 
 ### Factoring Conditionals
 

@@ -1,33 +1,59 @@
 # Interactive Development 
 
-Extending a read-eval-print loop (REPL) session to support graphical inputs and outputs, live coding, and fancy comments essentially results in a [notebook interface](https://en.wikipedia.org/wiki/Notebook_interface). If a live coding notebook is purely functional, no effects, then it's essentially a spreadsheet. But if the notebook or spreadsheet defines a transactional 'step' method that we run in a background loop, it can also serve as a [glas application](GlasApps.md).
+Extending a read-eval-print loop (REPL) to support graphical inputs and outputs, live coding, and fancy comments essentially results in a [notebook interface](https://en.wikipedia.org/wiki/Notebook_interface). In my vision for glas systems, this interactive development experience should be the default. Even when applications present a conventional front-end, users should be able to peek under the hood to understand system behavior, and potentially modify code and behavior.
 
-I want this REPL-like development experience to be the default in glas systems. I believe notebooks also provide a good basis for applications in general. Especially if we can easily specify a skin, a primary view and interaction surface for end-users.
+Ideally, notebooks are modular, and every glas module is also a notebooks. The syntax for 'import' might select between including pages or linking to them. In context of user-defined front-end syntax, we compose notebooks based on a common intermediate representation: the `g:(ns:Namespace, Metadata)` program value. The namespace includes compiler-provided hooks for rendering a projectional editor, while metadata indicates which hooks are implemented and other hints for compile-time integration.
 
-Conventionally, a spreadsheet or REPL session is a file that we load into a suitable application. This application will interpret and render the file, and may edit the file based on user action. Unfortunately, this is awkward in context of user-defined syntax, live coding, and composition. 
+This has some implications. For example, it's preferable that every module successfully compiles. If a module is full of syntax errors, we still compile to a projectional editor that renders these errors and includes recommendations, and we can still run parts of the application that don't directly reference definitions from this module.
 
-A viable solution is to compile spreadsheets and REPL sessions into a more generic and composable object type. This object would provide 'http' or 'gui' interfaces for rendering and user input. With access to the filesystem, the object could update the spreadsheet or session file based on user action. A REPL session isn't necessarily a pure function - it might start some background threads, which we might represent with a 'step' method. Essentially, a spreadsheet or REPL session can be compiled into an applications, then we compose applications based on their interfaces.
 
-Although not all syntaxes are suitable for an interactive development view that mixes sources and live outputs, most can at least support projectional editing. In theory, *every* user-defined language in glas systems could automatically define an 'http' and 'gui' view oriented around live coding of the source code. And these projectional editors could optionally be covered with a skin or composed into a larger notebook.
 
-Ideally, we can separate applications from their development environment. Our compiler should capture source code at compile-time. With this, we can render a read-only view of a notebook even detached from original filesystem. Also, our compiler should avoid entangling things, such that the notebook view and integrated development environment is easily erased via dead-code elimination. This would let us use notebooks as conventional modules, extracting only a few definitions we need.
+
+
+  automatically integrate indices or tables of contents into a composite index or table.
+
+ The program namespace should include hooks to support a projectional editor, table of contents, and other useful features. The metadata should include hints for default composition of modular notebooks upon 'import'. Ideally, this is arranged such that developers can still provide a conventional user interface, control how the notebook view is integrated, and the notebook view is subject to dead-code elimination if ignored.
+
+
+A notebook view that mixes source and rendered output also provides an effective front-end for many applications. But even where we provide a front-end or skin for regular end-users, we could let users access the notebook view to peek and poke under the hood.
+
+Conventionally, a spreadsheet or REPL session is a file that we load into a suitable application. This application will interpret and render the file, and may edit the file based on user action. However, this is awkward in context of user-defined syntax, live coding, and composition. A viable alternative solution is to compile both spreadsheets and REPL sessions into objects with a shared, composable interface such as 'http' or 'gui', perhaps 'step'. By capturing the abstract source file, this interface may also support live coding.
+
+Spreadsheets, REPL sessions, and notebooks are explicitly designed for interactive development, i.e. rendering a mixed view of editable source and reactive outputs. Unfortunately, not every useful syntax will share this property. However, we can at least implement an integrated live code editor with syntax highlighting. Even a minimal interface can be composed as a page or chapter into a larger notebook. Thus, in glas systems, I propose that every user-defined syntax compiler provides these features. That said, perhaps we can develop a more efficiently composable interface than 'http' and 'gui' in this role.
+
+It should be possible to compile or run notebook applications in detached mode with a read-only view of the notebook, or drop the notebook view where the overhead is too much. This could involve compilation modes or overrides and dead code elimination.
 
 ## Composition
 
 It is feasible to compose interactive development sessions or notebooks in various ways in accordance with the metaphor: we could continue a prior session, include pages or link chapters into a notebook, or merely import some definitions. Ideally, we'd also automatically build a table of contents and some useful indices. 
 
-To support concise composition, we should extend our program values with a little metadata, e.g. `g:(ns:ProgramNamespace, app:(http, step, toc))` to let the compilers easily identify which resources are available for composition. The 'app' metadata wouldn't be necessary for 'import' (which pushes most integration effort to the user) but may be needed for 'include'.
+To support concise composition, we should extend our program values with a little metadata, e.g. `g:(ns:ProgramNamespace, app:(http, step, index))` to let the compilers easily identify which resources are available for composition. This would be used when including or linking conent to automatically compose things.
 
 ## Indices
 
-It is feasible to automatically index a large notebook or REPL session, whether it's presented as multiple 'web pages' or a single page with anchors. But extracting and composing indices from HTTP responses is awkward and expensive, e.g. numbering and indentation is contextual. So, it might be useful to introduce conventions for intermediate methods like 'toc' as a composable value for building a table of contents.
-
-A reverse lookup index, e.g. find all mentions of 'foo', is also feasible with adequate compiler support. Though, working with stateful outputs may require careful attention, and we'll need an efficient way to compose indices. We could perhaps define 'rlu'
+For larger notebooks and REPL sessions, it is convenient to automatically index the content. Useful indices include both tables of contents and reverse lookups for keywords or topics. Efficient indexing benefits from composing a structured intermediate representation. Thus, we may introduce a separate, efficiently composable 'index' view within the application. This view might be parameterized by filters, level of detail, and language localization.
 
 ## Skin
 
-It is possible for developers to manually override http and gui. However, unless we intend to fully replace the notebook view, it will be difficult to ensure consistent access to the underlying notebook view across applications.
+With a little syntactic support, developers can override compiler provided 'http' and 'gui' definitions. However, manual overrides hinder consistent integration with a notebook view. An alternative is to describe the regular end-user's view then let a compiler automatically integrate this into the notebook view. The compiler might provide the end-user view as a landing page, provide a consistent mechanism to peek at the notebook view under the hood, and perhaps present the end-user view as a window or panel even in the notebook view.
 
-An alternative is let application developers describe a skin for an application with a little built-in syntax, then the compiler integrates the skin into the definitions of http and gui, where it serves as the initial landing page or interaction surface. For normal end users, the skin might be their entire application. However, a compiler could provide consistent mechanisms for programmers to peek and poke under the hood.
+## Extension to AR or VR
 
-Of course, if we aren't careful we might still introduce inconsistencies between user-defined languages. This could be mitigated by most languages sharing code for the final integration step.
+The notebook metaphor is useful for literate programming or a graphical, live coded REPL. However, I have also imagined interactive environments that users are immersed within, something feasible only with augmented reality (AR) or virtual reality (VR) devices. In my vision, users would integrate curated content from companies and communities, applying personalized extensions and overrides. Some user edits may propagate back to the community via DVCS or RPC. 
+
+VR should be easier. AR especially has extra challenges for indexing, level-of-detail, and security. We must index on stable visual fingerprints and locations. AFAIK, it is basically impossible to integrate community content into AR without giving away information about your location and view. At best, we could develop private spaces - e.g. within one's home, you only add personalized content and widgets, though the widgets themselves may be portals to a community.
+
+## Alternatives?
+
+Instead of directly defining 'http', 'gui', etc. a compiler may define 
+
+ integrating the notebook with the application's user interface, an application could present hooks for a notebook view then users could route `http` and `gui` to the compiler-provided integration based on some conventions 
+
+ standard way, e.g. und
+
+Can we separate primary compilation from introduction of the projectional editor? This seems feasible in theory. We would include 'hooks' in the compiled application to support any application-specific features of the projection, then the language module could provide a standard 'patch' for the projection.
+
+OTOH, this complicates integration with imported dependencies. 
+
+Might be best to revisit this after I have something working in practice.
+

@@ -1,8 +1,8 @@
 # Glas Namespaces
 
-For glas configurations and applications, we need modular namespaces with support for overrides, name shadowing, and robust access control. Other useful features include lazy extraction of needed definitions, staged metaprogramming within the namespace, garbage collection of temporary names, and support for concurrent interactive computation and parallelism. 
+For glas configurations and applications, we need modular namespaces with support for overrides, name shadowing, and robust access control. Other useful features include lazy extraction of needed definitions and staged metaprogramming within the namespace. Namespaces can express recursive definitions, but whether recursion is permitted also depends on the program model.
 
-This document proposes a simple namespace model to support these goals, based primarily on prefix-oriented translations of names. I assume definitions and import expressions are both represented using an [abstract assembly](AbstractAssembly.md). This enables us to precisely recognize and rewrite names within definitions, and also capture translations for localization or redirects. We can reduce translations to a single lazy pass to control overhead for rewrites.
+This document proposes a simple namespace model to support these goals, based primarily on prefix-oriented translations of names. I assume definitions and lazy load expressions are both represented using an [abstract assembly](AbstractAssembly.md). This enables us to precisely recognize and rewrite names within definitions, and also capture translations for localization or redirects. We can reduce translations to a single lazy pass to control overhead for rewrites.
 
 ## Proposed Model
 
@@ -10,32 +10,42 @@ We'll represent the namespace using plain old glas data, with support for deferr
 
         type NS
             = df:(Map of Name to Expr)                      # define
-            | mx:(TL, Set of NS)                            # mix
+            | ap:(NS, List of MX)                           # apply
+            | lz:(TL, Set of NS)                            # lazy
             | ld:(TL, Set of Expr)                          # load
 
-        type TL =
-            ( mv?(Map of Prefix to (Prefix | NULL | WARN))  # move
-            , ln?(Map of Prefix to Prefix)                  # link
-            )
+        type MX 
+            = mx:(TL, Set of NS)                            # mix or patch
+            | at:(LN, List of MX)                           # translate MX
+
+        type TL = (mv?MV, ln?LN)                            # translate
+        type MV = Map of Prefix to (Prefix | DROP)          # move map
+        type LN = Map of Prefix to Prefix                   # link map
 
         type Set = List                     # ignore order and dups
         type Name = Symbol                  # assumed prefix unique  
         type Prefix = Symbol                # empty up to full name
         type Symbol = Bitstring             # byte aligned, no NULL
-        type WARN = NULL 'w' (0x00 0x77)    # remove with a warning
+        type DROP = NULL (0x00)             # remove the definition
         type Map = Trie                     # a NULL byte separator
         type Expr = AST                     # via abstract assembly
 
-Description of namespace constructors (NS):
+Namespace constructors (NS):
 
 * *define (df)* - Provide set of definitions as dictionary. Canonical form of evaluated NS.
-* *mix (mx)* - Express a namespace as a set of smaller namespaces and a latent translation. 
-* *load (ld)* - Express namespace as a macro to be expanded and integrated. Each Expr should evaluate to a `(Output, Continuation)` pair. We effectively expand this to `mx:(TL, Output), ld:(TL, Continuation)`.
+* *apply (ap)* - Express namespace as a series of patches on another namespace. This is convenient when abstracting patches as operations on a namespace.
+* *lazy (lz)* - Express a namespace as a lazy translation on a lazy union of namespaces. This is useful to defer computation, and as an intermediate state in namespace evaluation.
+* *load (ld)* - Express namespace as a macro to be expanded and integrated. Each Expr should evaluate *within the partial namespace* to a `(Set of NS, Set of Expr)` pair. The output is the set of NS, while the continuation is the set of Expr. Essentially evaluates to `lz:(TL, Set of NS), ld:(TL, Set of Expr)`. 
 
-Description of namespace translations (TLMap):
+Patch constructors (MX):
 
-* *move (mv)* - rewrites keys of 'df' based on longest matching prefix. Special destinations: NULL to quietly remove a definition, WARN to remove with a warning.
-* *link (ln)* - rewrites names and localizations within Exprs based on longest matching prefix.
+* *mix (mx)* - This is the basic concrete patch. It first applies a translation to the target namespace, e.g. to delete or override names, then inserts new definitions. 
+* *at (at)* - Translate a patch to apply to modified representation of the namespace. This provides a basis for abstraction and reuse of patches, e.g. applying a patch to an abstract hierarchical component, or applying a patch as a function on a namespace computing from abstract 'lhs.' to 'rhs.'. 
+
+Description of namespace translations (TL):
+
+* *move (mv)* - rewrites keys of 'df' based on longest matching prefix. Can also remove with special target NULL.
+* *link (ln)* - rewrites names and localizations within Exprs based on longest matching prefix. 
 
 ## Prefix Unique Names
 
@@ -67,11 +77,11 @@ For performance, it's useful to compose translations before applying them to Exp
 
 We can compose translations sequentially, where one translation is followed by another. It can be useful for performance to compose translations instead of applying multiple sequential translations to Exprs, especially when the Exprs are large or when the composed translation is applied to many Exprs. Of course, composition of translations also has a cost, so there are some heuristic decisions involved.
 
-To clarify, by composition of translations, I mean to compose the 'TLMap' type, producing a new TLMap. 
+To clarify, by composition of translations, I mean to compose the 'TL' type, producing a new TL. 
 
         (mv:MVA, ln:LNA) fby (mv:MVB, ln:LNB) => (mv:MVAB, ln:LNAB)
 
-The 'mv' and 'ln' components of a TLMap can be composed independently. The basic approach for 'A fby B' is to extend implicit suffixes on both sides of A so the output for A matches input for B, then apply B's rules to the RHS of of the modified A, using the longest matching prefix in B in each case.
+The 'mv' and 'ln' components of a TL can be composed independently. The basic approach for 'A fby B' is to extend implicit suffixes on both sides of A so the output for A matches input for B, then apply B's rules to the RHS of of the modified A, using the longest matching prefix in B in each case.
 
         { "bar" => "fo" } fby { "f" => "xy", "foo" => "z"  }                    # start
 
@@ -85,17 +95,13 @@ A suffix cannot be extended if the longer prefix would be matched by another rul
 
 Conveniently, the NULL and WARN cases in 'mv' don't need any special handling because they cannot be matched by any valid prefix. Thus, we won't extend any suffixes, and we'll simply preserve remove rules from MVA, and potentially add new remove rules based on what MVB does match in the expanded MVA. The only thing we might do is simplify remove rules that are implied by a shorter rule in the composition.
 
-Due to the structure of NSDef, this is the only composition rule we need for TLMap. The translation closer to a leaf node is followed by a translation closer to the root node. 
+Due to the structure of NSDef, this is the only composition rule we need for TL. The translation closer to a leaf node is followed by a translation closer to the root node. 
 
-### Alt: List of Translations
+## Translation of Patches
 
-Instead of properly composing TLMap, we could introduce an intermediate representation that maintains a lists of rewrite rules.
+The 'at' constructor for patches will modify where a patch is applied. This will compose 'fby' with contained 'at' operations, but handlng 'mx' is more interesting. We must rewrite the patch to apply to a translated view of the namespace. This does operate as a rename for definitions introduced within the patch, but it doesn't rewrite the tacit namespace. Instead, we'll rewrite the TL element of 'mx', modifying the lhs and rhs of the move and link maps. 
 
-        type TLMapExt = ( lns:List of (Map of Prefix to Prefix)
-                        , mvs:List of (Map of Prefix to (Prefix | NULL | WARN))
-                        )
-
-With this, we can still walk each Expr only once to perform the rewrite, it's only the individual name and localization elements in the abstract assembly that must iterate through the list of link rewrites. Localizations could also maintain the list, with runtime support. This should perform adequately if our transforms aren't too deep. That said, I don't believe that proper composition is so complicated or expensive as to make this worthwhile.
+For example, if our 'at' translation is `{ "" => "foo.", "g." => "g." }`, then a move from `{ "a." => "b.", "c." => "g.d.", "g.e." => "f." }` will become a move `{ "foo.a." => "foo.b.", "foo.c." => "g.d.", "g.e." => "foo.f." }`. Removes need special recognition when rewriting the rhs, and as usually we'll want to un-simplify to expand prefixes and suffixes of rules to match all possible rewrites.
 
 ## Evaluation Strategy
 
@@ -109,35 +115,44 @@ In addition to explicit laziness via 'load', we might assume NS has implicit laz
             , drop:(Map of Name to (Set of Expr))   # conflicting defs for diagnosis
             )
 
-In each step, we can scan 'todo' for tasks that might contribute to what we 'want'. The primary basis for laziness is to filter 'mx' and 'ld' tasks: a name is a potential output of the NS if it doesn't have a prefix in the LHS of 'mv', or if it has a prefix in the RHS of 'mv'. For indexed performance, we might first extend TL with an index - a trie containing only the prefixes from RHS of 'mv'.
+When extracting some definitions, if they aren't already defined we add them to 'want'. In each evaluation step, we can scan 'todo' for tasks that might contribute to what we 'want'. The primary basis for laziness is to filter 'lz' and 'ld' tasks based on output prefixes from 'mv' translations. It is feasible to index and cache the output prefixes for each 'mv' map, perhaps extending the TL type. 
 
-To process 'df', we add the names to 'have' if possible, and remove those names from 'want', adding pending tasks back to 'todo'. If there are name conflicts, we instead add the definition to 'drop' to support debugging, and we report the conflict at most once per name.
+To process 'df', we add the names to 'have' if they are previously undefined, otherwise add to 'drop' and log a warning. When we add a name to 'have' we can remove the same name from 'want' and return any pending tasks to the 'todo' set.
 
-To process 'mx', we extract at least one NS, apply the TL, and expand translated NS and remaining mx (if any) into 'todo'. To apply TL to another 'mx', we compose TL. To apply TL to 'ld', we compose TL and also apply the 'ln' translation to the Set of Expr. To apply TL to 'df', we apply the 'ln' rules to the Exprs and 'mv' rules to the names. The latter may result in name conflicts if 'mv' merges two prefixes.
+We'll process 'ap' and patches by rewriting. The list of patch operations will be processed eagerly, but 'mx' rewrites to a lazy operation. Use of 'at' to translate patches is a relatively sophisticated operation. 
 
-To process 'ld', we try to evaluate an Expr to a `(Set of NS, Set of Expr)` pair, then produce an `mx:(TL, Set of NS), ld:(TL, Set of Expr)` pair with the TL from 'ld'. But we must also handle evaluation failures. If evaluation fails due to a missing definition, we can add `ld:[TL, Expr]` under 'want' for the missing name, otherwise report the problem and add it to 'fail' to support further debugging. Most complexity is related to developing the evaluator for Exprs in context of a partial namespace.
+        ap:(NS, ()) => NS                           # ap done
+        ap:(NS, (mx:(TL, Adds), Ops)) =>            # lazily apply mx
+            ap:(lz:((), (lz:[TL, NS], Adds)), Ops)
+        at:(LN, ()) =>                              # at done (empty seq)
+        at:(LN, (mx:(TL, Adds), Ops)) =>            # translate patches
+            mx:[TL at LN, lz:((mv:LN, ln:LN), Adds)], at:(LN, Ops)
+        at:(LN, (at:(LN', Ops'), Ops)) =>           # compose patch translations
+            at:(LN' fby LN, Ops'), at:(LN, Ops)
+
+To process 'lz', we extract at each NS, apply the TL, then return it to the todo pool. To apply a TL to another 'lz', we can use fby composition. To apply TL to 'ld', we fby compose TL and also apply the 'ln' translation to the Set of Expr. To apply TL to 'df' is essentially how TL was defined to start with. There is some risk of name collisions by 'mv' moving two names together, but this is resolved non-deterministically with a warning.
+
+To process `ld:(TL, Set of Expr)`, we try to evaluate each Expr to a `(Set of NS, Set of Expr)` pair. For successful evaluations, we produce an `lz:(TL, Set of NS), ld:(TL, Set of Expr)` pairs, using TL from 'ld'. On failure, we diagnose the cause. If the failure is due to a missing definition, we add the name and `ld:[TL, Expr]` to 'want'. For any non-recoverable cause, we instead add this to 'fail'.
 
 ## Design Patterns
 
-### Forbidden Names
+### Invalid Names
 
-Assume we forbid DEL (0x7F) for use in names. Then, by including DEL in rhs of a translation, we can guard against accidental use of the prefix within a namespace component. We can report if we accidentally do define names containing DEL, and easily verify that all translations are DEL-preserving (DEL in lhs implies DEL in rhs). 
+I propose to forbid byte DEL (0x7F) in names. This allows us to introduce DEL in translations to indicate that certain names or prefixes shouldn't be used, e.g. `{ "" => DEL, "foo." => "foo." }` would indicate that a given namespace component should only define or use `foo.*` names (depending on move or link rule), while `{ "foo." => DEL+"foo." }` would indicate that a namespace component must not define or use `foo.*`. If there are any issues, we can render the translated name as part of the warning.
 
-This would serve a symmetric role of 'move to WARN' controlling introduction of names. For example, if we want to insist a given subcomponent only uses names prefixed 'foo' or 'bar' we might use a link rule `{ "" => DEL, DEL => DEL, "foo." => "foo.", "bar." => "bar." }`. If we want to say the component *does not* use 'foo', the rule instead is `{ "foo." => DEL+"foo." }`. (We don't need shadowing since these names shouldn't be defined.)
+We can also check that all translations are DEL preserving, i.e. such that DEL in lhs implies DEL in rhs.
 
 ### Private Names
 
-Similar to DEL, we can reserve '~' (0x7E) for use in private names. We could warn if '~' appears in initial 'df' or load expressions, require it is only introduced in the rhs of a translation. We can also verify that translations are privacy preserving ('~' in lhs implies '~' in rhs). Further, we must also reject names containing '~' even before they are translated via *Localization*. 
+Similar to invalid names, I propose use of '~' (0x7E) for private names. To guard against most accidental privacy violations, we can raise a warning if '~' appears in initial definitions or link expressions before translation or if translations do not preserve '~'. However, in context of user-defined syntax, it is possible to bypass this privacy protection; it only resists accidents. More robust protection would be based on using translations to control where names are used and introduced. 
 
-Privacy would be introduced by rename, symmetric move and link, based on access control expressions. For example, we might compile `export foo, bar, qux as q` (accept list) to rename `{ "" => "~", "foo." => "foo.", "bar." => "bar.", "qux." => "q." }`. Or we could compile `hide foo, bar` (deny list) to rename `{ "foo." => "~foo.", "bar." => "~bar.", "~foo." => "~foo.^", "~bar." => "~bar.^" }`, including operations to shadowing the prior `~foo.`.
+Anyhow, with this convention we might compile `export foo, bar, qux as q` to rename `{ "" => "~", "foo." => "foo.", "bar." => "bar.", "qux." => "q." }`. Or we could compile `hide foo, bar` to rename `{ "foo." => "~foo.", "bar." => "~bar.", "~foo." => "~foo.^", "~bar." => "~bar.^" }`, including operations to shadowing the prior `~foo.`.
 
 ### Global Names
 
-We can simulate a global namespace by automatically forwarding names into hierarchical components by default. For example, a language might implicitly translate `{ "" => "foo.", "$" => "$", "%" => "%" }` for hierarchical component 'foo'. This would effectively treat `$*` and `%*` as global namespaces. We use `%*` for primitive AST constructors, and it might be read-only (via move `{ "%" => WARN }`), whereas `$*` could be the user writable global namespace.
+We can simulate a global namespace by automatically forwarding names into hierarchical components by default. For example, a language might implicitly translate `{ "g." => "g.", "%" => "%", "" => "foo." }`, treating `g.*` and `%*` as global namespaces for hierarchical component `foo.*`. The `%*` is generally for primitive AST constructors, and is read-only, thus we might also 'move' introduced `%*` to DEL. But we could permit introducing names under `g.*`.
 
-Usefully, because this namespace is still subject to translations, we can easily translate components to resolve name conflicts in the global namespace, or sandbox the global namespace for a subset of components. We only need some syntax to influence the default translation.
-
-A weakness of global names is that it hinders lazy evaluation. It isn't obvious which constructors might contribute to any specific global name. Without hints, we'll be blindly searching until we find the right component. To mitigate this, users could introduce manual hints where they notice performance issues, or a compiler could record some metadata to support search during incremental compilation.
+Usefully, because this isn't a true global space, it is subject to further translations. We could resolve conflicts by renaming globals for certain subprograms. We could also sandbox or 'chroot' the globals used in subprograms, e.g. routing `{ "g." => "g.foo." }`.
 
 ### Namespace as Function or Macro
 
@@ -159,11 +174,11 @@ Our namespace model restricts us to a single definition per name. However, in co
 
 We can leverage overrides in this role, manually composing definitions from various components. But it might prove more convenient to have language support for composing definitions from multiple components. Perhaps this could build upon *Load as a Process*, threading channels or possibly staged namespace-layer algebraic effects.
 
-### Abstraction of Call Graphs
+### Algebraic Effects and Abstraction of Call Graphs
 
-For first-order procedural programming, we can hard-code names in the call-graph between functions. Our abstract assembly would contain structures like `(%call Name ArgExpr)`. Despite being 'hard coded', the namespace translations make this elastic, rewriting names within the assembly. We can support hierarchical components, overrides, and shadowing, and even limited abstraction by intentionally leaving names for override.
+For first-order procedural programming, we hard-code names in the call-graph between functions. Our abstract assembly would contain structures like `(%call Name ArgExpr)`. Despite being 'hard coded', the namespace translations make this elastic, rewriting names within the assembly. We can support hierarchical components, overrides, and shadowing, and even limited abstraction by intentionally leaving names for override.
 
-However, encoding many small variations on a large call graph is very expensive in terms of memory overhead and rework by a late-stage compiler. To solve this, it's best to support some abstraction of calls in the program layer. It is not difficult to also support `(%call CallableExpr ArgExpr)`. Although my vision for glas systems eschews first-class functions (due to awkward interaction with live coding, orthogonal persistence, remote procedure calls, etc.), we could easily restrict this with static parameters, or use a special variation of 'call' for algebraic effects.
+However, encoding many small variations on a large call graph at the namespace level is very expensive in terms of memory overhead and rework by an optimizer. To solve this, we should support abstraction of calls at the program layer. For example, we could support algebraic effects where a program introduces an effects handler that may be invoked from a subprogram. With careful design, this effects handler may still be 'static' for inline optimizations and partial evaluation, similar to namespace overrides.
 
-Use of *Localizations* from abstract assembly can let us safely convert data to an open set of names. Instead of calling names directly or building abstract callables from a closed set, we might favor indirect calls through a localization. Intriguingly, we could also build a namespace within a method, and bind a localization to a component like `ext.*` within that namespace.
+By leveraging *Localizations* (from [abstract assembly](AbstractAssembly.md)), we can also interpret data to names in the host namespace without loss of namespace layer locality or security properties. It is feasible to leverage layers of localizations to model overlays on the call graph, where most names can be overridden in a given call context.
 
