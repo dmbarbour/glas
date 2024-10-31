@@ -8,7 +8,7 @@ Interaction with the glas system is initially through a command line 'glas' exec
 
 ## Data
 
-The 'plain old data' type for glas is the finite, immutable binary tree. Trees can directly represent structured and indexed data, align well with needs for parsing and processing languages, and are relatively convenient for persistent data structures and content addressing of very large values. A relatively naive encoding:
+The 'plain old data' type for glas is the finite, immutable binary tree. Trees can directly represent structured and indexed data and align well with needs for parsing and processing languages. They are convenient for persistent data structures via structure sharing, and content addressing for very large values. A relatively naive encoding:
 
         type Tree = ((1 + Tree) * (1 + Tree))   
             a binary tree is pair of optional binary trees
@@ -53,14 +53,14 @@ See also *Numbers*, below.
 
 ### Lists, Arrays, Queues, Binaries
 
-Sequential structure in glas is usually encoded as a list. A list is either a `(head, tail)` pair or a leaf node, similar in style to Lisp or Scheme lists.
+Sequential structure in glas is usually encoded as a list. A list is either a `(head, tail)` pair or a leaf node, a non-algebraic encoding similar in style to Lisp or Scheme lists.
 
         type List a = (a * List a) | () 
 
          /\
         1 /\     the list [1,2,3]
          2 /\
-          3  ()  
+          3  ()
 
 Direct representation of lists is inefficient for many use-cases, such as random access, double-ended queues, or binaries. To enable lists to serve many sequential data roles, lists are often represented under-the-hood using [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_%28data_structure%29). This involves extending the 'Node' type described earlier with logical concatenation and array or binary fragments.
 
@@ -76,59 +76,71 @@ For performance, a runtime may support optimized internal representations. A use
 
 ## Programs and Applications
 
-A program is a value with a known interpretation. An application is a program with a known integration.
+A program is a value with a known interpretation. An application is a program with a known integration. In glas systems, programs and applications are carefully designed to support my visions for live coding, user extension, and community curation. 
 
-An interpretation is specified for program values, a structured [intermediate representation](https://en.wikipedia.org/wiki/Intermediate_representation) of form `g:(ns:Namespace, ...)`. The [program namespace](GlasNamespaces.md) lets us compose, shadow, abstract, and override definitions. Each definition is expressed in an [abstract assembly](AbstractAssembly.md), letting us constrain, extend, or sandbox language features through the namespace. A set of [primitive AST constructors](GlasProg.md) is implicitly added by the runtime. The 'ns' dict and 'g' variant headers ensure opportunity for extension.
+### Modularity
 
-A [glas application](GlasApps.md) defines transactional methods for 'step', 'http', and other interfaces recognized by a runtime. Compared to conventional a 'main' procedure, transactional methods are more amenable to live coding and orthogonal persistence. We'll also model runtime effects algebraically as implicit parameters to each methods. Intriguingly, a repeating 'step' transaction can also optimize with incremental computing and replication of a stable non-deterministic choice, resulting in a highly reactive and concurrent system. This extends easily to distributed transactions and distributed computing. Orthogonal persistence is based on effectfully binding some application state to an external key-value database.
+Modularity begins with configuration. An initial configuration file is selected based on the `GLAS_CONF` environment variable, if defined, otherwise an OS-specific default, e.g. `"~/.config/glas/conf.g"` on Linux or `"%AppData%\glas\conf.g"` on Windows. A configuration may import other files, supporting file-based modularity. Instead of a separate package manager, applications and programs are defined in the configuration namespace. This results in a very large namespace, and performance must be mitigated by lazy loading and caching.
 
-The front-end syntax for glas is user-defined. To simplify external tooling, this is aligned with file-extensions: to compile a ".x" file, we'll search the local environment for module "lang.x", which must define the front-end compiler. A special exception is the [".g" syntax](GlasLang.md), which will use a built-in implementation as needed. We'll attempt to bootstrap "lang.g" if defined in terms of ".g" files. This initial language is suitable for general purpose programming.
+File paths are abstracted and extended to DVCS. A typical user configuration imports a community or company configuration from DVCS, then override definitions to integrate user-specific projects, preferences, resources, and authorizations. Similarly, a community configuration may inherit, extend, and override others. A community configuration serves the roles of package manager, curator, and atomic system versioning aligned with DVCS hashes and tags. 
 
-In my vision for glas systems, most applications shoud support interactive development, projectional editing, and live coding through a [notebook interface](GlasNotebooks.md). To achieve this, a compiler will integrate a projectional editor with compiled applications by default, and provide integrate interfaces to simplify notebook composition (pages, tables of contents, etc.). Where we don't need this expensive notebook view, it should be subject to override and dead code elimination.
+To simplify sharing, copying, and editing we organize software projects into packages. Each package isolates file-based dependencies to the same folder and subfolders. Other than local files, a package only depends on a configuration-provided environment of definitions, subject to localization. 
 
-## Modularity
+*Note:* Restrictions on file dependencies will be enforced using smart constructors for 'relative' abstract file paths. In addition to package restrictions, we should block "../" paths from escaping a DVCS repository, and we can let developers enforce DVCS resources are transitively immutable, using version hashes instead of tags. Aside from these restrictions, abstraction of files can also support binding to a database, modeling of logical overlays, or treating binary data as a read-only file.
 
-In glas systems, modularity begins with the configuration. Every user has an root configuration file, indicated by `GLAS_CONF` environment variable with OS-specific defaults, e.g. `"~/.config/glas/conf.g"` on Linux or `"%AppData%\glas\conf.g"` on Windows. A typical user configuration file import a community or company configuration from DVCS then apply overrides for user-specific preferences, projects, resources, and authorizations.
+### Compilation
 
-Instead of configuring a package manager or filesystem search path, applications and libraries are directly defined and computed within the configuration namespace. Thus, a remote DVCS serves the roles of package manager, curator, and whole system versioning. A configuration may inherit and integrate definitions from multiple DVCS to distribute responsibility. This design easily results in *very large* configurations, but performance is mitigated by lazy loading and caching.
+Front-end syntax is user-defined, aligned with file extensions. A front-end compiler will output definitions in a common Lisp-like intermediate representation, [abstract assembly](AbstractAssembly.md). These definitions are translated to support composition, extension via override, access control, and conflict resolution - see TL type from the [namespace model](GlasNamespace.md). A [set of primitives](GlasProg.md) is implicitly defined by the runtime system, including control structures such as conditionals or sequencing.
 
-A typical application or libary definition is expressed in terms of compiling a program file. In addition to the file, compilation is parameterized by a *localization*, providing controlled access to the configuration namespace through a translation, and thus to other applications and libraries. The file is processed based on file extension, searching for "lang.FileExt" in the localization, with special exceptions for "lang.g" and bootstrapping. 
+To support lazy loading and multi-stage programs, compilation is iterative and order is flexible. I propose to use non-deterministic choice: every terminating sequence of choices represents an atomic step and may define different components. Some steps may attempt to 'eval' an expression within the generated namespace, a simple basis for syntax-independent macros, and will implicitly wait for other steps to provide necessary definitions. To guide evaluation order, we can let users apply a translation to all future outputs from a step.
 
-Applications and libraries should compile to program values, i.e. `g:(ns:Namespace, Metadata)`. The namespace type is very modular, supporting flexible composition and extension without rewriting namespace values. Automatic composition can be augmented with metadata. For example, if modules might represent pages or chapters in a notebook, we might automatically compose the table of contents. In some cases, it is reasonable to omit the program file and directly compute a program value.
+Compilation steps should be commutative, monotonic, and idempotent. A conflict is possible where a name is assigned multiple distinct definitions. Although it isn't difficult to detect conflicts during evaluation, in context of laziness conflict may be latent in the system and go undiscovered. This can be mitigated by developing a deterministic scheduler for compilation steps and supporting a diagnostic evaluation mode that actively searches for conflicts instead of lazily halting after a definition is discovered.
 
-To simplify security, packaging, and reproducibility, file paths are abstract (see *Data Abstraction*) and their construction is constrained. When loading a file from a DVCS repository, we forbid relative "../" paths that would escape the repository. When compiling a program file for an application, we generally isolate file dependencies to the same folder and subfolders. With runtime support, this abstraction also provides an opportunity to treat a dict of binaries as a read-only folder, model logical filesystem overlays, or simulate a filesystem within a key-value database.
+### Multi-Stage Programming
 
-## User-Defined Syntax
+Compilers have an opportunity to evaluate expressions in context of the generated namespace. This can support macros independent of the front-end syntax, including namespace macros that may generate new definitions. If evaluation requires a missing definition, it can implicitly wait on that definition to be provided by another step. 
 
-A user-defined language module should compile to a program value that defines `compile : f:AbstractFileRef -> CompiledValue` that assumes a limited effects API. Compile-time effects are restricted to read-only queries on the environment to simplify caching, lazy loading, and parallel compilation. The CompiledValue is often another program value, especially in context of notebook interfaces. 
+        from { Expr } import x, foo as y, z
 
-Warnings or errors should be reported through logging annotations, and may also be captured in the CompiledValue. In context of live coding and notebook interfaces, it is most convenient if programs with syntax errors still compile to a projectional editor that provides detailed complaints and recommendations, and perhaps makes a best effort, rather than diverging.
+In case of namespace macros, we'll generally want to support the use case where we translate the generated definitions, defer computation based on a translation, yet evaluate in an environment prior to the translation. This is feasible with an API that reifies the environment, similar to: `var Env = env(); translate(TL); eval(Env, Expr)`. We may extend this API with methods to logically translate or compose the Env type.
 
-### Syntax Bootstrap
+Staging is a relatively simple use case. Between 'fork' and 'eval' there is sufficient flexibility to model concurrent processes that interactively generate definitions, treating the namespace as a set of single-assignment variables for futures and promises. We can also express procedural generation of infinite namespaces. To support garbage collection of intermediate definitions, we can block both evaluation and new definitions from directly referencing 'private' names containing "~". 
 
-The glas system defines an [initial syntax](GlasLang.md) associated with the ".g" file extension. When "lang.g" is undefined, we use the built-in compiler. If "lang.g" is defined in terms of ".g" files, we'll attempt to bootstrap. Bootstrap involves building "lang.g" with the built-in, then again with itself, then verifying a fixpoint is reached. Verifying the fixpoint generally requires one more build.
+### Applications
 
-A glas executable may support other initial syntax. For example, [".glob" files](GlasObject.md) may prove more convenient for automated configurations. In this case, we may need to bootstrap multiple built-in languages together if they are mutually defined in terms of each other.
+A [glas application](GlasApps.md) implements transactional methods recognized by a runtime, such as a 'step' method that is run repeatedly as a background loop, and an 'http' method to receive HTTP requests. Algebraic effects provide controlled access to the system, and application state is mapped to a key-value database. Performance is mitigated by partial evaluation, incremental computing, and parallel evaluation of non-deterministic choice.
 
-The toplevel configuration file *must* use an initial syntax recognized by the system. And we'll generally bootstrap the configuration by first building `"module.lang.g"` within the configuration (assuming `"module."` prefix is the default localization).
+A relevant consideration is how to represent the application object. Some viable options:
 
-## Annotations
+* Directly define application methods in configuration, i.e. `appname.step` and `appname.http`. Runtime searches for certain methods. This hinders extension. Apps may be built by hand or installed using macros..
+* Integrate methods into a single procedure, use partial eval, i.e. `appname("http", Request)`. This simplifies composition and delegation, but is inconvenient to implement, optimize, or reflect on the API.  
+* Application as a namespace macro, i.e. `appname()` defines 'step' and 'http'. This enables ad-hoc extension via override, but it greatly complicates sharing. Without this, namespace macros are still useful.
 
-Programs in glas systems will generally embed annotations to support logging, profiling, testing, debugging, type-checking, optimizations, and other non-semantic features. As a general rule, annotations should not influence observable behavior except through reflection. Thus, it should be safe to ignore unrecognized annotations, albeit with a warning to resist silent degradation of system consistency or performance. Within these limits, the glas system favors annotations over semantic operations where feasible.
+A runtime may recognize several approaches, perhaps distinguished by annotation (e.g. `appname.#run-mode`). I currently favor direct definition as the default.
 
-In abstract assembly, annotations might be generally represented using `(%an AnnoAST ProgAST)`, scoping over a subprogram. The AnnoAST might be something like `(%log ChanExpr MessageExpr)`. Ignoring the annotation, this should be equivalent to ProgAST. Annotations purely on context might use a no-op like an empty sequence as the ProgAST.
+### User-Defined Syntax
 
-Annotations may also be embedded in the program, namespace, or data layers. At the program layer, we might use `g:(ns:Namespace, an:Annotations, ...)` to guide integration. In the namespace, we can easily introduce a simple naming convention where `foo.#doc` is an annotation for 'foo', though this would only be useful for tools that browse the namespace. In the underlying data representation, we might embed hidden metadata to support data abstraction or tracing.
+A compiler can recursively compile other files into the namespace. This will automatically select a compiler from current namespace environment based on the file extension, e.g. "lang-FileExt". The compiler should be a procedure that receives an abstract file path as a parameter and generates definitions, iterative via non-deterministic choice.
+
+The glas system specifies an [initial syntax](GlasLang.md) associated with the ".g" file extension. If the associated "lang.g" compiler is undefined, we use the built-in compiler for ".g" files. However, if defined in terms of ".g" files, we'll attempt to bootstrap. Bootstrap involves building "lang.g" with the built-in, then again with itself, then verifying a fixpoint is reached with one more build.
+
+The initial configuration file *must* use an initial syntax recognized by the glas executable. It may also define the compiler for this initial syntax, supporting bootstrap. A glas executable may support other initial syntax. In this case, we may need to bootstrap multiple built-in languages together if they are mutually defined in terms of each other.
+
+### Notebook Interface
+
+Most files, including configuration files, should automatically compile to applications providing a notebook interface - a live coding environment and projectional editor over the initial file. See [glas notebooks](GlasNotebooks.md).
+
+### Annotations
+
+Programs in glas systems will generally embed annotations to support logging, profiling, testing, debugging, type-checking, optimizations, and other non-semantic features. As a general rule, annotations must not influence observable behavior except through reflection APIs. Under these constraints, it is safe to ignore an unrecognized annotation. However, we'll generally report a warning to resist silent degradation of system performance or consistency. Reflection APIs may peek at performance, logs, code and JIT, data representations, etc. but should be easily controlled.
+
+In context of abstract assembly, annotations might be generally represented using `(%an AnnoAST ProgAST)`, scoping over a subprogram. The AnnoAST might be something like `(%log ChanExpr MessageExpr)`. Ignoring the annotation, this should be equivalent to ProgAST. If ProgAST is omitted, we can assume a no-op.
+
+Some annotations may be embedded in the namespace to support reflection and browsing of the namespace. This should use a simple naming convention, perhaps `foo.#doc` and `foo.#type`. 
 
 ### Automated Testing
 
-In my vision for glas systems, users can easily view health of glas systems based on automated testing across entire community distributions of applications and modules. Further, developers should be able to determine how potential changes to modules would propagate and influence system health before committing. 
-
-To express tests, we might use compile-time assertions. Where assertions are awkward or limiting, we can introduce other annotations for property testing or fuzz testing. Alternatively, we could use compile-time logging to emit test programs to specific channels. 
-
-In context of lazy loading, users would notice a subset of tests when first loading an application, and they could configure whether they run these tests. To identify *all* the tests would require expanding the full configuration namespace, and perhaps further evaluating individual applications. But this can be mitigated by caching a dependency graph, such that we don't need to recompute all the things every time. 
-
-A community could easily maintain a server that performs all the tests across multiple proposed DVCS branches, and builds a report based on these test results and test outputs (pass/fail plus logs, profiles, and so on). 
+Automated testing can be aligned with iterative compilation, such that some steps represent tests. Testing can be guided by annotations and heuristics, and can leverage non-deterministic choice to model fuzz testing and property testing. With some careful configuration, it is feasible to cache and share tests between users, and produce a system health report.
 
 ## Performance
 
