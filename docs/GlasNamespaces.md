@@ -174,8 +174,12 @@ By leveraging *Localizations* (from [abstract assembly](AbstractAssembly.md)), w
 
 ### Namespace Macros
 
-It is feasible to extend the namespace type with 'load' expressions to support namespace macros. However, I don't have a good solution for maintaining a compiler's context of algebraic effects. So, it might be better to push this feature to the compiler directly. In any case, some form of iterative compilation and 'eval' for macros would be very useful for abstracting the namespace. Not sure it should be in the namespace type, though.
+It is feasible to extend the namespace type with 'load' expressions to support namespace macros, something like `ld:(TL, Expr)` where the TL is applied to the result, and the Expr is translated based on 'ln' rules. Iterative compilation can be based on non-deterministic choice within Expr.
+
+A significant weakness of this design is that it separates evaluation of Expr from any particular context of algebraic effects. It might be better to push this sort of 'eval' logic into the compiler to ensure consistent context. In the latter case, a compiler would recursively compile files or evaluate expressions within the current context of algebraic effects, relying on non-deterministic choice for iterative compilation (e.g. to wait on dependencies for 'eval', or wait on a file).
 
 ### Mapping or Wrapping Definitions
 
-As an additional translation option, we could support a list of compositions, e.g. `ap:[F, G, H]` such that our translated definition is `F(G(H(Def)))`. Each function would also be an Expr, subject to translation via later 'ln'. The application could be modeled as simply addending the definition to an AST constructor. This feature is potentially useful for sandboxing definitions, but it may require careful design of AST constructors to effectively use. I'm not convinced it's the right direction to take, might be better to design the assembly to be sandbox-friendly and override each constructor as needed. 
+It is feasible to add a translation step to modify definitions, e.g. to wrap them with a series of constructors. This might be expressed as an extra `ap:[F, G, H]` translation, such that our translated definition is `F(G(H(Def)))`, and F, G, H are expressions (names or partial constructors) subject to link (ln) translations.
+
+This would simplify sandboxing, translation, and reflection on definitions. However, it's semantically awkward, and I'm not convinced that the use case is strong enough. A viable alternative is to design the AST and intermediate language such that it's friendly to sandboxing via integration of hooks or careful use of context (e.g. algebraic effects) instead of ad-hoc wrappers. This allows code to control its own integration more precisely.

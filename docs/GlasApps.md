@@ -2,13 +2,11 @@
 
 ## Overview
 
-An application [namespace](GlasNamespaces.md) must define transactional procedures recognized by a runtime, such as 'step' to model background processing, or 'http' to handle an HTTP request. The 'step' procedure is called repeatedly by the runtime, which allows useful optimizations such as incremental computing, replication on non-deterministic choice, and reactivity. See *Transaction Loops* below.
+An application defines a subset of transactional procedures recognized by a runtime, such as 'step' to model background processing and 'http' to handle an HTTP request. The 'step' procedure is called repeatedly by the runtime, leveraging optimizations such as incremental computing and replication on non-deterministic choice as the basis for reactivity and concurrency. See *Transaction Loops* below.
 
-These procedures exchange data with their environment via algebraic effects. Some effects may be specific to the 'step' versus 'http' methods, but most are shared. Application state is bound to an external key-value database, providing a simple basis for orthogonal persistence and live coding. Access to the filesystem, network, and other host resources is also via algebraic effects.
+These procedures interact with their environment via algebraic effects. Application state is bound to an external key-value database, providing a simple basis for live coding and orthogonal persistence. Communication within glas systems is via transactional remote procedure calls. Interaction with the filesystem, network, FFI, and other host resources is often asynchronous, committing to run non-transactional operations between transactional steps.
 
-Conventional request-response interactions with the host filesystem or network require at least two transactions: one to commit the request, another to read the response. This can be mitigated by dedicated front-end syntax for multi-step procedures. However, where feasible, glas applications should favor the key-value database for state and remote procedure calls (RPC) for networking, enabling direct support for transactions and other runtime features such as accelerated representations or content-addressed storage for large values.
-
-In general, the configuration serves as a layer of indirection between the application and host resources. The configuration will abstract filesystem roots, network interfaces, FFI resources, and RPC registries, among others. Application-specific features are supported by letting the configuration query an application's `settings.*` methods (as an algebraic effect).
+The runtime configuration abstracts access to host resources, e.g. an application's access to the filesystem may involve named roots like "AppData" that are routed to a specific folder by the configuration. A subset of configuration options are application-specific, supported by algebraic effects to query the application's `settings.*` methods. For example, the configuration may bind "AppData" to the filesystem based on `settings.name`. 
 
 ## Transaction Loops
 
@@ -40,17 +38,19 @@ Unfortunately, we need a mature optimizer and runtime system for these opportuni
 
 An application is represented by a namespace. For a transaction loop application, the first effectful operation is `start()`. This will be retried indefinitely until it commits successfully or the application is killed externally. After a successful start, the runtime will begin evaluating `step()` repeatedly in separate transactions. The runtime may also call methods to handle RPC and HTTP requests, GUI connections, and so on based on the interfaces implemented by the application. If undefined, start and step default to pass.
 
-The application may voluntarily halt via `sys.halt()`, marking a final transaction. To support graceful shutdown, a `stop()` method will be called in case of OS events such as SIGTERM on Linux or WM_CLOSE in Windows, but the application must still explicitly halt itself. An applications may voluntarily restart via `sys.restart()`, which upon commit resets runtime state (closing any open files, network sockets, etc.) then the next operation becomes `start()`. 
+The application may voluntarily halt via committing `sys.halt()`, asking the runtime to stop. To signal an application, we might call `stop()` upon specific OS events such as Ctrl+C or SIGTERM on Linux or WM_CLOSE in Window. The application would be expected to voluntarily halt within a short period after a stop signal.
 
-### Live Coding Extensions
+## Live Coding Extensions
 
-To support live coding, a runtime can introduce methods to scan for updates, recompile, and transition to the new code. I'm uncertain exactly what is needed here, though we'll probably want some reflection so we can observe warnings or errors before transition, or make an informed choice between recent versions in an edit history. A minimum interface might be `sys.refl.reload()`.
+Source code may be updated after an application has started. In my vision for glas systems, these changes are usually applied to the running system. However, not every application needs live coding. Based on configuration and application settings we might disable this feature for some applications or require manual `sys.refl.reload()` to trigger the update. We could also configure the runtime to reload on external signals such as SIGHUP in Linux or a named event in Windows.
 
-To support a smooth transition, the runtime could evaluate `switch()` method as the first operation in the updated code. If switch fails it will usually be retried, allowing the transition to wait for the right conditions.
+To support a smooth transition after a live update, the runtime will evaluate `switch()` (if defined) as the first operation in the updated code. If switch fails, it may be retried until it succeeds, or the runtime may try some other later version of code. This allows the runtime to skip 'broken' intermediate versions and also to favor a stable intermediate version (in context of DVCS) over the bleeding edge.
 
 ## Application Specific Settings
 
-Applications may define ad-hoc `settings.*` methods. Settings methods are purely functional and accessible when evaluating any 'application specific' configuration option, such as the HTTP/RPC port, mirroring, or FFI bindings. The runtime never directly observes application settings. Instead, the runtime observes a configuration, which may refer to application settings according to community conventions.
+Applications may define ad-hoc `settings.*` methods. When evaluating application-specific runtime configuration options, the runtime will provide an algebraic effect to query settings in the selected application. There is an important layer of indirection: the runtime never directly observes settings, instead letting a configuration 'interpret' these settings in a runtime-specific way. Conversely, the application is abstracted except for these settings, which simplifies reasoning about refactoring.
+
+*Note:* One reason for this design is to be amenable to staged applications or anonymous scripts. We can configure based on `settings.name = "foo"` independent of how an application is named within the configuration.
 
 ## Application Mirroring
 
@@ -60,13 +60,13 @@ Configurations and effects APIs must be designed with mirroring in mind. Mirrori
 
 ## Application State
 
-Application state is generally bound to a key-value database. Developers are encouraged to favor the database instead of the filesystem due to simpler interaction with transactions, content-addressed storage for very large values, and runtime support for mirroring of data. The database should provide a few specialized data types, such as queues, bags, and CRDTs, to further improve performance and partitioning tolerance.
+Application state is generally bound to a key-value database. Developers are encouraged to favor the database over the filesystem to more conveniently integrate with transactions, content-addressed storage for large values, support for mirroring of data, and precise conflict analysis for specialized data types such as queues, bags, and CRDTs. Ideally, we can support performance, parallelism, and partitioning tolerance both between and within transactions.
 
-Keys are concretely represented as binaries. To support hierarchical composition and to mitigate problems of global state, these binaries are abstracted within the program. The abstraction will apply a prefix-to-prefix rewrite, similar to namespaces. The database may be persistent by default, but some keys may be scoped runtime or ephemeral. This might be indicated in the key names. 
+A subset of keys may be local to the runtime or even to the transaction. This might align with simple naming conventions and provide a simple, robust basis for orthogonal persistence and limited parallelism or concurrency within transactions.
 
-Support for 'dynamic' keys for multiple instances of an object also deserves some attention. A viable direction is to bind ephemeral index variables to the abstract keys. 
+## Dynamic Code (TBD)
 
-## Dynamic Code
+I need to revisit how code and references are bound dynamically.
 
 There are use cases for integrating code at runtime without modifying source files. However, in context of live coding, first-class functions should be ephemeral or eschewed. This limits our options.
 

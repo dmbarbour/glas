@@ -2,7 +2,7 @@
 
 The main idea for abstract assembly to use Names from a user-controlled namespace as constructors in an abstract syntax tree (AST) intermediate representation. This gives users an opportunity to control which language features a subprogram may use through the namespace, and potentially supports extension of or adaptation between ASTs.
 
-Proposed representation for abstract assembly as glas data:
+Proposed plain-old-data representation for abstract assembly as glas data:
 
         type AST = c:(Name, List of AST)        # constructor
                  | d:Data                       # embedded data

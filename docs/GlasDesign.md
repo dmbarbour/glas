@@ -178,13 +178,11 @@ Data abstraction is a property of a program, not of data. Data is abstract in co
             | ...
             | Abstract of Key * Tree
 
-Annotations can 'wrap' or 'unwrap' abstraction nodes based on a matching Key. Attempting to observe data without unwrapping it, or attempting to unwrap with the wrong Key, would be a divergence error modulo use of reflection APIs. An optimizer can potentially remove or disable wrap/unwrap annotations when it can be locally proven safe, giving us some benefits of static analysis.
+Annotations can 'wrap' or 'unwrap' abstraction nodes based on a matching Key. Attempting to observe data without unwrapping it, or attempting to unwrap with the wrong Key, would be a divergence error. Some reflection APIs could peek under the hood. An optimizer can potentially remove or disable wrap/unwrap annotations when it can be locally proven safe, giving us some benefits of static analysis.
 
-We can further constrain manipulation of abstract data: 'linear' data must not be copied or dropped, and 'scoped' data restricts storage and communication. In this case, dynamic enforcement might involve a few tag bits per Node, perhaps via packed pointers. In general, we could use one bit for linearity and two bits for scope: universal, database, runtime, transaction. In this case, database scope forbids transport over remote procedure calls, while runtime scope prevents persistent storage.
+We can further constrain manipulation of abstract data: 'linear' data must not be copied or dropped, and 'scoped' data restricts storage and communication. In this case, efficient dynamic enforcement may involve caching a few tag bits per Node (perhaps via packed pointers). We don't need much: plain old data vs. linear runtime-scoped data could use just one bit, and (together with algebraic effects) should adequately cover most use cases.
 
-Support for abstract 'universal' data is possible, but relatively expensive to enforce beyond the remote procedure call horizon. We could use encryption and decryption for wrap and unwrap, or allocate read-once variables for linearity. To mitigate costs, we might favor 'weak' types at the universal scope to express intentions and resist accidents. In that case, the Key might be a GUID or URL.
-
-*Note:* Holding abstract data in persistent storage can easily hinder schema update. We could feasibly restrict abstraction to the runtime and transaction scopes by default.
+*Note:* Intriguingly, specific annotations for data abstraction could be enforced cryptographically, using symmetric or asymmetric keys. This would allow for data abstraction to be enforced even in context of remote procedure calls and reflection APIs. An optimizer can lazily defer encryption within a runtime or across 'trusted' RPC boundaries. However, I doubt this is worth the performance and system flexibility costs in most cases.
 
 ### Type System
 

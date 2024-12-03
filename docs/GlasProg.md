@@ -1,18 +1,92 @@
 # Program Model for Glas
 
-The initial program model is `g:(ns:Namespace, ...)`. The 'g' variant header and 'ns' dict layer exist for extensibility and to support concise integration based on metadata. The main body of the program is a [namespace](GlasNamespaces.md) containing [abstract assembly](AbstractAssembly.md) definitions. Abstract assembly uses *named* AST constructors, generally `%*`, within definitions. Thus, it is feasible to restrict or extend the intermediate language through the namespace.
+In the intermediate representation, a program is an abstract [namespace](GlasNamespaces.md) containing definitions in a Lisp-like [abstract assembly](AbstractAssembly.md). Assembly constructors are provided via names with a '%' prefix, e.g. `(%sum Expr1 Expr2)` might represent a primitive expression to compute and return the sum of two expressions. 
 
-This document focuses on a specific choice of `%*` primitives, something relatively easy to interpret or further compile yet suitable for my vision glas systems - live coding, orthogonal persistence, incremental computing, transactions. 
+Abstraction through the namespace ensures extension, restriction, and intervention on subprograms is supported via systematic rewrites of names. However, such rewrites are expensive, resulting in a bloated and redundant namespace. Ideally, the abstract assembly should support additional layers of abstraction, e.g. parameters, external wiring, algebraic effects. 
 
-The initial semantics are procedural in nature, albeit with algebraic effects, hierarchical transactions, and careful attention to non-determinism. However, unlike conventional procedural languages with a 'main' procedure, a [glas application](GlasApps.md) namespace instead defines a transactional 'step' method for background processing, an 'http' method to handle ad-hoc HTTP requests, among others. Also, the effects API is modeled using algebraic effects instead of special extensions to the application namespace.
+In glas systems, programs are transactional and [applications](GlasApps.md) are expressed as transaction loops, leveraging non-deterministic choice and incremental computing as the basis for concurrency. Distributed transactions and remote procedure calls form a basis for larger systems. Live coding is assumed, so we should avoid entangling application state with the current codebase.
 
-staging and partial evaluation, parsing and backtracking, concurrency and parallelism, effective control over non-determinism, and stable rendering of computations for live coding and [gui](GlasGUI.md).
+This document proposes and motivates a set of assembly constructors for glas systems.
 
-The initial program model is procedural in nature, i.e. programs will generally describe a sequence of operations on the abstract environment. There is support 
+## Design Thoughts
 
- This is limiting in some ways, but it's also relatively simple to reason about
+* Parallel and concurrent computation within a transaction is very convenient for incremental computing of distributed transactions. Ideally, opportunities for parallelism can be determined statically, and concurrency is separate from non-deterministic choice, and concurrency allows for flexible staged computing.
+  * For parallelism, it would be convenient if we can statically distinguish operations that write to one end of a 'list' or queue variable from those that read at the other end. There are likely many similar specialized cases.
+* A program should be able to control (extend, sandbox, etc.) the 'abstract environment' exposed to its subprograms in a manner consistent with the environment presented to the program. That is, consistency across layers of abstraction is a priority.
+* Managing scope and aliasing of references is troublesome, requiring careful attention and sophisticated types in context of stack objects, live coding, orthogonal persistence, and remote procedure calls. Aliasing tends to hinder parallelism. I'd prefer to avoid the sophisticated type systems that needed to truly get references right.
+* In most cases, it is feasible to replace references with abstract linear data. Users can introduce their own abstract linear data types via annotations to wrap or unwrap data. Runtime APIs for filesystem or network can transparently wrap OS provided handles or sockets as abstract linear data, allowing for safe parallel file access.
+* Open files or sockets should have 'runtime' scope, forbidding distribution across RPC or writing into a persistent database. I think in practice we could easily conflate runtime scope with linear types, i.e. if it's linear it has runtime scope and vice versa. Efficient dynamic type enforcement of linearity and scope would then require only one metadata bit via packed pointers or similar.
+* The runtime can abstract files and sockets to channels, and let users allocate channels for internal use within an application. Support for channels within an application is potentially convenient for modeling concurrent subtasks. 
+* I would like to automate support for indexed and editable relational database views. It is feasible to model the database as an accelerated data type or linear object, but it might be easier to support static analysis of views if the database model is built-in to the program model.
+* As a general rule, it is easiest to optimize objects fully hosted by the abstract environment and understood by the program model. For example, we could support indexed, editable relational database views if the program model includes special operations to introduce relational views within a scope. 
+* Ideally, every program has a clear small-step rewrite semantics. This greatly simplifies debugging.
+* I would like some effective support for staging, including static partial returns from a computation. Ideally, staging supports ad-hoc concurrency rather than just a single pass. An intriguing possibility is to support a fractal namespace aligned with the call graph as a medium for concurrent staging.
+* Support for hierarchical transactions is very convenient for modeling grammars, though there is certainly some risk of awkward interaction with non-deterministic choice. I think we should pursue this feature and if necessary we can limit concurrency a little.
+* Although performance isn't top priority, optimizability is a high priority.
+
+##
+
+The proposed program model is procedural, albeit extended with transactions and algebraic effects. I'm still exploring the possibility to reduce need for first-class references and support parallelism within the transaction. 
+
+* Transactional - In general, we assume toplevel application methods like 'start', 'step', or 'http' are evaluated in implicit transactions. The constructors include further support for hierarchical transactions. Transactions are separated from backtracking, and it is permitted to return limited information from an aborted transaction.
+* Algebraic Effects - Conventional procedural languages provide effects through abstract definitions in the application namespace. This hinders intervention and sandboxing. I propose to instead model the abstract environment as an implicit object with methods, subject to override when presenting parts of the environment to subprograms.
+* Explicit Context - I would like to track some flexible ad-hoc static context across operations, both for safety checks and comprehension. One use case includes tracking units for numbers across a computation. TBD: still working out how this should be modeled. Ideas include: constraint model with namespace or overlay of abstract environment.
+* Stable Graph - As much as possible, we should stabilize and control interaction with the environment both within and between procedures. This provides a basis for unchecked parallel evaluation. Ideally, we can reduce most cases to 'static' connections, but there may be some cases (e.g. 'eval' or dynamic references) where we must bind to the environment dynamically. In those cases, we should still be able to reason about and restrict which references are used.
+* Pervasive Parallelism - It should be possible to evaluate different parts of a large procedure in parallel, especially including loops (so we can start processing the next loop before the last cycle finishes), such that we can model concurrency both within and between procedures. In addition to the stable graph of relationships, this may require restricting the effects on each resource, such as writing versus reading a queue or network socket, potential support for CRDTs.
+
+These features have a widespread impact on program expression. For example, a request-response pattern over the network will require at least two transactions (so we can commit the request). We'll avoid first-class references like sockets or file handles, instead binding responses to a stable environment. With careful design, it should be feasible to model parallel interaction with multiple network connections and open files even within a single procedure.
+
+## Resources, Registers, and References?
+
+A procedure operates on an abstract environment and may restrict or extend the abstract environment presented to subprograms (i.e. via algebraic effects). This should be mostly independent from the program namespace (modulo reflection or 'eval'), yet is similar in nature insofar as it is convenient to 'name' features or methods of the abstract environment for purpose of operations, extensions, and restrictions. To support parallelism, restrictions must be precise and amenable to static analysis. Extending this environment is a simple basis for algebraic effects.
+
+For open files, network sockets, dynamic channels, etc.. I intend to avoid first-class references (i.e. references as data) because they make it difficult to reason statically about sharing and parallelism. In theory, this can be solved using substructural types for linearity and lifespan (e.g. runtime or ephemeral). However, I prefer a robust structural solution instead of an optional analytic solution.
+
+A viable structure is to introduce named 'registers' for linear objects in the environment, separate from the normal data registers. A procedure can then operate on objects through these registers, and potentially move objects between registers. In theory, we could generalize registers to model named channels or stacks, allowing them to contain a simple sequence of values and support a higher level of parallelism based on how read and write access are used.
+
+Recursive functions need some careful attention. One option is to forbid recursion, but that is awkward for a lot of use cases. Instead, I would prefer to carefully design recursion to use conventional stacks of ephemeral resources, and support parallel operations across past, present, and future stacks. 
+
+## Dynamic Collections
+
+A program might need to open multiple files or sockets, iterate through them or process them concurrently. Each resource might be associated with some working state and metadata. This will be difficult to express if we're directly binding resources to registers, i.e. we'd also need all the associated data to be presented as registers. It would be more convenient if we have linear reference types for the open file or socket.
+
+
+
+ without adequate support from the environment. 
+
+However, expressing it will hinder static computation. 
+
+
+
+Dynamic resources and eval also need some attention. It is feasible to model 'scoped' dynamic references, i.e. where register names are runtime expressions but subject to static translations. It is feasible to statically analyze for sharing and parallelism at the level of scopes instead of individual names. However, this makes the 'pointers' very dependent on context of translation, and some users would inevitably attempt to translate pointers between scopes. This complicates the system.
+
+A viable alternative is instead to model a static set of dynamic collections in the environment. Perhaps we could model 'channels' of data and linear objects. And some databases. However, if we start trying to support logical 'slices' and editable projections or views, I think we won't have much benefit compared to scoped access to a dynamic namespace of registers.
+
+Anyhow, I feel that the solution to dynamic collections should not be arbitrary. It should be justified as either an optimization of what we could (in theory) do with static collections - e.g. avoiding big dispatch tables, awkward views and slicing - or we should go the other way and take static environments as an optimizable subset of dynamic. 
+
+...
+
+In any case, we can then arrange for different parts of a large procedure to operate in parallel on different registers with minimal synchronization, providing a basis for parallelism that is much simpler compared to extracting dataflow just one stack. It might also be feasible to also model deterministic concurrent interaction directly in the semantics, e.g. based on Kahn process networks instead of parallel evaluation of loops.
+
+*Note:* It isn't necessary to discriminate stacks and channels and bags. They could all be the same thing with different access flags or methods. But it might be useful to ensure that loops are either invariant on a channel or stack, or explicitly test for empty.
+
+## Pseudo Concurrency
+
+I don't intend to support concurrency directly within a procedure. But, it should be feasible to model concurrency in terms of running multiple iterations of a top-level loop in parallel. Basically, the top-level loop becomes a simulated 'time-step', and steps in each iteration should receive input both from earlier steps in the same loop and later steps in the prior iteration, threaded through these named registers and linear objects. The difficulty is identifying how many loops can usefully run in parallel, and evaluating the conditions to start the next loop before the prior loop completes.
+
+# Old Stuff
+
+## Parallelism Within Programs
+
+Although the program model is procedural, there is an opportunity for parallelism between mostly independent subprograms. This can be augmented by careful attention to the nature of effects, e.g. multiple reads or multiple writes can occur in parallel, but stateful read-write cannot. Ideally, we can analyze our programs statically to extract a lot of useful parallelism at compile time, or with minimal overhead at runtime.
+
+Even better if we can model concurrent interaction between subprograms with some parallel evaluation. This might be feasible with some attention to channels and parallel loop unrolling, i.e. such that we can determine conditions and start the next few loops before the prior loop completes. Interactions between subprograms can be modeled across loops.
+
+However, use of dynamic references for the filesystem or network APIs will likely hinder implicit parallelism. Is there a good alternative or solution for this? Perhaps we could restrict such resource references to be linear, such that dataflow and parallelism can be aligned.
 
 ## Semantic Foundation
+
+I've decided on a simple procedural foundation, albeit with scoped hierarchical transactions. 
 
 At the moment, I'm still deciding the semantic foundation for this program model. A few approaches that seem good to me include [static process networks](GlasKPN.md) and [grammar logic](GrammarLogicProg.md). The simple procedural foundation is also a good choice, but might be a little too simple without mitigation strategies.
 
