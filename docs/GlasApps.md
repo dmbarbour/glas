@@ -2,11 +2,13 @@
 
 ## Overview
 
-An application defines a subset of transactional procedures recognized by a runtime, such as 'step' to model background processing and 'http' to handle an HTTP request. The 'step' procedure is called repeatedly by the runtime, leveraging optimizations such as incremental computing and replication on non-deterministic choice as the basis for reactivity and concurrency. See *Transaction Loops* below.
+An application defines a subset of transactional methods recognized by a runtime, such as 'step' to model background processing and 'http' to receive incoming HTTP requests. These methods are typically expressed in a procedural intermediate language, with algebraic effects providing access to the runtime. See [glas program model](GlasProg.md) for details.
 
-These procedures interact with their environment via algebraic effects. Application state is bound to an external key-value database, providing a simple basis for live coding and orthogonal persistence. Communication within glas systems is via transactional remote procedure calls. Interaction with the filesystem, network, FFI, and other host resources is often asynchronous, committing to run non-transactional operations between transactional steps.
+Instead of expressing a process as a single long-running 'main' procedure, a 'step' transaction is repeatedly executed by the runtime.  The 'step' may include non-deterministic choice to model multiple task threads. The runtime can apply incremental computing to a stable transaction prefix, and implicitly wait for changes if the transaction aborts after some analysis of state. Software updates may also apply between transactions. We can further support distributed transactions via RPC or a distributed runtime. This results in robust and flexible expression of concurrent, reactive, and distributed systems, albeit requiring sophisticated optimizations. See *Transaction Loops*.
 
-The runtime configuration abstracts access to host resources, e.g. an application's access to the filesystem may involve named roots like "AppData" that are routed to a specific folder by the configuration. A subset of configuration options are application-specific, supported by algebraic effects to query the application's `settings.*` methods. For example, the configuration may bind "AppData" to the filesystem based on `settings.name`. 
+Application state between transactions is logically represented in a runtime or persistent database. Some state, such as open file handles or network sockets, must bind to the runtime database. This allows for semi-transparent orthogonal persistence. Although we can support basic get/set variables, state may be augmented with built-in types such as queues, bags, and CRDTs that enable more parallel or distributed transactions without read-write conflicts.
+
+External resources, such as filesystem or FFI, are abstracted by the runtime to support security (e.g. wrapping distrusted code), portability, and implementation of a distributed runtime. For example, instead of a single filesystem root, we might reference multiple abstract roots like AppData", configured externally. Application-specific options are supported indirectly by defining a static 'settings' method that may be queried from the configuration layer.
 
 ## Transaction Loops
 
@@ -34,11 +36,68 @@ In a transaction loop, we repeatedly evaluate the same atomic, isolated transact
 
 Unfortunately, we need a mature optimizer and runtime system for these opportunities become acceptably efficient. This is an unavoidable hurdle for transaction loops. Meanwhile, the direct implementation is usable only for single-threaded event dispatch and state machines.
 
-## Application Life Cycle
+## Life Cycle
 
-An application is represented by a namespace. For a transaction loop application, the first effectful operation is `start()`. This will be retried indefinitely until it commits successfully or the application is killed externally. After a successful start, the runtime will begin evaluating `step()` repeatedly in separate transactions. The runtime may also call methods to handle RPC and HTTP requests, GUI connections, and so on based on the interfaces implemented by the application. If undefined, start and step default to pass.
+For a transaction loop application, the first effectful operation is `start()`. This will be logically retried indefinitely until it commits successfully or the application is killed externally. After a successful start, the runtime will begin evaluating `step()` repeatedly in separate transactions, modeling the main loop. 
 
-The application may voluntarily halt via committing `sys.halt()`, asking the runtime to stop. To signal an application, we might call `stop()` upon specific OS events such as Ctrl+C or SIGTERM on Linux or WM_CLOSE in Window. The application would be expected to voluntarily halt within a short period after a stop signal.
+Insofar as the 'step' method is non-deterministic, the runtime may fork and evaluate both options in parallel, and even commit both if there is no read-write conflict. If a fork aborts (or is otherwise obviously unproductive), the runtime may heuristically set some triggers to wait for a relevant change before retrying. This, together with some incremental computing optimizations, provides a simple basis for concurrency and reactivity that is also friendly to live coding.
+
+Between 'step' transactions, the runtime may call 'rpc' or 'http' or 'gui' based on external events. It is possible to define applications without 'step' that only act based on external events. The runtime may optimistically evaluate these events in parallel with steps, but may be forced to abort and retry a conflicting step or event. Some applications may leave 'step' undefined, depending entirely on external events.
+
+An application may voluntarily terminate by calling and committing a `sys.halt()` effect. By default, SIGTERM, Ctrl+C, or WM_CLOSE events may also kill an application. Otherwise, the application runs indefinitely, i.e. until killed externally by debugger or operating system. Aside from halting, we may also support restarts, clearing all runtime state.
+
+## Settings
+
+Applications may define a static `settings` method. The runtime does not observe these settings directly, but instead queries a configuration that may query application settings. This gives the configuration an opportunity to interpret settings and the final word for overrides. This is convenient for portability and security.
+
+The glas executable may support run modes other than transaction loop applications. For example, staged applications might read some command line arguments then return another application. We could also support a more conventional main procedure. In any case, the intended run mode for an application should be indicated in settings then translated by the configuration. By default, the runtime may heuristically guess at run mode based on which methods are defined (e.g. 'start' vs. 'main' vs. 'stage').
+
+As a general rule, we'll avoid direct use of command-line switches for runtime features. Instead, we either use a staged application to manipulate 'settings' indirectly based on the command line, or we might introduce runtime reflection APIs to dynamically tune some runtime features. This design avoids command-line clutter and lets users abstract over options.
+
+## Mirroring
+
+It is feasible to configure a 'distributed' runtime, i.e. a runtime that overlays two or more networked machines. The *Transaction Loop* model is a great fit because it formally doesn't matter where a transaction is initiated so long as references have consistent meaning. In a distributed runtime, some references will be associated with resources bound to specific machines (e.g. open files or network sockets), and in some cases a distributed transaction is required. 
+
+For both performance and partitioning tolerance, we must minimize need for distributed transactions. This requires careful design of the application, e.g. favoring queues (or bags, or CRDTs) to communicate between asynchronous tasks that may run on separate machines. However, assuming a suitable application, a runtime may heuristically abort any 'step' transaction where the first effect involves a remote resource, implicitly partitioning steps between machines for locality.
+
+Conveniently, when the network is fully connected, a mirrored transaction loop is formally equivalent to running on a single machine. When disconnected, each mirror might continue with degraded service, and may notice the disruption (e.g. via reflection or timeouts) and behave accordingly. When reconnected, blocked distributed transactions will proceed opportunistically. In theory, this should result in more survivable systems than most manual approaches to mirroring. 
+
+There are still some challenges. For example, a queue can support multiple independent writers, and we might eventually serialize transactions from one writer before another. But this may prove a little awkward if each writer is also time-stamping each message. We can only insist that each writer is using an independent clock, which may logically drifted, and perhaps aim to mitigate the extent of drift (e.g. by interleaving writes from separate transactions that the reader hasn't observed yet). State, filesystem, and network APIs must also be designed with mirroring in mind.
+
+Anyhow, simplified mirroring of applications is one of my design goals for glas systems, and I believe transaction loops support this admirably. See [*Mirroring in Glas*](GlasMirror.md) for more. 
+
+## State
+
+An application may declare external registers or variables that hold state between transactions. Some state may be persistent, shared between applications and future instances of the same application (based on naming conventions). Other state may be runtime specific, lost when the application halts or restarts. A transaction may also have some local variables. 
+
+It is also feasible to model state via abstract linear data, i.e. values that cannot be directly observed, copied, or dropped by the holder, instead forcing use of effects APIs. This is convenient for dynamic resources such as an open files or network sockets. In general, we'll want to scope linear resources to the runtime, typefully forbidding storage in persistent variables or communication over RPC. This implies semi-transparent persistence, i.e. we can store plain old data in registers with a runtime lifespan, but we cannot store runtime resources in registers with a persistent lifespan.
+
+Other than basic get/set variables, we might provide built-in support for queues, bags, perhaps CRDTs as primitive 'state' types. The motive is to simplify read-write conflict analysis and maximize parallelism for concurrent or distributed transactions. 
+
+Of course, developers can also manually push state to the filesystem or an independent database. But then they'll be missing out on many runtime integration benefits: transactions, accelerated representations, content-addressed storage for large data, etc.. Instead, it will often be more convenient to configure the runtime to use a database or the filesystem in a known good way.
+
+## Remote Procedure Calls
+
+Remote procedure calls (RPCs) are a good fit for transactional interactions between applications. In conjunction with algebraic effects, RPC can support flexible synchronous interactions with the caller in a single transaction. Asynchronous interactions can be expressed using two calls in separate transactions: initiate an operation, request the result, perhaps with an intermediate token to identify the result. (*Note:* Asynchronous RPC 'callbacks' are feasible but conflict with my vision for live coding and resilient open systems.)
+
+In context of glas systems, I propose to publish RPC APIs through a configured registry. Based on metadata, different parts of the API might be published to a 'trusted' registry versus a 'public' one, or filtered on topic or other criteria. Conversely, applications may search and discover registered RPC APIs and filter on metadata. Registries may be logical composites that perform further filtering and adaptation. Applications may come and go at any time, subject to continuous discovery, but registered APIs should be relatively stable and cacheable.
+
+When calling a remote procedure, it is feasible to include a partial continuation. This is especially useful when the continuation involves further calls to the remote application, allowing a simpler RPC API and reducing need for round-trips. Conversely, when registering RPC methods, partial code for that procedure would allow the caller to perform some trivial calls locally or filter extraneous arguments to reduce network traffic. At the extreme, registering RPC methods that return cacheable, read-only views reduces to publish-subscribe.
+
+An application might define an 'rpc' method, or perhaps a few standard `rpc.*` methods (e.g. `rpc.api` vs `rpc.event`), to provide the initial API and receive events. Still need to work the details! In any case, this should be carefully designed to support partial evaluation and incremental computing, e.g. based on static parameters.
+
+*Note:* The runtime should maintain the TCP/UDP listener for RPC requests, perhaps shared with 'http' and debugger access. The details are configurable and may be application specific.
+
+## HTTP Interface
+
+An application can implement an interface `http : Request -> Response` to receive HTTP requests. This might be viewed as a limited RPC interface. Logically, the Request and Response types are binaries that include full HTTP headers and body. However, they might be runtime accelerated to mitigate redundant parsing and validation.
+
+By default, each 'http' request is handled in a separate transaction. If this transaction aborts due to system state or read-write conflict, it is implicitly retried until it succeeds or times out. This provides a simple basis for long polling. Eventually, we might introduce custom HTTP headers to support multi-request transactions or read-only views.
+
+*Note:* Subject to configuration, the runtime may route `"/sys"` for external reflection and debugging. This API would also be accessible via reflection API.
+
+
+
 
 ## Live Coding Extensions
 
@@ -46,33 +105,14 @@ Source code may be updated after an application has started. In my vision for gl
 
 To support a smooth transition after a live update, the runtime will evaluate `switch()` (if defined) as the first operation in the updated code. If switch fails, it may be retried until it succeeds, or the runtime may try some other later version of code. This allows the runtime to skip 'broken' intermediate versions and also to favor a stable intermediate version (in context of DVCS) over the bleeding edge.
 
-## Application Specific Settings
 
-Applications may define ad-hoc `settings.*` methods. When evaluating application-specific runtime configuration options, the runtime will provide an algebraic effect to query settings in the selected application. There is an important layer of indirection: the runtime never directly observes settings, instead letting a configuration 'interpret' these settings in a runtime-specific way. Conversely, the application is abstracted except for these settings, which simplifies reasoning about refactoring.
 
-*Note:* One reason for this design is to be amenable to staged applications or anonymous scripts. We can configure based on `settings.name = "foo"` independent of how an application is named within the configuration.
+## Dynamic Code
 
-## Application Mirroring
+There are several viable approaches to dynamic code: Live coding. Dynamic eval. Hot patching of the application namespace. I think that 'eval' and live coding are perhaps the better options, and hot patching could be treated as a special case of live coding (e.g. applying a 'patch' variable to the code). 
 
-The essential idea is that we'll configure a distributed runtime for some applications. Leveraging the *transaction loop* model, we can run the same transaction loop on multiple nodes, and heuristically filter which concurrent 'threads' run where based on the first node-specific effect or load balancing. See [*Mirroring in Glas*](GlasMirror.md) for more. 
+See also [glas notebooks](GlasNotebooks.md).
 
-Configurations and effects APIs must be designed with mirroring in mind. Mirroring is application specific, and many runtime resources will be mirror specific. This might be expressed by implicitly parameterizing such configuration options with a mirror identifier, or by including mirror identifiers in the configuration options.
-
-## Application State
-
-Application state is generally bound to a key-value database. Developers are encouraged to favor the database over the filesystem to more conveniently integrate with transactions, content-addressed storage for large values, support for mirroring of data, and precise conflict analysis for specialized data types such as queues, bags, and CRDTs. Ideally, we can support performance, parallelism, and partitioning tolerance both between and within transactions.
-
-A subset of keys may be local to the runtime or even to the transaction. This might align with simple naming conventions and provide a simple, robust basis for orthogonal persistence and limited parallelism or concurrency within transactions.
-
-## Dynamic Code (TBD)
-
-I need to revisit how code and references are bound dynamically.
-
-There are use cases for integrating code at runtime without modifying source files. However, in context of live coding, first-class functions should be ephemeral or eschewed. This limits our options.
-
-One viable option is `sys.refl.eval(Program, Method, Args) with Localization`. Users can memoize compilation of scripts to program values, and the runtime can further cache compilation of the program value based on the selected methods and actual branches. I suggest localization as an implicit parameter, but it could use ephemeral types instead. Reflection is useful to integrate runtime features such as type safety, logging, profiling, and assertions.
-
-Another approach is hot patching, perhaps expressed as `sys.refl.patch(List of Mixin)` to statefully set a patch list, using the Mixin (MX) type from [namespaces](GlasNamespaces.md). The actual transition is deferred until successful live code 'switch' after committing the patch. Hot patching can be understood as a form of live coding where this list of patches is in-memory source code, applied to the original application namespace.
 
 ## Implicit Parameters and Algebraic Effects
 
@@ -80,37 +120,10 @@ It is useful to tie algebraic effects to the application namespace, such that we
 
 First-class functions and objects are relatively awkward in context of live coding and orthogonal persistence. This could be mitigated by escape analysis, e.g. runtime or ephemeral types might restrict which variables are used. But for glas systems I'd like to push most higher order programming to an ad-hoc combination of staging and algebraic effects, reducing need for analysis.
 
-## Remote Procedure Calls? Defer. 
 
-TODO: needs revisit with much more attention to application composition
+## Defunctionalized Procedures and Processes? Language and State Layer.
 
-Transactional remote procedure calls with publish-subscribe of RPC resources is an excellent fit for my vision of glas systems. With careful design of the distributed transaction, transaction loop features such as incremental computing and replication on non-deterministic choice can be supported across application boundaries. The publish-subscribe aspect simplifies live coding and orthogonal persistence.
-
-Concretely, applications will define a few methods such as `rpc.event` to receive incoming requests and `rpc.api` to support registration and search. The system might define `sys.rpc.find` to search the registry and `sys.rpc.call` to perform a remote call. We might introduce `sys.rpc.cb` callbacks to support algebraic effects and higher order programming over RPC boundaries. A single transaction may involve many requests to each of many applications.
-
-I need to work on these details in context of application composition. It should be feasible for application components to construct an 'RPC' graph between eachother based on application overrides or implicit parameters. Probably requires support for defining runtime-scoped registries.
-
-Security should mostly be handled based on a compositional registry model, filtering, routing, and rewriting metadata based on trust, topic, and roles for each component registry. I'll need to consider this model carefully.
-
-For performance, it is feasible to perform partial evaluation of given RPC events and distribute this code for local evaluation. Conversely, when performing a remote call, we could send a continuation to remotely handle the result, avoiding unnecessary network traffic.
-
-*Note:* The runtime will maintain its own TCP/UDP listener for RPC requests, usually shared with the 'http' interface. This is configurable and may be application specific.
-
-## Defunctionalized Procedures and Processes? Low Priority.
-
-To support 'direct style' in programming of network connections, filesystem access, and FFI it is convenient if a front-end syntax knows to compile some sequences of operations into state machines that yield and commit to await a response in a future transaction. Intriguingly, we might also introduce `atomic {}` sections to force multiple steps to complete within a single transaction.
-
-A relevant concern is stability of these procedures in context of live coding. To simplify manual stabilization, we might only yield at explicit, labeled 'yield' points. This also encourages coarse-grained steps, which mitigates performance overhead.
-
-I feel this feature would be useful as a bridge between glas and host systems.
-
-## HTTP Interface
-
-An application can implement an interface `http : Request -> Response` to receive HTTP requests through a configurable port, which is also shared with RPC. By defining 'http', users can support ad-hoc views and user interactions with an application, much more flexible than console IO. Regardless, the `"/sys"` path is reserved by the runtime and implicitly routed to `sys.refl.http` to support access to logs, debugger integration, administrative controls, and so on. 
-
-The Request and Response types are binaries that include the full HTTP headers and body. However, they will often be accelerated under the hood to minimize need for redundant parsing and validation. Some HTTP features and headers, such as HTTP pipelining, will be handled by the runtime and are not visible to the application. Authorization and authentication should be configurable.
-
-By default, every HTTP request is handled in a separate transaction. If this transaction aborts due to system state or read-write conflict, it is implicitly retried until success or timeout, providing a basis for long polling. I propose custom response header 'Commit: false' to return the response - minus this header - without committing. This is potentially useful for safe HTTP GET requests or invalid HTTP POST requests. Default commit behavior may be configurable. Eventually, custom headers could support multi-request transactions. 
+To support 'direct style' in programming of network connections, filesystem access, and FFI it is convenient if a front-end syntax knows to compile some sequences of operations into state machines that yield and commit to await a response in a future transaction. Intriguingly, we might also introduce `atomic {}` sections to force multiple steps to complete within a single transaction. In any case, each 'step' must result in an intermediate state that can be continued in a simple way, with minimal analysis and routing. It's best if we have fine-grained application state to support this, so we only need to detect changes, as opposed to constructing a very large value that we then need to analyze.
 
 ## Graphical User Interface? Defer.
 

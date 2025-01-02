@@ -1,6 +1,10 @@
 # Program Model for Glas
 
-In the intermediate representation, a program is an abstract [namespace](GlasNamespaces.md) containing definitions in a Lisp-like [abstract assembly](AbstractAssembly.md). Assembly constructors are provided via names with a '%' prefix, e.g. `(%sum Expr1 Expr2)` might represent a primitive expression to compute and return the sum of two expressions. 
+In the intermediate representation, a program is an abstract [namespace](GlasNamespaces.md) of definitions using a Lisp-like [abstract assembly](AbstractAssembly.md). An application namespace must define methods recognized by the runtime, e.g. start, step, switch, signal, settings, http, and rpc. The abstract assembly references undefined names, typically with a '%' prefix, as primitive AST constructors or keywords. 
+
+ and ' an interface via this namespace. 
+
+Assembly constructors are provided via names with a '%' prefix, e.g. `(%sum Expr1 Expr2)` might represent a primitive expression to compute and return the sum of two expressions. 
 
 Abstraction through the namespace ensures extension, restriction, and intervention on subprograms is supported via systematic rewrites of names. However, such rewrites are expensive, resulting in a bloated and redundant namespace. Ideally, the abstract assembly should support additional layers of abstraction, e.g. parameters, external wiring, algebraic effects. 
 
@@ -8,23 +12,89 @@ In glas systems, programs are transactional and [applications](GlasApps.md) are 
 
 This document proposes and motivates a set of assembly constructors for glas systems.
 
+## Design Decisions
+
+* Built-in Transactions.
+  * Transactions independent of conditionals, but easy to compose.
+  * Transactions should have useable return value even on abort.
+  * Some sort of return value or transaction-scoped vars not reset.
+  * Scoped as blocks. Perhaps set a transaction var to indicate commit.
+* Algebraic Effects.
+  * Implicit parameter namespace of algebraic effects independent of program namespace.
+  * Second-class algebraic effects also serve limited roles of first-class functions.
+  * No dynamic 'return' of a function, macros may abstract definition of effect handlers.
+  * Should support higher-order handlers that access effects from caller, not just of host.
+  * Support static parameters and partial eval of algebraic effects, flexible integration.
+* Built-in Staging.
+  * Explicit support for staged algebraic effects and operations.
+  * Explicit support for partial evaluation with static parameters and results.
+* Linear abstract data, runtime scoped.
+  * Dynamic enforcement as needed, e.g. via metadata bit in packed pointers.
+  * Viable basis for open files, network sockets, and FFI bindings. 
+  * Generally conflate with runtime scoped data.
+* Reject dynamic channel references.
+  * Technically feasible, via linear reference understood by runtime or database.
+  * Entangles connectivity with state, hindering live coding and open systems.
+  * Difficult to simulate with parallelism via algebraic effects and local state.
+  * Favor algebraic effects and remote procedure calls for interactions, instead.
+  * Do support static second-class queues, distinct ops to read and write queue.
+
+
+## Design Goals
+
+Without first-class channels, we can still simulate second-class channels in terms of reading and writing a shared queue in the database. But without linear channel refs, it is also difficult to achieve parallelism for dynamic channels.
+
+Perhaps the solution is closer to programmable switching fabrics. We could try to make it easy to 'optimize' stable routing, with mux and demux. Both within a parallel loop and between transactions. What would this look like? Static routing is easier, but can we extract stable conditionals for dynamic routing?
+
+A static optimization is essentially that a predictable future series of data moves can be integrated into a single move. 
+
+
+
+Could support channels within app more generally, but:
+    * Results in inconsistency between apps.
+
+* Reject channels or wormholes within apps. 
+  * In theory, could support via linear abstract data. 
+  * In theory, could support channels or wormholes for internal use in app.
+
+  * 
+  * Avoid first-class channels as linear objects (for both live coding and consistency with IPC)
+
+
+  
+
 ## Design Thoughts
 
-* Parallel and concurrent computation within a transaction is very convenient for incremental computing of distributed transactions. Ideally, opportunities for parallelism can be determined statically, and concurrency is separate from non-deterministic choice, and concurrency allows for flexible staged computing.
+* Parallel and concurrent computation within a transaction is very convenient for incremental computing of distributed transactions. Ideally, opportunities for parallelism can be recognized statically, and concurrency is separate from non-deterministic choice, and concurrency allows for flexible staged computing. 
   * For parallelism, it would be convenient if we can statically distinguish operations that write to one end of a 'list' or queue variable from those that read at the other end. There are likely many similar specialized cases.
+  * Concurrency can complicate the effects API. Perhaps solving this is the biggest issue: can we model concurrent, distributed effects without loss of determinism or confluence? How do we model a concurrent runtime object?
 * A program should be able to control (extend, sandbox, etc.) the 'abstract environment' exposed to its subprograms in a manner consistent with the environment presented to the program. That is, consistency across layers of abstraction is a priority.
+  * All access to effects should be algebraic or otherwise provided implicitly through the call graph. It should be feasible to restrict a subprogram's access to effects, and also to rename or wrap effects visible to a subprogram.
+  * In context of references or linear objects from the runtime, the user must be able to introduce similar references or linear objects connected to the environment exposed to subprograms. 
+  * We should have effective support for unwind behavior when we exit a scope, e.g. to clean up abstract environment.
 * Managing scope and aliasing of references is troublesome, requiring careful attention and sophisticated types in context of stack objects, live coding, orthogonal persistence, and remote procedure calls. Aliasing tends to hinder parallelism. I'd prefer to avoid the sophisticated type systems that needed to truly get references right.
-* In most cases, it is feasible to replace references with abstract linear data. Users can introduce their own abstract linear data types via annotations to wrap or unwrap data. Runtime APIs for filesystem or network can transparently wrap OS provided handles or sockets as abstract linear data, allowing for safe parallel file access.
-* Open files or sockets should have 'runtime' scope, forbidding distribution across RPC or writing into a persistent database. I think in practice we could easily conflate runtime scope with linear types, i.e. if it's linear it has runtime scope and vice versa. Efficient dynamic type enforcement of linearity and scope would then require only one metadata bit via packed pointers or similar.
-* The runtime can abstract files and sockets to channels, and let users allocate channels for internal use within an application. Support for channels within an application is potentially convenient for modeling concurrent subtasks. 
-* I would like to automate support for indexed and editable relational database views. It is feasible to model the database as an accelerated data type or linear object, but it might be easier to support static analysis of views if the database model is built-in to the program model.
-* As a general rule, it is easiest to optimize objects fully hosted by the abstract environment and understood by the program model. For example, we could support indexed, editable relational database views if the program model includes special operations to introduce relational views within a scope. 
-* Ideally, every program has a clear small-step rewrite semantics. This greatly simplifies debugging.
-* I would like some effective support for staging, including static partial returns from a computation. Ideally, staging supports ad-hoc concurrency rather than just a single pass. An intriguing possibility is to support a fractal namespace aligned with the call graph as a medium for concurrent staging.
-* Support for hierarchical transactions is very convenient for modeling grammars, though there is certainly some risk of awkward interaction with non-deterministic choice. I think we should pursue this feature and if necessary we can limit concurrency a little.
-* Although performance isn't top priority, optimizability is a high priority.
+* In most cases, it is feasible to replace references with abstract linear data. Users can introduce their abstract linear data types via annotations to wrap or unwrap data. Runtime APIs for filesystem or network can transparently wrap OS provided handles or sockets as abstract linear data, allowing for safe parallel file access.
+  * Linearity can be encoded into data for efficient dynamic enforcement using a metadata bit in packed pointers.
+  * OS-provided references wrapped as linear objects  - e.g. open files or sockets - also benefit from 'runtime' scope. This would block storing the object into a persistent database or passing it over RPC.
+  * Runtime scope also makes linearity a lot more robust, easier to track and enforce. Consider conflating runtime scope and linearity into a single type to simplify the system. 
+* Channels are convenient for modeling flexible dataflows in a concurrent system. A runtime could let users allocate channels, returning a connected pair of linear objects for one-way communication. Further, channels could also transfer linear objects. We might want something like session types for channels.
+  * The inability to transfer linear channels across RPC boundaries would result in an inconsistency between inter-process communications and local concurrency.
+  * Stateful entanglements of channels will likely hinder live coding, insofar as we interface through dynamic channels instead of code and stable state resources.
+  * Might prefer to avoid channels for these reasons.
+* Recursion is convenient for processing of tree-structured data and provides opportunity to represent extensible loops in the namespace. However, recursion will hinder some forms of static computing, i.e. it cannot be directly aligned with the call graph.
+  * If we don't have recursion, we end up implementing it indirectly via lists and such. No reason to block recursion for memory reasons without also blocking allocation.
+  * Perhaps annotations could constrain recursion for some subprograms.
 
-##
+
+* Support for hierarchical transactions is very convenient for modeling grammars. However, it should be separate from backtracking conditionals, otherwise we cannot easily refactor backtracking transactions that share a common prefix. We may also need some output that is dependent on observations within a transaction. Interaction with concurrency requires careful attention.
+* I would like effective support for staging, including static parameters and partial results from a computation. Ideally, staging supports ad-hoc interactive definitions rather than just a single call-return. An intriguing possibility is to support a fractal namespace aligned with the call graph as a medium for concurrent staging.
+* For number types, I want unbounded integers, rationals, complex numbers, and vectors or matrices to be the default. But ideally the program model should make it easy to identify and isolate subprograms where we can use bounded number representations to optimize things. 
+* I want to support unit types for numbers and other useful context, ideally propagating through a computation at compile time. And I'd like users to have flexible support to define similar context for other roles. I'm not sure how to approach this yet.
+* I would like to automate support for indexed and editable relational database views. It is feasible to model the database as an accelerated data type or linear object, but it might be easier to support static analysis of views if the database model is built-in to the program model.
+* Ideally, every program has a clear small-step rewrite semantics. This greatly simplifies debugging.
+
+
+# Old Stuff
 
 The proposed program model is procedural, albeit extended with transactions and algebraic effects. I'm still exploring the possibility to reduce need for first-class references and support parallelism within the transaction. 
 
@@ -74,7 +144,7 @@ In any case, we can then arrange for different parts of a large procedure to ope
 
 I don't intend to support concurrency directly within a procedure. But, it should be feasible to model concurrency in terms of running multiple iterations of a top-level loop in parallel. Basically, the top-level loop becomes a simulated 'time-step', and steps in each iteration should receive input both from earlier steps in the same loop and later steps in the prior iteration, threaded through these named registers and linear objects. The difficulty is identifying how many loops can usefully run in parallel, and evaluating the conditions to start the next loop before the prior loop completes.
 
-# Old Stuff
+# Older Stuff
 
 ## Parallelism Within Programs
 

@@ -13,11 +13,16 @@ The 'plain old data' type for glas is the finite, immutable binary tree. Trees c
         type Tree = ((1 + Tree) * (1 + Tree))   
             a binary tree is pair of optional binary trees
 
-A binary tree can easily represent a pair `(a, b)`, either type `(a + b)`, or unit `()`. However, glas systems will favor labeled data as more human meaningful and extensible. We will encode labels such as 'height' and 'weight' into the left-right-left path into a binary tree, using UTF-8. We add a NULL separator between label and value, then encode dictionaries such as `(height:180, weight:200)` as [radix trees](https://en.wikipedia.org/wiki/Radix_tree). A variant is encoded as a singleton dictionary. 
+This can generally encode a pair `(a, b)`, a choice `(a + b)`, or a leaf `()`. Alternatively, we could encode these options more directly as a sum type:
 
-To efficiently represent dictionaries and variants, we must compactly encode non-branching sequences. A viable runtime representation is closer to:
+        type Tree = 
+            | Branch of Tree * Tree
+            | Stem of (bool * Tree)  # bool is left/right label
+            | Leaf
 
-        type Tree = (Stem * Node)       // as a struct
+However, glas systems will often encode data into stems. Dictionaries such as `(height:180, weight:100)` can be encoded as [radix trees](https://en.wikipedia.org/wiki/Radix_tree), while an open variant becomes a singleton dictionary. The naive binary tree encoding is inefficient for this role because it doesn't compact stem bits. In practice, we might use something closer to:
+
+        type Tree = (Stem * Node)       // as struct
         type Stem = uint64              // encodes 0..63 bits
         type Node = 
             | Leaf 
@@ -32,7 +37,7 @@ To efficiently represent dictionaries and variants, we must compactly encode non
             abcde..1    63 bits
             00000..0     unused
 
-This can also efficiently encode bitstrings of arbitrary length as a Stem terminating in a Leaf, which is useful when encoding integers. 
+This allows for reasonably efficient representation of labeled data. We can also easily encode integers into stems. However, we might further extend the Node representation to more efficiently encode arrays and other useful types. 
 
 ### Integers
 
