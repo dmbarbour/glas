@@ -25,6 +25,9 @@ This document proposes and motivates a set of assembly constructors for glas sys
   * No dynamic 'return' of a function, macros may abstract definition of effect handlers.
   * Should support higher-order handlers that access effects from caller, not just of host.
   * Support static parameters and partial eval of algebraic effects, flexible integration.
+* Stack Objects.
+  * A second-class way to 'return' functions, or abstract over algebraic effects handlers.
+  * An effective basis for multi-step interaction and composition of staged subprograms.    
 * Built-in Staging.
   * Explicit support for staged algebraic effects and operations.
   * Explicit support for partial evaluation with static parameters and results.

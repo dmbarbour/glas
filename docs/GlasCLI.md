@@ -1,20 +1,22 @@
 # Glas Command Line Interface
 
-As a general rule, the glas executable takes the first argument to determine the 'language' for remaining arguments. There are a few different options for running programs, depending on where the program is sourced. 
+The glas executable generally takes the first command line argument as a switch to interpret the remainder of the arguments. There are several options for running applications from various sources, then ad-hoc features such as debugging the configuration or access to help. Potential forms:
 
         glas --run ConfiguredApp Args To App
         glas --script(.FileExt)* FileName Args To App
         glas --cmd(.FileExt)+ "Command Text" Args To App 
         glas --config ConfigOp ...
-        # and so on, extensible
+        # and so on, runtime extensible
 
-To support user defined extensions, we also have a simple syntactic sugar:
+We'll also support a lightweight syntactic sugar:
 
-        glas opname Args To App
-          # rewrites to
-        glas --run cli.opname Args To App
+        glas opname Args
+          # implicitly rewrites to
+        glas --run cli.opname Args
 
-We avoid command line switches for runtime configuration options. Instead, configuration is handled via combination of configuration file and application settings.
+This enables users or communities to conveniently extend the command-line interface, especially in conjunction with *staged* applications. For many use cases, the aesthetics and ergonomics should be much nicer than manually using `--run` or `--cmd`. 
+
+*Note:* To avoid cluttering the command line with runtime switches, the configuration interprets application 'settings' or the OS environment. However, where necessary, a staged application can define 'settings' based on command-line arguments. The indirection at least supports flexible abstraction and packaging of runtime options.
 
 ## Configuration
 

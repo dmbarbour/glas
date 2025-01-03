@@ -44,15 +44,25 @@ Insofar as the 'step' method is non-deterministic, the runtime may fork and eval
 
 Between 'step' transactions, the runtime may call 'rpc' or 'http' or 'gui' based on external events. It is possible to define applications without 'step' that only act based on external events. The runtime may optimistically evaluate these events in parallel with steps, but may be forced to abort and retry a conflicting step or event. Some applications may leave 'step' undefined, depending entirely on external events.
 
-An application may voluntarily terminate by calling and committing a `sys.halt()` effect. By default, SIGTERM, Ctrl+C, or WM_CLOSE events may also kill an application. Otherwise, the application runs indefinitely, i.e. until killed externally by debugger or operating system. Aside from halting, we may also support restarts, clearing all runtime state.
+An application may voluntarily terminate by calling and committing a `sys.halt()` effect. Based on runtime configuration, SIGTERM, Ctrl+C, or WM_CLOSE events may also kill an application. Otherwise, the application runs indefinitely, i.e. until killed externally by debugger or operating system. Aside from halting, we may also support restarts, clearing all runtime state.
 
-## Settings
+## Configuration, Settings, and Switches 
 
-Applications may define a static `settings` method. The runtime does not observe these settings directly, but instead queries a configuration that may query application settings. This gives the configuration an opportunity to interpret settings and the final word for overrides. This is convenient for portability and security.
+I imagine different communities of application developers may have different 'conventions' for application settings. Different runtime implementations may have distinct options. A configuration ultimately serves as flexible, ad-hoc glue between the two *and* the user's own preferences. 
 
-The glas executable may support run modes other than transaction loop applications. For example, staged applications might read some command line arguments then return another application. We could also support a more conventional main procedure. In any case, the intended run mode for an application should be indicated in settings then translated by the configuration. By default, the runtime may heuristically guess at run mode based on which methods are defined (e.g. 'start' vs. 'main' vs. 'stage').
+Applications typically define a pure, ad-hoc `settings` method. However, the runtime never directly observes these settings. Instead, the runtime queries a configuration, providing indirect access to `settings` via algebraic effect for all options that may be application specific. This indirection allows for flexible adaptation and portability, and gives the configuration the final word for potential security-sensitive options.
 
-As a general rule, we'll avoid direct use of command-line switches for runtime features. Instead, we either use a staged application to manipulate 'settings' indirectly based on the command line, or we might introduce runtime reflection APIs to dynamically tune some runtime features. This design avoids command-line clutter and lets users abstract over options.
+Similarly, the runtime also does not directly observes OS environment variables, excepting `GLAS_CONF` to load the configuration. Instead, the configuration may observe and interpret environment variables on behalf of the runtime when the runtime evaluates options that may be instance specific.
+
+I hope to avoid cluttering the command line - the user interface - with runtime options. However, indirectly, we can support user-defined command-line languages that define 'settings' based on command-line arguments.
+
+See [glas CLI](GlasCLI.md) for more details.
+
+## Run Modes and Staging
+
+Although my vision for glas systems builds primarily upon the transaction loop application model, the glas executable may implement multiple run modes and select between them based on configuration via application settings. For example, we could support the more conventional `int main(args)` model, perhaps treating hierarchical transactions as atomic sections. Or we might define modes with restricted effects APIs, e.g. read from standard input and write to standard output, convenient for early development and bootstrap.
+
+A particularly useful application mode is a *staged* application that might read some arguments or files then generate another application. It is feasible to define staged applications very similarly to language modules.
 
 ## Mirroring
 
@@ -68,13 +78,13 @@ Anyhow, simplified mirroring of applications is one of my design goals for glas 
 
 ## State
 
-An application may declare external registers or variables that hold state between transactions. Some state may be persistent, shared between applications and future instances of the same application (based on naming conventions). Other state may be runtime specific, lost when the application halts or restarts. A transaction may also have some local variables. 
+An application will declare external registers or variables as needed to hold state between transactions. These should be subject to renaming and restrictions similar to namespace translations. Depending on the final translation, some variables might bind to a persistent database while others bind to runtime or even transaction-local memory.
 
-It is also feasible to model state via abstract linear data, i.e. values that cannot be directly observed, copied, or dropped by the holder, instead forcing use of effects APIs. This is convenient for dynamic resources such as an open files or network sockets. In general, we'll want to scope linear resources to the runtime, typefully forbidding storage in persistent variables or communication over RPC. This implies semi-transparent persistence, i.e. we can store plain old data in registers with a runtime lifespan, but we cannot store runtime resources in registers with a persistent lifespan.
+For open files and network sockets and similar resources, we might instead maintain state in abstract linear data, i.e. values that cannot be directly observed, copied, or dropped. These values might be runtime scoped, e.g. forbidding storage in the persistent database or transfer over remote procedure calls. This is easily enforced with dynamic types via metadata bits in packed pointers. However, this does limit 'orthogonal persistence' to be semi-transparent, i.e. not all values may be written into persistent storage.
 
-Other than basic get/set variables, we might provide built-in support for queues, bags, perhaps CRDTs as primitive 'state' types. The motive is to simplify read-write conflict analysis and maximize parallelism for concurrent or distributed transactions. 
+In addition to basic get/set variables, runtimes should support queues, bags, maybe CRDTs to simplify conflict analysis and maximize parallelism for concurrent or distributed transactions.
 
-Of course, developers can also manually push state to the filesystem or an independent database. But then they'll be missing out on many runtime integration benefits: transactions, accelerated representations, content-addressed storage for large data, etc.. Instead, it will often be more convenient to configure the runtime to use a database or the filesystem in a known good way.
+*Note:* Developers may also manually push some application state to filesystem or external database, but favoring the built-in database lets the runtime handle integration with transactions, acceleration, incremental computing, content-addressed storage for large values, etc.. 
 
 ## Remote Procedure Calls
 
@@ -94,16 +104,14 @@ An application can implement an interface `http : Request -> Response` to receiv
 
 By default, each 'http' request is handled in a separate transaction. If this transaction aborts due to system state or read-write conflict, it is implicitly retried until it succeeds or times out. This provides a simple basis for long polling. Eventually, we might introduce custom HTTP headers to support multi-request transactions or read-only views.
 
-*Note:* Subject to configuration, the runtime may route `"/sys"` for external reflection and debugging. This API would also be accessible via reflection API.
-
-
-
+*Note:* To simplify integrated development and debugging, I propose for the runtime to reserve a path such as `"/sys"` for reflection and event APIs. The exact path and authorization requirements may be configurable. 
 
 ## Live Coding Extensions
 
-Source code may be updated after an application has started. In my vision for glas systems, these changes are usually applied to the running system. However, not every application needs live coding. Based on configuration and application settings we might disable this feature for some applications or require manual `sys.refl.reload()` to trigger the update. We could also configure the runtime to reload on external signals such as SIGHUP in Linux or a named event in Windows.
+Source code may be updated after an application has started. In my vision for glas systems, these changes are usually applied to the running system. However, not every application needs live coding, and we might want some application control over when an update is applied. 
 
-To support a smooth transition after a live update, the runtime will evaluate `switch()` (if defined) as the first operation in the updated code. If switch fails, it may be retried until it succeeds, or the runtime may try some other later version of code. This allows the runtime to skip 'broken' intermediate versions and also to favor a stable intermediate version (in context of DVCS) over the bleeding edge.
+It is feasible to disable live coding via application-specific configuration, or restrict it to some external events (e.g. via SIGHUP in Linux, a named event in Windows, or debugger events via HTTP). And the runtime could further defer the update until `switch()`, if defined in the updated code, successfully commits. This would allow skipping 'broken' intermediate versions of code, or delaying update when the application is in a fragile state.
+
 
 
 

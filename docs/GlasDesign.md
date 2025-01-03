@@ -125,11 +125,13 @@ A runtime may recognize several approaches, perhaps distinguished by annotation 
 
 ### User-Defined Syntax
 
-A compiler can recursively compile other files into the namespace. This will automatically select a compiler from current namespace environment based on the file extension, e.g. "lang-FileExt". The compiler should be a procedure that receives an abstract file path as a parameter and generates definitions, iterative via non-deterministic choice.
+A compiler can recursively compile other files into the namespace. This will automatically select a compiler from current namespace environment based on the file extension, e.g. "lang.FileExt". The compiler should be a procedure that receives an abstract file path as a parameter and generates definitions, iterative via non-deterministic choice.
 
 The glas system specifies an [initial syntax](GlasLang.md) associated with the ".g" file extension. If the associated "lang.g" compiler is undefined, we use the built-in compiler for ".g" files. However, if defined in terms of ".g" files, we'll attempt to bootstrap. Bootstrap involves building "lang.g" with the built-in, then again with itself, then verifying a fixpoint is reached with one more build.
 
 The initial configuration file *must* use an initial syntax recognized by the glas executable. It may also define the compiler for this initial syntax, supporting bootstrap. A glas executable may support other initial syntax. In this case, we may need to bootstrap multiple built-in languages together if they are mutually defined in terms of each other.
+
+*Note:* Other than defining a compiler, a language might define additional interfaces to support auto-complete and other features. I'm still considering the exact representation for languages.
 
 ### Notebook Interface
 
