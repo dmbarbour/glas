@@ -2,67 +2,65 @@
 
 ## Overview
 
-An application defines a subset of transactional methods recognized by a runtime, such as 'step' to model background processing and 'http' to receive incoming HTTP requests. These methods are typically expressed in a procedural intermediate language, with algebraic effects providing access to the runtime. See [glas program model](GlasProg.md) for details.
+A *Transaction Loop* application implements an interface of transactional methods such as a repeating 'step' for background processing and 'http' to receive HTTP requests. It is feasible to extend transactions across multiple applications through transactional remote procedure calls and a distributed transaction protocol. 
 
-Instead of expressing a process as a single long-running 'main' procedure, a 'step' transaction is repeatedly executed by the runtime.  The 'step' may include non-deterministic choice to model multiple task threads. The runtime can apply incremental computing to a stable transaction prefix, and implicitly wait for changes if the transaction aborts after some analysis of state. Software updates may also apply between transactions. We can further support distributed transactions via RPC or a distributed runtime. This results in robust and flexible expression of concurrent, reactive, and distributed systems, albeit requiring sophisticated optimizations. See *Transaction Loops*.
+This is subject to many useful optimizations: fork on non-deterministic choice, incremental computing of a stable prefix, wait for changes before repeating an unproductive transaction, and more. Relying on these optimizations, transaction loops support concurrency, reactivity, live coding, and distributed programming. This is a great fit for my vision of glas systems, but does require careful design to simplify optimization.
 
-Application state between transactions is logically represented in a runtime or persistent database. Some state, such as open file handles or network sockets, must bind to the runtime database. This allows for semi-transparent orthogonal persistence. Although we can support basic get/set variables, state may be augmented with built-in types such as queues, bags, and CRDTs that enable more parallel or distributed transactions without read-write conflicts.
+Unfortunately, most external systems - filesystem, network, FFI, etc. - won't support transactions. This forces asynchronous interaction, i.e. write a request, commit, read response in a future transaction. There is a workaround for safe, cacheable  operations such as HTTP GET. But where multiple transactions are required, we might favor a direct-style procedural language that compiles into a stateful transaction loop. 
 
-External resources, such as filesystem or FFI, are abstracted by the runtime to support security (e.g. wrapping distrusted code), portability, and implementation of a distributed runtime. For example, instead of a single filesystem root, we might reference multiple abstract roots like AppData", configured externally. Application-specific options are supported indirectly by defining a static 'settings' method that may be queried from the configuration layer.
+This document aims to develop and describe the interface a transaction loop application should expose to a runtime, the API the runtime should expose to the application, and some exploration of a direct style language.
 
-## Transaction Loops
+## Transaction Loop
 
-In a transaction loop, we repeatedly evaluate the same atomic, isolated transactions. Many interesting optimizations and opportunities apply to this scenario based on the assumptions of atomicity, isolation, and predictable repetition.
+A transaction loop system involves repeatedly running atomic, isolated transactions. Many optimizations and opportunities apply to transaction loops.
 
-* *Incremental.* Instead of recomputing everything from the start of the transaction, we can cache the transaction prefix and recompute from where inputs actually changed. Programmers can leverage this by designing most transactions to have a 'stable' prefix. This can generalize to caching computations that tend to vary independently.
+* *Incremental Computing.* Instead of recomputing from the start of a transaction, we can cache and run from where relevant changes are first observed. Programmers can leverage this by designing transactions to have a stable prefix. 
 
-* *Reactive.* In some cases, repeating a transaction is obviously unproductive. For example, if the transaction aborts, or if it repeatedly writes the same values to the same variables. In these cases, the system can simply wait for relevant changes in the environment before retrying. With some careful API design (and perhaps a few annotations), programmers can ensure wait conditions are obvious to the runtime without ever explicitly waiting.
+* *Reactive.* If repeating a transaction would obviously be unproductive, e.g. it would abort or outputs are idempotent, we can instead wait for a relevant change. This involves implicitly setting triggers on observed input sources. 
 
-* *Live Coding.* The behavior of a repeating transaction can be safely modified between transactions. Application state, schema update, and IDE integration also need attention, which might be expressed by inserting a handoff transaction. 
+* *Parallel.* The system can optimistically evaluate multiple transactions at the same time, then abort a few where read-write conflicts occur. Upon repetition, the system can heuristically schedule to reduce repeating conflicts. 
 
-* *Concurrent.* For isolated transactions, there is no observable distinction between repetition and replication. This becomes useful in context of incremental computing and fair non-deterministic choice. For example, a `sys.fork(N)` effect might logically return a natural number less than N, but can be implemented by creating N copies of the transaction and evaluating them in parallel. Assuming those transactions do not have a read-write conflict, they can commit in parallel. This effectively models multi-threaded systems without reifying threads, which greatly simplifies interaction with live coding.
+* *Concurrent.* In case of non-deterministic choice in a repeating transaction, we can fork and evaluate both choices in parallel. If there is no conflict, both may commit. Stable repeating choice is akin to multi-threading. 
 
-* *Distribution.* The properties of transaction loops also apply to repeating distributed transactions. However, distributed transactions are expensive! To minimize need for distributed transactions, we might locally cache read-mostly data and introduce specialized state types such as queues, bags, or CRDTs. Multiple transactions can write to the same queue without risk of read-write conflict, and a distributed queue could buffer writes locally.
+* *Distributed.* Transactions may be distributed via remote procedure calls or a mirrored runtime. Remote transaction loops can interact asynchronously through shared queues, bags, or CRDTs.
 
-* *Mirroring.* It is feasible to configure a distributed runtime where multiple remote nodes logically repeat the same transaction. While the network is connected, where the transaction runs influences only performance. There is no need to run a distributed transaction if another node will run the same transaction locally. Concurrent 'threads' have implicit affinity to nodes based locality. Some resources, such as state, may be cached or migrated to improve locality or load balancing. If the network is disrupted, some distributed transactions will fail, but each node can continue to provide degraded services locally and the system will recover resiliently by default.
+* *Congestion Control.* Instead of random choice, a scheduler may heuristically favor transactions that drain full buffers or fill empty buffers. A few heuristics can help control buffer sizes and improve the ratio of productive transactions.
 
-* *Congestion Control.* If a repeating transaction writes to a queue that already contains many items, the runtime might reduce priority for evaluating that transaction again. Conversely, we could increase priority of transactions that we expect will write to a near-empty queue. A few heuristics like this can mitigate scenarios where work builds up or runs dry. This combines nicely with more explicit controls.
+* *Real-Time.* Insofar as repeating transactions have controllable size, a hard real-time scheduler is feasible. When a transaction waits on the clock, the system can evaluate slightly ahead of time then hold ready to commit. 
 
-* *Real-time.* A repeating transaction can wait on a clock by becoming unproductive when the time is not right. This combines nicely with *reactivity* for scheduling future actions. Intriguingly, the system can precompute a pending transaction slightly ahead of time and hold it ready to commit at the earliest moment. This can form a simple and robust basis for real-time systems.
+* *Live Coding.* We can model a repeating transaction as reading and interpreting its own code, automatically integrating changes in coded behavior. This does leave challenges like schema update, but it simplifies the problem.
 
-* *Adaptation.* Even without transactions, a system control loop can read calibration parameters and heuristically adjust them based on feedback. However, transactions make this pattern much safer, allowing experimentation without committing. This creates new opportunities for adaptive software.
+* *Orthogonal Persistence.* Application state is separate from the transactions. A system can easily abort the current transactions and serialize the state. However, some features such as open files require special attention.
 
-* *Loop Fusion.* The system is always free to merge smaller transactions into a larger transaction. Potential motivations include debugging of multi-step interactions, validation of live coding or auto-tuning across multiple steps, and loop fusion optimizations.
+The main challenge is implementing the optimizer. Without optimization, transaction loops will usually perform poorly compared to conventional application architectures. At most, we can efficiently implement a single-threaded event dispatch loop to support early tooling and bootstrap.
 
-Unfortunately, we need a mature optimizer and runtime system for these opportunities become acceptably efficient. This is an unavoidable hurdle for transaction loops. Meanwhile, the direct implementation is usable only for single-threaded event dispatch and state machines.
+## Settings
+
+To support configuration, applications should define an ad-hoc `settings(Query)` method. The runtime does not query settings directly. Instead, the runtime provides access to settings when querying the configuration for application-specific runtime options. This indirection is convenient for portability and security. 
+
+Settings will usually be evaluated at compile-time, and lack access to stateful effects. However, they might have access to stateless effects such as querying for configuration features. Again, to serve
+
+  configuration. And the configured properties.
+
+ typically be evaluated before any effectful operation.
+
+The glas executable may support multiple run modes and select a runtime based on settings. This document assumes a transaction loop mode is selected.
 
 ## Life Cycle
 
-For a transaction loop application, the first effectful operation is `start()`. This will be logically retried indefinitely until it commits successfully or the application is killed externally. After a successful start, the runtime will begin evaluating `step()` repeatedly in separate transactions, modeling the main loop. 
+For a transaction loop application, the first effectful operation is `start()`. This is logically retried indefinitely until it commits successfully or the application is killed externally. After a successful start, the runtime will begin evaluating `step()` repeatedly in separate transactions, modeling the main loop. 
 
 Insofar as the 'step' method is non-deterministic, the runtime may fork and evaluate both options in parallel, and even commit both if there is no read-write conflict. If a fork aborts (or is otherwise obviously unproductive), the runtime may heuristically set some triggers to wait for a relevant change before retrying. This, together with some incremental computing optimizations, provides a simple basis for concurrency and reactivity that is also friendly to live coding.
 
 Between 'step' transactions, the runtime may call 'rpc' or 'http' or 'gui' based on external events. It is possible to define applications without 'step' that only act based on external events. The runtime may optimistically evaluate these events in parallel with steps, but may be forced to abort and retry a conflicting step or event. Some applications may leave 'step' undefined, depending entirely on external events.
 
-An application may voluntarily terminate by calling and committing a `sys.halt()` effect. Based on runtime configuration, SIGTERM, Ctrl+C, or WM_CLOSE events may also kill an application. Otherwise, the application runs indefinitely, i.e. until killed externally by debugger or operating system. Aside from halting, we may also support restarts, clearing all runtime state.
+An application may voluntarily terminate by calling and committing a `sys.halt()` effect. Depending on configuration, SIGTERM, Ctrl+C, or WM_CLOSE events might also kill the application. Otherwise, the application runs indefinitely, i.e. until killed externally by debugger or operating system. Aside from halting, we may also support restarts, clearing all runtime state.
 
-## Configuration, Settings, and Switches 
+## Administrative Control and Orthogonal Persistence
 
-I imagine different communities of application developers may have different 'conventions' for application settings. Different runtime implementations may have distinct options. A configuration ultimately serves as flexible, ad-hoc glue between the two *and* the user's own preferences. 
+Other than starting and killing an application, we might want a few other standard administrative controls. We could use these controls to pause and continue the 'step' operations separately from disabling and enabling RPC or HTTP requests. In context of orthogonal persistence, it is also convenient if we can hibernate and awaken the application without fully killing it. Relatedly, applications could also have something like a power save mode where it continues to run but with severe quotas. 
 
-Applications typically define a pure, ad-hoc `settings` method. However, the runtime never directly observes these settings. Instead, the runtime queries a configuration, providing indirect access to `settings` via algebraic effect for all options that may be application specific. This indirection allows for flexible adaptation and portability, and gives the configuration the final word for potential security-sensitive options.
-
-Similarly, the runtime also does not directly observes OS environment variables, excepting `GLAS_CONF` to load the configuration. Instead, the configuration may observe and interpret environment variables on behalf of the runtime when the runtime evaluates options that may be instance specific.
-
-I hope to avoid cluttering the command line - the user interface - with runtime options. However, indirectly, we can support user-defined command-line languages that define 'settings' based on command-line arguments.
-
-See [glas CLI](GlasCLI.md) for more details.
-
-## Run Modes and Staging
-
-Although my vision for glas systems builds primarily upon the transaction loop application model, the glas executable may implement multiple run modes and select between them based on configuration via application settings. For example, we could support the more conventional `int main(args)` model, perhaps treating hierarchical transactions as atomic sections. Or we might define modes with restricted effects APIs, e.g. read from standard input and write to standard output, convenient for early development and bootstrap.
-
-A particularly useful application mode is a *staged* application that might read some arguments or files then generate another application. It is feasible to define staged applications very similarly to language modules.
+Not everything requires informing the application. But for orthogonal persistence, we could benefit from a `hibernate(status)` event, or perhaps some way to query the runtime for the status.
 
 ## Mirroring
 
@@ -82,7 +80,7 @@ An application will declare external registers or variables as needed to hold st
 
 For open files and network sockets and similar resources, we might instead maintain state in abstract linear data, i.e. values that cannot be directly observed, copied, or dropped. These values might be runtime scoped, e.g. forbidding storage in the persistent database or transfer over remote procedure calls. This is easily enforced with dynamic types via metadata bits in packed pointers. However, this does limit 'orthogonal persistence' to be semi-transparent, i.e. not all values may be written into persistent storage.
 
-In addition to basic get/set variables, runtimes should support queues, bags, maybe CRDTs to simplify conflict analysis and maximize parallelism for concurrent or distributed transactions.
+In addition to basic get/set variables, runtimes should support queues, bags, and perhaps a few CRDTs. Introducing a few specialized state models can simplify conflict analysis and maximize parallelism for concurrent or distributed transactions, at least for applications that leverage them effectively.
 
 *Note:* Developers may also manually push some application state to filesystem or external database, but favoring the built-in database lets the runtime handle integration with transactions, acceleration, incremental computing, content-addressed storage for large values, etc.. 
 
@@ -100,18 +98,19 @@ An application might define an 'rpc' method, or perhaps a few standard `rpc.*` m
 
 ## HTTP Interface
 
-An application can implement an interface `http : Request -> Response` to receive HTTP requests. This might be viewed as a limited RPC interface. Logically, the Request and Response types are binaries that include full HTTP headers and body. However, they might be runtime accelerated to mitigate redundant parsing and validation.
+An application can implement an interface `http : Request -> Response` to receive HTTP requests. Request and Response are binaries that include full HTTP headers and body. However, they may be accelerated to mitigate redundant parsing and validation. Because 'http' is flexible and relatively easy to implement compared to the proposed RPC or GUI models, we'll rely on it heavily for early development, debugging, and integration of glas systems.
 
-By default, each 'http' request is handled in a separate transaction. If this transaction aborts due to system state or read-write conflict, it is implicitly retried until it succeeds or times out. This provides a simple basis for long polling. Eventually, we might introduce custom HTTP headers to support multi-request transactions or read-only views.
+By default, each 'http' request is handled in a separate transaction. If this transaction aborts, it is logically retried until it succeeds or times out. To integrate with asynchronous server operations, an initial POST request might commit then return a 303 response, triggering a GET request that awaits the result or times out. Implicit retry is also useful for long polling. Eventually, custom HTTP headers might support multi-request transactions.
 
-*Note:* To simplify integrated development and debugging, I propose for the runtime to reserve a path such as `"/sys"` for reflection and event APIs. The exact path and authorization requirements may be configurable. 
+To simplify integrated development and debugging, I propose for the runtime to reserve a path such as `"/sys"` for reflection and event APIs. The exact path and authorization requirements may be configurable. 
 
-## Live Coding Extensions
+*Note:* Websockets and server-sent events (SSE) do not align nicely with transactions. If necessary, users could manually implement HTTP over a TCP API. But, for most cases, I expect long polling is adequate and much more convenient.
+
+## Live Coding Integration
 
 Source code may be updated after an application has started. In my vision for glas systems, these changes are usually applied to the running system. However, not every application needs live coding, and we might want some application control over when an update is applied. 
 
 It is feasible to disable live coding via application-specific configuration, or restrict it to some external events (e.g. via SIGHUP in Linux, a named event in Windows, or debugger events via HTTP). And the runtime could further defer the update until `switch()`, if defined in the updated code, successfully commits. This would allow skipping 'broken' intermediate versions of code, or delaying update when the application is in a fragile state.
-
 
 
 

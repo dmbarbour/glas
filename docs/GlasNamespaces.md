@@ -4,7 +4,9 @@ For glas configurations and applications, we need modular namespaces with suppor
 
 This document proposes a simple namespace model to support these goals, based primarily on prefix-oriented translations of names. I assume definitions are expressed using an [abstract assembly](AbstractAssembly.md), but we could substitute any representation that lets us precisely recognize and rewrite names. Abstract assembly can also capture future translations into a 'localization', which is valuable in context of 'eval'.
 
-Some important features of this namespace model include monotonicity, idempotence, and the ability to compose translations into a single pass. I'm still contemplating built-in support for lazy loading and macros versus pushing those features to the compilation model. There are some potential errors
+Some important features of this namespace model include monotonicity, idempotence, and the ability to compose translations into a single pass. I'm still contemplating built-in support for lazy loading and macros versus pushing those features to the compilation model. 
+
+*Note:* I'm uncertain whether I'll use the full namespace type. The important take-aways seem to be support for composable prefix-based translations, restricting names a little (for prefix uniqueness, private names, invalid names), and the opportunity to capture translations via localizations.
 
 ## Proposed Model
 
@@ -125,6 +127,10 @@ We'll process 'ap' and patches by rewriting. The list of patch operations will b
             at:(LN' fby LN, Ops'), at:(LN, Ops)
 
 To apply a TL to another 'lz', we can use fby composition. Application of TL to 'df', and composition of TL, may also benefit from implicit laziness via thunks.
+
+## Alternatives
+
+Instead of sets, we could support ordered namespaces with deterministic outcomes upon conflict. We might still report conflicts as errors, but this would ensure that conflicts don't result in a non-deterministic system. 
 
 ## Design Patterns
 

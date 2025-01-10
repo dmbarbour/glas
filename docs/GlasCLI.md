@@ -1,121 +1,88 @@
 # Glas Command Line Interface
 
-The glas executable generally takes the first command line argument as a switch to interpret the remainder of the arguments. There are several options for running applications from various sources, then ad-hoc features such as debugging the configuration or access to help. Potential forms:
+The glas executable generally takes the first command line argument as a switch to interpret the remainder of the arguments. There are a few options for running applications from different sources, and extensible ad-hoc ops for managing the configuration and so on.
 
         glas --run ConfiguredApp Args To App
         glas --script(.FileExt)* FileName Args To App
         glas --cmd(.FileExt)+ "Command Text" Args To App 
-        glas --config ConfigOp ...
-        # and so on, runtime extensible
+        glas --conf ConfigOp
+        # runtime extensible
 
-We'll also support a lightweight syntactic sugar:
+A simple syntactic sugar supports user-defined operations:
 
         glas opname Args
           # implicitly rewrites to
         glas --run cli.opname Args
 
-This enables users or communities to conveniently extend the command-line interface, especially in conjunction with *staged* applications. For many use cases, the aesthetics and ergonomics should be much nicer than manually using `--run` or `--cmd`. 
-
-*Note:* To avoid cluttering the command line with runtime switches, the configuration interprets application 'settings' or the OS environment. However, where necessary, a staged application can define 'settings' based on command-line arguments. The indirection at least supports flexible abstraction and packaging of runtime options.
+My vision and intention is that end users mostly operate through user-defined operations. To fit the aesthetic, we must avoid cluttering the command line with runtime switches. Instead, we'll push most configuration options into application 'settings', a configuration file, and environment variables.
 
 ## Configuration
 
-The `GLAS_CONF` environment variable should specify an initial configuration file with a file extension and associated syntax understood by the 'glas' executable. If the environment variable is not defined, we'll try an OS-specific default such as `"~/.config/glas/conf.g"` in Linux or `"%AppData%\glas\conf.g"` on Windows. If the configuration file doesn't exist, users may be asked to create one, perhaps via `glas --config init`.
+The glas executable starts by reading a configuration file. This file is typically specified by the `GLAS_CONF` environment variable, otherwise we'll try an OS-specific default, such as `"~/.config/glas/conf.g"` in Linux or `"%AppData%\glas\conf.g"` on Windows. If the configuration file does not exist, users must create one, perhaps interactively via `glas --config init` or external tools.
 
-Configurations are modular. A typical user's configuration will generally extend a community or company configuration from DVCS, overriding a few definitions for user preferences, projects, authorities, or resources. The community configuration may define a massive library of applications and reusable application components. This is mitigated by lazy loading and caching.
+A typical user configuration will import a community or company configuration, then override a few definitions to integrate user preferences, projects, authorities, or resources. The community or company configuration is typically imported from DVCS and will define applications, tools, and reusable components through further imports. Each DVCS reference will specify a tag or version hash. Effectively, every glas configuration doubles as a package manager and virtual envrionment. This results in very large configurations, but potential problems are mitigated by lazy loading and caching.
 
-In addition to defining a applications, the configuration will define runtime options. 
+Many runtime options should be application-specific. To support this, applications define an ad-hoc 'settings' method. These settings are not directly observed by the runtime. Instead, they should be queried and interpreted by the configuration when evaluating application-specific options. Intriguingly, some queries to 'settings' may be higher-order, receiving access to some methods to query the configuration. This allows for more flexible adaptation, where settings may depend on the configuration or runtime features.
 
-* *persistent database and cache* - Glas applications are well suited for orthogonal persistence, but we'll need to configure this.
-* *reference host resources* - most effects APIs (network, filesystem, clock, FFI, etc.) will have some indirection through the configuration when binding resources. 
-* *mirroring* - it's easiest to define a distributed application in context of a distributed runtime environment.
-* *logging, profiling, assertions* - enable and disable channels, redirect streams, random sampling, max counts, etc.. 
-* *application environment* - instead of directly providing access to OS environment variables, it can let the configuration intervene.
-* *RPC registries* - publish and subscribe to remote 'objects', routing and filtering smaller registries for security.
+In addition to application settings, the configuration can query OS environment variables or ask the runtime about its version or feature set. This enables a carefully designed configuration to be portable across multiple systems.
 
-Many configuration options, such as logging, will be application specific. This is supported indirectly: the application defines `settings.*`, and these are made accessible as implicit parameters when evaluating some expressions in the configuration. Similarly, configuration options such as network interfaces and clocks may be mirror specific.
+Configurable features may include:
 
-All configuration options are ultimately runtime specific. Runtimes must document which configuration names they recognize, their expected types, and their meaning. Of course, in practice we'll develop de-facto standards across 'glas' implementations. To support a more adaptive configuration, a runtime can potentially supply some stable information about itself through the `sys.*` namespace. 
+* *persistent state* - where to store and share structured data
+* *environment* - overrides the OS environment, and supports structured data
+* *filesystem roots* - restrict an app to role-named folders
+* *mirroring* - a distributed runtime for scaling or partitioning tolerance
+* *logging* - whether and where to record progress and problems
+* *profiling* - whether and where to record performance statistics
+* *RPC registries* - where to publish and access RPC APIs
+* *run mode* - how to interpret an application
 
-*Note:* There is a tradeoff between flexibility and tooling. For example, it is inconvenient to develop general `glas --db` or `glas --rpc` tools if persistence and RPC are application specific.
+The glas executable should not add runtime switches to the command line or directly observing environment variables other than `GLAS_CONF`. Instead, staged applications compute 'settings' of the next stage based on the arguments, and configurations may read some environment variables when evaluating runtime options.
 
-## Application Module Namespace
+## Run Mode and Staging
 
-At the toplevel, applications and application-layer modules will generally be defined under `module.*`. In case of `glas --run cli.opname` we'd be looking for `module.cli.opname` in the configuration. The 'module' prefix prevents accidental name collisions between modules and configuration options. Dependencies can be localized, i.e. `"import math"` might refer to different modules in context of compiling different applications. But aside from conventions for compilation flags, we'll usually favor consistent names within a community.
+The glas executable may support multiple run modes, e.g. transaction loops, conventional `int main(args)`, and staged programs. Run mode is necessarily application-specific and should be configured based on application settings. 
 
-### RPC Registry Configuration
-
-tbd
-
-Basic registry might be a shared service or distributed hashtable. Composite registries should support filtering and routing on RPC object metadata, and also rewriting of this metadata.
-
-### Database Configuration
-
-tbd
-
-Possibly just specify a folder in the filesystem, let the runtime decide file format (e.g. LMDB or LSM tree).
+A staged run mode should let users 'compile' command-line arguments into next-stage application, similar to a language module. This is convenient for problem-specific command-line languages, or where users wish to abstract and override 'settings' through the command line. To simplify caching, staged applications should support staged arguments, e.g. use '--' to divide arguments, passing everything after to the next-stage app.
 
 ## Running Applications
 
-The `--run`, `--cmd`, and `--script` operations each compile an application module then run that application with provided command line arguments. The main difference for these three is how the module is introduced:
+The `--run`, `--cmd`, and `--script` operations each build and run an application, just from different sources. 
 
-* `--run ConfiguredApp Args` - look up `module.ConfiguredApp` in the configuration. This should evaluate to an application namespace.
-* `--cmd.FileExt ScriptText Args` - module is provided as script text. We'll compile it using the default `module.*` compilation context, then run. 
-* `--script(.FileExt)? ScriptFile Args` - module is a script file outside the module system. If this file starts with a shebang line, it's logically removed before processing. If a file extension is given, the actual file extension is ignored.
+* `--run ConfiguredApp Args` - lookup definition ConfiguredApp in the configuration.
+* `--cmd.FileExt ScriptText Args` - compile ScriptText as if a file with the given file extension. 
+* `--script(.FileExt)? ScriptFile Args` - compile ScriptFile based on given extension, or actual if none given.
 
-Regardless of how the module is introduced, it should compile into a recognized program value. This usually represents a [transaction loop application](GlasApps.md), but the configuration can look at `settings.*` and decide it's a *Staged Application* or something else.
-
-Many computations may be cached such that running the same application a second time is a lot more efficient.
-
-### Arguments Processing 
-
-Command line arguments are conventionally provided to an application as a list of strings. We could easily do the same here, but I've always found this awkward, especially when we begin to compose applications. I think it would be better if arguments were parsed before the application sees them. Even better if this parsing supports tab completions, help documentation, and so on such before the application is run.
-
-A viable solution is to extend the configuration with an application specific argument parser.
-
-### Staged Applications
-
-        glas --run StagedApp Args To Staged App -- Args To Next Stage
-
-Staged applications allow us to treat the command-line as a user-defined language. A staged application might define `compile : Args -> App` similar to a language module, and perhaps `settings.mode = "staged"` to support runtime configuration. In this case, argument processing might also be expected to return a pair, representing which arguments are visible in each stage. The default arguments processor might split on `"--"`.
-
-In context of live coding (via `sys.reload()`), staged applications can recompute all the stages. 
+After recognizing the application, the system might analyze, optimize, and further compile it down to lower level code. These steps are subject to caching, allowing us to save work when the same application is run many times, even for scripts or commands.
 
 ## Command Shells and Interactive Development
 
-I envision users mostly 'living within' a live-coded glas system instead of using lots of 'glas' commands on a command line. Instead of running specific applications on the command line, user actions would manipulate a live coding environment, adding and removing active 'applications' at runtime. This seems feasible via [REPL or Notebook interface](GlasNotebooks.md). 
+Very long term, I envision users mostly 'living within' a live-coded glas system instead of using lots of glas commands on a command line. Instead of running specific applications on the command line, user actions would manipulate a live coding environment, adding and removing active 'applications' at runtime. This seems feasible via [REPL or Notebook interface](GlasNotebooks.md). 
 
 ## Built-in Tooling
 
-The glas executable might provide a variety of associated tools:
+The glas executable may be extended with useful built-in tools, insofar as they don't add much bloat. Some tools that might prove useful:
 
-* `--config` - initialize, inspect, or rewrite a configuration. Might support debug evaluation of configuration properties, pretty-printing results, or extracting binary values to stdout.
-* `--module` - operations to inspect the module system, e.g. browse modules, or ensure a module compiles or passes tests without running it.
-* `--db` - browse the persistent key-value database, continuously watch for changes, or even perform changes manually.
-* `--cache` - summarize, inspect, invalidate, or clear the cache.
-* `--rpc` - inspect the RPC registry, perhaps manually invoke some RPC methods.
+* `--conf` - inspect and debug the configuration, perhaps initialize one
+* `--db` - query, watch, or edit persistent data
+* `--cache` - manage storage used for persistent memoization and incremental compilation
+* `--rpc` - inspect RPC registries, perhaps issue some RPC calls directly from command line
+* `--app` - debug or manipulate running apps through runtime provided HTTP or RPC APIs
 
-Built-in tooling should be balanced against bloat. A feature that requires more logic should have a stronger justification to provide as a built-in. But there are many useful features that won't cost much.
+Integrating application-specific resources need some attention. It is awkward to specify an application at `--db`, especially in context of anonymous scripts or staged run mode. To mitigate this, we might add a little indirection, e.g. based on application settings we might select a database that is independently defined in the configuration. Then, one argument to `--db` might name the database. Of course, it would be even simpler to configure one database for all the apps.
 
 ## Bootstrap
 
-Pre-bootstrap implementations of the glas executable might support only a limited subset of the effects API, such as console IO, an in-memory database, and perhaps the HTTP interface. To work within these limits, I propose to bootstrap by writing an executable binary to standard output then redirecting to a file. 
-
-Assuming a suitable definition, we could develop the compiler within the glas system.
+Early implementations of the glas executable might support a limited subset of the effects API such as console IO, an in-memory database, and the HTTP interface. We can introduce a specialized run mode just for bootstrapping, perhaps restricted to writing a binary to stdout. Then, with suitable application definitions that compile 'glas' within the system, we could bootstrap.
 
     # build
-    ~/.glas/bin/glas --run glas-bin > ~/.glas/tmp/glas
+    /usr/bin/glas --run glas-bin > ~/.glas/tmp/glas
     chmod +x ~/.glas/tmp/glas
 
     # verify
     ~/.glas/tmp/glas --run glas-bin | cmp ~/.glas/tmp/glas
 
     # install
-    sudo mv ~/.glas/tmp/glas ~/.glas/bin/glas
+    sudo mv ~/.glas/tmp/glas /usr/bin/glas
 
-It is feasible to support multiple targets through the configuration. Also, very early bootstrap might instead write to an intermediate C file or LLVM that we then compile further. However, I do hope to eventually bootstrap directly to OS-recognized executable binary.
-
-## Filesystem Setup
-
-Although it is feasible to install glas globally, I think it would be better to install glas on a per-user basis, e.g. `~/.glas/bin/glas` in Linux with suitable PATH definitions.
-
+Of course, we should abstract over the install paths and such. Also, early bootstrap might output to C or LLVM or something that must be further compiled instead of directly to executable format. 
