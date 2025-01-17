@@ -1,12 +1,206 @@
 # Glas Namespaces
 
-For glas configurations and applications, we need modular namespaces with support for overrides, name shadowing, and robust access control. Other useful features include lazy extraction of needed definitions and staged metaprogramming within the namespace. Namespaces can express recursive definitions, though the extent to which recursion is permitted may depend on the program model.
+For glas configurations and applications, I want a deterministic, modular, simple, scalable, extensible namespace that supports namespace macros, late binding, lazy loading, incremental computing, and robust access control. Definitions may be mutually recursive in general, though static analysis may reject recursion in specific cases. I assume definitions and macros are represented using [abstract assembly](AbstractAssembly.md). 
 
-This document proposes a simple namespace model to support these goals, based primarily on prefix-oriented translations of names. I assume definitions are expressed using an [abstract assembly](AbstractAssembly.md), but we could substitute any representation that lets us precisely recognize and rewrite names. Abstract assembly can also capture future translations into a 'localization', which is valuable in context of 'eval'.
+## Representation
 
-Some important features of this namespace model include monotonicity, idempotence, and the ability to compose translations into a single pass. I'm still contemplating built-in support for lazy loading and macros versus pushing those features to the compilation model. 
+A namespace may define macros and be expressed in terms of those same macros. It is most consistent and convenient to represent the complete namespace as one big macro expression. That is, at the toplevel a namespace is expressed using abstract assembly, with the system providing primitive AST constructors such as `(%ns.union NS1 NS2 ...)`.
+
+The namespace expression may depend upon terms that it defines, relying on flexible order of evaluation to resolve missing definitions. In our example, NS2 might define 'foo' then NS1 might call 'foo'. With some careful design, it is feasible to represent negotiations and handshake protocols, modular components collaborating to define a namespace. With lazy evaluation, we might stop after evaluating NS2 if we have all the definitions we need.
+
+The namespace may support limited effects such as loading files, DVCS resources, perhaps HTTP GET. In general, these effects should be safe and cacheable. Lazy loading is then based on lazy evaluation of the namespace macro expression.
+
+## Failure Modes
+
+It's useful to ask "what could go wrong?" non-ironically. 
+
+### Ambiguous Definitions
+
+Use of `(%ns.union NS1 NS2 ...)` implies the idempotence and commutativity of sets. However, if a name is assigned distinct definitions by NS1 and NS2, it isn't immediately clear how this should be resolved. Picking one arbitrarily is non-deterministic. Selecting one based on relative order is non-commutative. Combining definitions would contradict lazy evaluation.
+
+I propose to resolve this based on order, then to also raise a warning where ambiguity is detected. We might introduce a 'debug' evaluation mode that aggressively searches for ambiguities. We should encourage programmers to make their intentions explicit, e.g. by renaming or removing a conflicting definition, or favoring `%ns.seq` instead of union.
+
+### Divergence
+
+Some namespace expressions may fail to evaluate due to missing definitions or quota restrictions. The expression *might* provide a higher-priority version of a definition that we want, but we don't know because could not evaluate. When this happens, depending on context, the system can halt on error or raise a few warnings then continue, best-effort, with what might be a partial namespace and lower-priority definitions.
+
+Another failure mode is that we're simply missing some definitions we need to proceed with evaluation of a namespace expression. In this case, we could emit a warning then continue evaluating a best-effort without any output from that expression. This introduces a risk that we'll use and output lower-priority definitions. 
+
+### Dependency Cycles
+
+In a dependency cycle, an NS expression depends (oft indirectly) on some definition it produces. In practice, a dependency cycle is distinguished from divergence only when a lower-priority definition breaks the cycle, and thus we discover the higher-priority definition after the lower-priority version is in use.
+
+Proposed resolution: If the higher-priority version is identical to the lower-priority, there is no conflict. Otherwise, we report an error. This is simple to check.
+
+In special cases, we might want to 'bootstrap' some definitions, reach a fixpoint without requiring the lower-priority definition is equivalent to the higher-priority. For this I propose `%ns.fix` or similar, with the user indicating a maximum number of cycles and substituting some definitions for just the first cycle. Making it explicit would help keep it simple.
+
+## Behavior
+
+### Conditional Definitions
+
+We can support a simple form of conditional expressions at the namespace layer, i.e. if-then-else where the condition is independent of definitions produced by the 'then' or 'else' expressions. However, we cannot support 'ifdef' or non-monotonic observations.
+
+### Constraint Namespaces? No.
+
+If we relax the dependency constraints on conditional expressions, we'll effectively represent a constraint system and require a constraint solver. We can support 'ifdef' using the same solvers, akin to [answer set programming](https://en.wikipedia.org/wiki/Answer_set_programming). These features support hard constraint systems.
+
+Soft constraint systems might be expressed by adding a notion of weighted choices then searching for a 'solution' to the namespace with the lowest total weight. In the general case, weights may depend on definitions introduced, so this might require hill climbing algorithms to find answers.
+
+These features would make it difficult to support laziness or ensure determinism. I'd prefer to focus on a simpler namespace model for now, but it might be worth returning to these ideas in some other context.
+
+#
+
+
+
+
+evaluation of the macro should be deferred until dependencies are computed and we need the output. There is a possibility to express a dependency cycle, but this is relatively easy to detect and debug. For efficient lazy loading, we can use translations to scope generated definitions.  
+
+Order of evaluation for namespace macros is flexible, independent of order of expressions within a file and decomposition into modules. However, in case a name is defined more than once, we must deterministically select one definition based on priority. To support flexibe priority, namespace macros could emit monotonic 'weights' to guide search, or fall back on order of expression where weights are equal. 
+
+Evaluation of namespace macros may use limited effects, e.g. for loading files or DVCS resources. This allows us to align lazy loading with lazy evaluation. However, these effects should be safe and cacheable, like HTTP GET.
+
+
+
+## Namespaces As Macros
+
+I propose to represent a namespace as one big macro expression in abstract assembly. This would initially assume several primitive AST constructors, conventionally prefixed with `%`. This should include a union constructor where definitions introduced by one component namespace may be used in construction of another.
+
+This allows the namespace to define reusable components, perhaps abstracted via parameters or algebraic effects. Avoiding a concrete intermediate representation is useful for lazy evaluation across multiple 'layers'. Later, we might also embed namespaces within procedures, e.g. as a basis for objects, and we'd still want lazy static evaluation of object methods.
+
+## Translations, Localizations, and Laziness
+
+When composing a namespace, we might translate the generated definitions:
+
+* We can move or remove definitions generated by that component.
+* We can rewrite names used within generated definitions.
+
+It may also prove convenient to support translation of inline abstract assembly fragments as though translating a definition.
+
+
+
+When expressing a namespace in terms of namespace components, there are several useful translations we might apply:
+
+## Weighted Definitions and Resolving Ambiguity
+
+Intriguingly, weights can be abstracted, e.g. expressing metadata like 'experimental' that get converted to weights through algebraic effects. This would allow a namespace to express a set of definitions that varies conditionally in limited ways based on context and user preferences.
+
+
+## Rough Evaluation Strategy
+
+A compiler might partially evaluate a namespace, generating a 'flat' dictionary based on translations.
+
+, containing the required definitions. In addition to definitions, this dictionary might contain weights and a flag to indicate which definitions are used in 
+
+
+Abstract assembly can be extended or constrained for a subprogram, and could easily support something akin to algebraic effects. The generated namespace representation remains abstract, which is convenient for laziness and flexible order of evaluation. There is no need to wrap or localize a data representation of a namespace when defining namespace components. It is also more convenient to define local namespaces within procedures as something like a lightweight object model.
+
+
+allows us to fully l benefits
+
+ complications of embedding abstract assembly for namespace macros within data AST expression, and allows us to robustly support some features similar to algebraic effects. 
+
+
+
+* 
+* Namespace fragments can be directly defined within the namespace.
+* We can robustly embed namespace ASTs within a procedure.
+
+convenient than a mixed representati
+
+
+This design has several benefits. 
+
+a union of two namespace expressions would allow one subset to depend on definitions provided by other subsets. 
+
+ but may refer to macros defined within the namespace.
+
+To avoid a dependency cycle, a toplevel module namespace should depend only on primitive AST constructors for namespaces, i.e. conventionally prefixed with `%` and provided by the runtime. However, in context of a namespace union constructors, one subset of definitions may depend on definitions provided by another subset.
+
+In concrete terms, this means expressing the namespace using abstract assembly, and providing any primitive AST constructors for namespaces under the `%*` naming convention. The toplevel intermediate language representation of a module or program must depend on these primitive AST constructors for namespaces because use of anything else would form a dependency cycle. 
+
+This design is convenient in many ways. 
+
+This design is both more convenient and extensible than designing another AST type just for namespaces. It allows us to directly define namespace fragments within the namespace, and makes it relatively easy to integrate namespace fragments into procedures, too, e.g. for modeling 'objects' of some form.
+
+Namespace expressions must be composable, such that a large namespace can be composed from smaller namespaces and evaluated incrementally. To support laziness, abstraction, and determinism without too much ordering, each component namespace might be logically translated (with an import/export list) and have some monotonic weight.
+
+# Old Content
+
+In a prior version, I didn't handle conflict very well due to working with 'Sets'. It was difficult to identify conflicts without evaluating the full namespace. By ordering things, we can resolve conflicts, and reported conflict may be deterministic based on which definitions we required. We can still evaluate many components in parallel.  
 
 *Note:* I'm uncertain whether I'll use the full namespace type. The important take-aways seem to be support for composable prefix-based translations, restricting names a little (for prefix uniqueness, private names, invalid names), and the opportunity to capture translations via localizations.
+
+
+
+An acceptable failure mode is a dependency cycle, where two macros each rely on definitions provided by the other macro - we can recognize these issues then resolve them manually.
+
+## Dependency Cycles and Bootstrap
+
+A dependency cycle exists when a namespace macro depends on the same definitions it outputs. Although easy to avoid locally, it is difficult to avoid dependency cycles in context of latent overrides. Nobody will grok the entire graph of namespace dependencies. 
+
+In case of actual dependency cycles, we can only insist that programmers resolve them manually. Programmers can apply a number of ad-hoc strategies, e.g. staging the definitions more clearly, or restructuring the modules a little. In any case, the problematic behavior should be deterministic and very debuggable.
+
+However, prioritized definitions introduce a special case: we might optimistically evaluate a macro using a lower-priority definition, but then discover the macro outputs a higher-priority definition for the same name. If the definitions are identical, there is obviously no conflict. Intriguingly, the definitions might instead be behaviorally equivalent, or only equivalent within the space observed. Thus, we might retry evaluation using the higher-priority definition, and check one final time for identical results. 
+
+Note that we are not computing a fixpoint! Instead, we're attempting to verify an assumption that the difference in definitions was irrelevant to evaluation of the namespace. However, this effectively implements lightweight bootstrap, and programmers might rely on this lightweight bootstrap for manually resolving some dependency cycles.
+
+
+
+
+
+
+
+
+
+
+
+
+We've reached a fixpoint. If the two aren't the same, we could try to re-evaluate the macro using the higher-priority definition, then test again whether a fixpoint is reached. If no fixpoint is achieved after a few rounds, we might report a warning to let the programmer know. 
+
+Support for resolving fixpoints is essentially a bootstrap strategy for the namespace. The challenge is to ensure bootstrap is deterministic, i.e. independent of the 
+
+
+
+
+
+. For example, we could make some assumptions about the definition that will be output, and check whether those assumptions are true.
+
+
+because we don't know precisely which definitions a macro will output before it's evaluated. Instead, we only know scope and priority. In this case, 
+
+ because we don't know exactly which definitions a macro will output before evaluation. We only have a rough idea based on scope and priority. In this case, we can optimistically evaluate the macros, assuming there will be no conflicts, then check our assumptions. It is feasible to heuristically attempt evaluation under a few different sets of assumptions to finally resolve the conflict.
+
+
+In this case, we can optimistically evaluate the macros, then check our assumptions afterwards. In practice, there might be no conflict. 
+
+Usefully, if a macro outputs *the same* definition we used optimistically - even if the version we used was from a lower-priority source - we
+
+there is also no conflict.
+
+
+ In this case, a macro may depend on definitions *potentially* generated by another macro, and vice versa.
+
+
+One viabl
+
+
+ then resolved manually.  
+
+ isn't easy to avoid cycles
+
+it can be difficult for a programmer to grok the entire graph of namespace dependencies when performing overrides. 
+
+ cycles in context of overrides. 
+
+ a cycle can be introduced by a downstream programmer. The question
+
+ generated by the same namespace macro. 
+
+evaluation of a namespace macro might depend on a definition also provided by that macro, perhaps indirectly through another ma
+
+ or two or more macros might be mutually
+
+
 
 ## Proposed Model
 

@@ -1,33 +1,27 @@
 # Abstract Assembly
 
-The main idea for abstract assembly to use Names from a user-controlled namespace as constructors in an abstract syntax tree (AST) intermediate representation. This gives users an opportunity to control which language features a subprogram may use through the namespace, and potentially supports extension of or adaptation between ASTs.
-
 Proposed plain-old-data representation for abstract assembly as glas data:
 
-        type AST = c:(Name, List of AST)        # constructor
-                 | d:Data                       # embedded data
-                 | n:Name                       # name (as arg)
-                 | z:Localization               # localization
+        type AST = (Name, List of AST)      # constructor
+                 | 0b0:Data                 # embedded data
+                 | 0b10:Name                # namespace ref
+                 | 0b11:Localization        # namespace scope
 
-The types for Name and Localization depend on the namespace model. In case of [glas namespaces](GlasNamespaces.md) we could use:
+This encoding uses lists for constructor nodes and a compact tagged union for leaf nodes. Names and localizations are clearly distinguished from data to simplify renames, allowing us to translate definitions as they are introduced into a namespace. Embedded data is arbitrary; if very large, it might be represented using content-addressed storage.
+
+Every constructor starts with a name. A compiler assumes the system defines a known, abstract set of primitive AST constructor names. For example, a procedural intermediate language might assume '%i.add' and '%seq'. To simplify processing and user recognition, by convention these primitives are prefixed by '%'.
+
+By default, a compiler should forward primitive '%' names unmodified through the namespace, e.g. when a module might be imported under prefix `foo.*` using prefix-to-prefix rename `{ "" => "foo.", "%" => "%" }`. However, we aren't limited to the default. With a suitable syntax, a program might extend, restrict, override, route, and abstract AST primitives available to its subprograms. This indirection is the basis for the name *abstract assembly*.
+
+The representation of Name and Localization depend on the namespace model, especially which names and renames are legal. For [glas namespaces](GlasNamespaces.md), which support byte-aligned, prefix-to-prefix renames, a viable solution is:
 
         type Name = Bitstring (byte aligned, no NULL)   # not prefix of another
         type Localization = Map of Prefix to Prefix     # rewrite longest match
         type Prefix = Bitstring (byte aligned, no NULL) # empty up to full name
 
-Localization captures all rewrite rules that would apply to a Name. This can be useful in context of staged computing, where some names might be integrated in a later stage. In case of glas namespaces, we would capture link (ln) operations, aggregating via followed by (fby) composition.
+Localizations capture a program's local view of its context. This can be useful for dynamic 'eval', embedded DSLs, or format strings where we might want to bind names to the environment. However, use of localizations at runtime will hinder dead-code elimination and static safety analysis. In glas systems, we might use localizations only for staged computing at compile time.
 
-As a convention, I propose primitive AST constructors are '%' prefixed. This enables easy recognition, resists accidental name collisions, supports prefix-based propagation of primitives into hierarchical components, and simplifies syntactic control of direct user access to primitives. A few primitive AST nodes for a procedural language might include %seq, %i.add, %cond, %call, and so on.
-
-The abstraction overhead for abstract assembly is negligible and is paid entirely at compile time. To simulate a concrete assembly, it is sufficient to propagate '%' names into hierarchical components by default (i.e. `{ "" => "foo.", "%" => "%" }` for component 'foo'). The abstraction can still be useful in some contexts, such as when integrating components developed in multiple languages.
-
-## Name Capture
-
-In context of a Localization we could safely introduce a `Binary -> Name` computation that accounts for how the name would be rewritten in context. This preserves namespace-based access control. However, unless this operation is used only at compile-time, it easily interferes with dead code elimination.
-
-In practice, a better solution is to construct an explicit table of all the names we might reference, e.g. `[(n:"foo", m:&foo), (n:"bar", m:&bar), ...]`. This allows for precise erasure of unused definitions. In context of live coding or orthogonal persistence, it is useful to further restrict `&foo` as an *ephemeral* type, usable only within a transaction (permitting partial evaluation at compile time).
-
-*Note:* We can support the converse, `Name -> Binary`, as part of a reflection API. This exposes contextual details, reducing 'portability' of code within a namespace, so it can be useful to restrict access.
+# Meta Thoughts
 
 ## Capture of Stack Variables
 

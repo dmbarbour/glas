@@ -71,7 +71,30 @@ The glas executable may be extended with useful built-in tools, insofar as they 
 
 Integrating application-specific resources need some attention. It is awkward to specify an application at `--db`, especially in context of anonymous scripts or staged run mode. To mitigate this, we might add a little indirection, e.g. based on application settings we might select a database that is independently defined in the configuration. Then, one argument to `--db` might name the database. Of course, it would be even simpler to configure one database for all the apps.
 
-## Bootstrap
+## Implementation Roadmap
+
+The initial implementation of the glas executable must be developed outside the glas system, perhaps in rust. This implementation will surely lack many features: transaction loop optimizations, acceleration, effects APIs, DVCS support. However, it should at least offer adequate performance for the procedural language, perhaps via JIT compilation. 
+
+This should implement filesystem and network APIs, support both 'step' and 'http' interfaces of transaction loop applications, and perhaps provide a simple debugger through `"/sys"` URL on the 'http' interface. No need to deal with authorization.
+
+Of course, without those optimizations, 'step' is limited in practice to a
+
+
+ the transaction loop optimizations, and it might implement only a fraction of the effects API . But it should still be feasible to develop a few applications where 'step' is essentially the body of an event dispatch loop, with access to network and filesystem. If the implementation involves a JIT compiler, performance may be acceptable within the
+
+
+us to simple applications.
+
+ It could use an interpreter or JIT compiler. However, 
+
+ if only because I've been wanting to learn that language, and it supports a relatively functional programming style.
+
+
+
+I'd prefer not to implement 
+
+Implementing a basic transaction loop without optimizations is not a problem. However, 
+the full transactional effects API is somewhat painful, and I'd prefer to not implement it twice. For early development
 
 Early implementations of the glas executable might support a limited subset of the effects API such as console IO, an in-memory database, and the HTTP interface. We can introduce a specialized run mode just for bootstrapping, perhaps restricted to writing a binary to stdout. Then, with suitable application definitions that compile 'glas' within the system, we could bootstrap.
 
@@ -85,4 +108,7 @@ Early implementations of the glas executable might support a limited subset of t
     # install
     sudo mv ~/.glas/tmp/glas /usr/bin/glas
 
-Of course, we should abstract over the install paths and such. Also, early bootstrap might output to C or LLVM or something that must be further compiled instead of directly to executable format. 
+Of course, we should abstract over paths. And the above assumes we directly generate an executable format, which is my long-term goal. Early forms of bootstrap could be adjusted to instead generate LLVM or similar to be further compiled instead of directly to executable format. Perhaps:
+
+
+    
