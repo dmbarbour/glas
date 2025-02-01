@@ -1,10 +1,8 @@
 # Glas Design
 
-Glas is named in allusion to transparency of glass, human mastery over glass as a material, and phased liquid-to-solid creation with glass being vaguely analogous to staged metaprogramming. It can also be read as a backronym for 'general language system', which is what glas aspires to be.
+Glas is named in allusion to transparency of glass, human mastery over glass as a material, and the phased liquid-to-solid creation analogous to staged metaprogramming. It can also be read as a backronym for 'general language system', which is something glas aspires to be. Design goals orient around compositionality, extensibility, scalability, live coding, staged metaprogramming, and distributed systems programming. 
 
-Design goals for glas include compositionality, extensibility, reproducibility, modularity, staged metaprogramming, live coding, and distributed computing. Compared to conventional languages, there is much more focus on compile-time computation and many design constraints to simplify liveness. 
-
-Interaction with the glas system is initially through a command line 'glas' executable. See [Glas CLI](GlasCLI.md) for details.
+Interaction with the glas system is initially through a command line 'glas' executable. See [Glas CLI](GlasCLI.md).
 
 ## Data
 
@@ -22,12 +20,12 @@ This can generally encode a pair `(a, b)`, a choice `(a + b)`, or a leaf `()`. A
 
 However, glas systems will often encode data into stems. Dictionaries such as `(height:180, weight:100)` can be encoded as [radix trees](https://en.wikipedia.org/wiki/Radix_tree), while an open variant becomes a singleton dictionary. The naive binary tree encoding is inefficient for this role because it doesn't compact stem bits. In practice, we might use something closer to:
 
-        type Tree = (Stem * Node)       // as struct
-        type Stem = uint64              // encodes 0..63 bits
+        type Tree = (Stem * Node)       # as struct
+        type Stem = uint64              # encodes 0..63 bits
         type Node = 
             | Leaf 
-            | Branch of Tree * Tree     // branch point
-            | Stem64 of uint64 * Node   // all 64 bits!
+            | Branch of Tree * Tree     # branch point
+            | Stem64 of uint64 * Node   # all 64 bits!
 
         Stem Encoding (0 .. 63 bits)
             10000..0     0 bits
@@ -79,75 +77,77 @@ For performance, a runtime may support optimized internal representations. A use
 
 *Note:* Arithmetic in glas is exact by default, but there will be workarounds for performance.
 
+### Abstract or Linear Data
+
+Technically, data is abstract only in context of a subprogram that does not directly observe or construct that data. Abstract data may be linear insofar as the subprogram further does not directly copy or drop the data. These are extrinsic properties of context, not intrinsic properties of data. However, enforcing these features based on static analysis can be difficult. A little bit of metadata in the representation can support efficient enforcement at runtime.
+
+To support abstract data is not difficult, involving a lightweight extension to the Node type:
+
+        type Node =
+            | ... # other Node types
+            | Abstract of Key * Tree
+
+The runtime may provides primitives or recognize annotations to wrap and unwrap data. Attempting to observe abstract data without first unwrapping it would be treated as divergence or type error. An optimizer can eliminate unnecessary wrap-unwrap pairs. Intriguingly, it is feasible to strongly enforce abstraction via encryption in cases where data is serialized across trust boundaries, though for performance and debuggability reasons we might limit this to specialized keys.
+
+Linearity is a bit more difficult. I suggest [tagged pointers](https://en.wikipedia.org/wiki/Tagged_pointer) to efficiently encode a bit describing whether each node is transitively linear. At runtime, we can check this bit before we copy or drop the data. User-defined types would introduce linearity only upon wrapping a value as abstract. A runtime should mark open files, sockets, channels, etc. as linear at the API.
+
+Linearity cannot be strongly enforced in an open system. Thus, we might conlate linearity with runtime scope, forbid serialization of linear data over remote procedure calls or into a persistent database. Even with this constraint, linear data can be very useful for safely integrating a glas system with external resources.
+
 ## Programs and Applications
 
-A program is a value with a known interpretation. An application is a program with a known integration. In glas systems, programs and applications are carefully designed to support my visions for live coding, user extension, and community curation. 
+A glas system is expressed as one enormous namespace, customized per user. A typical user configuration composes community and company configurations via import from DVCS, then integrates user-specific preferences, projects, resources, and authorizations. Clever binding to DVCS version tags or hashes serves roles in version control, community curation, package managers, and software update. To effectively work with such large namespaces, the [namespace model](GlasNamespaces.md) is carefully designed to support lazy loading and caching.
 
-### Modularity
+Within the namespace, definitions are represented using a Lisp-like intermediate representation called abstract assembly, where every AST constructor is a name. This enables extension and restriction of AST nodes through the namespace. Primitive AST constructors are ultimately provided by the runtime, prefixed with '%' for easy recognition and routing. For example, the runtime might define '%i.add' for integer arithmetic, '%cond' for conditional behavior, and '%seq' for procedural composition. See the [glas program model](GlasProg.md).
 
-Modularity begins with configuration. An initial configuration file is selected based on the `GLAS_CONF` environment variable, if defined, otherwise an OS-specific default, e.g. `"~/.config/glas/conf.g"` on Linux or `"%AppData%\glas\conf.g"` on Windows. A configuration may import other files, supporting file-based modularity. Instead of a separate package manager, applications and programs are defined in the configuration namespace. This results in a very large namespace, and performance must be mitigated by lazy loading and caching.
+The [glas CLI](GlasCLI.md) can run applications defined within the configuration namespace, and also compile a file or command-line text into an application. Thus, to 'install' applications, users may choose flexibly between extending the namespace or maintaining a folder of scripts. Aside from directly running applications, it is feasible to reflect on the namespace to extract an executable binary.
 
-File paths are abstracted and extended to DVCS. A typical user configuration imports a community or company configuration from DVCS, then override definitions to integrate user-specific projects, preferences, resources, and authorizations. Similarly, a community configuration may inherit, extend, and override others. A community configuration serves the roles of package manager, curator, and atomic system versioning aligned with DVCS hashes and tags. 
+To support my vision for glas systems, I develop a [transaction-loop application model](GlasApps.md) as the default for glas applications. In this model, an application defines a transactional 'step' method that we'll evaluate repeatedly. The application will handle 'http' requests and other transactional events between steps. Performance of a transaction loop application relies on relatively sophisticated optimizations: incremental computing of a stable prefix, parallel evaluation of stable non-deterministic choice. Without these optimizations, we're limited to a simple event dispatch loop.
 
-To simplify sharing, copying, and editing we organize software projects into packages. Each package isolates file-based dependencies to the same folder and subfolders. Other than local files, a package only depends on a configuration-provided environment of definitions, subject to localization. 
+The glas CLI will support at least two run modes: staged applications and transaction loop applications. Instead of directly running applications, we'll first configure the runtime. Runtime options are defined in the user's configuration, but application-specific options may be contingent upon a query to application settings. For example, we might log to stderr by default, yet configure logging differently for a self-described "console app". Run mode is configured the similarly.
 
-*Note:* Restrictions on file dependencies will be enforced using smart constructors for 'relative' abstract file paths. In addition to package restrictions, we should block "../" paths from escaping a DVCS repository, and we can let developers enforce DVCS resources are transitively immutable, using version hashes instead of tags. Aside from these restrictions, abstraction of files can also support binding to a database, modeling of logical overlays, or treating binary data as a read-only file.
+## User-Defined Syntax
 
-### Compilation
+The glas system supports user-defined syntax. Whenever we 'import' a file into our namespace, we'll automatically select a compiler from the current namespace based on file extension. The namespace schema might be simple "%.lang.xyzzy" for file extension ".xyzzy". This assumes a convention using "%." prefix for implicit parameters within the namespace. 
 
-Front-end syntax is user-defined, aligned with file extensions. A front-end compiler will output definitions in a common Lisp-like intermediate representation, [abstract assembly](AbstractAssembly.md). These definitions are translated to support composition, extension via override, access control, and conflict resolution - see TL type from the [namespace model](GlasNamespace.md). A [set of primitives](GlasProg.md) is implicitly defined by the runtime system, including control structures such as conditionals or sequencing.
+To get this system started, the glas executable provides a built-in compiler for at least one 'initial' syntax. The root namespace file must be written using an initial syntax. I propose [glas language, ".glas" files](GlasLang.md) in this role. However, initial syntax will be bootstrapped as part of runtime configuration, if possible, replacing with an implementation defined in the user's namespace and verifying a fixpoint is reached after a few iterations.
 
-To support lazy loading and multi-stage programs, compilation is iterative and order is flexible. I propose to use non-deterministic choice: every terminating sequence of choices represents an atomic step and may define different components. Some steps may attempt to 'eval' an expression within the generated namespace, a simple basis for syntax-independent macros, and will implicitly wait for other steps to provide necessary definitions. To guide evaluation order, we can let users apply a translation to all future outputs from a step.
+Because access to the compiler is routed through the namespace, it is feasible to locally extend languages within scope community or project. This is convenient for experimental features, project specific DSLs, or precise control of versions. However, it complicates sharing of code, requiring a compatible environment. Thus, it's preferable that file extensions are relatively stable.
 
-Compilation steps should be commutative, monotonic, and idempotent. A conflict is possible where a name is assigned multiple distinct definitions. Although it isn't difficult to detect conflicts during evaluation, in context of laziness conflict may be latent in the system and go undiscovered. This can be mitigated by developing a deterministic scheduler for compilation steps and supporting a diagnostic evaluation mode that actively searches for conflicts instead of lazily halting after a definition is discovered.
+*Note:* Compilers are modeled as applications with a staged run mode. In addition to providing a procedure for compiling source code, this application may implement ad-hoc interfaces to support syntax highlighting, auto-complete, interactive development and debugging, browsable documentation, or even an interactive tutorial on the language.
 
-### Multi-Stage Programming
+*Note:* To simplify integration with syntax highlighting, auto-complete, live coding, and so on, a file with multiple extensions such as ".tar.gz" is treated as one large extension. Attempting to compose interfaces automatically seems doomed to fail!
 
-Compilers have an opportunity to evaluate expressions in context of the generated namespace. This can support macros independent of the front-end syntax, including namespace macros that may generate new definitions. If evaluation requires a missing definition, it can implicitly wait on that definition to be provided by another step. 
+## Distributed Runtimes
 
-        from { Expr } import x, foo as y, z
+Instead of understanding a runtime as a process running on a specific machine, we can model a runtime as a distributed system overlay that implements a reasonable API for the application. This allows a single application to run on multiple nodes without explicitly struggling with serialization, network interfaces, network disruption. 
 
-In case of namespace macros, we'll generally want to support the use case where we translate the generated definitions, defer computation based on a translation, yet evaluate in an environment prior to the translation. This is feasible with an API that reifies the environment, similar to: `var Env = env(); translate(TL); eval(Env, Expr)`. We may extend this API with methods to logically translate or compose the Env type.
+Such a runtime should have built-in support for latency-tolerant or partitioning-tolerant data types such as queues, channels, bags, and CRDTs. By integrating the application in terms of such resources, the application can be distributed across multiple nodes.
 
-Staging is a relatively simple use case. Between 'fork' and 'eval' there is sufficient flexibility to model concurrent processes that interactively generate definitions, treating the namespace as a set of single-assignment variables for futures and promises. We can also express procedural generation of infinite namespaces. To support garbage collection of intermediate definitions, we can block both evaluation and new definitions from directly referencing 'private' names containing "~". 
+The transaction loop application model is an excellent fit for a distributed runtime. We can logically run the *same* repeating transaction on every node, yet heuristically filter based on non-deterministic choice and locality. There is no serializability conflict between one transaction reading a queue and another transaction blindly writing a queue. We can benefit from distributed transactions where needed, yet design our application such that *most* transactions run on a single node. Mirroring and distributed systems programming are neatly unified. 
 
-### Applications
+Of course, in context of a distributed runtime, we no longer have an implicit host operating system. This has a significant impact on filesystem APIs, network APIs, FFI, and so on. If we aren't careful, reading a local clock can violate transactional isolation. The various APIs must be carefully reinvented in context of the distributed runtime.
 
-A [glas application](GlasApps.md) implements transactional methods recognized by a runtime, such as a 'step' method that is run repeatedly as a background loop, and an 'http' method to receive HTTP requests. Algebraic effects provide controlled access to the system, and application state is mapped to a key-value database. Performance is mitigated by partial evaluation, incremental computing, and parallel evaluation of non-deterministic choice.
+## Annotations
 
-A relevant consideration is how to represent the application object. Some viable options:
+Programs in glas systems will generally embed annotations to support logging, profiling, automated testing, debugging, type-checking, optimizations, and other non-semantic features. As a general rule, annotations must not influence observable behavior except through reflection APIs. Thus, it is safe to ignore unrecognized annotations, though we'll report a warning to resist silent degradation of performance or consistency. 
 
-* Directly define application methods in configuration, i.e. `appname.step` and `appname.http`. Runtime searches for certain methods. This hinders extension. Apps may be built by hand or installed using macros..
-* Integrate methods into a single procedure, use partial eval, i.e. `appname("http", Request)`. This simplifies composition and delegation, but is inconvenient to implement, optimize, or reflect on the API.  
-* Application as a namespace macro, i.e. `appname()` defines 'step' and 'http'. This enables ad-hoc extension via override, but it greatly complicates sharing. Without this, namespace macros are still useful.
+In context of abstract assembly, annotations might be generally represented using `(%an AnnoAST ProgAST)`, scoping over a subprogram. The AnnoAST might be something like `(%log ChanExpr MessageExpr)`. Ignoring the annotation, this should be equivalent to ProgAST. If ProgAST is omitted, we might assume a no-op.
 
-A runtime may recognize several approaches, perhaps distinguished by annotation (e.g. `appname.#run-mode`). I currently favor direct definition as the default.
+We can also support annotations in the namespace. For this, I propose prefix '#' for annotations. We might define 'foo.#doc' or 'foo.#type' to document 'foo'. 
 
-### User-Defined Syntax
+Although annotations don't directly influence system behavior, their influence is indirectly visible through reflection APIs or external configurations. For example, annotations for profiling might result in statistics that can later be extracted via 'refl.prof.\*', or we might configure a runtime to serialize profiling metadata to file.
 
-A compiler can recursively compile other files into the namespace. This will automatically select a compiler from current namespace environment based on the file extension, e.g. "lang.FileExt". The compiler should be a procedure that receives an abstract file path as a parameter and generates definitions, iterative via non-deterministic choice.
+## Automated Testing
 
-The glas system specifies an [initial syntax](GlasLang.md) associated with the ".g" file extension. If the associated "lang.g" compiler is undefined, we use the built-in compiler for ".g" files. However, if defined in terms of ".g" files, we'll attempt to bootstrap. Bootstrap involves building "lang.g" with the built-in, then again with itself, then verifying a fixpoint is reached with one more build.
+Automatic tests should be expressed using annotations. We might express this using static assertions within programs or a simple convention such as 'foo.#test.\*' within a namespace.
 
-The initial configuration file *must* use an initial syntax recognized by the glas executable. It may also define the compiler for this initial syntax, supporting bootstrap. A glas executable may support other initial syntax. In this case, we may need to bootstrap multiple built-in languages together if they are mutually defined in terms of each other.
+Most tests will run with a limited effects API to ensure reproducibility. This API may include non-deterministic choice to model fuzz testing and property testing, with the system searching for a sequence of choices that will fail the test. With some configuration, it is feasible to cache and share these restricted tests between users, and produce a system health report.
 
-*Note:* Other than defining a compiler, a language might define additional interfaces to support auto-complete and other features. I'm still considering the exact representation for languages.
+## Live Coding
 
-### Notebook Interface
+Applications can provide a projectional editor for their own code and state. As we edit code or state, we can immediately observe updates in system behavior. In many cases, this feedback can be rendered in close visual proximity to the relevant code. We can design applications to leverage this. A useful metaphor for live coding is the [notebook application](GlasNotebooks.md), where we develop an application as a notebook that mixes source and output. 
 
-Most files, including configuration files, should automatically compile to applications providing a notebook interface - a live coding environment and projectional editor over the initial file. See [glas notebooks](GlasNotebooks.md).
-
-### Annotations
-
-Programs in glas systems will generally embed annotations to support logging, profiling, testing, debugging, type-checking, optimizations, and other non-semantic features. As a general rule, annotations must not influence observable behavior except through reflection APIs. Under these constraints, it is safe to ignore an unrecognized annotation. However, we'll generally report a warning to resist silent degradation of system performance or consistency. Reflection APIs may peek at performance, logs, code and JIT, data representations, etc. but should be easily controlled.
-
-In context of abstract assembly, annotations might be generally represented using `(%an AnnoAST ProgAST)`, scoping over a subprogram. The AnnoAST might be something like `(%log ChanExpr MessageExpr)`. Ignoring the annotation, this should be equivalent to ProgAST. If ProgAST is omitted, we can assume a no-op.
-
-Some annotations may be embedded in the namespace to support reflection and browsing of the namespace. This should use a simple naming convention, perhaps `foo.#doc` and `foo.#type`. 
-
-### Automated Testing
-
-Automated testing can be aligned with iterative compilation, such that some steps represent tests. Testing can be guided by annotations and heuristics, and can leverage non-deterministic choice to model fuzz testing and property testing. With some careful configuration, it is feasible to cache and share tests between users, and produce a system health report.
+To simplify live coding, we should avoid unnecessary sources of entanglement between code and state such as long-running procedural loops (where local vars become state), spawned threads, or first-class functions or objects. The transaction loop application model avoids those procedural loops and spawned threads, but we'll further avoid first-class functions in the program model.
 
 ## Performance
 
@@ -176,20 +176,6 @@ To support larger-than-memory data, glas systems may leverage content-addressed 
 Compared to virtual memory backed by disk, content addressing has benefits for incremental computation, orthogonal persistence, and structure sharing. A lot of work doesn't need to be repeated when a hash is known. When communicating large values, it also works nicely with [content delivery networks (CDN)](https://en.wikipedia.org/wiki/Content_delivery_network).
 
 ## Thoughts
-
-### Data Abstraction 
-
-Data abstraction is a property of a program, not of data. Data is abstract in context of a program insofar as that program does not directly observe the data, instead observing it only through provided interfaces. Ideally, data abstraction is enforced based on compile-time analysis. However, such analysis is difficult in many cases. Dynamic enforcement is feasible by adding annotations to data:
-
-        type Node =
-            | ...
-            | Abstract of Key * Tree
-
-Annotations can 'wrap' or 'unwrap' abstraction nodes based on a matching Key. Attempting to observe data without unwrapping it, or attempting to unwrap with the wrong Key, would be a divergence error. Some reflection APIs could peek under the hood. An optimizer can potentially remove or disable wrap/unwrap annotations when it can be locally proven safe, giving us some benefits of static analysis.
-
-We can further constrain manipulation of abstract data: 'linear' data must not be copied or dropped, and 'scoped' data restricts storage and communication. In this case, efficient dynamic enforcement may involve caching a few tag bits per Node (perhaps via packed pointers). We don't need much: plain old data vs. linear runtime-scoped data could use just one bit, and (together with algebraic effects) should adequately cover most use cases.
-
-*Note:* Intriguingly, specific annotations for data abstraction could be enforced cryptographically, using symmetric or asymmetric keys. This would allow for data abstraction to be enforced even in context of remote procedure calls and reflection APIs. An optimizer can lazily defer encryption within a runtime or across 'trusted' RPC boundaries. However, I doubt this is worth the performance and system flexibility costs in most cases.
 
 ### Type System
 
