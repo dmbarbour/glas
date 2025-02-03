@@ -36,15 +36,7 @@ The main challenge is implementing the optimizer. Without optimization, transact
 
 ## Settings
 
-To support configuration, applications should define an ad-hoc `settings(Query)` method. The runtime does not query settings directly. Instead, the runtime provides access to settings when querying the configuration for application-specific runtime options. This indirection is convenient for portability and security. 
-
-Settings will usually be evaluated at compile-time, and lack access to stateful effects. However, they might have access to stateless effects such as querying for configuration features. Again, to serve
-
-  configuration. And the configured properties.
-
- typically be evaluated before any effectful operation.
-
-The glas executable may support multiple run modes and select a runtime based on settings. This document assumes a transaction loop mode is selected.
+To support configuration, applications should define 'settings' supporting ad-hoc queries at compile-time. The runtime does not query settings directly. Instead, the runtime queries the configuration, which may in turn query settings for configuration of any application-specific runtime option. This indirection lets the user configuration provide an ad-hoc adapter layer between applications and runtimes.
 
 ## Life Cycle
 
@@ -54,13 +46,13 @@ Insofar as the 'step' method is non-deterministic, the runtime may fork and eval
 
 Between 'step' transactions, the runtime may call 'rpc' or 'http' or 'gui' based on external events. It is possible to define applications without 'step' that only act based on external events. The runtime may optimistically evaluate these events in parallel with steps, but may be forced to abort and retry a conflicting step or event. Some applications may leave 'step' undefined, depending entirely on external events.
 
-An application may voluntarily terminate by calling and committing a `sys.halt()` effect. Depending on configuration, SIGTERM, Ctrl+C, or WM_CLOSE events might also kill the application. Otherwise, the application runs indefinitely, i.e. until killed externally by debugger or operating system. Aside from halting, we may also support restarts, clearing all runtime state.
+An application may voluntarily terminate by calling and committing a `sys.halt()` effect. Otherwise, the application runs indefinitely, i.e. until killed externally by debugger or operating system. Aside from halting, we may also support restarts, clearing all runtime state. We could introduce something like a `signal()` interface to receive SIGTERM or WM_CLOSE events for graceful shutdown. This interface could also receive other generic OS events, such as signaling hibernation, wakeup, or requesting a power-save mode.
 
-## Administrative Control and Orthogonal Persistence
+## Live Coding Integration
 
-Other than starting and killing an application, we might want a few other standard administrative controls. We could use these controls to pause and continue the 'step' operations separately from disabling and enabling RPC or HTTP requests. In context of orthogonal persistence, it is also convenient if we can hibernate and awaken the application without fully killing it. Relatedly, applications could also have something like a power save mode where it continues to run but with severe quotas. 
+Source code may be updated after an application has started. In my vision for glas systems, these changes are applied to the running system as the norm, but this should be configurable per application. 
 
-Not everything requires informing the application. But for orthogonal persistence, we could benefit from a `hibernate(status)` event, or perhaps some way to query the runtime for the status.
+It is feasible to disable live coding via application-specific configuration, or restrict it to some external events (e.g. via SIGHUP in Linux, a named event in Windows, or debugger events via HTTP). And the runtime could further defer the update until `switch()`, if defined in the updated code, successfully commits. This would allow skipping 'broken' intermediate versions of code, or delaying update when the application is in a fragile state.
 
 ## Mirroring
 
@@ -98,21 +90,13 @@ An application might define an 'rpc' method, or perhaps a few standard `rpc.*` m
 
 ## HTTP Interface
 
-An application can implement an interface `http : Request -> Response` to receive HTTP requests. Request and Response are binaries that include full HTTP headers and body. However, they may be accelerated to mitigate redundant parsing and validation. Because 'http' is flexible and relatively easy to implement compared to the proposed RPC or GUI models, we'll rely on it heavily for early development, debugging, and integration of glas systems.
+An application may implement an `http : Request -> Response` interface, and the runtime configured to provide HTTP requests. For performance and validation, Request and Response types may be abstracted within the application. But the runtime will provide APIs to observe or construct as binaries. Because 'http' is flexible and relatively easy to implement compared to the proposed RPC or GUI models, I expect to rely on it for early development and debugging of glas systems. 
 
-By default, each 'http' request is handled in a separate transaction. If this transaction aborts, it is logically retried until it succeeds or times out. To integrate with asynchronous server operations, an initial POST request might commit then return a 303 response, triggering a GET request that awaits the result or times out. Implicit retry is also useful for long polling. Eventually, custom HTTP headers might support multi-request transactions.
+By default, each 'http' request is handled in a separate transaction. If this transaction aborts, it is logically retried until it either produces a response or times out, providing a simple basis for long polling. In cases where asynchronous interaction is required by the server, a 303 response can ask the client to query again in a separate transaction to retrieve the result. Eventually, we might introduce custom HTTP headers to support multi-request transactions.
 
-To simplify integrated development and debugging, I propose for the runtime to reserve a path such as `"/sys"` for reflection and event APIs. The exact path and authorization requirements may be configurable. 
+To simplify integrated development and debugging, I propose to reserve a path such as `"/sys"` for external access to the runtime. The exact path and authorization may be configurable.
 
-*Note:* Websockets and server-sent events (SSE) do not align nicely with transactions. If necessary, users could manually implement HTTP over a TCP API. But, for most cases, I expect long polling is adequate and much more convenient.
-
-## Live Coding Integration
-
-Source code may be updated after an application has started. In my vision for glas systems, these changes are usually applied to the running system. However, not every application needs live coding, and we might want some application control over when an update is applied. 
-
-It is feasible to disable live coding via application-specific configuration, or restrict it to some external events (e.g. via SIGHUP in Linux, a named event in Windows, or debugger events via HTTP). And the runtime could further defer the update until `switch()`, if defined in the updated code, successfully commits. This would allow skipping 'broken' intermediate versions of code, or delaying update when the application is in a fragile state.
-
-
+*Note:* Websockets and server-sent events (SSE) do not align nicely with transactions. My hope is long polling proves adequate. But, if necessary, it is feasible to support WebSockets requests as carrying a specialized linear channel.
 
 ## Dynamic Code
 

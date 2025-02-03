@@ -18,7 +18,7 @@ This can generally encode a pair `(a, b)`, a choice `(a + b)`, or a leaf `()`. A
             | Stem of (bool * Tree)  # bool is left/right label
             | Leaf
 
-However, glas systems will often encode data into stems. Dictionaries such as `(height:180, weight:100)` can be encoded as [radix trees](https://en.wikipedia.org/wiki/Radix_tree), while an open variant becomes a singleton dictionary. The naive binary tree encoding is inefficient for this role because it doesn't compact stem bits. In practice, we might use something closer to:
+However, glas systems will often encode data into stems. Dictionaries such as `(height:180, weight:100)` can be encoded as [radix trees](https://en.wikipedia.org/wiki/Radix_tree). We can encode a zero bit as a left branch, a one bit as a right branch, and encode key text using UTF-8, separating it from data with a NULL byte. An open variant type can be represented as a singleton dictionary. To support these encodings, we must compact stem bits. We might favor something closer to:
 
         type Tree = (Stem * Node)       # as struct
         type Stem = uint64              # encodes 0..63 bits
@@ -35,7 +35,7 @@ However, glas systems will often encode data into stems. Dictionaries such as `(
             abcde..1    63 bits
             00000..0     unused
 
-This allows for reasonably efficient representation of labeled data. We can also easily encode integers into stems. However, we might further extend the Node representation to more efficiently encode arrays and other useful types. 
+This allows for reasonable representation of labeled data. We may similarly encode integers into stems. However, we will further extend the Node to efficiently encode embedded binaries and other useful types.
 
 ### Integers
 
@@ -77,21 +77,21 @@ For performance, a runtime may support optimized internal representations. A use
 
 *Note:* Arithmetic in glas is exact by default, but there will be workarounds for performance.
 
-### Abstract or Linear Data
+### Abstract, Linear, and Scoped Data
 
-Technically, data is abstract only in context of a subprogram that does not directly observe or construct that data. Abstract data may be linear insofar as the subprogram further does not directly copy or drop the data. These are extrinsic properties of context, not intrinsic properties of data. However, enforcing these features based on static analysis can be difficult. A little bit of metadata in the representation can support efficient enforcement at runtime.
+Data is abstract in context of a subprogram that does not directly observe or construct that data. Abstract data may be linear insofar as the subprogram further does not directly copy or drop the data. Technically, these are extrinsic properties of context, not intrinsic properties of data. However, it can be useful to integrate some metadata to simplify runtime enforcement.
 
-To support abstract data is not difficult, involving a lightweight extension to the Node type:
+To support abstract data, we can simply extend the Node type:
 
         type Node =
             | ... # other Node types
             | Abstract of Key * Tree
 
-The runtime may provides primitives or recognize annotations to wrap and unwrap data. Attempting to observe abstract data without first unwrapping it would be treated as divergence or type error. An optimizer can eliminate unnecessary wrap-unwrap pairs. Intriguingly, it is feasible to strongly enforce abstraction via encryption in cases where data is serialized across trust boundaries, though for performance and debuggability reasons we might limit this to specialized keys.
+The runtime may recognize annotations to wrap and unwrap data. Attempting to observe abstract data without first unwrapping it would be a runtime type error, which will typically abort the current transaction. An optimizer can eliminate unnecessary wrap-unwrap pairs. Intriguingly, it is feasible to cryptographically enforce abstractions across trust boundaries, though for performance and debugging this should be limited to specialized keys.
 
-Linearity is a bit more difficult. I suggest [tagged pointers](https://en.wikipedia.org/wiki/Tagged_pointer) to efficiently encode a bit describing whether each node is transitively linear. At runtime, we can check this bit before we copy or drop the data. User-defined types would introduce linearity only upon wrapping a value as abstract. A runtime should mark open files, sockets, channels, etc. as linear at the API.
+To support linearity, we could leverage [tagged pointers](https://en.wikipedia.org/wiki/Tagged_pointer) to efficiently encode a metadata bit for whether each node is transitively linear. At runtime, we can easily check this bit before we copy or drop data. Linear types are very convenient for modeling open files, sockets, channels, futures and promises, and so on - anything where we might want to enforce a protocol. Aside from runtime use, users could mark abstract data linear upon 'wrap'.
 
-Linearity cannot be strongly enforced in an open system. Thus, we might conlate linearity with runtime scope, forbid serialization of linear data over remote procedure calls or into a persistent database. Even with this constraint, linear data can be very useful for safely integrating a glas system with external resources.
+I propose to conflate linear types and runtime scope. That is, linear data cannot be stored in a persistent database or communicated through remote procedure calls. This neatly avoids the troublesome challenges of enforcing linearity in open systems and cleanup after a foreign source of linear objects vanishes from the open system.
 
 ## Programs and Applications
 
@@ -119,13 +119,11 @@ Because access to the compiler is routed through the namespace, it is feasible t
 
 ## Distributed Runtimes
 
-Instead of understanding a runtime as a process running on a specific machine, we can model a runtime as a distributed system overlay that implements a reasonable API for the application. This allows a single application to run on multiple nodes without explicitly struggling with serialization, network interfaces, network disruption. 
+My vision for glas systems involves live coding of distributed systems. The distributed runtime is how I propose to support this. A runtime can be configured to run on multiple machines. In context of the transaction loop application model, a distributed transaction may start anywhere. We can mirror an application, repeat the same transaction everywhere, then - as a performance heuristic - abort a repeating transaction that starts by accessing a remote resource. 
 
-Such a runtime should have built-in support for latency-tolerant or partitioning-tolerant data types such as queues, channels, bags, and CRDTs. By integrating the application in terms of such resources, the application can be distributed across multiple nodes.
+A queue can be written by one transaction and concurrently read by another without serializability conflict. We can use queues, bags, CRDTs, and similar intermediate state for asynchronous communication within an application. With some design effort, an application can arrange for most transactions to evaluate on a single node, yet distributed transactions remain available where convenient.
 
-The transaction loop application model is an excellent fit for a distributed runtime. We can logically run the *same* repeating transaction on every node, yet heuristically filter based on non-deterministic choice and locality. There is no serializability conflict between one transaction reading a queue and another transaction blindly writing a queue. We can benefit from distributed transactions where needed, yet design our application such that *most* transactions run on a single node. Mirroring and distributed systems programming are neatly unified. 
-
-Of course, in context of a distributed runtime, we no longer have an implicit host operating system. This has a significant impact on filesystem APIs, network APIs, FFI, and so on. If we aren't careful, reading a local clock can violate transactional isolation. The various APIs must be carefully reinvented in context of the distributed runtime.
+The runtime must tweak some effects APIs - filesystem, network, clock, FFI, etc. - in context of distribution. This might involve implicit parameters, allowing us to reuse some APIs. The compiler, optimizers, and runtime should also support features such as automatically mirroring or migrating state for performance.
 
 ## Annotations
 
@@ -133,21 +131,23 @@ Programs in glas systems will generally embed annotations to support logging, pr
 
 In context of abstract assembly, annotations might be generally represented using `(%an AnnoAST ProgAST)`, scoping over a subprogram. The AnnoAST might be something like `(%log ChanExpr MessageExpr)`. Ignoring the annotation, this should be equivalent to ProgAST. If ProgAST is omitted, we might assume a no-op.
 
-We can also support annotations in the namespace. For this, I propose prefix '#' for annotations. We might define 'foo.#doc' or 'foo.#type' to document 'foo'. 
+We can also support annotations in the namespace. For this, I propose prefix '\#' for annotations. We might define 'foo.\#doc' or 'foo.\#type' to document 'foo'. 
 
 Although annotations don't directly influence system behavior, their influence is indirectly visible through reflection APIs or external configurations. For example, annotations for profiling might result in statistics that can later be extracted via 'refl.prof.\*', or we might configure a runtime to serialize profiling metadata to file.
 
 ## Automated Testing
 
-Automatic tests should be expressed using annotations. We might express this using static assertions within programs or a simple convention such as 'foo.#test.\*' within a namespace.
+Automatic test are expressed using annotations. Within definitions, we might use annotations to express static assertions. In the namespace, we could try a simple naming convention such as 'foo.\#test.\*', and scan for test functions. 
 
-Most tests will run with a limited effects API to ensure reproducibility. This API may include non-deterministic choice to model fuzz testing and property testing, with the system searching for a sequence of choices that will fail the test. With some configuration, it is feasible to cache and share these restricted tests between users, and produce a system health report.
+Tests should be cacheable, reproducible, and have minimal effect on the real world environment. We could support non-deterministic choice for fuzz testing (recording the sequence of choices), and local state for simulation, yet omit most external effects.
 
 ## Live Coding
 
-Applications can provide a projectional editor for their own code and state. As we edit code or state, we can immediately observe updates in system behavior. In many cases, this feedback can be rendered in close visual proximity to the relevant code. We can design applications to leverage this. A useful metaphor for live coding is the [notebook application](GlasNotebooks.md), where we develop an application as a notebook that mixes source and output. 
+To support live coding, an abstract reference to source code is captured at compile-time, then the runtime provides a filesystem-like API to diff or edit these sources. This API is adjusted to work with DVCS. Typically, the compiler will provide code to render an editable projection of code through HTTP or GUI interfaces, but a language designed for live coding should also support syntax for integrating customized views or applets.
 
-To simplify live coding, we should avoid unnecessary sources of entanglement between code and state such as long-running procedural loops (where local vars become state), spawned threads, or first-class functions or objects. The transaction loop application model avoids those procedural loops and spawned threads, but we'll further avoid first-class functions in the program model.
+One useful metaphor for live coding is the [notebook application](GlasNotebooks.md), where we present the application as a mix of source code, rendered windows, and ad-hoc widgets. In context of this metaphor, we might 'import' pages or chapters, automatically integrate a table of contents and search bars. We can still support conventional GUI views. By overriding a few definitions, programmers could wrap the notebook view behind a user-defined front-end, or disable the notebook view to reduce program size via dead code elimination. Other metaphors for live coding are also viable, and might prove more suitable for VR or AR devices.
+
+To simplify live coding, we must minimize entanglements between code and state. For this reason, the glas program model eschews first-class functions, function pointers, or objects where state references code, instead favoring defunctionalization or runtime staging. The transaction loop application model supports stateless multi-threading and lets software updates be applied atomically. We'll favor caching via performance annotations, avoiding accidental use of cached computations after a code change. Nonetheless, some concerns must still be addressed by the compiler or programmer, such as how to handle schema updates.
 
 ## Performance
 
@@ -179,21 +179,13 @@ Compared to virtual memory backed by disk, content addressing has benefits for i
 
 ### Type System
 
-We can support type annotations within the abstract assembly, and typechecking on the final namespace. To avoid harming extensibility, it should be feasible to express just fragments of a type, a subset of type assumptions we make locally, leaving details to be refined contextually. Gradual typing should be feasible.
-
-In addition to structural types and data abstraction, I'm very interested in support for 'shadow' types that aren't represented in runtime data as a possible basis for unit types on numbers, staging types, logical locations or latency, and other contextual properties. Perhaps instead of shadow types per se, we could model an ad-hoc static computation that propagates bi-directionally through a call graph. This could feasibly be expressed as yet another namespace.
-
-Aside from types, I like the idea of annotating other properties and developing a system of 'proof hints' and 'proof tactics'. Ideally, types would be expressed within this system instead of separately from it. In case of shadow types, we'd add 'proof assumptions'. But at the moment, I don't have concrete ideas on how to approach this idea.
+I touch on type systems in the section on abstract and linear data, but I hope to gradually support something more sophisticated. I would hope to track unit types on numbers within applications, for example. And perhaps track ad-hoc session types for channels. It is unclear to me how to best approach this, other than that it will involve annotations within programs and namespaces to guide static analysis. Beyond types, I like the more general idea of proof-carrying code, with annotations for proof hints or tactics. 
 
 ### Program Search
 
-I'm interested in a style of metaprogramming where programmers express hard constraints and preferences while building a call graph. This might be expressed as path-dependent 'costs' based on non-deterministic choices. Costs could be described by emitting ad-hoc values at compile time, which are then translated to positive rational numbers, allowing users to explore different cost heuristics. 
-
-To support this, of course, we need static bi-directional computation with a notion of weighted choice, and we'll need a caching model and modified A* search to support incremental compilation. Intriguingly, this search could be applied to both construction of namespaces and choices within a call graph.
-
-I think it's best to solve the problem of static bi-directional computations first. That would be very useful even without search, e.g. to provide extra context over a call graph. Perhaps it could solve shadow types, or involve them, e.g. units for numbers.
+I'm interested in a style of metaprogramming where programmers express hard constraints and soft (weighted) preferences, and some form of stable search is performed. Expressing search isn't difficult by itself, but I also want a deterministic outcome and effective support for incremental computing. So, I'm still exploring my options here.
 
 ### Provenance Tracking
 
-I need to explore how to debug problems and trace them back to their original sources. In glas systems, this is complicated by metaprogramming at multiple layers, but also somewhat simplified by disfavoring first-class functions or other 'mobile' code abstractions. I like the idea of [SHErrLoc project's](https://research.cs.cornell.edu/SHErrLoc/) blame heuristics.
+I need to explore how to debug problems and trace them back to their original sources. In glas systems, this is complicated by metaprogramming at multiple layers, but also somewhat simplified by avoiding first-class functions and objects. I like the idea of [SHErrLoc project's](https://research.cs.cornell.edu/SHErrLoc/) blame heuristics.
 
