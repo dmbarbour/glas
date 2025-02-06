@@ -1,61 +1,51 @@
 # Glas Namespaces
 
-The glas namespace model is the foundation for modularity, extensibility, scalability, and version control of glas systems. A glas system, including runtime configuration and applications, is expressed as one enormous namespace across multiple files and DVCS repositories. 
+The glas namespace is the foundation for modularity, extensibility, metaprogramming, and version control of glas systems.
 
+A user's view of a glas system is expressed as an enormous namespace importing from multiple files and DVCS repositories. In general, the user will import from some DVCS repositories representing a community, company, or specific projects of interest, then override some definitions for user-specific resources, preferences, or authorities. Working with a huge namespace is mitigated by lazy evaluation and caching.
 
+I propose to represent a glas namespace *procedurally*: a program that 'writes' definitions when evaluated in a suitable context. At the top level, this procedure is parameterized by a source file, also serving as a front-end compiler for a specific file extension. This delegates many representation details to the [glas program model](GlasProg.md).
 
-
- glas namespace will define both applications and runtime configuration options, albeit in a structured way to support lazy loading and caching. 
-
- There is no strong separation of configurations and applications.
-
-
-
-A configuration may import other files, supporting file-based modularity. Instead of a separate package manager, applications and programs are defined in the configuration namespace. This results in a very large namespace, and performance must be mitigated by lazy loading and caching.
-
-aggregate definitions and overrides across multiple DVCS repositories. It also serves the role of package, also serve the role of package manager
-
-A glas namespace  nice systemic features: modular, extensible, scalable, predictable, and programmable.
-
-For modularity, I want the ability to define a namespace across multiple files and DVCS resources. Extensibility means I can introduce new definitions or modify existing definitions without invasively modifying files. Scalability requires parallelism, lazy evaluation, caching of definitions, and access control such that I can work effectively with very large namespaces. Predictability requires a deterministic outcome, automated testing, and effective control of relationships within the namespace. And programmability involves robust procedural generation of a namespace via definitions within the same namespace.
-
-
-## Representations
-
-I propose to represent a glas namespace *procedurally*: a program that 'writes' definitions when evaluated in a suitable context. At the top level, this procedure will be parameterized by a source file, also serving as a front-end compiler for a specific file extension. This design delegates many representation details to the [glas program model](GlasProg.md), but we must further specify an algebraic effects API and other contextual features.
+## Proposed Representation
 
 Some useful types:
 
-        type Name = Binary excluding NULL, prefix-unique, as a bitstring, 
-        type Definition = Abstract Assembly (separate doc)
-        type NSDict = Map of Name to Definition, as dict 
-        type Prefix = Binary excluding NULL, empty up to a full name
-        type TLMap = Map of Prefix to (Prefix | NULL), as dict  
-           # match longest prefix; NULL in RHS is a deletion or restriction
+        type Name = prefix-unique Binary, excluding NULL, as bitstring
+        type Prefix = any prefix of Name (empty to full), byte aligned
+        type TL = Map of Prefix to (Prefix | NULL) as radix tree dict
+          # rewrites longest matching prefix, invalidates if NULL
+        type NSDict = Map of Name to AST as radix tree dict
+        type AST = (Name, List of AST)      # constructor
+                 | d:Data                   # embedded data
+                 | n:Name                   # namespace ref 
+                 | s:(AST, List of TL)      # scoped AST
+                 | z:List of TL             # localization
 
-Algebraic effects API (roughly):
+Compiler effects API (roughly):
 
-* `define(NSDict)` - emit a batch of definitions
-* `move(TLMap)` - apply translation to future assigned names (LHS of NSDict)
-* `link(TLMap)` - apply translation to future definitions (RHS of NSDict, eval)
+* `def(NSDict)` - emit a batch of definitions
+* `move(TL)` - apply translation to future assigned names (LHS of NSDict)
+* `link(TL)` - apply translation to future definitions (RHS of NSDict, eval)
 * `fork(N)` - returns non-deterministic choice of natural number 0..(N-1)
-* `eval(Definition)` - evaluate under current translation
+* `eval(AST)` - evaluate under current translation
 * `load(URL)` - compile another source file
-* `source` - abstract source file (location, version, content, etc.) to support live coding.
+* `source` - abstract source (location, version, etc.) to support notebook apps and debugging.
 
-This will surely need some tweaking as things are developed, but it's sufficient to discuss implications.
+## Abstract Assembly
 
-### Prefix Uniqueness and Name Mangling
+I call the lisp-like AST encoding "abstract assembly" because every constructor node starts with a name, never a concrete value or bytecode. This ensures we can extend, restrict, or redirect constructors through the namespace. The system provides a set of 'primitive' constructor names, typically prefixed with '%' such as '%i.add' for arithmetic and '%seq' for procedural composition. The common prefix simplifies recognition and translation. Most TL maps will contain a `"%" => "%"` entry to forward primitives by default.
+
+## Prefix Uniqueness and Name Mangling
 
 Names are described as prefix-unique: no name should be a prefix of another name. A violation of prefix uniqueness is a minor issue, worthy only of a warning. However, prefix-uniqueness is what lets us translate "bar" without modifying "bard" and "barrel". To resolve this, a compiler should 'mangle' names, e.g. escaping special characters and adding a ".!" suffix. 
 
 The proposed suffix ".!" serves a role beyond prefix uniqueness. Every definition "bar.!" is implicitly associated with larger composite "bar.\*" for purpose of renames. This allows every definition to be implicitly extended with subcomponents or metadata within the namespace. We'll usually translate "x." to "y." instead of "x" to "y".
 
-*Note:* I don't write names in mangled form for aesthetic reasons, but in practice even primitives would be mangled.
+*Note:* I don't write names in mangled form for aesthetic reasons, but even primitives would be mangled.
 
-### Composing and Simplifying Translations
+## Composing and Simplifying Translations
 
-We can compose TLMaps sequentially, i.e. `A fby B` to indicate translation A is followed by (fby) translation B. We can evaluate this by adding rules with extended suffixes on both sides of A such that the RHS for A matches every possible LHS prefix for B, then we apply B's rewrites to the RHS of A. Note NULL never appears in the LHS of B, thus erasures are preserved.
+We can compose TL sequentially, i.e. assuming TL maps A and B, we can write 'A fby B' to indicate translation A is followed by (fby) translation B. Within the AST, we often express this lazily as a list of TL, head followed by tail. But it is feasible to reduce a list of TL to a singleton. This is achieved by extending suffixes on both sides of A such that the RHS for A matches every possible LHS prefix for B, then we apply B's rewrites to the RHS of A.
 
         { "bar" => "fo" } fby { "f" => "xy", "foo" => "z"  }                    # start
           # NOTE: also extend suffixes of implicit "" => "" rule
@@ -63,27 +53,29 @@ We can compose TLMaps sequentially, i.e. `A fby B` to indicate translation A is 
             fby { "f" => "xy", "foo" => "z"}     
         { "bar" => "xyo", "baro" => "z", "f" => "xy", "foo" => "z" }            # end
 
-Of course, a namespace evaluator could just as easily just maintain a list of translations without composing it. Composition into one 'flat' TLMap can potentially save a little space or time compared to iterating through a sequence of translations, but in practice the benefit is often negligible or negative.
+However, if it's only for performance, compacting TL maps will often prove to be a wasted effort because we end up applying a large TL map to just a few names, and we have better structure sharing with the list of TL. We only save when applying the translation very widely. So, this should be left as a heuristic decision.
 
-A TLMap can be simplified insofar as rewrite rules are redundant, e.g. when a rule with a longer prefix is implied by a rule with the next shorter prefix. For example, we don't need a rule `"xy" => "zy"` if the rule `"x" => "z"` exists. And we don't need the rule `"xy" => NULL` if `"x" => NULL` exists.
+Aside from composition, a TL map can be simplified where rewrite rules are redundant, e.g. when a rule with a longer prefix is implied by a rule with the next shorter prefix. For example, we don't need a rule `"xy" => "zy"` if the rule `"x" => "z"` exists. And we don't need the rule `"xy" => NULL` if `"x" => NULL` exists.
 
-### Alternative Designs
+### Scoped ASTs
 
-I could express translations as 'scoped' to definitions generated by a subprogram, instead of a stateful algebraic effect applying to the remaining continuation. This would leave it to 
+The only computation represented at the AST layer is scoping, which applies a sequence of translations to the AST node. Scoping is convenient when composing large AST fragments, and supports lazy evaluation. A localization lets us record a scope for future use in multi-stage programming.
 
-This would hinder laziness, but it could be resolved by encouraging compilers to scope entire continuations. 
-
- translations to be 'scoped' to expressions, not applying to the full remaining sequence. 
+When constructing definitions, the stack of 'link' translations will essentially be applied as a scope to every introduced definition. The 'move' translation instead rewrites the defined symbols, thus aren't represented within the AST at all.
 
 ## Non-Deterministic Choice
 
-The procedural namespace supports non-deterministic choice via 'fork'. In context, this evaluates all choices, and may be implemented by cloning the computation. This is similar to a [transaction loop](GlasApps.md), but simplified because there is no mutable state shared between steps. Use of fork serves as a foundation for iterative procedural generation, flexible evaluation order, and lazy evaluation.
+We use non-deterministic choice as the basis for iteration, i.e. upon 'fork' we'll actually evaluate both options in separate iterations. To ensure a deterministic outcome, definitions from lower numbered forks have priority. However, evaluation order is flexible. It is sufficient to avoid creating a dependency cycle. 
 
 ## Lazy Evaluation
 
-To support lazy evaluation, we must have robust metadata regarding which subcomputations are unnecessary. In this role, we'll primarily rely on 'move' translations. For example, while we're looking for the definition of 'foo', we can safely ignore the fork that adds a 'bar.\*' prefix to all newly defined names.
+Independent of lazy 'thunks' to defer pure computations, we can lazily evaluate a namespace by deferring evaluation of forks that obviously won't define the names we need. This will be determined based on 'move' translations.
 
-*Note:* Aside from laziness based on definitions, the program model may support laziness at the data layer. This would mostly be limited to purely functional calculations.
+## Source Abstraction
+
+To support notebook applications, the application must capture a reference to source so it can be edited from within the application. However, the source should be kept abstract to avoid influencing the compiled output. I currently propose a 'source' parameter that returns an abstract value that we'll be able to observe later through runtime reflection APIs.
+
+The runtime can decide whether this value is an abstract reference or directly records all relevant details.
 
 ## Modularity and Resources
 
@@ -164,8 +156,16 @@ The compiler lacks APIs to directly store computations into cache. Instead, we'l
 
 
 
+## Naming Variables
+
+In context of metaprogramming, it is convenient if capture of variables is controlled, aka [macro hygiene](https://en.wikipedia.org/wiki/Hygienic_macro). One possibility here is to encode a namespace directly into the computation, use translations to control access. Alternatively, we could encode variable names with reference to an external namespace. In the latter case, instead of `(%local "x")`, we might use `(%local &privateScopeName "x")`. This allows for limited non-hygienic macros when they can guess the private scope name.
+
+## Staged Eval
+
+In some cases, we'll want to insist certain expressions, often including function parameters and results, are evaluated at compile time. Minimally, this should at least be supported by annotations and the type system. But it is useful to further support semantic forms of static eval, e.g. '%static-if' doesn't necessarily need to assume the same type or environment on both conditions, instead allowing the static type of an expression or function to vary conditionally.
+
+In context of dead code elimination and lazy loading, static eval is limited in viable 'effects' API. We can permit 'safe' cacheable fetching of files or HTTP GET, or debug outputs such reporting a warning. In the latter case, we might be wiser to model the effect as an annotation and debugging as reflection.
 
 
-# Old Content
 
 

@@ -1,6 +1,6 @@
 # Program Model for Glas
 
-In the intermediate representation, a program is an abstract [namespace](GlasNamespaces.md) of definitions using a Lisp-like [abstract assembly](AbstractAssembly.md). An application namespace must define methods recognized by the runtime, e.g. start, step, switch, signal, settings, http, and rpc. The abstract assembly references undefined names, typically with a '%' prefix, as primitive AST constructors or keywords. 
+In the intermediate representation, a program is an abstract [namespace](GlasNamespaces.md) of definitions using a Lisp-like intermediate language. An application namespace must define methods recognized by the runtime, e.g. start, step, switch, signal, settings, http, and rpc. The abstract assembly references undefined names, typically with a '%' prefix, as primitive AST constructors or keywords. 
 
  and ' an interface via this namespace. 
 
@@ -95,6 +95,8 @@ Could support channels within app more generally, but:
 * I want to support unit types for numbers and other useful context, ideally propagating through a computation at compile time. And I'd like users to have flexible support to define similar context for other roles. I'm not sure how to approach this yet.
 * I would like to automate support for indexed and editable relational database views. It is feasible to model the database as an accelerated data type or linear object, but it might be easier to support static analysis of views if the database model is built-in to the program model.
 * Ideally, every program has a clear small-step rewrite semantics. This greatly simplifies debugging.
+
+Embedded data is the only type that doesn't contain names, and is thus not rewritten based on scope. However, we should wrap most embedded data with a suitable node that can validate its type and represent intentions, e.g. favoring `(%i.const 42)` where an integer expression is expected. Some languages might restrict which data can be embedded.
 
 
 # Old Stuff
@@ -295,4 +297,4 @@ For first-order procedural programming, we hard-code names in the call-graph bet
 
 However, encoding many small variations on a large call graph at the namespace level is very expensive in terms of memory overhead and rework by an optimizer. To solve this, we should support abstraction of calls at the program layer. For example, we could support algebraic effects where a program introduces an effects handler that may be invoked from a subprogram. With careful design, this effects handler may still be 'static' for inline optimizations and partial evaluation, similar to namespace overrides.
 
-By leveraging *Localizations* (from [abstract assembly](AbstractAssembly.md)), we can also interpret data to names in the host namespace without loss of namespace layer locality or security properties. It is feasible to leverage layers of localizations to model overlays on the call graph, where most names can be overridden in a given call context.
+By leveraging *Localizations*, we can also interpret data to names in the host namespace without loss of namespace layer locality or security properties. It is feasible to leverage layers of localizations to model overlays on the call graph, where most names can be overridden in a given call context.
