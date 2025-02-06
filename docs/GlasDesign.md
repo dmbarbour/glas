@@ -125,43 +125,97 @@ A queue can be written by one transaction and concurrently read by another witho
 
 The runtime must tweak some effects APIs - filesystem, network, clock, FFI, etc. - in context of distribution. This might involve implicit parameters, allowing us to reuse some APIs. The compiler, optimizers, and runtime should also support features such as automatically mirroring or migrating state for performance.
 
-## Annotations
-
-Programs in glas systems will generally embed annotations to support logging, profiling, automated testing, debugging, type-checking, optimizations, and other non-semantic features. As a general rule, annotations must not influence observable behavior except through reflection APIs. Thus, it is safe to ignore unrecognized annotations, though we'll report a warning to resist silent degradation of performance or consistency. 
-
-In context of abstract assembly, annotations might be generally represented using `(%an AnnoAST ProgAST)`, scoping over a subprogram. The AnnoAST might be something like `(%log ChanExpr MessageExpr)`. Ignoring the annotation, this should be equivalent to ProgAST. If ProgAST is omitted, we might assume a no-op.
-
-We can also support annotations in the namespace. For this, I propose prefix '\#' for annotations. We might define 'foo.\#doc' or 'foo.\#type' to document 'foo'. 
-
-Although annotations don't directly influence system behavior, their influence is indirectly visible through reflection APIs or external configurations. For example, annotations for profiling might result in statistics that can later be extracted via 'refl.prof.\*', or we might configure a runtime to serialize profiling metadata to file.
-
-## Automated Testing
-
-Automatic test are expressed using annotations. Within definitions, we might use annotations to express static assertions. In the namespace, we could try a simple naming convention such as 'foo.\#test.\*', and scan for test functions. 
-
-Tests should be cacheable, reproducible, and have minimal effect on the real world environment. We could support non-deterministic choice for fuzz testing (recording the sequence of choices), and local state for simulation, yet omit most external effects.
-
 ## Live Coding
 
-To support live coding, an abstract reference to source code is captured at compile-time, then the runtime provides a filesystem-like API to diff or edit these sources. This API is adjusted to work with DVCS. Typically, the compiler will provide code to render an editable projection of code through HTTP or GUI interfaces, but a language designed for live coding should also support syntax for integrating customized views or applets.
+Transaction loop applications make it relatively simple to update program behavior between transactions. Logically, we can understand this as the application reading and rebuilding its own code in the stable prefix of each transaction. A glas runtime can be configured to check for updates in files or DVCS automatically, or we might let applications trigger updates via reflection API. To further control live coding, applications may define a 'switch' method that must succeed as the first call on the updated code.
 
-One useful metaphor for live coding is the [notebook application](GlasNotebooks.md), where we present the application as a mix of source code, rendered windows, and ad-hoc widgets. In context of this metaphor, we might 'import' pages or chapters, automatically integrate a table of contents and search bars. We can still support conventional GUI views. By overriding a few definitions, programmers could wrap the notebook view behind a user-defined front-end, or disable the notebook view to reduce program size via dead code elimination. Other metaphors for live coding are also viable, and might prove more suitable for VR or AR devices.
+To further simplify live coding, the glas program model avoids state-code entanglement where feasible. There are no first-class functions or objects. Instead, for dynamic code programs should rely on defunctionalization or accelerated eval. Instead of 'spawning' threads with a start function, concurrency is based on stable repetition of a non-deterministic choice. Caching is declarative, guided by annotations, allowing for precise invalidation by a runtime. Transactional remote procedure calls are favored over long-lived connections such as channels, ensuring reactivity of relationships in the open system.
 
-To simplify live coding, we must minimize entanglements between code and state. For this reason, the glas program model eschews first-class functions, function pointers, or objects where state references code, instead favoring defunctionalization or runtime staging. The transaction loop application model supports stateless multi-threading and lets software updates be applied atomically. We'll favor caching via performance annotations, avoiding accidental use of cached computations after a code change. Nonetheless, some concerns must still be addressed by the compiler or programmer, such as how to handle schema updates.
+Rather than rely entirely on external tools, I hope for applications to participate in their own live coding. For example, we could define [notebooks](GlasNotebooks.md) where the compiler provides at least one editable projection of source code mixed with rendering computed values, graphs, graphics, even a few widgets for users to tweak application state. When we 'import' modules, it might automatically integrate pages or chapters into the notebook, and construct a composite table of contents. In the general case, this allows for graphical programming, e.g. with boxes and wires or some other metaphor. Ideally, this view should be easy for users to wrap within a user-defined GUI or remove to save space.
+
+## Annotations
+
+Programs in glas systems will generally embed annotations to support logging, profiling, testing, debugging, static analysis, caching, acceleration, parallelism, and other non-semantic features. As a general rule, annotations should not influence observable behavior except as observed through reflection APIs. That is, it must be safe for a runtime to ignore unrecognized annotations. Instead of raising an error, we'll report a warning per unrecognized annotation to resist silent degradation of program integrity or performance.
+
+In context of the abstract assembly intermediate representation, I propose that annotations are represented using a uniform structure `(%an AnnoAST Operation)`, such as:
+
+        (%an (%log ConfigChan Message) Operation)
+        (%an (%assert ConfigChan Expr Message) Operation)
+        (%an (%type TypeExpr) Operation)
+
+In each case, we annotate Operation with a given AnnoAST. If Operation is omitted, it defaults to a no-op. The set of recognized annotations is ad-hoc extensible via abstract assembly. We can easily warn about unrecognized annotations only once per name. To let developers selectively disable warnings, we might generically support `(%an (%an.nowarn AnnoAST) Operation)`.
+
+We can also support annotations at other layers. For the namespace layer, we might use prefix '\#' such as 'foo.\#type' or 'foo.\#test.\*' to define annotations on 'foo' or 'foo.\*'. At the data layer, we might annotate data to enforce types at runtime, to support acceleration, or to trace data flow through a system.
+
+### Automatic Testing
+
+Automatic tests can be expressed within a program using assertions, or within a namespace via ad-hoc conventions such as 'foo.\#test.\*'. Assertions can be static or dynamic. In general, we might leverage non-deterministic choice as a basis for fuzz testing, and tests would be evaluated within a transaction that we abort after determining pass or fail.
+
+Conventionally, assertions are treated as independent statements. However, in some cases it might be useful to express some assertions as 'invariants' over a subprogram, such as:
+
+        assert(Chan, Cond, Message) { Operation }
+          # compile to
+        (%an (%assert Chan Cond Message) Operation)
+
+In this case, we might evaluate Cond at multiple points during Operation. Or, depending on configuration, we might test Cond once randomly during Operation, or just randomly in general allowing for multiple Operations per test. Regardless, we might test the condition whenever something else goes wrong during Operation and it's time to generate a stack trace.
+
+### Logging and Profiling
+
+As with assertions, I propose to support logging over an operation. Depending on the configuration, logging over an operation could include some performance metadata in addition to messages. Profiling can be understood as a specialized log, where the runtime efficiently aggregates performance statistics, treating each 'message' as a dynamic aggregation index.
+
+        log (Channel, Message) { Operation }
+        prof (Channel, DynamicIndex) { Operation }
+          # compile to
+        (%an (%log Channel Message) Operation)
+        (%an (%prof Channel DynamicIndex) Operation)
+
+We could support configuration of random sampling during an operation, or 'animation' of a log to support rendering of Operation. Or perhaps we only compute Message as part of a stack trace to support debugging.
+
+*Note:* In context of transaction loop applications, with incremental computing and non-deterministic choice, we might want to render logs as something like a stable tree of messages that is also animated across repeating transactions.
+
+### Recording
+
+Where logging produces a user-defined message, recording instead captures some data to slowly replay a computation in the future. This recording initial states, parameters, and results from calling runtime APIs, but only insofar as these are observed within the computation. Though, we could record some outputs to help 'validate' the recording upon replay.
+
+        # perhaps expressed as
+        record (Channel, Cond) { Operation }
+
+I think that such records would prove convenient for debugging many programs without interfering quite so severely as breakpoints. 
+
+## Debugging
+
+Depending on configuration, a glas runtime may implicitly intercept some `"/sys"` HTTP requests, and similarly for RPC, with configurable authorization. Through these interfaces the runtime can provide access to logs, profiles, recordings, an attached database, source and version information, disassembly of code, manipulation of breakpoints, and generic administrative controls: pause, continue, update, restart, etc.. 
+
+An integrated development environment can implement scripts or plugins to interact with the glas runtime through these APIs. The runtime may also peek at the 'Accept:' header and let users browse logs, profiles, etc. with a few hyperlinks, insofar as this view doesn't add overly much overhead.
+
+An application will receive access to these features via reflection APIs. Some reflection APIs may be fine-grained and structured for performance and efficiency, but should also support aggregate views via 'sys.refl.http' and similar. This enables an application to implement its own ad-hoc debug views. This is especially convenient in context of notebook applications where an application implements its own projectional editor.
 
 ## Performance
 
 ### Acceleration
 
-I touch on the notion of acceleration when describing the *List* and *Number* types for glas data. More generally, a runtime can develop specialized data representations and functions to leverage them, then let programmers replace a reference implementation with a more efficient version via annotation. In addition to triggering this exchange, the annotation resists silent performance degradation by warning the user if the exchange fails. 
+In context of community and portability concerns, it is socially awkward to unilaterally extend a glas program model with new semantic primitives. Acceleration is a pattern that bridges this gap, letting runtimes introduce 'performance' primitives separately from 'semantic' primitives. 
 
-Intriguingly, it is feasible to accelerate simulation of an abstract CPU or GPGPU or process network. With some careful design and ahead-of-time safety checks, we can compile a simulation to run unchecked on actual hardware. This is a viable path to high performance computing in glas systems.
+For example, instead of directly introducing a new primitive for '%matrix.mul', we might write `(%an (%accel.matrix.mul) ReferenceImpl)`. A subset of runtimes might recognize this annotation, optionally validate ReferenceImpl, then replace the entire expression by '%matrix.mul'. Other runtimes could raise a warning then use ReferenceImpl. The warning guards against silent performance degradation.
 
-Developing an accelerator is a high risk endeavor due to potential for bugs or security holes. As a rule, we should introduce acceleration only where the reward is similarly great. Aside from lists, numbers, and abstract machines, effective support for graphs, bags, sets, and relational algebras may prove worthy.
+One of the best use cases is accelerated 'eval' of an abstract CPU, GPGPU, or other low-level model. With some careful design, we can efficiently validate code is safe then 'compile' to run upon an actual CPU (or GPGPU, etc.). This can replace most performance-motivated of FFI or embedded assembly, and let glas systems effectively enter new problem domains. But there are also plenty benefits for extending 'data types' to graphs, bags, sets, relational algebras and databases, etc..
 
 ### Laziness and Parallelism
 
-We can introduce annotations to guide use of laziness and parallelism. If intelligently applied, parallelism can enhance utilization while laziness avoids wasted efforts. Both can keep transactions shorter, reducing risk of concurrent interference. However, laziness and parallelism introduce their own performance risks. This can be mitigated by heuristically 'forcing' computations. I suggest automatically forcing computations at RPC boundaries to isolate performance risks to each application.
+Insofar as we determine certain expressions are read-only, we might ask the runtime to defer computation, immediately returning a 'thunk' that captures code and context. Later, we can implicitly force evaluation by observing the value, or explicitly do so via other annotations. We can even ask a runtime to put the thunk into a queue for a worker thread to 'force', which supports lightweight parallelism.
+
+Viable API:
+
+        (%an (%lazy.thunk) Expr)        # return thunk immediately; restricts type of Expr
+        (%an (%lazy.force) Expr)        # if Expr returns shallow thunk, force evaluation
+        (%an (%lazy.force.deep) Expr)   # force all thunks within data returned by Expr
+        (%an (%lazy.spark) Expr)        # put thunk in a queue to be forced by worker thread
+
+Laziness does introduce a risk of capturing divergent computations. Or, even if we guarantee termination, some computations might simply take too long and hinder reasoning about performance. To control this problem, we'll generally scope thunks to the runtime, i.e. implicitly forcing thunks when serializing data in context of remote procedure calls or persistent storage. 
+
+Aside from runtime scope, we might benefit from 'transaction' scope, i.e. thunks that will be forced just prior to commit if they would escape the transaction. Indeed, this might be a better default than runtime-scoped thunks. One viable expression: a runtime could recognize both `%lazy.thunk.rt` and `%lazy.thunk.tn`, with `%lazy.thunk` translating to a configurable default.
+
+Anyhow, I don't expect glas systems to pursue Haskell levels of laziness, but it does seem a useful feature for guiding performance.
 
 ### Memoization
 
@@ -171,21 +225,49 @@ In any case, the use of memoization is assumed in design of glas. Without it, ma
 
 ### Content Addressed Data
 
-To support larger-than-memory data, glas systems may leverage content-addressed storage to offload subtrees to network or disk. This optimization can be guided by program annotations, but should be transparent modulo use of runtime reflection APIs.
+To support larger-than-memory data, glas systems may leverage content-addressed storage to offload subtrees to higher-latency storage (e.g. disk or network). This optimization can be guided by program annotations, but should be transparent modulo use of runtime reflection APIs. In context of serialization - distributed runtimes, database storage, or remote procedure calls - we can support protocols to lazily fetch fragments of data as needed, supporting incremental upload and download for large values. 
 
-Compared to virtual memory backed by disk, content addressing has benefits for incremental computation, orthogonal persistence, and structure sharing. A lot of work doesn't need to be repeated when a hash is known. When communicating large values, it also works nicely with [content delivery networks (CDN)](https://en.wikipedia.org/wiki/Content_delivery_network).
+There are also benefits for memoization, allowing us to work with larger values as 'keys'. And it is feasible to offload hashed content to a [content delivery networks (CDN)](https://en.wikipedia.org/wiki/Content_delivery_network), reducing the network burden for distributing very large values.
 
 ## Thoughts
 
 ### Type System
 
-I touch on type systems in the section on abstract and linear data, but I hope to gradually support something more sophisticated. I would hope to track unit types on numbers within applications, for example. And perhaps track ad-hoc session types for channels. It is unclear to me how to best approach this, other than that it will involve annotations within programs and namespaces to guide static analysis. Beyond types, I like the more general idea of proof-carrying code, with annotations for proof hints or tactics. 
+The section on abstract and linear data provides a highly simplified dynamic type system. But I hope to gradually support something more sophisticated. I would hope to track unit types on numbers within applications, for example. And perhaps track ad-hoc session types for channels, insofar as we use them. It is unclear to me how to best approach this, other than that it will involve annotations within programs or namespaces to guide static analysis. Beyond types, I hope to explore the more general idea of proof-carrying code, using annotations to integrate proof tactics that can adapt to smaller code changes.
+
+*Note:* Because glas programs are mostly transactional in nature, it's relatively easy to treat dynamic type errors at runtime as divergence, same as an infinite loop, effectively aborting the transaction. 
 
 ### Program Search
 
-I'm interested in a style of metaprogramming where programmers express hard constraints and soft (weighted) preferences, and some form of stable search is performed. Expressing search isn't difficult by itself, but I also want a deterministic outcome and effective support for incremental computing. So, I'm still exploring my options here.
+I'm interested in a style of metaprogramming where programmers express both hard and soft constraints on the program, and the program includes sufficient code to adapt to contexts and user preferences. Depending on the design, this might also support working with 'ambiguous' definitions, allowing programmers to be more vague and still get a useful program.
 
-### Provenance Tracking
+Some ideas: We could introduce AST nodes for 'static' non-deterministic choice within a call graph. We can reject some solutions based on static asseertions, and prioritize others that have a lower 'weight'. Weights can be abstracted into arbitrary values that we 'interpret' into positive rational numbers according to user preference, e.g. an 'experimental' tag might weigh 0.01 for one user and 100 for another. By applying something similar to an A* search, it should be feasible to discover the 'best' solution by weight, and we can ensure this solution is deterministic.
 
-I need to explore how to debug problems and trace them back to their original sources. In glas systems, this is complicated by metaprogramming at multiple layers, but also somewhat simplified by avoiding first-class functions and objects. I like the idea of [SHErrLoc project's](https://research.cs.cornell.edu/SHErrLoc/) blame heuristics.
+But I'm not convinced that a one-size-fits-all solution at the toplevel is the right approach here. Perhaps more explicit staging of program search would be easier for programmers to isolate, control, and stabilize in context of incremental compilation. 
 
+### Tracing and Recording
+
+I would love to trace both code and runtime data to its sources despite the challenges of multi-stage metaprogramming, optimizers, and open distributed systems. But what can be achieved without too much overhead or added system complexity?
+
+One feasible idea is to add model something like medical radioactive tracers for dataflow. We can attach tracer annotations to data, then observe these annotations as they propagate through a system. By default, we could log the tracer when the value is observed or destroyed. Then we could annotate some expressions to capture and repply tracers to the return value instead of logging them.
+
+ and such. 
+
+ state and log external events (and non-deterministic choices) so we can slowly replay some computations after the fact. This could also be guided by annotations.
+
+
+
+
+I'd love the ability to trace computed definitions back to source code at a very fine granularity. And, similarly, to trace outputs from a program back to specific inputs and conditional code. But this seems difficult to achieve, at least without enormous overheads. Some ideas: Perhaps we could leverage something like  And instead of fine-grained data annotations, we could support bulkier 'overlay' annotations. But this seems a pipe dream at the moment. 
+
+What we can achieve in is support something like explicitly tagging data with
+ 
+ annotations that we can then inspect as the data flows through the system. 
+
+By default, we could *log* a message whenever a tag is removed from data and not explicitly handled. And we cou
+
+
+
+For example, we could annotate expressio
+
+ arrange for certain operations to capture tags 'removed' when processing data, then applying a new tag that may depend on all the tags removed. 
