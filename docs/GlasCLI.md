@@ -20,7 +20,7 @@ My vision and intention is that end users mostly operate through user-defined op
 
 ## Configuration
 
-The glas executable starts by reading a `GLAS_CONF` environment variable and loading the specified file as a [namespace](GlasNamespaces.md). This doesn't need to be a local file; we could load a package folder or URL. But if unspecified, the default location is `"~/.config/glas/conf.g"` in Linux or `"%AppData%\glas\conf.g"` on Windows. 
+The glas executable starts by reading a `GLAS_CONF` environment variable and loading the specified file as a [namespace](GlasNamespaces.md). If unspecified, the default location is `"~/.config/glas/conf.g"` in Linux or `"%AppData%\glas\conf.g"` on Windows. 
 
 The configuration namespace defines functions to evaluate runtime options such as persistent storage, caching, filesystem access, logging, etc.. The set of configurable features is ad-hoc and runtime-specific, albeit subject to de-facto standardization. Many options, such as logging, may be application-specific: the configuration can query application 'settings' when evaluating application-specific options. To simplify portability and security, application settings are never directly observed by the glas executable.
 
@@ -34,7 +34,7 @@ The choice of '--run', '--script' and '--cmd' lets users reference applications 
 
 * **--run**: The application is already defined in the configuration namespace. To run "foo" we might access definitions such as "app.foo.settings", "app.foo.start", "app.foo.step", and so on. This translation may be configurable. A user can inherit from a community configuration that defines thousands of useful applications, loading them on demand.
 * **--script**: The namespace model defines a 'load' operation. We 'load' the specified source (e.g. a file, package folder, or URL) in scope of a configurable '%env.\*' environment and primitive '%\*' AST constructors. The generated namespace should define application methods such as 'settings', 'start', 'step', and so on. 
-  * **--script.FileExt**: Same as '--script' except we assume or assert the given file extension. Intended for use with shebang scripts in Linux, where file extensions are often elided.
+  * **--script.FileExt**: Same as '--script' except we'll assume the given file extension in place of the actual file extension. Intended for use with shebang scripts in Linux, where file extensions are frequently elided.
 * **--cmd.FileExt**: Treated as '--script.FileExt' for an anonymous, read-only file found in the caller's working directory. The assumed motive is to avoid writing a temporary file.
 
 Prior to running the application, the glas executable might download sources, analyze types, evaluate tests, optimize, JIT-compile, and apply application-specific configuration options based on 'settings'. However, these efforts can be cached such that running the same application in the future is a lot faster.
@@ -45,7 +45,15 @@ However, the glas executable may support alternative run modes, e.g. staged appl
 
 ### Installing Applications
 
-Users might 'install' some applications to ensure they're available for offline use. To simplify tooling, the user configuration might specify a text file where a list of installs is recorded. Users would maintain this file through a text editor or through command line operations such as 'glas --install' and 'glas --uninstall'. Use of 'glas --update' could process the file, downloading resources and maintaining the local cache.
+Users will inevitably want to 'install' applications to ensure they're available for offline use. 
+
+        glas --install AppName*
+        glas --uninstall AppName*
+        glas --update
+
+To simplify tooling, the configuration will specify a separate text file where installs are managed by 'glas --install' and 'glas --uninstall'. This can be paired with a computed list of installs defined within the configuration. When the user runs 'glas --update', the cache is maintained according to the current list of installs.
+
+The proposed interface only supports applications defined within the configuration and referenced by name. It is feasible to extend this to scripts, referencing file paths or URLs. (I would not recommend installing '--cmd' text!)
 
 ### Shared Memo-Cache
 

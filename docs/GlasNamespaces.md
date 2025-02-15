@@ -95,7 +95,7 @@ The 'load' operation is the basis for modular namespaces. This call returns imme
 
 Support for modularity is entangled with support for user-defined syntax. Instead of a standard syntax, 'load' selects a namespace procedure from the current scope based on file extension, typically '%env.lang.FileExt'. This namespace procedure is parameterized by the file binary and evaluated. Effectively, this implements a front-end compiler, while the generated definitions serve as an [intermediate representation](https://en.wikipedia.org/wiki/Intermediate_representation).
 
-We assume built-in support for a few file extensions, such as ".g" files. However, '%env.lang.g' is favored. If necessary, we'll bootstrap this via the built-in then verify a fixpoint. 
+We assume built-in support for a few file extensions, such as ".glas" files. However, '%env.lang.glas' is favored. If this is self-referentially defined, we'll attempt a bootstrap via the built-in then verify a fixpoint. Multiple built-in languages can be mutually bootstrapped in one step. 
 
 By aligning user-defined syntax with file extensions, we can easily integrate with external tools. A file-based database or a ".zip" file can generously be viewed as 'syntax'. Graphical and textual programming can be freely mixed. Users can develop DSLs for a project. Simple ".txt" or ".json" files might merely define 'data', but we can warn for spelling errors or report compile-time errors for structure errors, and we can easily apply partial evaluation optimizations.
 
@@ -103,21 +103,27 @@ By aligning user-defined syntax with file extensions, we can easily integrate wi
 
 ### Folders as Packages
 
-Users may refer to a folder as the target for 'load'. In this case, we'll search for the 'package' file, of any extension. If a package file exists, it is loaded. Otherwise, we'll generate a namespace that mimics the hierarchical structure of the folder content, albeit hiding file extensions. Files or subfolders whose names start with '.' would be fully hidden.
+To simplify sharing of folders, we forbid loading of parent-relative and absolute file paths. Files within a folder may only reference other files in the same folder or subfolders, or remote DVCS resources. Thus, a folder is effectively location-independent.
 
-To further simplify sharing of folders, we forbid loading of parent-relative and absolute file paths. Files within a folder may only reference other files in the same folder or subfolders, or remote DVCS resources. Thus, a folder is effectively location-independent.
+Users may refer to a folder as the target for 'load'. In this case, we search for the 'package' file of any extension. If the package file exists, it is loaded. Otherwise, we generate a simple namespace that mimics the hierarchical structure of the folder content, albeit hiding file extensions. Files or subfolders whose names start with '.' would be fully hidden.
 
-### Source References
+Reference to specific files within a subfolder can bypass interface abstractions and hinder refactoring of code. We might raise a linter-level warning to encourage developers to properly treat folders as packages.
 
-Interpretation of source references is relatively arbitrary and ad-hoc: A specific runtime might heuristically recognize *some* raw texts, 'file:Text', and 'dvcs:(...)' with multiple parts. However, to simplify things, this runtime can allow the user configuration define an extra translation step. This configured function may query runtime version information to support a more adaptive translation. 
+### Ad-hoc SourceRef
 
-We can further support some translation steps *before* the load step, e.g. the front-end compiler could refer to a shared library. And in the extreme, the source could compute SourceRef by namespace macros.
+A glas runtime may interpret source references in implementation-specific ways. For example, a runtime might heuristically recognize some texts as file paths or DVCS URLs. It may also support 'file:(path:Text, as:FileExt)' and 'dvcs:(...)' with multiple parts clearly describing where to fetch, which file to load, mirrors, authorization hints, etc..
 
-Ultimately, this leaves many opportunities for extension and adaptation as we integrate new sources.
+A user configuration might define a `SourceRef -> SourceRef` function to translate and sanitize this reference between 'load(SourceRef)' and the runtime observing the value. For portability, this method might query the runtime. Unfortunately, this configured method is not available for the first few loads. The runtime will retrospectively review whether those initial loads are consistent with the configuration, i.e. whether we're within a fixpoint. If not, raise an error.
 
-## Abstract Source Location
+This design supports gradual integration with remote sources, and gradual standardization of SourceRef across runtime implementations. Initially, we might aim to support only a few remote DVCS resource sites, such as github and gitlab. We can grow from there.
 
-The 'source' API is intended to support notebook applications where every application is a projectional editor for itself. This requires knowing where to find the source code. However, the output from compilation shouldn't depend on where code comes from. Thus, I propose capturing an abstract value or reference. This abstract source should ideally be stabilized in context of a shared memo-cache.
+## Abstract Source and Live Coding
+
+The 'source' in the API for namespace procedures is mostly intended to support notebook applications, where every application is its own live coding projectional editor. It could be used for self-modifying code in general. The front-end compiler is parameterized with a *binary*, thus this source is the only clue where that binary comes from. However, glas code should not behave differently based on where it comes from, thus this source is left abstract. 
+
+At runtime, the API for access to source should be abstracted around cooperative work though a DVCS - feature branches, pull requests, comments, blame, diffs, etc.. Details about where the source is located would also be available. A runtime could simulate a useful subset of these features for local files.
+
+*Note:* Ideally, the abstract source is stable across common reorganizations of code, such that it doesn't interfere with incremental compilation or shared memo-cache. However, the developers responsible for writing the incremental compiler should assume it's unstable.
 
 ## Design Patterns
 
@@ -153,13 +159,13 @@ At the moment, I lack a solid generic solution. However, I do have an intuition:
 
 *Note:* I don't have a practical use case in mind. At the moment, this pattern serves only as a demonstration of theoretical expressiveness.
 
-A namespace process can be modeled in terms of a namespace procedure that 'yields' incremental output by forking to commit one branch and continue the other. A process may also fork to 'spawn' a subprocess. Processes interact by writing or awaiting definitions in turn, with 'eval' implicitly waiting. Although the outcome is deterministic, composition is more flexible than call-return, able to model protocols and negotiations. We can use [session types](https://en.wikipedia.org/wiki/Session_type) to describe a process.
+A namespace process can be modeled in terms of a namespace procedure that 'yields' incremental output by forking to commit one branch and continue the other. A process may also fork to 'spawn' a subprocess. Processes interact by writing or awaiting definitions in turn, with 'eval' implicitly waiting. Although the outcome is deterministic, composition is more flexible than call-return, able to model protocols and negotiations.
 
-Interaction of processes introduces many intermediate definitions. It is possible to garbage-collect these definitions, but a long-running process must *add* `Prefix => NULL` link rules to *remove* items from scope. Unless these rules simplify, this implies linear overheads, useful only for very coarse-grained interaction.
+Interaction of processes introduces many intermediate definitions. It is possible to garbage-collect these definitions, but a long-running process must *add* link rules to *remove* items from scope. Unless these rules simplify, this incurs linear overhead, thus is useful only for coarse-grained collection.
 
-We can arrange for link rules to simplify for *sequential* interactions, such as modeling a channel. Consider a variable-width numbering schema such as A000 to A999, B001000 to B999999, C001000000 to C999999999, and so on. Assuming simplification, rule A11 replaces rules A110 to A119. When processing item A123, six rules remove all prior items from scope: A0, A10, A11, A120, A121, A122. The number of rules is the sum of digits plus the number of prior size headers. For performance, a binary encoding would result in fewer rules after simplification, and we can allocate and collect 'buffers' for smaller messages.
+Link rules most easily simplify for *sequential* interactions, such as channels. Consider a variable-width numbering schema such as A000 to A999, B001000 to B999999, C001000000 to C999999999, and so on. Under simplification, rule `"A11" => NULL` replaces rules for A110 to A119. When processing item A123, six rules can remove A000 to A122 from scope: A0, A10, A11, A120, A121, A122. In general, the number of rules is the sum of digits plus the number of prior size headers (A, B, C, etc.). A binary encoding results in fewer rules.
 
-Channels are second-class. The 'link' translation can remove names from scope, but there is no mechanism to bring names into scope. Thus, channels cannot be passed between processes that don't already have them in scope. However, we can establish subchannels over existing channels, e.g. message 'mA123' informs reader to begin processing subchannel 'cA003.\*' for reading or writing. We can spawn a subprocess to lazily 'wire' an input channel to an output channel. Wiring adds overhead per hop, but may be acceptable if we control the number of hops.
+Dynamic channels are readily supported. Message 'mA123' could inform the reader that the next subchannel, 'cA003.\*', is now in play for reading or writing. A few caveats: Simplifying requires tracking extra metadata because cA003 may remain in use long after cA009 is released. Depth is a concern: as we establish subchannels over subchannels over channels, names grow linearly like 'cA003.cA042.cA001.mA042'. Channels are second-class: the closest thing to passing a channel around is spawning a subprocess to lazily alias inputs to outputs, a 'wiring' pattern.
 
 ## Quotas
 
