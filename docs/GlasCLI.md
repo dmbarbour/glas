@@ -1,12 +1,14 @@
 # Glas Command Line Interface
 
-The glas executable generally takes the first command line argument as a switch to interpret the remainder of the arguments. There are a few options for running applications from different sources, and extensible ad-hoc ops for managing the configuration and so on.
+The glas executable generally takes the first command line argument as a switch to interpret the remainder of the arguments. There are a few options for running applications from different sources, and some ad-hoc operations to help users understand and control the glas system. 
 
-        glas --run ConfiguredApp Args To App
-        glas --script(.FileExt)* FileName Args To App
-        glas --cmd(.FileExt)+ "Command Text" Args To App 
+        glas --run AppName Args To App
+        glas --script SourceRef Args To App
+        glas --script.FileExt FilePath Args To App
+        glas --cmd.FileExt "Source Text" Args To App 
+        glas --cache CacheOp
         glas --conf ConfigOp
-        # runtime extensible
+        ... etc. ...
 
 A simple syntactic sugar supports user-defined operations:
 
@@ -18,85 +20,62 @@ My vision and intention is that end users mostly operate through user-defined op
 
 ## Configuration
 
-The glas executable starts by reading a configuration file. This file is typically specified by the `GLAS_CONF` environment variable, otherwise we'll try an OS-specific default, such as `"~/.config/glas/conf.g"` in Linux or `"%AppData%\glas\conf.g"` on Windows. If the configuration file does not exist, users must create one, perhaps interactively via `glas --config init` or external tools.
+The glas executable starts by reading a `GLAS_CONF` environment variable and loading the specified file as a [namespace](GlasNamespaces.md). This doesn't need to be a local file; we could load a package folder or URL. But if unspecified, the default location is `"~/.config/glas/conf.g"` in Linux or `"%AppData%\glas\conf.g"` on Windows. 
 
-A typical user configuration will import a community or company configuration, then override a few definitions to integrate user preferences, projects, authorities, or resources. The community or company configuration is typically imported from DVCS and will define applications, tools, and reusable components through further imports. Each DVCS reference will specify a tag or version hash. Effectively, every glas configuration doubles as a package manager and virtual envrionment. This results in very large configurations, but potential problems are mitigated by lazy loading and caching.
+The configuration namespace defines functions to evaluate runtime options such as persistent storage, caching, filesystem access, logging, etc.. The set of configurable features is ad-hoc and runtime-specific, albeit subject to de-facto standardization. Many options, such as logging, may be application-specific: the configuration can query application 'settings' when evaluating application-specific options. To simplify portability and security, application settings are never directly observed by the glas executable.
 
-Many runtime options should be application-specific. To support this, applications define an ad-hoc 'settings' method. These settings are not directly observed by the runtime. Instead, they should be queried and interpreted by the configuration when evaluating application-specific options. Intriguingly, some queries to 'settings' may be higher-order, receiving access to some methods to query the configuration. This allows for more flexible adaptation, where settings may depend on the configuration or runtime features.
+The configuration namespace may also define applications and shared libraries. A typical user configuration will import a community or company configuration from DVCS, then apply a few overrides for user-specific preferences, projects, and resources. A community configuration can define thousands of applications, mitigated by lazy loading and caching. Importing by specific tags or hashes in remote DVCS repositories serves as the foundation for curation, version control, and package management.
 
-In addition to application settings, the configuration can query OS environment variables or ask the runtime about its version or feature set. This enables a carefully designed configuration to be portable across multiple systems.
-
-Configurable features may include:
-
-* *persistent state* - where to store and share structured data
-* *environment* - overrides the OS environment, and supports structured data
-* *filesystem roots* - restrict an app to role-named folders
-* *mirroring* - a distributed runtime for scaling or partitioning tolerance
-* *logging* - whether and where to record progress and problems
-* *profiling* - whether and where to record performance statistics
-* *RPC registries* - where to publish and access RPC APIs
-* *run mode* - how to interpret an application
-
-The glas executable should not add runtime switches to the command line or directly observing environment variables other than `GLAS_CONF`. Instead, staged applications compute 'settings' of the next stage based on the arguments, and configurations may read some environment variables when evaluating runtime options.
-
-## Run Mode and Staging
-
-The glas executable may support multiple run modes, e.g. transaction loops, conventional `int main(args)`, and staged programs. Run mode is necessarily application-specific and should be configured based on application settings. 
-
-A staged run mode should let users 'compile' command-line arguments into next-stage application, similar to a language module. This is convenient for problem-specific command-line languages, or where users wish to abstract and override 'settings' through the command line. To simplify caching, staged applications should support staged arguments, e.g. use '--' to divide arguments, passing everything after to the next-stage app.
+*Note:* The initial configuration file must use a recognized file extension with a built-in syntax, such as ".g" files. However, this is subject to the normal rules for user-defined syntax. If the configuration defines "env.lang.g", we'll attempt to bootstrap the language and reload the configuration. 
 
 ## Running Applications
 
-The `--run`, `--cmd`, and `--script` operations each build and run an application, just from different sources. 
+The choice of '--run', '--script' and '--cmd' lets users reference applications in a few ways:
 
-* `--run ConfiguredApp Args` - lookup definition ConfiguredApp in the configuration.
-* `--cmd.FileExt ScriptText Args` - compile ScriptText as if a file with the given file extension. 
-* `--script(.FileExt)? ScriptFile Args` - compile ScriptFile based on given extension, or actual if none given.
+* **--run**: The application is already defined in the configuration namespace. To run "foo" we might access definitions such as "app.foo.settings", "app.foo.start", "app.foo.step", and so on. This translation may be configurable. A user can inherit from a community configuration that defines thousands of useful applications, loading them on demand.
+* **--script**: The namespace model defines a 'load' operation. We 'load' the specified source (e.g. a file, package folder, or URL) in scope of a configurable '%env.\*' environment and primitive '%\*' AST constructors. The generated namespace should define application methods such as 'settings', 'start', 'step', and so on. 
+  * **--script.FileExt**: Same as '--script' except we assume or assert the given file extension. Intended for use with shebang scripts in Linux, where file extensions are often elided.
+* **--cmd.FileExt**: Treated as '--script.FileExt' for an anonymous, read-only file found in the caller's working directory. The assumed motive is to avoid writing a temporary file.
 
-After recognizing the application, the system might analyze, optimize, and further compile it down to lower level code. These steps are subject to caching, allowing us to save work when the same application is run many times, even for scripts or commands.
+Prior to running the application, the glas executable might download sources, analyze types, evaluate tests, optimize, JIT-compile, and apply application-specific configuration options based on 'settings'. However, these efforts can be cached such that running the same application in the future is a lot faster.
+
+To run a [transaction loop application](GlasApps.md), we'll evaluate first 'start', repeatedly evaluate 'step', and occasionally handle 'http' requests or other events in separate transactions. This model is especially friendly for live coding and distributed programming. 
+
+However, the glas executable may support alternative run modes, e.g. staged applications, binary extraction, or a conventional 'main' procedure. The run mode should be expressed as an application-specific configuration option.
+
+### Installing Applications
+
+Users might 'install' some applications to ensure they're available for offline use. To simplify tooling, the user configuration might specify a text file where a list of installs is recorded. Users would maintain this file through a text editor or through command line operations such as 'glas --install' and 'glas --uninstall'. Use of 'glas --update' could process the file, downloading resources and maintaining the local cache.
+
+### Shared Memo-Cache
+
+Instead of manual caching, glas systems rely on cache annotations. We can easily [memoize](https://en.wikipedia.org/wiki/Memoization) application of pure functions to immutable data, e.g. using secure hashes as keys in a lookup table. We can design compilers to leverage memoization as a basis for incremental computing, and configure a persistent memoization to share work. This isn't restricted to user code, even JIT-compiled fragments of executable code can be memoized. 
+
+It is feasible to share the memo-cache between users. Sharing introduces concerns related to authorization, authentication, and accounting. We might sign our results and specify whose signatures we trust. We could employ a [content delivery network](https://en.wikipedia.org/wiki/Content_delivery_network) to distribute larger results across many users. All of this amounts to extra configuration.
+
+The glas system does not directly distribute executable code to users for running or installing applications. However, a shared memo-cache can serve a similar role. To fully leverage this, we might carefully control the implicit environment (shared libraries, compilers, etc.) visible to applications that we want to install easily, similar to Nix package manager.
 
 ## Command Shells and Interactive Development
 
-Very long term, I envision users mostly 'living within' a live-coded glas system instead of using lots of glas commands on a command line. Instead of running specific applications on the command line, user actions would manipulate a live coding environment, adding and removing active 'applications' at runtime. This seems feasible via [REPL or Notebook interface](GlasNotebooks.md). 
+I envision users eventually 'living within' a live-coded glas system. Instead of running fine-grained commands or applications, users would have a [projectional editor](GlasNotebooks.md) for a 'shell' that is running multiple component applications. Through the live coding interface, users could directly manipulate what is running.
 
 ## Built-in Tooling
 
 The glas executable may be extended with useful built-in tools, insofar as they don't add much bloat. Some tools that might prove useful:
 
 * `--conf` - inspect and debug the configuration, perhaps initialize one
-* `--db` - query, watch, or edit persistent data
 * `--cache` - manage storage used for persistent memoization and incremental compilation
+* `--db` - query, watch, or edit persistent data
 * `--rpc` - inspect RPC registries, perhaps issue some RPC calls directly from command line
 * `--app` - debug or manipulate running apps through runtime provided HTTP or RPC APIs
 
-Integrating application-specific resources need some attention. It is awkward to specify an application at `--db`, especially in context of anonymous scripts or staged run mode. To mitigate this, we might add a little indirection, e.g. based on application settings we might select a database that is independently defined in the configuration. Then, one argument to `--db` might name the database. Of course, it would be even simpler to configure one database for all the apps.
+However, it is awkward to provide built-in tooling for application-specific resources, especially in context of '--cmd' and staged applications. To mitigate this, we might limit exactly how much choice applications have, e.g. select between three configured database options.
 
 ## Implementation Roadmap
 
-The initial implementation of the glas executable must be developed outside the glas system, perhaps in rust. This implementation will surely lack many features: transaction loop optimizations, acceleration, effects APIs, DVCS support. However, it should at least offer adequate performance for the procedural language, perhaps via JIT compilation. 
+The initial implementation of the glas executable must be developed outside the glas system. This implementation will lack many features, especially all the optimizations that would let transaction loops scale beyond a simple event dispatch loop. But it should be feasible to provide basic file system access and console IO, HTTP integration, simple persistent state, lazy evaluation of namespaces and simplistic caching, and loading of DVCS resources.
 
-This should implement filesystem and network APIs, support both 'step' and 'http' interfaces of transaction loop applications, and perhaps provide a simple debugger through `"/sys"` URL on the 'http' interface. No need to deal with authorization.
-
-Of course, without those optimizations, 'step' is limited in practice to a
-
-
- the transaction loop optimizations, and it might implement only a fraction of the effects API . But it should still be feasible to develop a few applications where 'step' is essentially the body of an event dispatch loop, with access to network and filesystem. If the implementation involves a JIT compiler, performance may be acceptable within the
-
-
-us to simple applications.
-
- It could use an interpreter or JIT compiler. However, 
-
- if only because I've been wanting to learn that language, and it supports a relatively functional programming style.
-
-
-
-I'd prefer not to implement 
-
-Implementing a basic transaction loop without optimizations is not a problem. However, 
-the full transactional effects API is somewhat painful, and I'd prefer to not implement it twice. For early development
-
-Early implementations of the glas executable might support a limited subset of the effects API such as console IO, an in-memory database, and the HTTP interface. We can introduce a specialized run mode just for bootstrapping, perhaps restricted to writing a binary to stdout. Then, with suitable application definitions that compile 'glas' within the system, we could bootstrap.
+Ideally, we'll eventually bootstrap the glas executable by extracting another executable binary. Something like:
 
     # build
     /usr/bin/glas --run glas-bin > ~/.glas/tmp/glas
@@ -108,7 +87,4 @@ Early implementations of the glas executable might support a limited subset of t
     # install
     sudo mv ~/.glas/tmp/glas /usr/bin/glas
 
-Of course, we should abstract over paths. And the above assumes we directly generate an executable format, which is my long-term goal. Early forms of bootstrap could be adjusted to instead generate LLVM or similar to be further compiled instead of directly to executable format. Perhaps:
-
-
-    
+Early forms of bootstrap could be adjusted to instead generate C or LLVM or similar to be further compiled instead of directly to executable format. But I hope to eliminate such dependencies.

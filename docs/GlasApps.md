@@ -2,7 +2,7 @@
 
 ## Overview
 
-A *Transaction Loop* application implements an interface of transactional methods such as a repeating 'step' for background processing and 'http' to receive HTTP requests. It is feasible to extend transactions across multiple applications through transactional remote procedure calls and a distributed transaction protocol. 
+A *Transaction Loop* application implements a handful of transactional methods such as a repeating 'step' for background processing and 'http' to receive HTTP requests. Transactions may be distributed across multiple applications based on transactional remote procedure calls and a multi-phase commit protocol.
 
 This is subject to many useful optimizations: fork on non-deterministic choice, incremental computing of a stable prefix, wait for changes before repeating an unproductive transaction, and more. Relying on these optimizations, transaction loops support concurrency, reactivity, live coding, and distributed programming. This is a great fit for my vision of glas systems, but does require careful design to simplify optimization.
 
@@ -34,25 +34,17 @@ A transaction loop system involves repeatedly running atomic, isolated transacti
 
 The main challenge is implementing the optimizer. Without optimization, transaction loops will usually perform poorly compared to conventional application architectures. At most, we can efficiently implement a single-threaded event dispatch loop to support early tooling and bootstrap.
 
-## Settings
-
-To support configuration, applications should define 'settings' supporting ad-hoc queries at compile-time. The runtime does not query settings directly. Instead, the runtime queries the configuration, which may in turn query settings for configuration of any application-specific runtime option. This indirection lets the user configuration provide an ad-hoc adapter layer between applications and runtimes.
-
 ## Life Cycle
 
-For a transaction loop application, the first effectful operation is `start()`. This is logically retried indefinitely until it commits successfully or the application is killed externally. After a successful start, the runtime will begin evaluating `step()` repeatedly in separate transactions, modeling the main loop. 
+Every transaction loop application should define 'start'. This is evaluated as the first transaction, retrying until it succeeds or the application is killed externally. After a successful start, we may call 'step' (if defined) in a repeating transaction to model the application's background behavior. Between steps, the application may receive 'http' requests or other events from external sources. 
 
-Insofar as the 'step' method is non-deterministic, the runtime may fork and evaluate both options in parallel, and even commit both if there is no read-write conflict. If a fork aborts (or is otherwise obviously unproductive), the runtime may heuristically set some triggers to wait for a relevant change before retrying. This, together with some incremental computing optimizations, provides a simple basis for concurrency and reactivity that is also friendly to live coding.
+The application will run indefinitely until killed externally or halting voluntarily. For a voluntary shutdown, the application would call and commit an API such as 'sys.halt(ExitCode)'. To handle OS events like SIGTERM or WM_CLOSE, the runtime might integrate a 'signal' method.
 
-Between 'step' transactions, the runtime may call 'rpc' or 'http' or 'gui' based on external events. It is possible to define applications without 'step' that only act based on external events. The runtime may optimistically evaluate these events in parallel with steps, but may be forced to abort and retry a conflicting step or event. Some applications may leave 'step' undefined, depending entirely on external events.
+## Live Coding
 
-An application may voluntarily terminate by calling and committing a `sys.halt()` effect. Otherwise, the application runs indefinitely, i.e. until killed externally by debugger or operating system. Aside from halting, we may also support restarts, clearing all runtime state. We could introduce something like a `signal()` interface to receive SIGTERM or WM_CLOSE events for graceful shutdown. This interface could also receive other generic OS events, such as signaling hibernation, wakeup, or requesting a power-save mode.
+Based on settings, we could configure a runtime to detect and apply updates automatically, or to let the application trigger updates through an API such as 'sys.refl.update'. Of course, we could also disable live coding entirely, but I hope for live coding to be a common feature of glas systems.
 
-## Live Coding Integration
-
-Source code may be updated after an application has started. In my vision for glas systems, these changes are applied to the running system as the norm, but this should be configurable per application. 
-
-It is feasible to disable live coding via application-specific configuration, or restrict it to some external events (e.g. via SIGHUP in Linux, a named event in Windows, or debugger events via HTTP). And the runtime could further defer the update until `switch()`, if defined in the updated code, successfully commits. This would allow skipping 'broken' intermediate versions of code, or delaying update when the application is in a fragile state.
+To let programmers control when updates are applied, or to fix state for the code change, we will also evaluate 'switch' as the first transaction in the new code. If switch fails, we repeatedly retry, but meanwhile we continue running the prior version of application code.
 
 ## Mirroring
 

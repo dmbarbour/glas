@@ -219,9 +219,7 @@ Anyhow, I don't expect glas systems to pursue Haskell levels of laziness, but it
 
 ### Memoization
 
-Any computation that can run lazily or in parallel can potentially be memoized. Persistent memoization can be useful for compilation of applications or indexing of a database. We can introduce annotations to guide memoization. Memoization is most easily applied to tree structures, where we compute some monoidal property for a tree node based on the same property of each subtree. But memoizing computations on lists is also very valuable, and may need special attention.
-
-In any case, the use of memoization is assumed in design of glas. Without it, many 'pure' computations such as compilation would require explicit use of state for manual caching.
+When applying a pure function to immutable data, we can produce a secure hash for the computation as a whole. A simple lookup table can let us find the result. In glas systems, we'll configure persistent memoization tables to support incremental compilation, which is very convenient for live coding. Memoization will be guided by annotations. 
 
 ### Content Addressed Data
 
@@ -244,30 +242,3 @@ I'm interested in a style of metaprogramming where programmers express both hard
 Some ideas: We could introduce AST nodes for 'static' non-deterministic choice within a call graph. We can reject some solutions based on static asseertions, and prioritize others that have a lower 'weight'. Weights can be abstracted into arbitrary values that we 'interpret' into positive rational numbers according to user preference, e.g. an 'experimental' tag might weigh 0.01 for one user and 100 for another. By applying something similar to an A* search, it should be feasible to discover the 'best' solution by weight, and we can ensure this solution is deterministic.
 
 But I'm not convinced that a one-size-fits-all solution at the toplevel is the right approach here. Perhaps more explicit staging of program search would be easier for programmers to isolate, control, and stabilize in context of incremental compilation. 
-
-### Tracing and Recording
-
-I would love to trace both code and runtime data to its sources despite the challenges of multi-stage metaprogramming, optimizers, and open distributed systems. But what can be achieved without too much overhead or added system complexity?
-
-One feasible idea is to add model something like medical radioactive tracers for dataflow. We can attach tracer annotations to data, then observe these annotations as they propagate through a system. By default, we could log the tracer when the value is observed or destroyed. Then we could annotate some expressions to capture and repply tracers to the return value instead of logging them.
-
- and such. 
-
- state and log external events (and non-deterministic choices) so we can slowly replay some computations after the fact. This could also be guided by annotations.
-
-
-
-
-I'd love the ability to trace computed definitions back to source code at a very fine granularity. And, similarly, to trace outputs from a program back to specific inputs and conditional code. But this seems difficult to achieve, at least without enormous overheads. Some ideas: Perhaps we could leverage something like  And instead of fine-grained data annotations, we could support bulkier 'overlay' annotations. But this seems a pipe dream at the moment. 
-
-What we can achieve in is support something like explicitly tagging data with
- 
- annotations that we can then inspect as the data flows through the system. 
-
-By default, we could *log* a message whenever a tag is removed from data and not explicitly handled. And we cou
-
-
-
-For example, we could annotate expressio
-
- arrange for certain operations to capture tags 'removed' when processing data, then applying a new tag that may depend on all the tags removed. 

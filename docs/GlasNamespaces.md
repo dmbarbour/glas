@@ -4,94 +4,120 @@ The glas namespace is the foundation for modularity, extensibility, metaprogramm
 
 A user's view of a glas system is expressed as an enormous namespace importing from multiple files and DVCS repositories. In general, the user will import from some DVCS repositories representing a community, company, or specific projects of interest, then override some definitions for user-specific resources, preferences, or authorities. Working with a huge namespace is mitigated by lazy evaluation and caching.
 
-I propose to represent a glas namespace *procedurally*: a program that 'writes' definitions when evaluated in a suitable context. At the top level, this procedure is parameterized by a source file, also serving as a front-end compiler for a specific file extension. This delegates many representation details to the [glas program model](GlasProg.md).
+## Procedurally Generated Namespaces
 
-## Proposed Representation
+I propose to represent a glas namespace *procedurally*, i.e. as a program that iteratively writes definitions. The effects API is restricted to simplify laziness, caching, and flexible evaluation order. To support metaprogramming, the procedure receives access to 'eval' within scope of the generated namespace.
 
-Some useful types:
+Useful types:
 
         type Name = prefix-unique Binary, excluding NULL, as bitstring
-        type Prefix = any prefix of Name (empty to full), byte aligned
-        type TL = Map of Prefix to (Prefix | NULL) as radix tree dict
-          # rewrites longest matching prefix, invalidates if NULL
-        type NSDict = Map of Name to AST as radix tree dict
+        type Prefix = any byte-aligned prefix of Name, empty to full
+        type TL = Map of Prefix to (Prefix | NULL | WARN), as radix tree
+        type WARN = NULL 'w'                # 0x00 0x77, as bitstring
         type AST = (Name, List of AST)      # constructor
                  | d:Data                   # embedded data
-                 | n:Name                   # namespace ref 
+                 | n:Name                   # namespace ref
                  | s:(AST, List of TL)      # scoped AST
                  | z:List of TL             # localization
 
-Compiler effects API (roughly):
+Algebraic effects API:
 
-* `def(NSDict)` - emit a batch of definitions
-* `move(TL)` - apply translation to future assigned names (LHS of NSDict)
-* `link(TL)` - apply translation to future definitions (RHS of NSDict, eval)
+* `define(Name, AST)` - write a definition, modified by prior move and link
+* `move(TL)` - apply translation to future defined names
+* `link(TL)` - apply translation to future definition body (scopes AST)
 * `fork(N)` - returns non-deterministic choice of natural number 0..(N-1)
-* `eval(AST)` - evaluate under current translation
-* `load(URL)` - compile another source file
-* `source` - abstract source (location, version, etc.) to support notebook apps and debugging.
+* `eval(AST)` - returns result of evaluating anonymous procedure
+* `eval.eff` - used by eval; default implementation raises an error
+* `load(SourceRef)` - compile module in scope of current translation 
+* `source` - (tentative) returns stable, abstract reference to the current source location
+
+## Evaluation Strategy
+
+The 'fork' effect supports non-deterministic choice as a basis for iteration and laziness. Logically, we repeatedly evaluate a namespace procedure as many times as necessary, each in a separate transaction. However, the output is monotonic, idempotent, and deterministic. There is no need to recompute a branch after it commits or aborts for any reason other than missing definitions. In practice, we might evaluate multiple branches in parallel and pause computation when awaiting a missing definition.
+
+However, to ensure a deterministic outcome in case of ambiguity, we prioritize definitions from lower-numbered forks. Thus, we must not accept definitions from higher-numbered forks before all lower-numbered forks are finished or paused. Further, 'move' translations restrict which definitions a branch can produce: we can lazily defer computation of branches if we determine that they do not produce definitions we need.
+
+In case of long-running computations, we might heuristically garbage-collect intermediate definitions. This can be understood as an aggressive form of dead-code elimination. We can forget 'private' definitions if they are not reachable from 'public' definitions or any pending computation. The 'link' translation influences what is reachable from a namespace procedure. We can also collect computations that wait on definitions not in scope of any 'move' translation. See *Namespace Processes and Channels* for a design pattern that relies on garbage-collection.
+
+The 'eval' and 'load' effects both invoke the current namespace. If necessary, they wait for definitions. Although these can be implemented via interpreter, for performance we might run post-processing of definitions concurrently with computation of the namespace. This post-processing may include type-checking, testing, optimizations, JIT compilation to lower-level code, and so on.
 
 ## Abstract Assembly
 
-I call the lisp-like AST encoding "abstract assembly" because every constructor node starts with a name, never a concrete value or bytecode. This ensures we can extend, restrict, or redirect constructors through the namespace. The system provides a set of 'primitive' constructor names, typically prefixed with '%' such as '%i.add' for arithmetic and '%seq' for procedural composition. The common prefix simplifies recognition and translation. Most TL maps will contain a `"%" => "%"` entry to forward primitives by default.
+I call the Lisp-like AST encoding 'abstract assembly' because every constructor node is abstracted by a name. In contrast to concrete encodings like bytecodes, it is very convenient to extend, restrict, or redirect these names via 'link' translations.
+
+We assume the system defines a set of 'primitive' constructor names, such as '%i.add' for arithmetic and '%seq' for procedural composition. The '%' prefix will simplify recognition and translation. Usually, we'll forward primitives through the namespace unmodified, so `import ... as foo` might use a TL similar to `{ "" => "foo.", "%" => "%" }`. 
+
+We can evaluate AST to a canonical form by applying scope translations then simplifying localizations. Evaluation of a scope node involves rewriting or invalidating names and appending the list of translations to an internal scope node or localization.
+
+## Aliasing
+
+Aliasing is expressed by defining one name to another, e.g. 'define(Name1, n:Name2)'. These two names should then be equivalent under evaluation within the program model, excepting reflection APIs. 
+
+## Translations
+
+A translation is expressed as a prefix-to-prefix map. We'll find the longest matching prefix for a name on the LHS, and rewrite that to the RHS prefix. This allows for atomic swaps, e.g. `{ "a." => "b.", "b." => "a." }` would swap 'a.\*' and 'b.\*' in a single step. 
+
+To cover a few additional cases, we permit NULL or WARN (NULL 'w') in place of the RHS prefix. These are context-dependent. For a move translation, NULL quietly removes names before they're added to a dictionary, while WARN represents removal with a warning. For a link translation, NULL raises a compile-time error, while WARN emits a compile-time warning then arranges for a runtime error in case that code is evaluated. Based on user configuration and local annotations, we may treat all link errors as warnings or vice versa.
+
+Translations compose sequentially. Within the AST, list of TL `[A, B, C]` will apply A, B, then C in sequence. However, we can evaluate this to one large translation. To compose 'A fby (followed-by) B' we first expand A to include redundant rules with longer suffixes on both sides such that the RHS of A matches every possible LHS prefix in B. Then we apply B's rules to the RHS of A. For example:
+
+        { "bar" => "fo" } fby { "f" => "xy", "foo" => "z"  }                    # start
+        { "bar" => "fo", "baro" => "foo", "f" => "f", "foo" => "foo" }          # extend suffixes
+            fby { "f" => "xy", "foo" => "z"}
+        { "bar" => "xyo", "baro" => "z", "f" => "xy", "foo" => "z" }            # rewrite
+        # Note that NULL and WARN are never rewritten under 'fby'.
+
+We can further simplify the resulting TL by recognizing and removing redundant rules. For example, we don't need rule `"xy" => "zy"` if `"x" => "z"` exists. We don't need rule `"xy" => NULL` if `"x" => NULL` exists.
+
+## Localizations
+
+Localizations allow programs to capture a 'link' scope for deferred use in multi-stage programming. For example, we could support a primitive like `(%ast.eval Localization ASTDataExpr)` that will evaluate an AST under a specific view of the namespace. 
+
+*Note:* Localizations are best used in context of compile-time computations. Any potential use of localizations at runtime will hinder dead-code elimination, lazy evaluation, static analysis, and convenient nice features.
 
 ## Prefix Uniqueness and Name Mangling
 
-Names are described as prefix-unique: no name should be a prefix of another name. A violation of prefix uniqueness is a minor issue, worthy only of a warning. However, prefix-uniqueness is what lets us translate "bar" without modifying "bard" and "barrel". To resolve this, a compiler should 'mangle' names, e.g. escaping special characters and adding a ".!" suffix. 
+Names should be prefix-unique, i.e. no name is a prefix of another name. This constraint exists to esnure prefix-to-prefix translations (the TL type) can always uniquely translate a name. If we notice this property is violated, it is sufficient to report a warning. In practice, prefix uniqueness will be enforced by a compiler rewriting names, e.g. escaping reserved characters and appending a ".!" suffix.
 
-The proposed suffix ".!" serves a role beyond prefix uniqueness. Every definition "bar.!" is implicitly associated with larger composite "bar.\*" for purpose of renames. This allows every definition to be implicitly extended with subcomponents or metadata within the namespace. We'll usually translate "x." to "y." instead of "x" to "y".
+The proposed ".!" suffix further ensures every definition "bar.!" is implicitly be part of a composite "bar.\*". This supports ad-hoc extension. For example, we might annotate definitions with "bar.\#type" and "bar.\#doc" and so on.
 
-*Note:* I don't write names in mangled form for aesthetic reasons, but even primitives would be mangled.
+## Namespace Macros and Eval
 
-## Composing and Simplifying Translations
+The 'eval' operation is the basis for namespace macros. This operation interprets an AST argument as the body of an anonymous procedure. Although I say 'interpret', I assume a just-in-time compiler is involved for performance. The return value is returned to the caller, while failure will abort the caller. A special exception is failure due to a missing definition: we can arrange the namespace procedure to wait for the definition settle before continuing.
 
-We can compose TL sequentially, i.e. assuming TL maps A and B, we can write 'A fby B' to indicate translation A is followed by (fby) translation B. Within the AST, we often express this lazily as a list of TL, head followed by tail. But it is feasible to reduce a list of TL to a singleton. This is achieved by extending suffixes on both sides of A such that the RHS for A matches every possible LHS prefix for B, then we apply B's rewrites to the RHS of A.
+The AST may interact with the caller via algebraic effects. To keep integration simple, the interpreter routes all requests to `eval.eff : (HandlerName, List of Arg) -> Result`. The caller is expected to override this handler in scope of calling 'eval', with the default raising an error.
 
-        { "bar" => "fo" } fby { "f" => "xy", "foo" => "z"  }                    # start
-          # NOTE: also extend suffixes of implicit "" => "" rule
-        { "bar" => "fo", "baro" => "foo", "f" => "f", "foo" => "foo" }          # extend suffixes 
-            fby { "f" => "xy", "foo" => "z"}     
-        { "bar" => "xyo", "baro" => "z", "f" => "xy", "foo" => "z" }            # end
+## Modularity
 
-However, if it's only for performance, compacting TL maps will often prove to be a wasted effort because we end up applying a large TL map to just a few names, and we have better structure sharing with the list of TL. We only save when applying the translation very widely. So, this should be left as a heuristic decision.
+The 'load' operation is the basis for modular namespaces. This call returns immediately, merely arranging to compile and integrate the module after the caller returns. Only the caller's 'link' and 'move' translations are inherited, and the module is compiled in an otherwise fresh environment of algebraic effects.
 
-Aside from composition, a TL map can be simplified where rewrite rules are redundant, e.g. when a rule with a longer prefix is implied by a rule with the next shorter prefix. For example, we don't need a rule `"xy" => "zy"` if the rule `"x" => "z"` exists. And we don't need the rule `"xy" => NULL` if `"x" => NULL` exists.
+### User-Defined Syntax
 
-### Scoped ASTs
+Support for modularity is entangled with support for user-defined syntax. Instead of a standard syntax, 'load' selects a namespace procedure from the current scope based on file extension, typically '%env.lang.FileExt'. This namespace procedure is parameterized by the file binary and evaluated. Effectively, this implements a front-end compiler, while the generated definitions serve as an [intermediate representation](https://en.wikipedia.org/wiki/Intermediate_representation).
 
-The only computation represented at the AST layer is scoping, which applies a sequence of translations to the AST node. Scoping is convenient when composing large AST fragments, and supports lazy evaluation. A localization lets us record a scope for future use in multi-stage programming.
+We assume built-in support for a few file extensions, such as ".g" files. However, '%env.lang.g' is favored. If necessary, we'll bootstrap this via the built-in then verify a fixpoint. 
 
-When constructing definitions, the stack of 'link' translations will essentially be applied as a scope to every introduced definition. The 'move' translation instead rewrites the defined symbols, thus aren't represented within the AST at all.
+By aligning user-defined syntax with file extensions, we can easily integrate with external tools. A file-based database or a ".zip" file can generously be viewed as 'syntax'. Graphical and textual programming can be freely mixed. Users can develop DSLs for a project. Simple ".txt" or ".json" files might merely define 'data', but we can warn for spelling errors or report compile-time errors for structure errors, and we can easily apply partial evaluation optimizations.
 
-## Non-Deterministic Choice
+*Note:* File extensions will be rewritten a little in translation to a name: utf-8, lower-case ('A-Z' only), replace '.' with '-'. We'll also add the ".!" suffix for prefix uniqueness.
 
-We use non-deterministic choice as the basis for iteration, i.e. upon 'fork' we'll actually evaluate both options in separate iterations. To ensure a deterministic outcome, definitions from lower numbered forks have priority. However, evaluation order is flexible. It is sufficient to avoid creating a dependency cycle. 
+### Folders as Packages
 
-## Lazy Evaluation
+Users may refer to a folder as the target for 'load'. In this case, we'll search for the 'package' file, of any extension. If a package file exists, it is loaded. Otherwise, we'll generate a namespace that mimics the hierarchical structure of the folder content, albeit hiding file extensions. Files or subfolders whose names start with '.' would be fully hidden.
 
-Independent of lazy 'thunks' to defer pure computations, we can lazily evaluate a namespace by deferring evaluation of forks that obviously won't define the names we need. This will be determined based on 'move' translations.
+To further simplify sharing of folders, we forbid loading of parent-relative and absolute file paths. Files within a folder may only reference other files in the same folder or subfolders, or remote DVCS resources. Thus, a folder is effectively location-independent.
 
-## Source Abstraction
+### Source References
 
-To support notebook applications, the application must capture a reference to source so it can be edited from within the application. However, the source should be kept abstract to avoid influencing the compiled output. I currently propose a 'source' parameter that returns an abstract value that we'll be able to observe later through runtime reflection APIs.
+Interpretation of source references is relatively arbitrary and ad-hoc: A specific runtime might heuristically recognize *some* raw texts, 'file:Text', and 'dvcs:(...)' with multiple parts. However, to simplify things, this runtime can allow the user configuration define an extra translation step. This configured function may query runtime version information to support a more adaptive translation. 
 
-The runtime can decide whether this value is an abstract reference or directly records all relevant details.
+We can further support some translation steps *before* the load step, e.g. the front-end compiler could refer to a shared library. And in the extreme, the source could compute SourceRef by namespace macros.
 
-## Modularity and Resources
+Ultimately, this leaves many opportunities for extension and adaptation as we integrate new sources.
 
-A large glas namespace will be represented across multiple files and multiple front-end languages. There are a few security considerations, e.g. a remote DVCS resource must not reference the user's local filesystem.
+## Abstract Source Location
 
-
-
-## Automatic Testing
-
-It is feasible to integrate tests or assertions with expression of the namespace. I would hope to do so in a manner that allows us to flexibly perform or ignore testing, e.g. with tests running on separate forks from definitions. In context of testing, use non-deterministic choice could serve as a basis for fuzz testing. 
-
-This might be expressed by adding a `test(Name)` effect that treats the remainder of the current fork as a test. New definitions in this context might only apply for 'eval' within the test environment.
-
-## Live Coding
-
-The proposed `source` parameter or effect would capture the source location and its content (or a hash thereof) to support live coding. Capture of content would be useful for display of the original source even when disconnected from it, or to diff a compiled version with the current file.
+The 'source' API is intended to support notebook applications where every application is a projectional editor for itself. This requires knowing where to find the source code. However, the output from compilation shouldn't depend on where code comes from. Thus, I propose capturing an abstract value or reference. This abstract source should ideally be stabilized in context of a shared memo-cache.
 
 ## Design Patterns
 
@@ -101,71 +127,50 @@ As a simple convention, we might assume the "~" prefix is reserved for private d
 
 Translation based on a privacy prefix doesn't prevent a client from accessing private definitions of a module, but it does allow the client to more precisely control which definitions are shared between different subprograms. 
 
-We might further add a weak enforcement mechanism: raise a warning when a name containing "~" is directly used in a definition or if a translation would not be privacy-preserving. A compiler would then arrange to introduce privacy only via translations, e.g. based on an export list.
+We might further add a weak enforcement mechanism: raise an error when a name containing "~" is directly used in a definition, or when a translation is not privacy-preserving. A translation is privacy-preserving if "~" in LHS prefix implies "~" or NULL in RHS. A compiler can arrange to introduce privacy only via translations.
 
-### Implicit Parameters
+### Implicit Environment
 
-I propose a simple convention: we reserve "%.\*" to serve as a read-only context. This piggybacks on the default rules for propagating abstract assembly primitives. I assume "%" is read-only via implicit 'move' rule `{ "%" => NULL }`. Instead of introducing definitions, we use translations to logically rewrite names like `{ "%.x." => "my.x." }` within a controlled scope. This might also serve as a flexible alternative to global definitions in some cases.
-
-### Aggregate Definitions
-
-There are various cases where we might want to combine definitions from multiple subcomponents. For example, in context of live coding we might render each 'import' as a page or chapter that merges into a final notebook. To support shared libraries, we might want to build a list of dependencies that the client is expected to provide in the end.
-
-Ultimately, this will be a language-layer feature, handled by the front-end compiler. It isn't possible to directly check whether a symbol is defined, but a compiler may assume specific definitions are provided by every import and automatically integrate them. Where this isn't the case, or where the feature should be disabled, specialized import syntax may let users intervene and manage integration manually.
+I propose to reserve "%env.\*" to serve as a read-only context. This piggybacks on the default rules for propagating primitives. I assume "%" is read-only via implicit move rule `{ "%" => NULL }`. Instead of defining '%' words, we use link rules to redirect them within a given scope, such as `{ "%env.x." => "my.x." }`. The runtime may apply a default link rule `{ "%env." => "env." }` to close the loop.
 
 ### Shared Libraries
 
-Instead of directly loading common utility code such as math libraries, we could insist on receiving these definitions as an implicit parameter, e.g. via "%.lib.math.\*". Doing so can potentially avoid a lot of rework and reduce need for a separate compression pass. Instead of manually loading, we might use aggregate definitions to compose a list of shared libraries needed, then process this list automatically. 
+Instead of directly loading common utility code such as math libraries, we can insist these definitions are provided through the implicit environment, such as "%env.lib.math.\*". If the symbol isn't defined, the user would receive a clear error such as "no definition for env.lib.math.whatever". This is easily corrected by importing the library into the client's environment. It isn't a problem to import many shared libraries: they'll be lazily loaded, and the cached code will be shared between apps.
 
-However, this does require every an extra step to explicitly load these resources. This could be mitigated by adding the shared library load step to the standard application life cycle, such that it can be handled by the runtime without wrapping the application.
+Shared libraries do introduce versioning and maintenance challenges. This can be mitigated by controlling the scope of sharing, e.g. loading shared libraries at the scope of a curated community or project. In general, sharing will restrict overloads, i.e. we cannot move and replace a shared definition, but we can redirect "%env.lib.abc.xyz" to "my.xyz" within scope of defining a subprogram.
+
+*Note:* Even without shared libraries, an optimizer could apply a compression pass to merge redundant code. But that optimization is relatively expensive, and it's convenient to start with 'hand-optimized' code that shares utility code.
+
+### Aggregate Definitions
+
+Some language features involve aggregating content across multiple modules. For example, notebook applications will import pages or chapters into view and compose a table of contents. A constraint-logic program might declare assumptions across multiple modules, with compilers gathering them to discover conflicts ASAP. Multimethods let users describe specialized implementations of a generic operation across multiple modules, then access them from anywhere.
+
+It is awkward and error-prone for users to manually gather and integrate definitions. Instead, we'll rely on the front-end compiler to automate things. However, in context of extension with new syntax and new aggregates, we'll want a generic solution. There are limitations to work around: we cannot query whether a definition exists, we should not pass arbitrary names between scopes, and there is risk of interference with lazy loading and caching.
+
+At the moment, I lack a solid generic solution. However, I do have an intuition: Reserve prefix "@" for public, compiler-generated definitions. Separate the logic from the compilers; provide it via '%env.\*'. At a 'leaf' node, use a call to write compiler metadata and bind to local definitions in scope. Align most aggregation of metadata with forks, such that each fork defines its own metadata then we locally compose them. A compiler can optimize a little, skipping a few writes or aggregations where obviously unnecessary.
+
+### Namespace Processes and Channels
+
+*Note:* I don't have a practical use case in mind. At the moment, this pattern serves only as a demonstration of theoretical expressiveness.
+
+A namespace process can be modeled in terms of a namespace procedure that 'yields' incremental output by forking to commit one branch and continue the other. A process may also fork to 'spawn' a subprocess. Processes interact by writing or awaiting definitions in turn, with 'eval' implicitly waiting. Although the outcome is deterministic, composition is more flexible than call-return, able to model protocols and negotiations. We can use [session types](https://en.wikipedia.org/wiki/Session_type) to describe a process.
+
+Interaction of processes introduces many intermediate definitions. It is possible to garbage-collect these definitions, but a long-running process must *add* `Prefix => NULL` link rules to *remove* items from scope. Unless these rules simplify, this implies linear overheads, useful only for very coarse-grained interaction.
+
+We can arrange for link rules to simplify for *sequential* interactions, such as modeling a channel. Consider a variable-width numbering schema such as A000 to A999, B001000 to B999999, C001000000 to C999999999, and so on. Assuming simplification, rule A11 replaces rules A110 to A119. When processing item A123, six rules remove all prior items from scope: A0, A10, A11, A120, A121, A122. The number of rules is the sum of digits plus the number of prior size headers. For performance, a binary encoding would result in fewer rules after simplification, and we can allocate and collect 'buffers' for smaller messages.
+
+Channels are second-class. The 'link' translation can remove names from scope, but there is no mechanism to bring names into scope. Thus, channels cannot be passed between processes that don't already have them in scope. However, we can establish subchannels over existing channels, e.g. message 'mA123' informs reader to begin processing subchannel 'cA003.\*' for reading or writing. We can spawn a subprocess to lazily 'wire' an input channel to an output channel. Wiring adds overhead per hop, but may be acceptable if we control the number of hops.
+
+## Quotas
+
+Divergence is a relevant concern. However, even if we could guarantee termination in presence of 'eval', we can easily express computations that take far more time than we're willing to spend. Thus, we'll want quotas for evaluation of a namespace. Quotas could be expressed via configurations and annotations.
+
+To ensure a reproducible outcome, quotas must be based on a heuristic cost function. We might accumulate costs in a register, then check for overruns periodically (e.g. upon GC) and just before commit.
 
 ## Failure Modes
 
-### Ambiguous Definitions
+Errors that abort a namespace procedure - dynamic type errors, assertion failures, quota constraints, etc. - can be reduced to a warning, with evaluation continuing on other branches. Errors that are localized to specific definitions - malformed AST, link violations, missing definitions, etc. - might raise a warning then arrange for a runtime error when the erroneous code is evaluated later. The choice between compile-time errors and warnings is subject to user configuration and guidance by annotations.
 
-If a namespace outputs the same name with two distinct definitions, we can raise an ambiguity warning. However, we can also resolve this predictably based on order, prioritizing the first definition, or the leftmost in context of 'fork'.
+Ambiguous definitions are possible if the same name is assigned multiple distinct definitions. (Assigning the same definition many times is idempotent.) In context of lazy evaluation, it is awkward to treat ambiguity as an error. Instead, we raise a warning then deterministically favor the 'first' definition from the lowest-numbered fork. When ambiguity errors are noticed, users should resolve them by tweaking import or export lists, or considering use of the *Shared Libraries* pattern.
 
-Note that defining a name many times with the same definition is idempotent and doesn't merit a warning. We can define pi to 3.14 as many times as we wish. It's only ambiguous if we define pi as 3.14 in some places and 3.1415926 in others. However, this would be limited to the most obvious structural equivalence. If we define pi as 3.14 here and 3+0.14 there, we'll consider them non-equivalent. The assumption of idempotence can be useful to help 'check' definitions.
-
-I expect users would manually resolve most ambiguity warnings by tweaking their import/export lists to be more precise. 
-
-### Divergence
-
-An '%ns.proc' program might enter an infinite loop until a configurable quota is hit, or be blocked indefinitely on a missing definition. In these cases, we can raise warnings and continue best-effort, despite risk of accepting lower-priority definitions.
-
-Ideally, failure on quota should be deterministic. That is, it should be based on some deterministic property that can be evaluated independently of runtime or host details like CPU time. A simple option is to base this on a loop counter or similar, perhaps augmented by annotations.
-
-### Dependency Cycles
-
-A dependency cycle will only be distinguished from a missing definition where a dependency for evaluating the high-priority source is 'resolved' using a lower-priority source for the same definition. In this case, we can accept the resolution if there is no ambiguity, otherwise we will raise a cycle error. Essentially, detecting this requires tracking priority of definitions and which definitions were 'used' during evaluation of the namespace.
-
-### Invalid Names
-
-If a 'link' TLMap contains a NULL in the RHS, it means the LHS prefix or name shouldn't be used. If that name is used regardless, we will at least emit a warning and 'compile' any call to that name to instead raise an error at runtime. However, this is one of those warnings we might want to treat as an error, forcing developers to fix the problem immediately.
-
-## Performance
-
-### Incremental Computing
-
-
-## Incremental Computing
-
-The compiler lacks APIs to directly store computations into cache. Instead, we'll rely on memoization via annotations and other features. How far can we take this?
-
-
-
-
-
-## Naming Variables
-
-In context of metaprogramming, it is convenient if capture of variables is controlled, aka [macro hygiene](https://en.wikipedia.org/wiki/Hygienic_macro). One possibility here is to encode a namespace directly into the computation, use translations to control access. Alternatively, we could encode variable names with reference to an external namespace. In the latter case, instead of `(%local "x")`, we might use `(%local &privateScopeName "x")`. This allows for limited non-hygienic macros when they can guess the private scope name.
-
-## Staged Eval
-
-In some cases, we'll want to insist certain expressions, often including function parameters and results, are evaluated at compile time. Minimally, this should at least be supported by annotations and the type system. But it is useful to further support semantic forms of static eval, e.g. '%static-if' doesn't necessarily need to assume the same type or environment on both conditions, instead allowing the static type of an expression or function to vary conditionally.
-
-In context of dead code elimination and lazy loading, static eval is limited in viable 'effects' API. We can permit 'safe' cacheable fetching of files or HTTP GET, or debug outputs such reporting a warning. In the latter case, we might be wiser to model the effect as an annotation and debugging as reflection.
-
-
-
-
+A cyclic dependency error is observed when a higher-priority 'ambiguous' definition can only be computed after observing the lower-priority version. If the definitions were the same, there is no error. If the cycle was not resolved, we did not observe the error. Essentially, this error is observed when a namespace macro should depend on its own output. Cyclic dependencies are perhaps the only errors at the namespace layer where we'll firmly insist on a resolution by programmers.
