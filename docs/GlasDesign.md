@@ -77,7 +77,7 @@ For performance, a runtime may support optimized internal representations. A use
 
 *Note:* Arithmetic in glas is exact by default, but there will be workarounds for performance.
 
-### Abstract, Linear, and Scoped Data
+### Abstract and Linear Data
 
 Data is abstract in context of a subprogram that does not directly observe or construct that data. Abstract data may be linear insofar as the subprogram further does not directly copy or drop the data. Technically, these are extrinsic properties of context, not intrinsic properties of data. However, it can be useful to integrate some metadata to simplify runtime enforcement.
 
@@ -91,7 +91,7 @@ The runtime may recognize annotations to wrap and unwrap data. Attempting to obs
 
 To support linearity, we could leverage [tagged pointers](https://en.wikipedia.org/wiki/Tagged_pointer) to efficiently encode a metadata bit for whether each node is transitively linear. At runtime, we can easily check this bit before we copy or drop data. Linear types are very convenient for modeling open files, sockets, channels, futures and promises, and so on - anything where we might want to enforce a protocol. Aside from runtime use, users could mark abstract data linear upon 'wrap'.
 
-I propose to conflate linear types and runtime scope. That is, linear data cannot be stored in a persistent database or communicated through remote procedure calls. This neatly avoids the troublesome challenges of enforcing linearity in open systems and cleanup after a foreign source of linear objects vanishes from the open system.
+*Note:* To simplify reasoning in open systems, abstract linear data will also be scoped to each runtime. That is, it cannot be stored in a shared database or transferred via remote procedure calls.
 
 ## Programs and Applications
 
@@ -158,7 +158,7 @@ As with assertions, logging *over* an operation is convenient for many use cases
 
         record (Channel, Cond) { Operation }
 
-Instead of ad-hoc user-defined messages, consider conditionally retaining data to replay certain computations in slow motion. Recording could be configured per Channel, e.g. how many records to keep, how often to record, how the condition is interpreted (true on entry, rising or falling edge), and so on. For debugging purposes, such records might prove more convenient than logging or breakpoints. 
+Instead of ad hoc user-defined messages, consider conditionally retaining data to replay certain computations in slow motion. Recording could be configured per Channel, e.g. how many records to keep, how often to record, how the condition is interpreted (true on entry, rising or falling edge), and so on. For debugging purposes, such records might prove more convenient than logging or breakpoints. 
 
 ## Debugging
 
@@ -170,9 +170,9 @@ Both browsers and external debugger tools could attach interact with the applica
 
 ### Acceleration
 
-Acceleration is a pattern that lets a runtime introduce 'performance' primitives separately from 'semantic' primitives. For example, instead of directly introducing a new primitive for '%matrix.mul', we might write `(%an (%accel.matrix.mul) ReferenceImpl)`. A subset of runtimes might recognize this annotation, optionally validate ReferenceImpl, then substitute the ReferenceImpl with the accelerator, e.g. '%internal.matrix.mul'. A simple link rule `{ "%internal." => NULL }` can block users from directly referencing internal primitives, leaving it for the optimizer only.
+Acceleration is a pattern that lets a runtime introduce 'performance' primitives separately from 'semantic' primitives. For example, instead of directly introducing a new primitive for '%matrix.mul', we might write `(%an (%accel.matrix.mul) ReferenceImpl)`. A subset of runtimes might recognize this annotation, optionally validate ReferenceImpl, then substitute the ReferenceImpl with the accelerator, e.g. '%internal.matrix.mul'. A simple link rule `{ "%internal." => NULL }` can block users from directly referencing internal primitives, leaving it for the internal optimizer only.
 
-Among the best use cases is accelerated simulation of an abstract CPU, GPGPU, or other low-level model. The runtime can 'compile' simplified code for the actual GPGPU (or CPU). This is much safer than embedded assembly or FFI, and can safely be used within a 'pure' function, which is convenient for declarative caching. If we want cryptography or physics simulations in glas systems, this is a very good approach. 
+There is plenty of benefit in accelerating matrices, graphs, sets, relational databases, and other types, so long as they are widely useful. However, among the best use cases is accelerated simulation of an abstract CPU, GPGPU, or other low-level models. The runtime can 'compile' simplified code for the actual GPGPU (or CPU). This is much safer than embedded assembly or FFI, and can easily be used within a 'pure' function, which is convenient for memoization. If we want cryptography, physics simulations, or LLMs in glas systems, this is a good approach.
 
 ### Laziness and Parallelism
 
@@ -189,15 +189,15 @@ When applying a pure function to immutable data, we can produce a secure hash as
 
 ### Content Addressed Data
 
-To support larger-than-memory data, glas systems may leverage content-addressed storage to offload subtrees to higher-latency storage (e.g. disk or network). This optimization can be guided by program annotations. In context of serialization - distributed runtimes, database storage, or remote procedure calls - we can lazily fetch fragments of data as needed, supporting incremental upload and download for large values. There are also benefits for memoization, allowing us to work with large values as 'keys'.
+To support larger-than-memory data, glas systems may leverage content-addressed storage to offload subtrees to higher-latency storage (e.g. disk or network). This optimization can be guided by program annotations. In context of serialization - distributed runtimes, database storage, or remote procedure calls - we can lazily fetch fragments of data as needed, supporting incremental upload and download. There are also benefits for memoization, allowing us to work with large values as 'keys'.
 
-We might also offload hashed content to a [content delivery networks (CDN)](https://en.wikipedia.org/wiki/Content_delivery_network) to reduce the local network burden.
+In some cases, we might want to distribute content-addressed data via [content delivery networks (CDN)](https://en.wikipedia.org/wiki/Content_delivery_network) to reduce the local network burden. 
 
 ## Thoughts
 
 ### Type System
 
-The section on abstract and linear data provides a highly simplified dynamic type system. But I hope to gradually support something more sophisticated. I would hope to track unit types on numbers within applications, for example. And perhaps track ad-hoc session types for channels, insofar as we use them. It is unclear to me how to best approach this, other than that it will involve annotations within programs or namespaces to guide static analysis. Beyond types, I hope to explore the more general idea of proof-carrying code, using annotations to integrate proof tactics that can adapt to smaller code changes.
+The section on abstract and linear data provides a highly simplified dynamic type system. But I hope to gradually support something more sophisticated. I would hope to track unit types on numbers within applications, for example. And perhaps track ad hoc session types for channels, insofar as we use them. It is unclear to me how to best approach this, other than that it will involve annotations within programs or namespaces to guide static analysis. Beyond types, I hope to explore the more general idea of proof-carrying code, using annotations to integrate proof tactics that can adapt to smaller code changes.
 
 *Note:* Because glas programs are mostly transactional in nature, it's relatively easy to treat dynamic type errors at runtime as divergence, same as an infinite loop, effectively aborting the transaction. 
 

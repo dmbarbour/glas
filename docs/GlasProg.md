@@ -12,6 +12,8 @@ In glas systems, programs are transactional and [applications](GlasApps.md) are 
 
 This document proposes and motivates a set of assembly constructors for glas systems.
 
+To support incremental computing and loop fusion, we might need some careful design such that we can isolate dependencies from sequential computations. Ideally, our 'procedures' support a fair bit of parallelism internally, and incremental computing within each parallel fragment. Some sort of dataflow?
+
 ## Design Decisions
 
 * Built-in Transactions.
@@ -90,7 +92,7 @@ Could support channels within app more generally, but:
 
 
 * Support for hierarchical transactions is very convenient for modeling grammars. However, it should be separate from backtracking conditionals, otherwise we cannot easily refactor backtracking transactions that share a common prefix. We may also need some output that is dependent on observations within a transaction. Interaction with concurrency requires careful attention.
-* I would like effective support for staging, including static parameters and partial results from a computation. Ideally, staging supports ad-hoc interactive definitions rather than just a single call-return. An intriguing possibility is to support a fractal namespace aligned with the call graph as a medium for concurrent staging.
+* I would like effective support for staging, including static parameters and partial results from a computation. Ideally, staging supports ad hoc interactive definitions rather than just a single call-return. An intriguing possibility is to support a fractal namespace aligned with the call graph as a medium for concurrent staging.
 * For number types, I want unbounded integers, rationals, complex numbers, and vectors or matrices to be the default. But ideally the program model should make it easy to identify and isolate subprograms where we can use bounded number representations to optimize things. 
 * I want to support unit types for numbers and other useful context, ideally propagating through a computation at compile time. And I'd like users to have flexible support to define similar context for other roles. I'm not sure how to approach this yet.
 * I would like to automate support for indexed and editable relational database views. It is feasible to model the database as an accelerated data type or linear object, but it might be easier to support static analysis of views if the database model is built-in to the program model.
@@ -105,7 +107,7 @@ The proposed program model is procedural, albeit extended with transactions and 
 
 * Transactional - In general, we assume toplevel application methods like 'start', 'step', or 'http' are evaluated in implicit transactions. The constructors include further support for hierarchical transactions. Transactions are separated from backtracking, and it is permitted to return limited information from an aborted transaction.
 * Algebraic Effects - Conventional procedural languages provide effects through abstract definitions in the application namespace. This hinders intervention and sandboxing. I propose to instead model the abstract environment as an implicit object with methods, subject to override when presenting parts of the environment to subprograms.
-* Explicit Context - I would like to track some flexible ad-hoc static context across operations, both for safety checks and comprehension. One use case includes tracking units for numbers across a computation. TBD: still working out how this should be modeled. Ideas include: constraint model with namespace or overlay of abstract environment.
+* Explicit Context - I would like to track some flexible ad hoc static context across operations, both for safety checks and comprehension. One use case includes tracking units for numbers across a computation. TBD: still working out how this should be modeled. Ideas include: constraint model with namespace or overlay of abstract environment.
 * Stable Graph - As much as possible, we should stabilize and control interaction with the environment both within and between procedures. This provides a basis for unchecked parallel evaluation. Ideally, we can reduce most cases to 'static' connections, but there may be some cases (e.g. 'eval' or dynamic references) where we must bind to the environment dynamically. In those cases, we should still be able to reason about and restrict which references are used.
 * Pervasive Parallelism - It should be possible to evaluate different parts of a large procedure in parallel, especially including loops (so we can start processing the next loop before the last cycle finishes), such that we can model concurrency both within and between procedures. In addition to the stable graph of relationships, this may require restricting the effects on each resource, such as writing versus reading a queue or network socket, potential support for CRDTs.
 
@@ -185,7 +187,7 @@ It might be best to avoid backtracking with process networks because we would ne
 
 ### Procedural
 
-The procedural foundation is simpler than a process network: a simple sequence of operations on an abstract environment, generally including arguments and a working space and a limited procedural interface (methods or algebraic effects) to the rest. We could support an unbounded data stack and ad-hoc recursive computations, or restrict procedural programs to a bounded data stack, limited to non-recursive computations or tail recursion.
+The procedural foundation is simpler than a process network: a simple sequence of operations on an abstract environment, generally including arguments and a working space and a limited procedural interface (methods or algebraic effects) to the rest. We could support an unbounded data stack and ad hoc recursive computations, or restrict procedural programs to a bounded data stack, limited to non-recursive computations or tail recursion.
 
 Compared to process networks, procedural programs do not have any built-in notion of interaction. However, it is feasible to model concurrent processes using an event loop. With suitable syntax, we can compile procedures into state machines that proceed and yield over multiple steps. Algebraic effects can abstract some interactions with the environment. Ideally, all effects are modeled as algebraic effects, i.e. the `sys.*` runtime API might be modeled as algebraic effects in the runtime environment instead of namespace extensions to the program definition. This provides opportunity for intervention and reflection.
 
