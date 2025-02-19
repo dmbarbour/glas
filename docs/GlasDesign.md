@@ -77,7 +77,7 @@ For performance, a runtime may support optimized internal representations. A use
 
 *Note:* Arithmetic in glas is exact by default, but there will be workarounds for performance.
 
-### Abstract and Linear Data
+### Abstract, Linear, and Scoped Data
 
 Data is abstract in context of a subprogram that does not directly observe or construct that data. Abstract data may be linear insofar as the subprogram further does not directly copy or drop the data. Technically, these are extrinsic properties of context, not intrinsic properties of data. However, it can be useful to integrate some metadata to simplify runtime enforcement.
 
@@ -87,11 +87,11 @@ To support abstract data, we can simply extend the Node type:
             | ... # other Node types
             | Abstract of Key * Tree
 
-The runtime may recognize annotations to wrap and unwrap data. Attempting to observe abstract data without first unwrapping it would be a runtime type error, which will typically abort the current transaction. An optimizer can eliminate unnecessary wrap-unwrap pairs. Intriguingly, it is feasible to cryptographically enforce abstractions across trust boundaries, though for performance and debugging this should be limited to specialized keys.
+Program annotations can wrap and unwrap data with the 'Abstract' node. An optimizer can eliminate these annotations in cases where type-safety is proven statically. A runtime might also recognize some keys and *encrypt* abstract data when serialized.
 
-To support linearity, we could leverage [tagged pointers](https://en.wikipedia.org/wiki/Tagged_pointer) to efficiently encode a metadata bit for whether each node is transitively linear. At runtime, we can easily check this bit before we copy or drop data. Linear types are very convenient for modeling open files, sockets, channels, futures and promises, and so on - anything where we might want to enforce a protocol. Aside from runtime use, users could mark abstract data linear upon 'wrap'.
+To support linearity, we might use [tagged pointers](https://en.wikipedia.org/wiki/Tagged_pointer) to encode whether a Node is transitively linear. We might introduce linearity as a special property of the Key for Abstract nodes. The runtime will use linear types open files, network sockets, FFI tasks, and so on. But users may introduce their own as a flag on the Key.
 
-*Note:* To simplify reasoning in open systems, abstract linear data will also be scoped to each runtime. That is, it cannot be stored in a shared database or transferred via remote procedure calls.
+Linear data is implicitly scoped to the runtime. This avoids the challenges of enforcing or cleaning up linear data in the open system. We'll instead raise an error when we attempt to transfer linear data via shared state or remote procedure calls. 
 
 ## Programs and Applications
 

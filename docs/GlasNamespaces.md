@@ -24,7 +24,7 @@ Algebraic effects API:
 
 * `define(Name, AST)` - write a definition, modified by prior move and link
 * `move(TL)` - apply translation to future defined names
-* `link(TL)` - apply translation to future definition body (scopes AST)
+* `link(TL)` - apply translation to future definition or eval ASTs
 * `fork(N)` - returns non-deterministic choice of natural number 0..(N-1)
 * `eval(AST)` - returns result of evaluating anonymous procedure
 * `eval.eff` - used by eval; default implementation raises an error

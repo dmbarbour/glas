@@ -49,11 +49,11 @@ Shared state cannot hold runtime-scoped data such as open file handles, network 
 
 The runtime will support the basic memory cell with 'get' and 'set' operations. However, in context of distributed computations and caching, we may wish to support a few other useful types. What are our options?
 
-* **cell** - the basic get, set, swap (for linear types). Only one node can 'own' a cell for writing, but mirrored caching is possible for read-mostly cells.
+* **cell** - the basic get, set, swap (for linear types). In a distributed runtime, only one node can 'own' a cell for writing, but mirrored caching is possible for read-mostly cells, and the cell can be migrated.
 
-* **queue** - a list cell accessed with 'write', 'read', and 'putback'. Serializable with one reader (read and putback) and multiple concurrent writers blindly adding to the other end. Transactions and network partitions can buffer writes locally, then merge them in any serializability-consistent order. In practice, we might want to include metadata clocks to merge writes from multiple network partitions.
+* **queue** - a list cell accessed with 'write', 'read', and 'putback'. Supports one reader and multiple concurrent writer transactions. However, in a distributed runtime, the write end is owned by only one node. Attempting to share is infeasible in context of observing time and network partitioning.
 
-* **bag** - a cell containing a multiset (represented as a list), accessed via 'write', 'read', and 'peek'. Serializable with any number of concurrent readers and writers. Each node can operate on a local slice of the bag, and freely shuffle elements between slices. Reads are non-deterministic but can be filtered (via read then abort), but read variants with runtime support for filtering can enhance performance and support heuristic routing of items to interested nodes.
+* **bag** - a cell containing a multiset (an unordered list), accessed via 'write', 'read', and 'peek'. Serializable with any number of concurrent readers and writers. In a distributed runtime, every node can operate on a local slice of the bag, and the runtime can freely shuffle elements between slices. Reads are non-deterministic but can be filtered (via read then abort), but read variants with runtime support for filtering can enhance performance and support heuristic routing of items to interested nodes.
 
 * **CRDTs?** - [conflict-free replicated datatypes](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) are designed for concurrent edits and partitioning tolerance, and can be adapted. But I don't know which ones I'd want as built-ins. For now, users might manually replicate CRDTs, maintaining a cell in each node with a bag of updates.
 
@@ -61,102 +61,126 @@ The runtime will support the basic memory cell with 'get' and 'set' operations. 
 
 State is accessed through algebraic effects. We'll present this a suitable API for a key-value database with abstract static keys. Construction of keys can follow a directory-like structure, and runtime-scoped keys can be transparently constructed from shared-scope keys (but not vice versa). This allows a program to control subprogram access to the database through controlling access to keys. It also supports encoding ad hoc metadata, such as caching hints into keys.
 
+### API
+
+TBD
+
 ## HTTP Interface
 
-If an application implements an `http : Request -> Response` interface, it can receive HTTP requests over the same channel as RPC requests and debugging. The Request type is abstracted, with a few methods to access URL, headers, body, and support routing.
+The runtime should recognize the 'http' interface and support requests over the same channels we use for remote procedure calls and debugging. By default, `"/sys/*"` will be intercepted for external debugger integration.
 
-Each 'http' request is handled in a separate transaction. If the transaction aborts, it is logically retried until it successfully produces a response or times out. In some cases, programmers might need a 303 response to ask the client to separately GET the asynchronous result.
+        http : Request -> [sys] Response
 
-Regardless of whether the application implements 'http', a debugger interface might be configured to intercept `"/sys"` requests, binding to 'sys.refl.http'. Authorization would also be configurable.
+The Request and Response types are binaries. However, these will often be *accelerated* binaries, i.e. with a structured representation under-the-hood that can be efficiently queried and manipulated through built-in functions. The application receives a complete request from the runtime, and must return a complete respon, no chunks. There is no support for WebSockets or SSE.
+
+Each 'http' request is handled in a separate transaction. If this transaction aborts voluntarily, it is logically retried until it successfully produces a response or times out, providing a simple basis for long polling. A 303 See Other response is suitable in cases where multiple transactions are required to compute a response. Runtimes may eventually support multiple requests within one transaction via dedicated HTTP headers, but that will wait for the future.
+
+Ideally, authorization and authentication are separated from the application. We could instead model them as application-specific runtime configuration, perhaps integrating with SSO.
 
 ## Remote Procedure Calls
 
-If an application implements `rpc : (MethodRef, UserArg) -> Result`, it may receive remote procedure calls (RPC). The UserArg and Result values are exchanged with the caller. The 'rpc' method may also interact with the caller through an algebraic effect, perhaps 'rpc.cb' for arbitrary callbacks. MethodRef is a stable routing parameter related to how RPC interfaces are configured and published. The runtime will map between local use of MethodRef and external use of GUIDs or URLs.
+If an application implements 'rpc' it may receive remote procedure calls (RPC).
 
-To configure RPC, the simplest solution is to declare a static API in application settings. The configuration can route this to the runtime, optionally applying a translation. A dynamic API is also feasible: settings specify a MethodRef to fetch more detailed APIs according to known protocols. This can be queried as a repeating transaction, expressing reactive APIs. Instead of publishing the same interface to everyone, an application may express multiple RPC 'objects' that each have some methods and some metadata for routing. This provides a basis for security: the configuration can route objects based on trust levels and roles declared in the metadata. Methods can potentially be renamed or wrapped by some registries.
+        rpc : (MethodRef, UserArg) -> [rpc.cb, sys] Result
 
-A prospective caller will query the runtime for RPC objects with a specific interface, filtering on metadata. This query returns a stable set of abstract objects. The caller can peek at the full metadata, and may invoke methods on these objects. We can extend transaction loop optimizations and incremental computing to remote calls.
+The UserArg and Result values are exchanged with the caller. Optionally, limited interaction may be supported via algebraic effects, an 'rpc.cb' callback. The MethodRef is instead a runtime parameter, relating to how RPC is registered and published. The runtime will map between local use of MethodRef and external use of GUIDs or URLs.
 
-To enhance performance, we can support limited code distribution. The 'rpc' method can be written and annotated such that an optimizer will partially evaluate MethodRef and extract code fragments for further evaluation by the remote caller. From a caller, we might extract parts of the callback and continuation, suporting sequential calls without a round-trips. These optimizations can mitigate performance pressures, supporting simplified remote APIs.
+RPC must be configured. The simplest solution is to declare a static API in application settings. Alternatively, the application settings might indicate a MethodRef for fetching a dynamic API. I propose to organize RPC methods into 'objects' that are published to different registries based on trust and roles. A prospective caller will query for RPC objects matching an interface and metadata. 
+
+To enhance performance, I hope to support annotation-guided code distribution. The 'rpc' method can be partially evaluated based on MethodRef, then have some code extracted for evaluation at the caller. A caller can similarly forward part of the callback code and continuation. These optimizations would mitigate performance pressures, supporting simplified remote APIs.
 
 ## Graphical User Interface? Defer.
 
-My vision for [GUI](GlasGUI.md) is that users participate in transactions indirectly through reflection on a user-agent. This allows observing aborted transactions and tweaking agent responses until the user is satisfied and ready to commit. This aligns nicely with live coding and projectional editing, and also allows users to also interact with non-deterministic choice, e.g. display multiple outcomes then commit the preferred outcome and abort the rest.
+My vision for [GUI](GlasGUI.md) is that users participate in transactions indirectly through reflection on a user-agent. This allows for some interesting integration across multiple services via transactional remote procedure calls. However, I'd rather not develop a half-assed GUI framework; do it well or not at all. In the meanwhile, we'll rely on HTTP or FFI as basis for GUI.
 
-As a minimum viable product, some sort of immediate-mode GUI that renders every 'gui' frame regardless of commit is viable. But I'd rather not develop a half-assed GUI model, so we might stick to HTTP and FFI for GUIs in the short term.
-
-## Foreign Function Interface
-
-Access to existing C or C++ APIs is convenient for integration. However, it is relatively awkward in context of transactions or memory safety. To mitigate this, I propose to run foreign functions in a background processes, i.e. with OS-enforced memory separation. The process maintains a tacit environment of variables and defined methods, and operations can use a lightweight scripting language to express loops or call multiple methods. If a process crashes, this can be indirectly observed. 
-
-Viable effects API:
-
-* `sys.ffi.open() : FFI` - returns a linear reference to a new or existing FFI process by name.
-* `sys.ffi.close(FFI) : unit` - release FFI, allows some GC of the associated process.
-* `sys.ffi.link(FFI, SharedObject, Functions) : FFI` - load definitions into the FFI process. 
-* `sys.ffi.eval(FFI, Script) : FFI` - ad-hoc script, can define things, call things, spawn threads, etc..
-* `sys.ffi.fork(FFI) : (FFI, FFI)` - obtain a second cursor for multi-threading or checkpoints. 
-* `sys.ffi.scope(FFI, TL) : FFI` - translate future names accessed or defined in FFI.
-* `sys.ffi.store(FFI, Name, Range, Binary) : FFI` - inject binary data into FFI after prior operations.
-* `sys.ffi.fetch(FFI, Name, Range) : (FFI, Binary)` - extract binary data from FFI
-
-This API benefits from acceleration of the Script type, precompiling to a runtime-specific bytecode. Linking the same SharedObject many times should be very efficient. In context of distributed computing, SharedObject might influence which node hosts the process.
-
-## Ordered Transactions
-
-For these use cases, 'bgeval' offers a convenient escape hatch from the transactional effects API.
-
-* `sys.refl.bgeval(MethodName, Arg)` - evaluate `MethodName(Arg)` in a prior transaction. The return value is logically cached then passed to the caller. If the caller aborts, the prior transaction may be aborted. 
-
- background transaction. The value is passed to a caller, as if computed then cached. If the caller aborts, bgeval may be aborted by the runtime.
-
-This background transaction logically runs *before* to the current transaction, and returns the result through a cell. Going backwards in time like this avoids the problems of entangling code and state. There is some risk of thrashing, where bgeval repeatedly forces the caller to abort, but it's easily avoided or debugged.
-
-## Non-Deterministic Choice for Concurrency and Search
+## Non-Deterministic Choice
 
 In context of a transaction loop, fair non-deterministic choice serves as a foundation for task-based concurrency. Proposed API:
 
-* `sys.fork(N)` - blindly but fairly chooses and returns an integer in the range 0..(N-1). Diverges if N is not a positive integer.
+* `sys.fork(N)` - fairly chooses and returns an integer in the range 0..(N-1). Diverges if N is not a positive integer.
 
-Fair choice means that, given sufficient opportunities, we'll eventually try all of them. However, this doesn't imply *random* choice. A scheduler could run forks in a predictable pattern. Based on heuristics, some forks may run far more frequently than others.
+Fair choice means that, given sufficient opportunities, we'll eventually try all of them. However, this doesn't imply *random* or *uniform* choice! A scheduler may compute forks in a very predictable pattern, some more frequently than others.
 
 ## Random Data
 
-The runtime can provide a cryptographic noise function: 
+A stateful random number generator is awkward in context of concurrency, distribution, and incremental computing. However, we can easily provide access to a stable, cryptographically random field.
 
-* `sys.noise(Index, N)` - Within scope of a runtime, returns a constant integer in the range 0..(N-1). This result should be cryptographically unpredictable without first observing it, and should have a uniform distribution over indices.
+* `sys.random(Seed, N) : Binary` - return a list of N cryptographically random bytes, uniformly distributed. The seed argument is arbitrary and may be structured. To robustly partition the random field, users can include state keys in the seed.
 
-This function may be expensive, e.g. involving an HMAC on `(Index, N)`. Users may take it as a seed for more efficient pseudo-random number generators or noise functions. To robustly partition this random field, the Index may involve state keys.
+An implementation might involve a secure hash of `[Seed, N, Secret]`, where Secret is obtained from `"/dev/random"` or a configurable source. In a distributed runtime, all nodes share the secret.
+
+## Foreign Function Interface
+
+The glas system discourages use of FFI for performance roles where *acceleration* is a good fit. However, there are other  use cases such as integration with host features or resources the 'sys.\*' API doesn't cover, or access to vast libraries of pre-existing code. Even for performance, FFI can serve as a convenient stopgap.
+
+I propose an API based around streaming commands to FFI threads. In general, these threads may run in attached processes to isolate concerns with memory safety and sharing. Each thread maintains a local 'namespace' of mutable variables and loaded functions. This namespace is not shared between threads, but threads within the same process do share the heap, thus may interact through pointers to allocated objects.
+
+A viable effects API:
+
+* `sys.ffi.open(Hint) : FFI` - Returns a linear reference to a new FFI thread with an initially empty namespace. The Hint may guide sharing of processes, location in a distributed runtime, and other configuration options. 
+* `sys.ffi.load(FFI, SharedObject, Functions) : FFI` - Adds functions from a referenced ".so" or ".dll" file to the FFI thread's namespace. The Functions argument should describe aliases, types, and calling conventions to support integration.
+* `sys.ffi.fork(FFI) : (FFI, FFI)` - Splits a stream of FFI operations and clones the FFI thread. The thread namespace is copied and will evolve independently based on future commands, but the process heap and global variables are shared between threads. 
+* `sys.ffi.eval(FFI, Script) : FFI` - Run a simple procedure in context of the thread's namespace. The Script can read and write variables, call FFI functions, and supports simple conditionals and loops.
+* `sys.ffi.store(FFI, Name, Type, Value) : FFI` - inject data into a thread's namespace. The type indicates how the value is translated, e.g. rational to floating point. Deleting a name might be expressed as storing a void type. 
+* `sys.ffi.fetch(FFI, Name, Type) : (FFI, Value)` - extract data of known type from the thread's namespace. This will wait for the FFI thread to settle, i.e. it diverges while Status is 'busy'. We can fetch from a failed thread.
+* `sys.ffi.status(FFI) : (FFI, Status)` - query whether the FFI thread is busy, halted in a failure state, or awaiting commands. Some details of the failure state or busy status might also be available.
+* `sys.ffi.close(FFI) : unit` - release FFI. If we close all FFI associated with a process, we can kill that process.
+
+This API incurs moderate overhead per operation for transactions and serialization. This is negligible for long-running or infrequent operations, but swiftly adds up for short operations at high-frequencies. Performance can be mitigated by constructing a long-running loop within the FFI process and interacting with it through the heap.
+
+*Note:* For portability and security, the Hint and SharedObject types should be translated by the user configuration.
+
+## Background Eval
+
+In some scenarios, we can reasonably assume operations are 'safe' such as HTTP GET, reading a file, or triggering a lazy computation. In these cases, we might want an escape hatch from the transaction system, i.e. such that we can trigger the computation, await the result, and pretend this result is already present. 
+
+A proposed mechanism is background eval:
+
+* `sys.refl.bgeval(StaticMethodName, UserArg) : Result` - Evaluate `StaticMethodName(UserArg)` in a separate transaction. The caller waits for this to commit then continues with the returned Result. 
+
+Intriguingly, stable bgeval integrates with incremental computing, and non-deterministic bgeval can clone the caller for each Result. If the caller is aborted for any reason, such as live code update, the background transaction may also be aborted unless it has already committed.
+
+*Caveats:* Computation may 'thrash' if the background computation repeatedly conflicts with the caller. The new transaction receives the original 'sys.\*' effects API, which may constitute a privilege escalation.
 
 ## Time
 
-Transactions are logically instantaneous, but they may observe the estimated time of commit. However, directly observing time is unstable. To simplify reactive and real-time systems, we can introduce an API to await a given timestamp. 
+A transaction can query a clock. A repeating transaction can wait on the clock, i.e. by aborting before the time is right. But the direct implementation is extremely inefficient, so we'll want to optimize this pattern.
 
-* `sys.time.now()` - Returns a TimeStamp for estimated commit time. By default, this timestamp is a rational number of seconds since Jan 1, 1601 UTC, i.e. Windows NT epoch with arbitrary precision. Multiple queries to the same clock within a transaction should return the same value. 
-* `sys.time.await(TimeStamp)` - Diverge unless `sys.time.now() >= TimeStamp`. Intriguingly, it is feasible to evaluate the transaction slightly ahead of time then hold it ready to commit. This is convenient for modeling scheduled operations in real-time systems.
-* `sys.time.clock` - implicit parameter, reference to a configured clock source by name. If unspecified, will use the configured default clock source.
+* `sys.time.now()` - Returns a TimeStamp for estimated time of commit. By default, this timestamp is a rational number of seconds since Jan 1, 1601 UTC, i.e. Windows NT epoch with flexible precision. Multiple queries to the same clock within a transaction should return the same value. 
+* `sys.time.await(TimeStamp)` - Diverge unless `sys.time.now() >= TimeStamp`. A runtime can easily optimize this to wait for the specified time. Further, the runtime can evaluate the transaction slightly ahead of time and hold it ready to commit.
 
-In context of mirroring, we might configure a non-deterministic choice of network clocks to simplify interaction with network partitioning.  
+In context of a distributed runtime, each node can maintain its own local estimate of the runtime's clock, but we must synchronize as nodes interact based on the last 'observed' time for each transaction.
 
-Note that `sys.time.*` should not be used for profiling. We'll introduce dedicated annotations for profiling, and access profiles indirectly through reflection APIs such as `sys.refl.http`. 
+*Note:* If attempting to record how long a computation takes, use profiling annotations instead.
 
-## Environment and Configuration Variables
+## Arguments and Environment Variables
 
-The configuration controls the environment presented to the application. The configuration has access to OS environment variables and application settings. A viable API:
+A runtime can easily provide access to OS environment variables and command-line arguments.
 
-* `sys.env.get(Query)` - The configuration should define a function representing the environment presented to the application. This operation will evaluate that function with an ad hoc Query. This should deterministically return some data or fail.
+* `sys.env.list : List of Text` - return the defined environment variables
+* `sys.env.get(Text) : Text` - return value for an OS environment variable
+* `sys.env.args : List of Text` - return the command-line arguments
 
-There is no finite list of query variables, but we can develop conventions for querying an 'index' that returns a list of useful queries. There is no support for setting environment variables statefully, but we could override `sys.env.get` in context of composing namespaces, and reference application state.
+In context of a distributed runtime, this environment is captured when the application was started. The application cannot mutate this environment, though it could intercept 'sys.env.\*' in scope of a subprogram.
 
-## Command Line Arguments
+## Console IO
 
-I propose to present arguments together with the environment. Unlike the OS environment variables, the configuration does not observe or interfere with arguments.
+A minimum viable API:
 
-* `sys.env.args` - runtime arguments to the application, usually a list of strings
+* `sys.tty.write(Binary)` - write Binary to stdout upon commit.
+* `sys.tty.read(Count) : Binary` - read Count bytes, diverge/wait if not available.
+* `sys.tty.unread(Binary)` - add Binary to head of read buffer.
+* `sys.tty.ctl(Hint)` - configure tty, e.g. disable input echo and line buffering
 
-*Note:* These arguments don't include executable name. That property might be accessible indirectly via reflection APIs, but it's a little awkward in context of staged computing.
+It is feasible to disable line buffering and input echo, to support sophisticated console applications via ANSI escape codes and a graphical terminal emulator like kitty or ghostty. However, I hope to push most interaction to HTTP, GUI, and other modes, and I don't want to spend much time on this API. 
 
-## Globs of Data? Defer.
+*Note:* The Hint might be be translated by the user configuration. 
+
+## Globs and Content-Addressed Data
+
+The runtime will handle most serialization of glas data - remote procedure calls, persistent state, persistent memo cache, etc.. And this can take advantage of content-addressed data. It is feasible to provide the user some access to this subsystem through a reflection API. Unfortunately, it's a little tricky to integrate this robustly with garbage collection.
+
+
 
 RPC can support content-addressed data implicitly, but if we want to integrate content addressing manually with TCP or UDP messages we'll instead need suitable reflection APIs. To avoid troublesome interactions with a garbage collector, we'll also locally maintain a Context that associates content-addressed hashes to values. 
 
@@ -164,18 +188,6 @@ RPC can support content-addressed data implicitly, but if we want to integrate c
 * `sys.refl.glob.read(Context, Binary)` - returns a Value, computed with access to a Context of external references. Fails if the binary contains any references not described in Context.
 
 The exact representation of Context is runtime specific, but should be plain old data and open to extension and versioning.
-
-## Console IO
-
-We could support console IO from applications via `sys.tty.*` methods. Simple streaming binaary reads and writes are probably adequate. Viable API:
-
-* `sys.tty.write(Binary)` - add Binary to write buffer, written upon commit
-* `sys.tty.read(Count)` - read exactly Count bytes, diverge/wait if it's not available
-* `sys.tty.unread(Binary)` - add Binary to head of read buffer to influence future reads.
-
-We could optionally add some methods to control line buffering and input echo.
-
-*Note:* I'd recommend the 'http' interface over console IO for any sophisticated user interaction. But console IO is still a good option for integration in some cases.
 
 ## Filesystem
 
