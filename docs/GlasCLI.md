@@ -20,13 +20,13 @@ My vision and intention is that end users mostly operate through user-defined op
 
 ## Configuration
 
-The glas executable starts by reading a `GLAS_CONF` environment variable and loading the specified file as a [namespace](GlasNamespaces.md). If unspecified, the default location is `"~/.config/glas/conf.g"` in Linux or `"%AppData%\glas\conf.g"` on Windows. 
+The glas executable starts by reading a `GLAS_CONF` environment variable and loading the specified file as a [namespace](GlasNamespaces.md). If unspecified, the default location is `"~/.config/glas/conf.glas"` in Linux or `"%AppData%\glas\conf.glas"` on Windows.
 
-The configuration namespace defines functions to evaluate runtime options such as persistent storage, caching, filesystem access, logging, etc.. The set of configurable features is ad-hoc and runtime-specific, albeit subject to de-facto standardization. Many options, such as logging, may be application-specific: the configuration can query application 'settings' when evaluating application-specific options. To simplify portability and security, application settings are never directly observed by the glas executable.
+The configuration namespace may define some applications directly. It also defines an environment of languages and shared libraries that will be used loading externally defined applications. Further, for portability, the configuration defines various adapters, such as how to interpret application 'settings' and overrides for 'sys.\*' effects APIs, with reference to application settings and runtime version info.
 
-The configuration namespace may also define applications and shared libraries. A typical user configuration will import a community or company configuration from DVCS, then apply a few overrides for user-specific preferences, projects, and resources. A community configuration can define thousands of applications, mitigated by lazy loading and caching. Importing by specific tags or hashes in remote DVCS repositories serves as the foundation for curation, version control, and package management.
+A typical user configuration will import a community or company configuration from DVCS, then apply a few overrides for user-specific preferences, projects, and resources. A community configuration can define thousands of applications. This is mitigated by lazy loading and caching. DVCS tags, hashes, and conventions such as pull requests serve as the foundation for curation, version control, and package management.
 
-*Note:* The initial configuration file must use a recognized file extension with a built-in syntax, such as ".g" files. However, this is subject to the normal rules for user-defined syntax. If the configuration defines "env.lang.g", we'll attempt to bootstrap the language and reload the configuration. 
+*Note:* The initial configuration file must use a recognized file extension with a built-in compiler, such as ".glas" files. However, the glas executable may support independent extension of built-in compilers.
 
 ## Running Applications
 

@@ -10,7 +10,7 @@ To solve this, we introduce a user agent to handle fast response and repetition.
 
 This involves *reflection* on the user agent, together with manipulation of user variables. Reflection allows users to observe aborted transactions. This provides a basis for read-only views or to withhold approval until the user has time to understand the information on display. User variables might be rendered as knobs, sliders, toggles, and text boxes.
 
-Some possible modes for user participation:
+Reasonable modes for user participation:
 
 * *read-only view* - The user agent continuously or infrequently renders the GUI then aborts.
 * *live action* - The user agent continuously renders the GUI and commits when possible.
@@ -30,39 +30,21 @@ Alternatively, we can modify applications to reduce severity of known glitches. 
 
 An adjacent issue is that *asynchronous* interactions - where feedback is not logically 'instantaneous' within a transaction - may appear to be glitchy if presented as synchronous to the user. In this case, I think the problem is more about managing user expectations (e.g. report actual status of pending requests) or meeting them (e.g. use RPC to complete actions synchronously in GUI transaction).
 
-## Proposed API
+## Integration
 
-A proposed API:
+        gui : FrameRef? -> [user, system] unit
 
-        gui : UserAgent -> ()
+An application's 'gui' method is repeatedly called in separate transactions. On each call, it queries the user agent and renders some outputs. 
 
-The user calls the application 'gui' method, providing access to some callback methods. Through these callbacks, the application can both query the user agent (for preferences, authorization tokens, window sizes, URL-like navigation variables, etc.) and ask the user agent to present data to the user. In general, the application may also try to write user variables, which could apply upon commit.
+In general, the queries and rendered outputs may be stable, subject to incremental computing. However, some 'frames' may be less stable than others. To support these cases (TBD)
 
-Exactly how a UserAgent is presented may vary based on language. It could be a first-class object in a language that supports this, or it could be a collection of algebraic effects. In any case, I'm hoping to avoid constructing intermediate documents with 'frames' for images or hierarchical documents that are filled by further requests.
+In some cases, we may 'fork' the GUI with non-deterministic choice, which a user agent might render in terms of multiple windows. We render without commit; the final 'commit' decision is left to the user through the user agent.
 
-Under premise of user participation in transactions, we will render aborted transactions. We can intentionally abort transactions intentionally as a basis for read-only views or effectful 'what if' computations within a transaction. Exactly what is rendered is left to the user agent. 
-
-### Integration
-
-Implementation of the 'gui' interface is not limited to the toplevel application object. It could be implemented on arbitrary application components - perhaps even individual variables - to support live coding and debugging. We could even define 'gui' for RPC objects published to the registry.
-
-By default, we might render the toplevel application 'gui' using a runtime integrated user agent. In this case, ad-hoc access to that user agent should also be accessible through the runtime reflection API (perhaps `sys.refl.gui`). 
-
-### Alternative APIs
-
-It is feasible to approach this more like HTTP, where the user requests a document view of a resource then might make further requests for graphics, hierarchical frames, and so on. This pushes more initiative to the user agent. 
+A user agent can help users systematically explore different outcomes. This involves heuristically maintaining history, checkpoints and bookmarks based on which values are observed. An application can help, perhaps suggesting alternatives to a query or using naming conventions to guide heuristics (e.g. distinguishing navigation and control).
 
 
 
-It requires more construction and parsing of intermediate representations, and more naming of intermediate resources. Might revisit this if the proposed model doesn't work out.
-
-## HTTP over GUI
-
-We can trivially encode some user variables as HTTP requests or even lists thereof, supporting any request method. I don't intend to build GUIs in this way, primarily, but a few conventions around this could provide a 'gui' view for many 'http' resources and operations and supports a smooth transition the two models.
-
-## GUI over HTTP? Defer.
-
-The runtime implicitly routes `/sys` to the runtime provided `sys.refl.http`. The runtime or compiler could feasibly implement 'gui' over HTTP via `/sys/gui` or similar, implementing a UserAgent based on HTML, CSS, JS, DOM, and XMLHttpRequest. However, this isn't a trivial feature, and we'll need custom HTTP headers for multi-request transactions. Something to consider developing much later.
+*Note:* It is feasible to introduce a notion of user-local state or session-local state. However, it is not clear to me how such state would be integrated between sessions, other than as queries. A few exceptions include passing files and such over the GUI, e.g. drag and drop, which may require special attention.
 
 ## Navigation Variables
 

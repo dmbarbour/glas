@@ -2,7 +2,7 @@
 
 Glas is named in allusion to transparency of glass, human mastery over glass as a material, and the phased liquid-to-solid creation analogous to staged metaprogramming. It can also be read as a backronym for 'general language system', which is something glas aspires to be. Design goals orient around compositionality, extensibility, scalability, live coding, staged metaprogramming, and distributed systems programming. 
 
-Interaction with the glas system is initially through a command line 'glas' executable. See [Glas CLI](GlasCLI.md).
+Interaction with the glas system is initially through a [command line interface](GlasCLI.md).
 
 ## Data
 
@@ -93,35 +93,43 @@ To support linearity, we might use [tagged pointers](https://en.wikipedia.org/wi
 
 Linear data is implicitly scoped to the runtime. This avoids the challenges of enforcing or cleaning up linear data in the open system. We'll instead raise an error when we attempt to transfer linear data via shared state or remote procedure calls. 
 
-## Programs and Applications
+## Namespaces and Programs 
 
-A glas system is expressed as an enormous [namespace](GlasNamespaces.md), customized per user. A typical user configuration inherits community or company configurations via import from DVCS, then integrates user-specific preferences, projects, resources, and authorizations. The namespace is essentially an intermediate representation, with definitions in the [glas program model](GlasProg.md).
+A glas system is expressed as a modular [namespace](GlasNamespaces.md) defining *languages, libraries, applications, and adapters*. Typically, a user imports a community or company configuration from DVCS, then overrides definitions to integrate user-specific projects, preferences, and resources. A community configuration may be enormous, defining hundreds of applications; this is mitigated by lazy loading and caching.
 
-The [glas command line interface](GlasCLI.md) can run applications defined within the user's namespace, or use 'languages' defined in the namespace to load scripts or command text as applications. Applications may also be 'installed' to make them available for offline use.
+The [programs](GlasProg.md) are procedural in nature. To simplify several optimizations, programs rely on second-class algebraic effects and compile-time metaprogramming instead of first-class functions or objects. 
 
-Most applications in glas systems will use the [transaction-loop application model](GlasApps.md), defining 'start', 'step', 'http', and other interfaces. The main loop is externalized, with the runtime repeatedly calling 'step', and calling 'http' between steps to handle occasional requests. This model is especially friendly for live coding, and it can be optimized in many useful ways. But even without those optimizations, we can express a single-threaded event dispatch loop.
+### Languages
 
-Alternative run modes are also supported, such as staged applications. Every application should define 'settings' to influence application-specific configuration of the runtime including run mode, logging, profiling, quotas, and other features.
+The namespace supports user-defined syntax: to load a ".xyz" file, we'll search for '%env.lang.xyz' in the current scope. This serves as a front-end compiler, writing an intermediate representation for programs into the namespace. To get started, the glas executable provides at least one built-in compiler, usually for [".glas" files](GlasLang.md). The built-in compiler is used to bootstrap the user definition if possible.
 
-### Syntax
+### Libraries
 
-The glas system supports user-defined syntax aligned with file extensions. This is inextricably entangled with the namespace model: when we 'load' a namespace module, we'll select a procedure '%env.lang.FileExt' from the namespace to 'compile' the binary into even more definitions. Via translation rules, we could set '%env.\*' within a scope, influencing 'load'.
+Shared libraries are a design pattern within the namespace. An application can assume '%env.lib.math.whatever' is already defined. If wrong, the error message is clear and the fix is easy: install the library. By convention, names with prefix '%' are implicitly propagated across imports, and we'll apply a default translation `"%env." => "env."` to the configuration namespace. Thus, we might install a library via import into 'env.lib.math' to share utility code with most applications.
 
-The glas executable include at least one built-in compiler for [glas language, ".glas" files](GlasLang.md). We'll use this if '%env.lang.glas' is undefined, or to bootstrap if self-referentially defined. Most other languages will ultimately be defined in terms of ".glas" code.
+The main advantage of shared libraries is performance, avoiding redundant work across applications. The main disadvantage is customization: the application cannot override library definitions or change its links to other libraries. The disadvantage can be mitigated by translating links to alternative versions of specific libraries within some scope. 
+
+### Applications
+
+A [transaction-loop application](GlasApps.md) is implemented by defining procedures for 'start', 'step', 'http', etc.. The main loop involves repeatedly running 'step' in separate transactions. The direct implementation is a single-threaded event loop. However, support for incremental computing and a few other optimizations lets this model express concurrent, distributed, reactive systems. The transaction loop is also very convenient for live coding.
+
+Although the transaction loop should be the default for glas systems, a runtime can support alternative modes, such as staged applications. Applications should define 'settings' to guide integration.
+
+### Adapters
+
+Standards compete and evolve. An application developed for one runtime might not run on another. Even a future version of the same runtime can break things! To mitigate this, a runtime might ask the configuration for an ad hoc adapter based on application settings and runtime version info. The adapter can translate effects APIs, life cycles, settings, etc.. A configuration can potentially 'adapt' new application models that were never recognized by any runtime. In the general case, an adapter is stateful and performs additional tasks in the background.
+
+Aside from external adapters, an application or library can apply conditional compilation for compatibility between communities, and a runtime may recognize a few common conventions and provide its own adapters.
 
 ## Distributed Programming
 
-Instead of running an application as an operating system process, we can configure a distributed runtime that overlays remote machines or processes. This is an especially good fit for the transaction loop application model. We can mirror the same 'step' and 'http' and other interfaces on every node, and due to the nature of repeating transactions, the result is one big application that can offer degraded service during network failure and recover resiliently when the network is re-established.
+The transaction loop application model greatly simplifies distributed programming. We can mirror the same repeating steps, the same 'http' and 'rpc' handlers, etc. on every node, apply a few optimizations, and *everything works out*. Network disruption only temporarily blocks some repeating distributed transactions.
 
-Of course, we still need to design the application to be partitioning tolerant, i.e. arranging for most transactions to run on a single node, and favoring queues, bags, or CRDTs for asynchronous communication between nodes. But the transaction loop simplifies the problem.
+Of course, we must design applications such that *most* transactions run on a single node. We should design the 'http' and 'rpc' features such that many requests can be handled locally. Use of queues, bags, or CRDTs can let nodes do more work locally.
 
 ## Live Coding
 
-We can update a transaction loop application atomically between steps. With most modules in DVCS, we can apply updates to multiple files atomically. We can also add some 'switch' behavior to control when updates are applied and help with any state or schema updates. 
-
-To further simplify live coding, the glas program model avoids state-code entanglement, e.g. no first-class functions or objects, no spawned threads. Even channels are avoided because they're awkward for schema updates. Alternative solutions are supported for the roles these usually fulfill.
-
-My long term vision is that our user-defined syntax will generate a [notebook view](GlasNotebooks.md) of the application, providing a projectional editor for every source file, with live coding as users make edits. But live coding through external tools is still useful.
+The transaction loop application model simplifies live coding. We can atomically update code between steps. State is externalized, so we don't need to fix any long-running loops. Incremental computing lets us view stable state as 'code'. To further simplify live coding, the glas program model avoids first-class functions and objects, which tend to entangle code and state.
 
 ## Annotations
 
@@ -162,9 +170,7 @@ Instead of ad hoc user-defined messages, consider conditionally retaining data t
 
 ## Debugging
 
-The transaction loop applications often define 'http' and 'rpc', and a socket is opened to handle these requests. But the runtime will intercept some requests, e.g. HTTP requests to `"/sys"` (by default). This can provide a reflective view of the runtime - logs, profiles, disassembly, and so on. It can provide some generic administrative tools: pause, continue, update, restart, etc..
-
-Both browsers and external debugger tools could attach interact with the application through this interface. Some applications might also support internal debuggers, which may use the same reflection interface from within the application, perhaps 'sys.refl.http'. Of course, reflective 'rpc' might prove more efficient.
+The runtime will be configured to listen on a TCP port for debugger interactions. For transaction loop applications, the same port may be shared for 'http' and 'rpc' calls. By convention, we might reserve `"/sys/*"` in for runtime use. The runtime may support limited debugging via browser in addition to web APIs. Access to status, recent logs, profiling information, application state, etc. can be provided through this interface. Administrative tools - pause, continue, update, restart, etc. - are also feasible. 
 
 ## Performance
 
