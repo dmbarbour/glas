@@ -77,27 +77,11 @@ For performance, a runtime may support optimized internal representations. A use
 
 *Note:* Arithmetic in glas is exact by default, but there will be workarounds for performance.
 
-### Abstract, Linear, and Scoped Data
-
-Data is abstract in context of a subprogram that does not directly observe or construct that data. Abstract data may be linear insofar as the subprogram further does not directly copy or drop the data. Technically, these are extrinsic properties of context, not intrinsic properties of data. However, it can be useful to integrate some metadata to simplify runtime enforcement.
-
-To support abstract data, we can simply extend the Node type:
-
-        type Node =
-            | ... # other Node types
-            | Abstract of Key * Tree
-
-Program annotations can wrap and unwrap data with the 'Abstract' node. An optimizer can eliminate these annotations in cases where type-safety is proven statically. A runtime might also recognize some keys and *encrypt* abstract data when serialized.
-
-To support linearity, we might use [tagged pointers](https://en.wikipedia.org/wiki/Tagged_pointer) to encode whether a Node is transitively linear. We might introduce linearity as a special property of the Key for Abstract nodes. The runtime will use linear types open files, network sockets, FFI tasks, and so on. But users may introduce their own as a flag on the Key.
-
-Linear data is implicitly scoped to the runtime. This avoids the challenges of enforcing or cleaning up linear data in the open system. We'll instead raise an error when we attempt to transfer linear data via shared state or remote procedure calls. 
-
 ## Namespaces and Programs 
 
 A glas system is expressed as a modular [namespace](GlasNamespaces.md) defining *languages, libraries, applications, and adapters*. Typically, a user imports a community or company configuration from DVCS, then overrides definitions to integrate user-specific projects, preferences, and resources. A community configuration may be enormous, defining hundreds of applications; this is mitigated by lazy loading and caching.
 
-The [programs](GlasProg.md) are procedural in nature. To simplify several optimizations, programs rely on second-class algebraic effects and compile-time metaprogramming instead of first-class functions or objects. 
+The [programs](GlasProg.md) are procedural in nature, but takes inspiration from functional and object-oriented programming. However, to simplify optimizations and live coding, we rely on algebraic effects and metaprogramming instead of first-class functions or objects.
 
 ### Languages
 
@@ -111,93 +95,122 @@ The main advantage of shared libraries is performance, avoiding redundant work a
 
 ### Applications
 
-A [transaction-loop application](GlasApps.md) is implemented by defining procedures for 'start', 'step', 'http', etc.. The main loop involves repeatedly running 'step' in separate transactions. The direct implementation is a single-threaded event loop. However, support for incremental computing and a few other optimizations lets this model express concurrent, distributed, reactive systems. The transaction loop is also very convenient for live coding.
+A [transaction-loop application](GlasApps.md) can be implemented by defining procedures for 'start', 'step', 'http', etc.. The main loop involves repeatedly running 'step' in separate transactions. The direct implementation is a single-threaded event loop. However, support for incremental computing and a few other optimizations lets this model express concurrent, distributed, reactive systems. The transaction loop is also very convenient for live coding.
 
-Although the transaction loop should be the default for glas systems, a runtime can support alternative modes, such as staged applications. Applications should define 'settings' to guide integration.
+Although the transaction loop is intended to be the default for glas systems, a runtime may support alternative modes. For example, staged applications would compile the next-stage application based on command-line arguments and OS environment variables. Applications should define 'settings' to guide integration, including run mode.
 
 ### Adapters
 
-Standards compete and evolve. An application developed for one runtime might not run on another. Even a future version of the same runtime can break things! To mitigate this, a runtime might ask the configuration for an ad hoc adapter based on application settings and runtime version info. The adapter can translate effects APIs, life cycles, settings, etc.. A configuration can potentially 'adapt' new application models that were never recognized by any runtime. In the general case, an adapter is stateful and performs additional tasks in the background.
+Instead of directly observing an application, a runtime should first ask the configuration for an adapter. The configuration can query application settings and runtime version info, then return wrappers for the runtime's algebraic effects, the application interface, perhaps annotations. Use cases include porting applications across runtimes, exploring alternative application models, sandboxing untrusted applications, and overriding application settings based on configuration policies.
 
-Aside from external adapters, an application or library can apply conditional compilation for compatibility between communities, and a runtime may recognize a few common conventions and provide its own adapters.
+Adapters at other layers are still useful. Runtimes can recognize multiple conventions. Applications and libraries can support conditional compilation based on '%env.\*' context or static parameters. But the configuration is the final opportunity to influence integration, and the most convenient opportunity for end users.
 
-## Distributed Programming
+*Aside:* We could define some applications with 'settings' alone, treating the adapter as a compiler.
 
-The transaction loop application model greatly simplifies distributed programming. We can mirror the same repeating steps, the same 'http' and 'rpc' handlers, etc. on every node, apply a few optimizations, and *everything works out*. Network disruption only temporarily blocks some repeating distributed transactions.
+## Distributed Systems Programming
 
-Of course, we must design applications such that *most* transactions run on a single node. We should design the 'http' and 'rpc' features such that many requests can be handled locally. Use of queues, bags, or CRDTs can let nodes do more work locally.
+The transaction loop application model greatly simplifies programming of distributed systems. The application can be mirrored on every node, i.e. repeating the same 'step' function, handling 'http' and 'rpc' requests locally, caching or migrating state. The runtime can apply a heuristic optimization: abort a 'step' that is better initiated on another node. Similarly, repeating 'rpc' calls can be redirected to the relevant node.
+
+To fully leverage the distributed system, applications must be architected such that *most* transactions involve only one or two runtime nodes. During a network disruption, the application continues running locally, but some distributed transactions are blocked. This supports graceful degradation as the network fails, and resilient recovery as communication is restored. If necessary, an application may observe disruption indirectly via timeouts or reflection. 
+
+Although transaction loops don't eliminate the need for design, they are flexible and forgiving of mistakes. We can always force a few distributed transactions rather than re-architecting.
 
 ## Live Coding
 
-The transaction loop application model simplifies live coding. We can atomically update code between steps. State is externalized, so we don't need to fix any long-running loops. Incremental computing lets us view stable state as 'code'. To further simplify live coding, the glas program model avoids first-class functions and objects, which tend to entangle code and state.
+To support live coding, a runtime can be configured to scan for source updates periodically or upon trigger. Sources include local files and remote DVCS resources. After compiling everything, we switch to the new code. For a transaction loop application, 'switch' is the first transaction evaluated in the new code. If switch fails, it can be retried; we continue running the old code until it succeeds. The switch operation is responsible for schema updates if necessary.
+
+In a distributed runtime, one node is be responsible for updates. This role can be configured or determined by consensus algorithms. For isolation of transactions, old code must not observe messages or states produced by new code. However, we can propagate software updates together with the messages and states. In case of network disruption, some nodes might be slower to receive the update.
+
+*Note:* Between incremental computing and acceleration, programmers can also model live coding *within* applications. This may be more convenient in some cases to control the scope and cost of the updates.
 
 ## Annotations
 
-Programs in glas systems will generally embed annotations to support logging, profiling, testing, debugging, static analysis, caching, acceleration, parallelism, and other non-semantic features. As a general rule, annotations should not influence observable behavior except through reflection APIs. Thus, a runtime can safely ignore unrecognized annotations. 
+Programs in glas systems will generally embed annotations to support *instrumentation, validation, optimization*, and other non-functional features. As a general rule, annotations should not influence observable behavior except through reflection APIs and performance.
 
-A proposed representation (in the abstract assembly) is `(%an AnnoAST Operation)`, such as:
+A proposed representation in the abstract assembly is `(%an AnnoAST Operation)`, such as:
 
-        (%an (%log ConfigChan Message) Operation)
-        (%an (%assert ConfigChan Expr Message) Operation)
-        (%an (%type TypeExpr) Operation)
+        (%an (%an.log ConfigChan Message) Operation)
+        (%an (%an.assert ConfigChan Expr Message) Operation)
+        (%an (%an.type TypeExpr) Operation)
 
-In each case, we annotate Operation with a given AnnoAST. If Operation is omitted, it defaults to a no-op. The set of recognized annotations is extensible. If unrecognized, a simple warning once per tag is sufficient. Where users don't want a warning, we could disable warnings with: `(%an (%an.nowarn AnnoAST) Operation)`.
+        (%an (%an.nowarn AnnoAST) Operation)
 
-We can also express annotations in the namespace layer, e.g. 'foo.\#doc' or 'foo.\#test.\*'. Also in the data layer, e.g. the `Abstract of Key * Tree` mentioned prior is an annotation. 
+In each case, we annotate an Operation. We might view annotations as a flavored identity function. If an annotation constructor is not recognized by a runtime, we can warn on the first encounter. To suppress warnings in certain cases, we could support composite annotation constructors such as '%an.nowarn'.
 
-### Automatic Testing
+Annotations can also be expressed at other layers. In the namespace layer, we might use 'foo.\#doc' for documentation or 'foo.\#test.\*' for a test suite. The runtime will ignore namespace-layer annotations, but they can be useful for external tools. In the data layer, a runtime might record some annotations to support acceleration or dynamic enforcement of abstract and linear types, but a user can only access this through reflection APIs.
 
-Tests can be expressed within programs using static or runtime assertions, and within the namespace via 'foo.\#test.\*'. Tests may leverage non-deterministic choice as a basis for fuzz testing.
+### Instrumentation
+
+We might annotate our programs to record some extra information to support debugging. This includes logging, profiling, or recording a computation.
+
+        log (Chan, Message) { Operation }
+        prof (Chan, DynamicIndex) { Operation }
+        record (Chan, Cond) { Operation }
+
+        (%an (%an.log Chan Message) Operation)
+        (%an (%an.prof Chan DynamicIndex) Operation)
+        (%an (%an.record Chan Cond) Operation)
+
+For performance reasons, instrumentation can be enabled and disabled based on a static Chan. This could be via application settings and conditional compilation, or statefully via reflection APIs.
+
+The log Message should either be a read-only computation or computable within a hierarchical transaction. Conditional logging is supported by returning an 'empty' message. Logging over an operation is interesting; depending on configuration for Chan, this could be taken as outputting random samples or adding Message to a stack trace. In context of transaction loop applications - with forks and incremental computing - we might render logs to a user as a time-varying tree instead of a message stream.
+
+Profiling should record things useful for understanding performance. Entry and exit counts, time spent, memory allocated, etc.. In context of transaction loop applications, we might keep stats related to stability and incremental computing, aborting on read-write conflict, and so on.
+
+A runtime can also be asked to record information to replay an Operation, and perhaps more based on configuration. Recording can be a convenient alternative to breakpoints in cases where users don't intend to interfere with the computation. We might keep the recording based on whether Cond was true at any point in Operation.
+
+*Note:* Non-deterministic choice in a log message or recording condition might be interpreted as a composition, i.e. set of messages, all conditions are true. For profiling dynamic index, we might heuristically split costs.
+
+### Validation
+
+Annotations can express assertions, type annotations, even proofs. However, type systems and proof-carrying code are deep subjects and I won't touch them here. Assertions are a lot simpler:
 
         assert(Chan, Cond, Message) { Operation }
+        (%an (%an.assert Chan Cond Message) Operation)
 
-It is feasible to express invariants as assertions *over* an operation. We could test this at start and end, randomly in the middle, upon error for the stack trace, etc.. depending on how we configure assertions on Chan. In a debugging context, we could try to isolate where a condition went from true to false within the operation.
+We might interpret an assertion over an operation as expressing an invariant. Based on configuration for Chan, this could be randomly sampled and tested again for stack traces, or tested continuously for every change that affects Cond (modulo hierarchical transactions). If Cond is non-deterministic, all conditions must be true.
 
-### Logging, Profiling, Recording
+Use of *static* assertions - plus a few conventions for static channel names - might prove a convenient way to express arbitrary unit tests within a program. Non-deterministic conditions could serve as a basis for fuzz testing.
 
-        log (Channel, Message) { Operation }
-        prof (Channel, DynamicIndex) { Operation }
+### Optimization
 
-As with assertions, logging *over* an operation is convenient for many use cases. We could potentially 'watch' the log message over the course of the operation, or add it to a stack trace. For profiling, the operation is almost essential (unless we're just counting entries). Profiling can be understood as a specialized form of logging, e.g. we could include some profiling stats (like duration) in a log, but we can't usefully include diverse messages in a profile.
-
-*Aside:* In context of transaction loop applications with incremental computing and branching upon non-deterministic choice, it might be more useful to render logs as a time-varying, scrubbable tree instead of as a text stream.
-
-### Recording
-
-        record (Channel, Cond) { Operation }
-
-Instead of ad hoc user-defined messages, consider conditionally retaining data to replay certain computations in slow motion. Recording could be configured per Channel, e.g. how many records to keep, how often to record, how the condition is interpreted (true on entry, rising or falling edge), and so on. For debugging purposes, such records might prove more convenient than logging or breakpoints. 
+Annotations will guide most performance features - acceleration, caching, laziness, parallelism, use of content-addressed storage. See *Performance* below. They might also guide JIT compilation and optimizers directly, such as inlining calls.
 
 ## Debugging
 
-The runtime will be configured to listen on a TCP port for debugger interactions. For transaction loop applications, the same port may be shared for 'http' and 'rpc' calls. By convention, we might reserve `"/sys/*"` in for runtime use. The runtime may support limited debugging via browser in addition to web APIs. Access to status, recent logs, profiling information, application state, etc. can be provided through this interface. Administrative tools - pause, continue, update, restart, etc. - are also feasible. 
+The runtime can be configured to listen on a TCP port for debugger interactions. The same port may be shared for 'http' and 'rpc' calls. By convention, we might reserve `"/sys/*"` for runtime use. The runtime could even integrate a browser-based debugger. Access to status, recent logs, profiling information, application state, etc. can be provided through this interface. Administrative tools - pause, continue, update, restart, etc. - are also feasible. Authorization for debugger access should be configurable, too.
 
 ## Performance
 
 ### Acceleration
 
-Acceleration is a pattern that lets a runtime introduce 'performance' primitives separately from 'semantic' primitives. For example, instead of directly introducing a new primitive for '%matrix.mul', we might write `(%an (%accel.matrix.mul) ReferenceImpl)`. A subset of runtimes might recognize this annotation, optionally validate ReferenceImpl, then substitute the ReferenceImpl with the accelerator, e.g. '%internal.matrix.mul'. A simple link rule `{ "%internal." => NULL }` can block users from directly referencing internal primitives, leaving it for the internal optimizer only.
+Acceleration is a pattern that lets a runtime introduce 'performance' primitives separately from 'semantic' primitives. For example, instead of directly introducing a new primitive for '%matrix.mul', we might write `(%an %accel.matrix.mul ReferenceImpl)`. A subset of runtimes might recognize this annotation, optionally validate ReferenceImpl, then substitute the ReferenceImpl with a built-in implementation. 
 
-There is plenty of benefit in accelerating matrices, graphs, sets, relational databases, and other types, so long as they are widely useful. However, among the best use cases is accelerated simulation of an abstract CPU, GPGPU, or other low-level models. The runtime can 'compile' simplified code for the actual GPGPU (or CPU). This is much safer than embedded assembly or FFI, and can easily be used within a 'pure' function, which is convenient for memoization. If we want cryptography, physics simulations, or LLMs in glas systems, this is a good approach.
+There is plenty of benefit in accelerating matrices, graphs, sets, relational databases (i.e. a dict of lists of dicts), and other types, so long as they are widely useful. However, among the best use cases is accelerated eval of an abstract CPU or GPU. The accelerator can validate memory safety and 'compile' code for actual hardware. If we want cryptography, physics simulations, or LLMs available as 'pure functions' in glas systems, this would be a good approach.
+
+There are caveats. Acceleration of floating point arithmetic is a hassle due to inconsistencies between processors, so we might stick with integers. If necessary, we can still access hardware through an effects API, perhaps indirectly via FFI.
 
 ### Laziness and Parallelism
 
-        (%an (%lazy.thunk) Expr)        # return thunk immediately; restricts type of Expr
-        (%an (%lazy.force) Expr)        # if Expr returns shallow thunk, force evaluation
-        (%an (%lazy.force.deep) Expr)   # force all thunks within data returned by Expr
-        (%an (%lazy.spark) Expr)        # put thunk in a queue to be forced by worker thread
+A subset of computations, especially pure functions, can be safely deferred. The deferred computation can later be forced, or sent to a background worker to handle in parallel.
 
-A subset of computations, especially pure functions, can be safely deferred. The deferred computation can later be forced, or sent to a background worker to handle in parallel. Laziness is very troublesome in open systems, so we might implicitly force computations prior to serialization for remote procedure calls or persistent storage.
+        (%an (%an.lazy.thunk) Expr)        # defer eval of type of Expr, immediately return thunk
+        (%an (%an.lazy.force) Expr)        # force evaluation of a thunk, returning the data
+        (%an (%an.lazy.spark) Expr)        # put thunk in a queue to be forced by worker thread
+
+I currently intend for explicit laziness. Attempting to force or spark data that is not a thunk would be an error. Explicit laziness is effective for most use cases. However, we could easily extend this with optional parameters to '%an.lazy.thunk' to support implicit force. Support for scoping laziness within a transaction might also be useful.
+
+Laziness is very troublesome in open systems, so lazy data will be runtime scoped. That is, we'll raise an error rather than store a thunk to a shared database or send one over a remote procedure call. For implicit laziness, we'd instead force the thunk as we serialize the data. That said we can send lazy data between nodes in a distributed runtime.
+
+### Content Addressed Storage
+
+To support larger-than-memory data, glas systems may leverage content-addressed storage to offload subtrees to higher-latency storage (e.g. disk or network). Programmers may use `(%an (%an.cas Hint) BigDataExpr)` annotations to guide this behavior, with Hint potentially suggesting minimum and maximum chunk sizes and other heuristic guidance. The actual conversion may be deferred, performed only when the garbage collector is looking for opportunities to recover memory, or when the hash might be useful for memoization.
+
+In context of serialization - distributed runtimes, database storage, or remote procedure calls - we can lazily fetch fragments of data as needed, supporting incremental upload and download. If we find ourselves repeatedly communicating content-addressed data between runtimes (e.g. via remote procedure calls) we could use integrate content delivery networks to spread the network pressure.
 
 ### Memoization
 
-When applying a pure function to immutable data, we can produce a secure hash as a lookup key the computation as a whole. A simple lookup table can let us find the result. In glas systems, we'll configure persistent memoization tables to support incremental compilation and many other use cases.
-
-### Content Addressed Data
-
-To support larger-than-memory data, glas systems may leverage content-addressed storage to offload subtrees to higher-latency storage (e.g. disk or network). This optimization can be guided by program annotations. In context of serialization - distributed runtimes, database storage, or remote procedure calls - we can lazily fetch fragments of data as needed, supporting incremental upload and download. There are also benefits for memoization, allowing us to work with large values as 'keys'.
-
-In some cases, we might want to distribute content-addressed data via [content delivery networks (CDN)](https://en.wikipedia.org/wiki/Content_delivery_network) to reduce the local network burden. 
+When applying a pure function to immutable data, we can use a secure hash as a lookup key. A persistent memoization table allows sharing work between applications. In glas systems, we'll rely on persistent memoization as a basis for incremental compilation. To work with large data, we should use content-addressed data to reduce the effective size of the argument.
 
 ## Thoughts
 
@@ -209,8 +222,18 @@ The section on abstract and linear data provides a highly simplified dynamic typ
 
 ### Program Search
 
-I'm interested in a style of metaprogramming where programmers express both hard and soft constraints on the program, and the program includes sufficient code to adapt to contexts and user preferences. Depending on the design, this might also support working with 'ambiguous' definitions, allowing programmers to be more vague and still get a useful program.
+I'm interested in a style of metaprogramming where programmers express constraints on the program, both hard and soft, then we discover a program that meets these constraints. However, I don't have a good solution for this that ensures a deterministic outcome and supports incremental compilation. At the moment, probably best to leave this to a separate stage and isolate it within the namespace and call-graph?
 
-Some ideas: We could introduce AST nodes for 'static' non-deterministic choice within a call graph. We can reject some solutions based on static asseertions, and prioritize others that have a lower 'weight'. Weights can be abstracted into arbitrary values that we 'interpret' into positive rational numbers according to user preference, e.g. an 'experimental' tag might weigh 0.01 for one user and 100 for another. By applying something similar to an A* search, it should be feasible to discover the 'best' solution by weight, and we can ensure this solution is deterministic.
+### Abstract, Scoped, and Linear Data
 
-But I'm not convinced that a one-size-fits-all solution at the toplevel is the right approach here. Perhaps more explicit staging of program search would be easier for programmers to isolate, control, and stabilize in context of incremental compilation. 
+Data is abstract in context of a subprogram that does not directly observe or construct that data. Data that is abstract to an application may be concrete to the runtime. However, it can be useful to integrate metadata for efficient runtime enforcement. To support abstract data, we might extend the Node type:
+
+        type Node =
+            | ... # other Node types
+            | Abstract of Key * Tree
+
+Program annotations like `(%an (%an.type.wrap Key) Expr)` can wrap or unwrap data with the 'Abstract' node. An optimizer can ignore annotations in cases where type-safety is proven statically. In special cases, keys could *encrypt* abstract data, e.g. for a remote procedure call.
+
+Some abstract types may be scoped to the runtime, forbidding use in remote procedure calls or shared storage. This can be efficiently enforced via [tagged pointers](https://en.wikipedia.org/wiki/Tagged_pointer), with a bit that encodes whether the value is transitively scoped to the runtime. 
+
+Some abstract types may be *linear*, which forbids copy and drop. Linear types can be useful for enforcing protocols, e.g. that open files are closed. As with scoping, linearity can use a tag bit. In practice, all linear types should be scoped because it's impossible to enforce or clean up linearity in an open system. That said, I'd prefer to avoid linearity in glas if there are good alternative.

@@ -30,44 +30,44 @@ A transaction loop application might define several transactional methods:
 * 'http' - Handle HTTP requests between steps. Our initial basis for GUI and events.
 * 'rpc' - Transactional inter-process communications. Multiple calls in one transaction. Callback via algebraic effects.
 * 'gui' - Like an immediate-mode GUI. Reflective - renders without commit. See [Glas GUI](GlasGUI.md).
-* 'switch' - Like 'start' except is first operation in new code after update. Old code runs until successful switch.
+* 'switch' - First transaction in new code after live update. Old code runs until successful switch.
 * 'settings' - (pure) influences runtime configuration when computing application-specific runtime options.
 
 The transactions will interact with the runtime - and through it the underlying systems - with an algebraic effects API. Unfortunately, most external systems - filesystem, network, FFI, etc. - are not transactional. We resolve this by buffering operations to run between transactions. But there are a few exceptions: application state, remote procedure calls, and a convenient escape hatch for safe, cacheable operations like HTTP GET.
 
 ## Application State
 
-### Scope
+The runtime will support a few useful state models: cells, queues, bags, key-value stores, and so on. Applications can construct and interact with these objects, but cannot share them: they are runtime scoped. The objects can be garbage collected if unreachable. The runtime provides a root key-value store to get started.
 
-The runtime will distinguish two scopes for mutable state: shared and runtime. Runtime state has the lifespan of the runtime, typically an ephemeral OS process. Shared state is often persistent, stored to a configured database. In many cases, shared state is only shared with future or concurrent instances of the same application. Linear data is runtime scoped and cannot be written to shared state. This includes open file handles, network sockets, or references to FFI theads.
+A viable API:
 
-### Model
+* `sys.db.root : KVS` - the application's state.
+* `sys.db.cell.*` - minimalist state, holds a single value. In a distributed runtime, only one node can write, but others may read a cached cell.
+  * `new(Data) : Cell` - construct a new cell with initial value
+  * `get(Cell) : Data` - access current value
+  * `set(Cell, Data)` - update value
+  * `swap(Cell, Data) : Data` - combines get and set (necessary for linear types)
+* `sys.db.queue.*` - a cell containing a list with controlled access. In a distributed runtime, reader and writer may be separate nodes. A writer can support multiple concurrent write transactions, buffering and interleaving data. 
+  * `new() : Queue` - construct a new queue, initially empty
+  * `read(Queue, N) : List of Data` - reader removes list of exactly N items from head of queue. Will diverge if fewer items available, forcing the transaction to retry later.
+  * `unread(Queue, List of Data)` - reader adds list to head of queue for a future read, for convenience
+  * `write(Queue, List of Data)` - add list to tail of queue, primary update operation
+* `sys.db.bag.*` - like a queue, but reads are unordered. In a distributed runtime, each node may read and write its local slice of the bag, and the runtime is free to shuffle items between nodes.
+  * `new() : Bag` - construct a new bag, initially empty
+  * `read(Bag) : Data` - read and remove data, non-deterministic choice.
+  * `write(Bag, Data)` - add data to bag.
+* `sys.db.kvs.*` - a key-value store, like a cell containing a dict with controlled access. Keys are arbitrary data but should be small for performance. In a distributed system, each key may have a separate writer node, but every node may have a read-only cache.
+  * `new(weak?) : KVS` - construct a new KVS, initially empty. Can configure for weak references to keys (recommended!).
+  * `get(KVS, Key) : Data` - read data at key. Will diverge if Key is undefined
+  * `set(KVS, Key, Data)` - write data at key
+  * `swap(KVS, Key, Data) : Data` - swap data at key, combines get and set
+  * `del(KVS, Key)` - modify Key to undefined state. If configured for weak references, GC may automatically delete keys that cannot be constructed.
+  * `keys(KVS) : List of Key` - return a list of defined keys.
+* `sys.db.key.new() : Key` - allocates a new, unique reference primarily for use as a key in KVS. This is useful for conflict prevention, and also for weak references and automatic deletion.
 
-The runtime will support the basic memory cell with 'get' and 'set' operations. However, in context of distributed computations and caching, we may wish to support a few other useful types. What are our options?
+Beyond these, we might adapt some [conflict-free replicated datatypes (CRDTs)](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) for partitioning tolerance. For CRDTs, each node can locally read and write its own replica, but (for serializable transactions) we must synchronize CRDTs between nodes whenever they interact.
 
-* **cell** - the basic get, set, swap (for linear types). In a distributed runtime, only one node can 'own' a cell for writing, but mirrored caching is possible for read-mostly cells, and the cell can be migrated.
-
-* **queue** - a list cell accessed with 'write', 'read', and 'unread'. Supports one reader and multiple concurrent writer transactions. However, in a distributed runtime, the write end is owned by only one node. Attempting to share is infeasible in context of observing time and network partitioning.
-
-* **bag** - a cell containing a multiset (an unordered list), accessed via 'write', 'read', and 'peek'. Serializable with any number of concurrent readers and writers. In a distributed runtime, every node can operate on a local slice of the bag, and the runtime can freely shuffle elements between slices. Reads are non-deterministic but can be filtered (via read then abort), but read variants with runtime support for filtering can enhance performance and support heuristic routing of items to interested nodes.
-
-* **CRDTs?** - [conflict-free replicated datatypes](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) are designed for concurrent edits and partitioning tolerance, and can be adapted. But I don't know which ones I'd want as built-ins. For now, users might manually replicate CRDTs, maintaining a cell in each node with a bag of updates.
-
-### Dynamic State?
-
-For dynamic state, it is feasible to support dynamic key-value stores:
-
-* **kvs** - a runtime-supported key-value store. This is useful for 'dynamic' cells where we might want separate nodes to 'own' different elements. We can also support kvs variations for queues and bags. We can inspect the known keys.
-
-However, rather than develop a variation for every model, it might prove simpler to treat this as a feature of state keys in general. 
-
-### Keys
-
-State is accessed through algebraic effects. We'll present this a suitable API for a key-value database with abstract static keys. Construction of keys can follow a directory-like structure, and runtime-scoped keys can be transparently constructed from shared-scope keys (but not vice versa). This allows a program to control subprogram access to the database through controlling access to keys. It also supports encoding ad hoc metadata, such as caching hints into keys.
-
-### API
-
-TBD
+*Note:* For a distributed runtime, this state API can tolerate temporary network disruptions, but permanent node destruction requires deliberate design. Still, we have options: favor bags or CRDTs, architect apps so the cells and queues state used remote nodes can be removed from root and garbage collected, or use reflection APIs to forcibly transfer ownership. 
 
 ## HTTP Interface
 
@@ -106,6 +106,7 @@ My vision for [GUI](GlasGUI.md) involves users participating in transactions ind
 In context of a transaction loop, fair non-deterministic choice serves as a foundation for task-based concurrency. Proposed API:
 
 * `sys.fork(N)` - fairly chooses and returns an integer in the range 0..(N-1). Diverges if N is not a positive integer.
+* `(%fork Op1 Op2 ...)` - (tentative) AST primitive for non-deterministic choice, convenient for static analysis.
 
 Fair choice means that, given sufficient opportunities, we'll eventually try all of them. However, this doesn't imply *random* or *uniform* choice! A scheduler may compute forks in a very predictable pattern, some more frequently than others.
 
@@ -113,35 +114,13 @@ Fair choice means that, given sufficient opportunities, we'll eventually try all
 
 A stateful random number generator is awkward in context of concurrency, distribution, and incremental computing. However, we can easily provide access to a stable, cryptographically random field.
 
-* `sys.random(Seed, N) : Binary` - return a list of N cryptographically random bytes, uniformly distributed. 
+* `sys.random(Seed, N) : Binary` - (pure) return a list of N cryptographically random bytes, uniformly distributed. Unique function per runtime instance.
 
-An implementation might involve a secure hash of `[Seed, N, Secret]`, where Secret is obtained from `"/dev/random"` or a configurable source when the application starts. In a distributed runtime, all nodes would share this secret. The Seed value may be structured. To robustly partition the random field, users may include abstract state keys in the seed.
-
-## Foreign Function Interface
-
-The glas system discourages use of FFI for performance roles where *acceleration* is a good fit. However, there are other  use cases such as integration with host features or resources the 'sys.\*' API doesn't cover, or access to vast libraries of pre-existing code. Even for performance, FFI can serve as a convenient stopgap.
-
-I propose an API based around streaming commands to FFI threads. In general, these threads may run in attached processes to isolate concerns with memory safety and sharing. Each thread maintains a local 'namespace' of mutable variables and loaded functions. This namespace is not shared between threads, but threads within the same process do share the heap, thus may interact through pointers to allocated objects.
-
-A viable effects API:
-
-* `sys.ffi.open(Hint) : FFI` - Returns a linear reference to a new FFI thread. The Hint may guide sharing of processes, location in a distributed runtime, redirection of standard output and error streams, and other configurable options. The thread's initial namespace may include a few built-in functions and configured properties. Initial status is 'busy' - open is effectively the first command.
-* `sys.ffi.load(FFI, SharedObject, Functions) : FFI` - Adds functions from a referenced ".so" or ".dll" file to the FFI thread's namespace. The Functions argument should describe aliases, types, and calling conventions to support integration.
-* `sys.ffi.fork(FFI) : (FFI, FFI)` - Splits a stream of FFI operations and clones the FFI thread. The thread namespace is copied and will evolve independently based on future commands, but the process heap and global variables are shared between threads.
-* `sys.ffi.eval(FFI, Script) : FFI` - Run a simple procedure in context of the thread's namespace. The Script can read and write variables, call FFI functions, and supports simple conditionals and loops.
-* `sys.ffi.define(FFI, Name, Script) : FFI` - For performance, we might define functions for reuse within the FFI context.
-* `sys.ffi.store(FFI, Name, Type, Value) : FFI` - inject data into a thread's namespace. The type indicates how the value is translated, e.g. rational to floating point. Deleting a name might be expressed as storing a void type.
-* `sys.ffi.fetch(FFI, Name, Type) : (FFI, Value)` - extract data of known type from the thread's namespace. This will wait for the FFI thread to settle, i.e. it diverges while Status is 'busy'. We can fetch from a failed thread.
-* `sys.ffi.status(FFI) : (FFI, Status)` - query whether the FFI thread is busy, halted in a failure state, or awaiting commands. Limited details of failure cause or busy status (e.g. how many steps behind) might be available.
-* `sys.ffi.close(FFI) : unit` - release the FFI, allowing for cleanup. This won't kill the process. To kill the process, a built-in function or loaded function might supply an 'exit()'.
-
-This API incurs moderate overhead per operation for transactions, serialization, and processing of scripts. This is negligible for long-running or infrequent operations, but swiftly adds up for short operations at high-frequencies. Performance can be mitigated by pushing more code to the FFI process. If necessary, users might construct a loop within the FFI process that is controlled asynchronously through the heap.
-
-*Note:* The Hint, SharedObject, Script, etc. types may be runtime specific. We may be relying on configuration-provided adapters for portability!
+An implementation might involve a secure hash of `[Seed, N, Secret]`, where Secret is obtained from `"/dev/random"` or a configurable source when the application starts. In a distributed runtime, all nodes share the secret. The Seed value may be structured.
 
 ## Background Eval
 
-In some scenarios, we can reasonably assume operations are 'safe' such as HTTP GET, reading a file, or triggering a lazy computation. In these cases, we might want an escape hatch from the transaction system, i.e. such that we can trigger the computation, await the result, and pretend this result is already present. 
+In some scenarios, we can reasonably assume operations are 'safe' such as HTTP GET, triggering a lazy computation, or writing some metadata only for reflection-like purposes. In these cases, we might want an escape hatch from the transaction system, i.e. such that we can trigger the computation, await the result, and pretend this result is already present. 
 
 A proposed mechanism is background eval:
 
@@ -185,9 +164,29 @@ A viable API:
 * `sys.tty.unread(Binary)` - add Binary to head of input buffer for future reads.
 * `sys.tty.ctrl(Hint)` - ad hoc control, extensible but mostly for line buffering and echo
 
-The Hint is runtime-specific. To mitigate portability, it may be translated through a user configuration before the runtime observes it. Control is silently ignored if not applicable, e.g. if standard input is bound to a file stream.
+The control hint is runtime specific, perhaps something like `(icanon:on, ...)`. It can be adapted easily enough. I leave standard error for runtime use, warnings or such as log outputs.
 
-*Note:* Applications can write standard error indirectly, via logging. This depends on configuration. Of course, technically, so does console IO: a runtime could configurably bind 'tty' to shared state queues.
+## Foreign Function Interface
+
+The glas system discourages use of FFI for performance roles where *acceleration* is a good fit. However, there are other  use cases such as integration with host features or resources the 'sys.\*' API doesn't cover, or access to vast libraries of pre-existing code. Even for performance, FFI can serve as a convenient stopgap.
+
+I propose an API based around streaming commands to FFI threads. In general, these threads may run in attached processes to isolate concerns with memory safety and sharing. Each thread maintains a local 'namespace' of mutable variables and loaded functions. This namespace is not shared between threads, but threads within the same process do share the heap, thus may interact through pointers to allocated objects.
+
+A viable effects API:
+
+* `sys.ffi.open(Hint) : FFI` - Returns a reference to a new FFI thread. The Hint may guide sharing of processes, location in a distributed runtime, redirection of standard output and error streams, and other configurable options. The thread's initial namespace may include a few built-in functions and configured properties. Initial status is 'busy' - open is effectively the first command.
+* `sys.ffi.load(FFI, SharedObject, Functions)` - Adds functions from a referenced ".so" or ".dll" file to the FFI thread's namespace. The Functions argument should describe aliases, types, and calling conventions to support integration.
+* `sys.ffi.fork(FFI) : FFI` - Splits a stream of FFI operations and clones the FFI thread. Returns reference to the clone. The thread namespace is copied and will evolve independently based on future commands, but the process heap and global variables are shared between threads.
+* `sys.ffi.eval(FFI, Script)` - Run a simple procedure in context of the thread's namespace. The Script can read and write variables, call FFI functions, and supports simple conditionals and loops.
+* `sys.ffi.define(FFI, Name, Script)` - For performance, we might define functions for reuse within the FFI context.
+* `sys.ffi.store(FFI, Name, Type, Data)` - inject data into a thread's namespace. The type indicates how the value is translated, e.g. rational to floating point. Deleting a name might be expressed as storing a void type.
+* `sys.ffi.fetch(FFI, Name, Type) : Data` - extract data of known type from the thread's namespace. This will wait for the FFI thread to settle, i.e. it diverges while Status is 'busy'. We can fetch from a failed thread.
+* `sys.ffi.status(FFI) : Status` - query whether the FFI thread is busy, halted in a failure state, or awaiting commands. Limited details of failure cause or busy status (e.g. how many steps behind) might be available.
+* `sys.ffi.close(FFI) : unit` - release the FFI, allowing for cleanup. This won't kill the process. To kill the process, a built-in function or loaded function might supply an 'exit()'.
+
+This API incurs moderate overhead per operation for transactions, serialization, and processing of scripts. This is negligible for long-running or infrequent operations, but swiftly adds up for short operations at high-frequencies. Performance can be mitigated by pushing more code to the FFI process. If necessary, users might construct a loop within the FFI process that is controlled asynchronously through the heap.
+
+*Note:* The Hint, SharedObject, Script, etc. types may be runtime specific. We may be relying on configuration-provided adapters for portability!
 
 ## Content-Addressed Storage and Glas Object (Low Priority!)
 
@@ -197,7 +196,17 @@ Rough API sketch:
 
 * `sys.refl.glob.*` - an API for serialization or parsing of glas data into a binary representation. Operations will take a CAS as a context argument to keep hashes in scope. Lazy loading of a binary into a value might extend the set of hashes that CAS is waiting on. Serializing a value can store hases into the CAS. Values cannot be serialized if they're still waiting on lazy hashes, but we can potentially determine which hashes we're lazily waiting upon.
 
-* `sys.refl.cas.*` - (tentative) an API that helps users maintain a linear content-addressed storage (CAS) context. This might prove unnecessary, perhaps we could maintain a serialization context as plain old data without any access to hashes held by the runtime. In any case, we can store and fetch binaries. Each stored binary might be paired with a list of hashes referenced by the binary. We can potentially report which hashes we're waiting on. The details need work, but should closely align to whatever a runtime is doing under the hood.
+* `sys.refl.cas.*` - (tentative) an API that helps users maintain a content-addressed storage (CAS) context. This might prove unnecessary, perhaps we could maintain a serialization context as plain old data without any access to hashes held by the runtime. In any case, we can store and fetch binaries. Each stored binary might be paired with a list of hashes referenced by the binary. We can potentially report which hashes we're waiting on. The details need work, but should closely align to whatever a runtime is doing under the hood.
+
+## Node Locals
+
+A distributed transaction doesn't have a location, but it must start somewhere. With runtime reflection, we can take a peek.
+
+* `sys.refl.txn.node() : NodeRef` - return a stable identifier for the node where the current transaction started.
+
+This API is useful for keeping associative state per node in a key-value store. 
+
+Observing the starting node has consequences! A runtime might discover that a transaction started on node A is better initiated on node B. Normally, we abort the transaction on node A and let B handle it. After observing that we started on node A, we instead *migrate* to node B. With optimizations, we can repeatedly evaluate on node B, *but only while connected to node A*. Thus, carelessly observing the node results in a system more vulnerable to disruption.
 
 ## Filesystem
 
@@ -209,6 +218,6 @@ I'm interested in extending the filesystem API for DVCS integration and cooperat
 
 ## Network
 
-The basic network APIs are easily adapted if we assume most action takes place between transactions.
+We can wrap the conventional sockets APIs with a specialized FFI. Use references. Schedule the actual operations between transactions.
 
-*Note:* I'm tempted to support opening a 'listener' on multiple nodes as a single action, but we would be unable to load and store the linear TCP listener reference into a cell without starting all transactions from the cell's 'owner'. If we want multiple nodes, we'll need separate references.
+Intriguingly, we might also support opening 'listeners' on multiple nodes as a single command. Similar to how a TCP listen command can bind to multiple interfaces on a single node.
