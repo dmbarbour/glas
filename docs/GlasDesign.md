@@ -182,6 +182,8 @@ The runtime can be configured to listen on a TCP port for debugger interactions.
 
 ## Performance
 
+This isn't an exhaustive list, just a few ideas.
+
 ### Acceleration
 
 Acceleration is a pattern that lets a runtime introduce 'performance' primitives separately from 'semantic' primitives. For example, instead of directly introducing a new primitive for '%matrix.mul', we might write `(%an %accel.matrix.mul ReferenceImpl)`. A subset of runtimes might recognize this annotation, optionally validate ReferenceImpl, then substitute the ReferenceImpl with a built-in implementation. 
@@ -196,11 +198,11 @@ A subset of computations, especially pure functions, can be safely deferred. The
 
         (%an (%an.lazy.thunk) Expr)        # defer eval of type of Expr, immediately return thunk
         (%an (%an.lazy.force) Expr)        # force evaluation of a thunk, returning the data
-        (%an (%an.lazy.spark) Expr)        # put thunk in a queue to be forced by worker thread
+        (%an (%an.lazy.spark) Expr)        # add thunk to a pool, eventually will be forced
 
-I currently intend for explicit laziness. Attempting to force or spark data that is not a thunk would be an error. Explicit laziness is effective for most use cases. However, we could easily extend this with optional parameters to '%an.lazy.thunk' to support implicit force. Support for scoping laziness within a transaction might also be useful.
+I assume *explicit* laziness for glas systems. Under this assumption, it would be a type error to 'force' or 'spark' data that is not a thunk, and we can construct have lazy lazy values that must be forced twice. This discourages unnecessary use of laziness, and also reduces the burden for a superbly efficient implementation of laziness. 
 
-Laziness is very troublesome in open systems, so lazy data will be runtime scoped. That is, we'll raise an error rather than store a thunk to a shared database or send one over a remote procedure call. For implicit laziness, we'd instead force the thunk as we serialize the data. That said we can send lazy data between nodes in a distributed runtime.
+Laziness is very troublesome in open systems. To keep it simple, lazy data will be runtime scoped. 
 
 ### Content Addressed Storage
 
@@ -211,6 +213,10 @@ In context of serialization - distributed runtimes, database storage, or remote 
 ### Memoization
 
 When applying a pure function to immutable data, we can use a secure hash as a lookup key. A persistent memoization table allows sharing work between applications. In glas systems, we'll rely on persistent memoization as a basis for incremental compilation. To work with large data, we should use content-addressed data to reduce the effective size of the argument.
+
+### Pre-Warming
+
+We can evaluate application-layer 'start' and 'step' operations at compile time. The compiler would simulate state, non-deterministic choice, and other runtime features, pausing computation for anything it cannot handle. The compiler can decide based on heuristic space-time tradeoffs whether to include initialized state and partially evaluated transactions in a compiled image. With guidance from application settings, a compiler could also perform a series of 'http' requests and cache the results.
 
 ## Thoughts
 
@@ -224,16 +230,16 @@ The section on abstract and linear data provides a highly simplified dynamic typ
 
 I'm interested in a style of metaprogramming where programmers express constraints on the program, both hard and soft, then we discover a program that meets these constraints. However, I don't have a good solution for this that ensures a deterministic outcome and supports incremental compilation. At the moment, probably best to leave this to a separate stage and isolate it within the namespace and call-graph?
 
-### Abstract, Scoped, and Linear Data
+### Dynamic Types
 
-Data is abstract in context of a subprogram that does not directly observe or construct that data. Data that is abstract to an application may be concrete to the runtime. However, it can be useful to integrate metadata for efficient runtime enforcement. To support abstract data, we might extend the Node type:
+We can add a little metadata to our data representation to support enforcement of types at runtime. To support abstract data types or 'newtype'-like wrappers, we might extend the Node type:
 
         type Node =
             | ... # other Node types
             | Abstract of Key * Tree
 
-Program annotations like `(%an (%an.type.wrap Key) Expr)` can wrap or unwrap data with the 'Abstract' node. An optimizer can ignore annotations in cases where type-safety is proven statically. In special cases, keys could *encrypt* abstract data, e.g. for a remote procedure call.
+An optimizer could avoid the extra wrap/unwrap step in cases where type-safety is proven statically. In special cases, some abstract types with certain keys recognized by a runtime could be encrypted when sent over RPC or stored to a shared database.
 
-Some abstract types may be scoped to the runtime, forbidding use in remote procedure calls or shared storage. This can be efficiently enforced via [tagged pointers](https://en.wikipedia.org/wiki/Tagged_pointer), with a bit that encodes whether the value is transitively scoped to the runtime. 
+Abstract types may be scoped to the runtime, forbidding use in remote procedure calls or shared storage. This can be efficiently enforced via [tagged pointers](https://en.wikipedia.org/wiki/Tagged_pointer), with a bit that encodes whether the value is transitively scoped to the runtime. 
 
 Some abstract types may be *linear*, which forbids copy and drop. Linear types can be useful for enforcing protocols, e.g. that open files are closed. As with scoping, linearity can use a tag bit. In practice, all linear types should be scoped because it's impossible to enforce or clean up linearity in an open system. That said, I'd prefer to avoid linearity in glas if there are good alternative.
