@@ -29,7 +29,7 @@ Algebraic effects API:
 * `eval(AST)` - returns result of evaluating anonymous procedure
 * `eval.eff` - used by eval; default implementation raises an error
 * `load(SourceRef)` - compile module in scope of current translation 
-* `source` - (tentative) returns stable, abstract reference to the current source location
+* `source` - returns an abstract, runtime-specific reference to source
 
 ## Evaluation Strategy
 
@@ -109,21 +109,17 @@ Users may refer to a folder as the target for 'load'. In this case, we search fo
 
 Reference to specific files within a subfolder can bypass interface abstractions and hinder refactoring of code. We might raise a linter-level warning to encourage developers to properly treat folders as packages.
 
-### Ad-hoc SourceRef
+### Ad hoc SourceRef
 
-A glas runtime may interpret source references in implementation-specific ways. For example, a runtime might heuristically recognize some texts as file paths or DVCS URLs. It may also support 'file:(path:Text, as:FileExt)' and 'dvcs:(...)' with multiple parts clearly describing where to fetch, which file to load, mirrors, authorization hints, etc..
+In 'load(SourcRef)', the SourceRef type is runtime specific. A runtime can heuristically recognize short texts as file paths or URLs. It may also support 'file:(path:Text, as:FileExt)' and 'dvcs:(url:URL, ...)'.  I assume this will eventually settle on some de facto standards. But integration with remote sources will inevitably be piecemeal, and flexible interpretation of SourceRef allows for this evolution.
 
-A user configuration might define a `SourceRef -> SourceRef` function to translate and sanitize this reference between 'load(SourceRef)' and the runtime observing the value. For portability, this method might query the runtime. Unfortunately, this configured method is not available for the first few loads. The runtime will retrospectively review whether those initial loads are consistent with the configuration, i.e. whether we're within a fixpoint. If not, raise an error.
+To mitigate portability, a configuration can define the final `SourceRef -> SourceRef` adapter, with reference to runtime version info. This does introduce a bootstrapping problem, but the runtime can maintain a history of loads before the adapter is defined, and retrospectively review that the adapter is irrelvant for those specific loads. This verifies a *stable* interpretation of SourceRef. At other layers, user-defined syntax can be extended for common sources and also support 'eval' of a SourceRef to ensure extensibility.
 
-This design supports gradual integration with remote sources, and gradual standardization of SourceRef across runtime implementations. Initially, we might aim to support only a few remote DVCS resource sites, such as github and gitlab. We can grow from there.
+## Abstract Source
 
-## Abstract Source and Live Coding
+The implicit 'source' parameter to a namespace procedure is intended primarily to support [notebook applications](GlasNotebooks.md), where an application defines its own live-coding projectional editor and live-coding. However, it can also support self-modifying code in general, and there may be other use cases.
 
-The 'source' in the API for namespace procedures is mostly intended to support notebook applications, where every application is its own live coding projectional editor. It could be used for self-modifying code in general. The front-end compiler is parameterized with a *binary*, thus this source is the only clue where that binary comes from. However, glas code should not behave differently based on where it comes from, thus this source is left abstract. 
-
-At runtime, the API for access to source should be abstracted around cooperative work though a DVCS - feature branches, pull requests, comments, blame, diffs, etc.. Details about where the source is located would also be available. A runtime could simulate a useful subset of these features for local files.
-
-*Note:* Ideally, the abstract source is stable across common reorganizations of code, such that it doesn't interfere with incremental compilation or shared memo-cache. However, the developers responsible for writing the incremental compiler should assume it's unstable.
+In context of incremental compilation, and especially shared caching, the abstract source reference must be stabilized across most source edits. This is supported by heuristic tactics: A runtime can check for `".glas/guid"` to stabilize relocation of folders. A user can add metadata to SourceRef to resolve an ambiguous GUID.
 
 ## Design Patterns
 

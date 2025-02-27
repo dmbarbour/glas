@@ -37,59 +37,49 @@ The transactions will interact with the runtime - and through it the underlying 
 
 ## Application State
 
-The runtime will support a few useful state models: cells, queues, bags, key-value stores, and so on. Applications can construct and interact with these objects. The runtime provides a root key-value store to get started. To simplify garbage collection, all state references are runtime scoped. 
+Applications receive access to a database with support for atomic transactions, structured data, and content-addressed storage. Portions of this database may be persistent and shared with other applications. I propose to structure this as a key-value database with abstract, runtime-scoped keys. A subset of keys are *ephemeral*, thus referring to runtime memory and permitting runtime-scoped data (including keys). In the persistent database, we're limitied to plain old data, but we can still model *arcs* between things.
 
 A viable API:
 
-* `sys.db.root : KVS` - stable reference to application state.
-* `sys.db.kvs.*` - a key-value store. Keys are arbitrary data.
-  * `new() : KVS` - construct a new KVS, initially empty. 
-  * `get(KVS, Key) : Data` - read data at key. Diverge if Key is undefined
-  * `set(KVS, Key, Data)` - write data at key.
-  * `del(KVS, Key)` - set Key to undefined state. 
-  * `swap(KVS, Key, Data) : Data` - combines get and set.
-  * `has(KVS, Key) : Bool` - test whether a key is defined. 
-* `sys.db.key.new() : Key` - returns an abstract key containing a fresh reference. Convenient for constructing unique KVS keys, and useless for any other purpose. Serves a similar role as 'gensym' in some languages. 
-* `sys.db.cell.*` - minimalist state, essentially a KVS with exactly one key.
-  * `new(Data) : Cell` - construct a new cell with initial value.
-  * `get(Cell) : Data` - access current value. 
-  * `set(Cell, Data)` - update value
-  * `swap(Cell, Data) : Data` - combines get and set (support for linear types)
-* `sys.db.queue.*` - a cell containing a list with controlled access. Supports multiple concurrent write transactions and a single reader, i.e. each transaction buffers writes locally, then a serialization is determined upon commit.
-  * `new() : Queue` - construct a new queue, initially empty
-  * `read(Queue, N) : List of Data` - reader slices list of exactly N items from head of queue. Will diverge if fewer items available.
-  * `unread(Queue, List of Data)` - reader prepends list to head of queue for a future read. Could use queue as a deque or stack.
-  * `write(Queue, List of Data)` - writer appends list to tail of queue, primary update operation
-* `sys.db.bag.*` - an unordered queue, where reads select items non-deterministically. Ideally, we can optimize reads by recognizing the subsequent code that filters the result; this may require some guidance by annotations.
-  * `new() : Bag` - construct a new bag, initially empty
-  * `read(Bag) : Data` - read and remove data, non-deterministic choice. Diverges if bag is empty.
-  * `peek(Bag) : Data` - read from bag without removing data. This allows for stable incremental computing.
-  * `write(Bag, Data)` - add data to bag.
-* `sys.refl.db.*` - additional methods for reflection on the runtime database. These APIs can observe runtime details, such as garbage collection, migration, or version tracking. We could add methods to guide migration or force ownership transfer and such.
-  * `ref.type(Cell|KVS|etc...) : cell | kvs | etc.` - dynamically discriminate state references.
-  * `kvs.keys(KVS) : List of Key` - list defined keys. Indirectly observes garbage collection.
-  * `kvs.writer(KVS, Key) : ...` - describe write authority, e.g. node reference or consensus algorithm
-  * `cell.writer(Cell) : ...`
-  * ... plenty of options here, may be runtime specific
+* `sys.db.*` - a key-value database with abstract keys. 
+  * `root : Key` - initial access to a database. Runtime-scoped, but usually persistent.
+  * `key.*` - referencing the database
+    * `dir(Key, Data) : Key` - access subdirectory labeled by plain old data. 
+    * `arc(Key, Key) : Key` - access subdirectory labeled by another key. This serves as a basis for associative structure. Unlike dirs, arcs cannot be listed (modulo reflection) so GC can treat the key as a weak reference.  
+    * `eph(Key) : Key` - arc via implicit ephemeral key with runtime lifespan.
+    * `gen() : Key` - runtime allocates a new ephemeral key. Subject to garbage collection.
+  * `dir.*` - support for browsing the database
+    * `list(Key) : List of Data` - list edge labels for active directories in the database. An active directory has at least one defined value. (There is no equivalent for *arcs*, modulo reflection APIs.)
+    * `clear(Key)` - transitively delete everything reachable from this directory (val, dirs, arcs).
+    * `clone(Key, Key)` - transitively copy from one directory to another. Target must be empty.
+  * `val.*` - every key may have an associated value
+    * `get(Key) : Data` - copy data at key. diverges if key has no associated value.
+    * `set(Key, Data) : Data` - write data into key. 
+    * `del(Key)` - reset key to an undefined state.  
+    * `has(Key) : Bool` - observe if key has value without observing the value
+    * `take(Key) : Data` - remove and return data at key. Diverges if key has no value.
+    * `put(Key, Data)` - place data into undefined key. Diverges if key has a value.
+    * `move(Key, Key)` - blindly 'take' from one key and 'put' to another.
+    * `copy(Key, List of Key)` - blindly 'get' from one key and 'set' to one or more keys. 
+  * `queue.*` - specialized view of list state. A runtime can evaluate multiple blind writer transactions and a single reader in parallel without risk of serializability conflicts.
+    * `read(Key, N) : List of Data` - reader takes items from head of list. Diverges if not a list or insufficient data.
+    * `push(Key, List of Data)` - reader pushes items to head of list for future reads (i.e. use as stack or deque)
+    * `write(Key, List of Data)` - addends items to tail of list. Diverges if not a list.
+    * `wire(Key, N, Key)` - (tentative) blindly read N items from one queue and write them to another 
+  * `bag.*` - essentially, an unordered queue. Reads and writes operate on non-deterministic locations in the list. Useful for distributed systems. 
+    * `read(Bag) : Data` - read and remove data, non-deterministic choice. Diverges if bag is empty.
+    * `write(Bag, Data)` - add item to bag, non-deterministic position in list.
+* `sys.refl.db.*` - methods for reflection on the database.
 
-In KVS, references within keys are treated as [weak refs](https://en.wikipedia.org/wiki/Weak_reference). If a key cannot be constructed after GC of a reference, the associated data is unreachable and the key is implicitly deleted. If users intend to browse keys, they can either maintain a directory or use reflection APIs. These weak references are useful for maintaining and accessing state about associations between things.
+When a key is used in a specialized mode, the system may heuristically optimize for this use case. This is especially relevant in a distributed runtime, where reader and writer endpoints of a queue can be split between two nodes, or a bag could be partitioned across many nodes. This optimization can be undone, but it generally requires a distributed transaction, thus a 'get' on a queue might diverge during network disruption. To improve disruption tolerance, extending the API with support for some [CRDTs](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) could be a very effective.
 
-### Distributed State
+An application adapter could easily hide 'root' and instead present an API with an application home, inbox, outbox, commons, perhaps a relational database, etc.. 
 
-The state models mentioned above can be adapted for a distributed runtime:
-
-* *KVS* - In a distributed runtime, write authority for individual keys can be spread across nodes, but nodes can maintain a local read-only cache of keys.  
-* *Cell* - Same as for a kvs key.
-* *Queue* - The reader and writer may be on separate nodes, with the writer buffering writes. Only a single writer node is supported unless to simplify interaction with 'sys.time' and timestamps.
-* *Bag* - In a distributed runtime, each node may read and write its local 'slice' of the bag. When the nodes are communicating, the runtime is free to shuffle items between nodes, and also to cache peek-only views data. Ideally, data is routed heuristically based on the filtering of results performed at each node.
-
-Write authority for keys in the root database should not be owned by any single node. Instead, write authority is controlled by a consensus algorithm. This supports robust recovery in case of permanent node loss. To mitigate performance, the data could be a Cell that is owned by a single node. Exceptions: no need for consensus during 'start', and a key containing new references can be committed to any KVS without risk of conflict.
-
-When we get serious about distributed runtimes, we should also investigate [conflict-free replicated datatypes (CRDTs)](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) for partitioning tolerance. Every node can locally read and write its own replica. When two nodes interact, they must synchronize their replicas (up to the moment of interaction) to preserve serializability of transactions. A few CRDTs to support lists, trees, and graphs, and trees could be very convenient.
+Regarding security, a configuration may describe some security policies at the granularity of specific directories. This can feasibly be enforced per call-site, based on which portions of an application are trusted. Based on application settings, a trusted application adapter can provide controlled access to an untrusted application, e.g. limiting an application to a 'home' directory, inbox, outbox, and a dedicated commons area. See *Securing Applications*.
 
 ## HTTP Interface
 
-The runtime should recognize the 'http' interface and support requests over the same channels we use for remote procedure calls and debugging. By default, `"/sys/*"` will be intercepted for external debugger integration.
+The runtime should recognize the 'http' interface and support requests over the same channels we use for remote procedure calls and debugging. Based on application settings, the runtime might intercept `"/sys"` for debugging and reflection. But every other subdirectory will be handled by 'http'.
 
         http : Request -> [sys] Response
 
@@ -105,32 +95,22 @@ Ideally, authorization and authentication are separated from the application. We
 
 If an application implements 'rpc' it may receive remote procedure calls (RPC).
 
-        rpc : (MethodRef, UserArg) -> [rpc.cb, sys] Result
+        rpc : (MethodRef, UserArg) -> [callback, sys] Result
 
-The UserArg and Result values are exchanged with the caller. Optionally, limited interaction may be supported via algebraic effects, an 'rpc.cb' callback. The MethodRef is instead a runtime parameter, relating to how RPC is registered and published. The runtime will map between local use of MethodRef and external use of GUIDs or URLs.
+The UserArg and Result values are exchanged with the caller. Optionally, limited interaction may be supported as a callback via algebraic effects. The MethodRef is instead a runtime parameter, relating to how RPC is registered and published. The runtime will map between local use of MethodRef and external use of GUIDs or URLs.
 
 RPC must be configured. The simplest solution is to declare a static API via application settings. Alternatively, settings could specify a MethodRef to fetch a dynamic API. Either way, I propose to organize RPC methods into 'objects' that are published to different registries based on trust and roles. 
 
 A prospective caller will query for RPC objects matching an interface and metadata.
 
+*Note:* One point I'm still uncertain of is whether we should support 'stateful' subscription for RPC objects, or a more reactive query. I suspect the stateful approach would be more efficient but would result in applications that don't adapt easily to open systems and disruption. Can we mitigate the performance hit? Incremental computing may help.
 
-
-
-        TBD - caller API
-
+* `sys.rpc.*` - discover and invoke RPC resources
+  * 
 
 
 
 To enhance performance, I hope to support annotation-guided code distribution. The 'rpc' method can be partially evaluated based on MethodRef, then have some code extracted for evaluation at the caller. A caller can similarly forward part of the callback code and continuation. These optimizations would mitigate performance pressures, supporting simplified remote APIs.
-
-
-## Shared State
-
-It is useful to understand shared state in terms of remote procedure calls to another application that maintains state on behalf of its clients. The runtime could provide a built-in implementation, but we'll still treat it as remote. The API should support transactions, structured data, and content-addressed storage. Compared to application state, shared state requires some design work around garbage collection, security, accounting, and open extension.
-
-
-
-
 
 
 ## Graphical User Interface? Defer.
@@ -208,61 +188,86 @@ The control hint is runtime specific, perhaps something like `(icanon:on, ...)`.
 
 ## Foreign Function Interface (FFI)
 
-The only FFI of relevance for system integration is the C FFI. In context of transactions, our best option is to commit to call C functions between transactions. I propose an API that involves streaming commands to FFI threads. Operations can be pipelined: a transaction can commit a sequence of commands to perform, wiring inputs to outputs without further intervention. To simplify memory safety and crash recovery, FFI threads may run in an attached process.
+The only FFI of any relevance for system integration is calling functions on a ".so" or ".dll" using the C ABI. C doesn't have any native support for transactions, but we can freely buffer a sequence of C calls to run between transactions. To ensure sequencing, I propose to stream commands and queries to FFI threads. These FFI threads may run in separate OS processes to control risk. To mitigate latency, a simple environment can pipeline outputs from one C call as inputs to the next without intervention. 
 
 A viable API:
 
 * `sys.ffi.*`
-  * `new(Hint) : FFI` - Return a runtime-scoped reference to a new FFI thread. Hint guides integration, such as whether to start a new process or attach to a named process, or where to run in a distributed runtime. 
-  * `run(FFI, Cmd)` - Enqueue a command in the FFI thread, drops any result (including status feedback).
-  * `eval(FFI, Cmd, Var)` - Enqueue a command in the FFI thread, record future return value into local Var.
-  * `fork(FFI) : FFI` - Returns a clone of the FFI thread. This copies the local vars, including pending results, then enqueues a command to copy the thread-local environment and construct a new OS thread.
-  * `status(FFI) : FFIStatus` - current status of FFI:
-    * *ready* - the FFI thread is halted in a good state, can receive more requests.
-    * *busy* - FFI thread is working in the background, or perhaps stuck on a mutex.
-    * *error:(text:Message, ...)* - the FFI thread halted in a bad state, some hint for cause.
-  * `var.read(FFI, Var) : Data` - Receive result from a prior command. Will diverge if not available.
-  * `var.drop(FFI, Var)` - Remove a current or pending result from this FFI. Memory management.
-  * `var.list(FFI) : List of Var` - Browse your local environment!
-  * `var.status(FFI, Var) : VarStatus` - A status per variable:
-    * *undefined* - variable was either dropped or never defined
-    * *uncommitted* - the command to set this variable has not been committed 
-    * *pending* - operation is queued, running, perhaps waiting on a mutex, etc.. 
-    * *available* - data is ready, can ask for it immediately
-    * *failed* - command failed or could not be started due to prior failure. See FFI status!
-  * `cmd.load.lib(SharedObject, Symbols) : Cmd` - load ".so" or ".dll" into environment.
-    * *Symbols* - a list of names to export. Eventually, I might also want aliases.
-  * `cmd.load.csrc(Text, Symbols) : Cmd` - compile C functions in memory for use in future commands.
-  * `cmd.load.chdr(Text, IncludeName) : Cmd` - for use in `#include <IncludeName>` directives.
-  * `cmd.invoke(Symbol) : Cmd` - run previously loaded command; assumes `void (*)()` interface.
-  * `cmd.cscript(Text, Symbol) : Cmd` - compile C code, invoke Symbol, then free the generated code. Users should be careful around the lifespan of function pointers to this code, e.g. for threads or callbacks.
-  * `cmd.env.*` - commands on the FFI's thread-local envronment. Commands are buffered and pipelined, so it isn't a problem to send a large number of gets and sets followed by running more commands.
-     * `push(Data, Type) : Cmd` - add to environment's data stack
-     * `pop() : Cmd` - remove and return from environment's data stack
-     * `set(Name) : Cmd` - pop from data stack into named register
-     * `get(Name) : Cmd` - copy from named register onto data stack
-     * `peek(N)` - returns copy of top N items from data stack if N>0, or all items if N is 0.
-     * `read(List of Name) : Cmd` - returns copy of listed registers, or all registers if list is empty.
+  * `new(Hint) : FFI` - Return a runtime-scoped reference to a new FFI thread. Hint guides integration, such as creating or attaching to a process, or which node in a distributed runtime. The FFI thread will start with with a fresh environment and must link definitions before calling them.
+  * `run(FFI, Cmd)` - Enqueue a command in the FFI thread.
+  * `eval(FFI, Qry, Var)` - Enqueue a query in the FFI thread. The future result is stored to Var. If that Var is already in use, it is implicitly dropped and replaced.
+  * `fork(FFI) : FFI` - Clone the FFI thread. The clone gets copy of query results and the remote thread-local environment (stack and registers), and runs in a new thread. Buffers and heap are shared.
+  * `status(FFI) : FFIStatus` - recent status of FFI thread:
+    * *uncommitted* - initial status for a 'new' or 'fork' FFI.
+    * *busy* - ongoing activity in the background - setup, commands, or queries
+    * *ready* - FFI thread is halted in a good state, can receive more requests.
+    * *error:(text:Message, ...)* - FFI thread is halted in a bad state and cannot receive any more commands or queries. The error is a dict with at least a text message. The FFI cannot receive any more commands or queries.
+  * `var.*` - access the local store for query results. The Var may be any plain old data.
+    * `read(FFI, Var) : Data` - Receive result from a prior query. Will diverge if not *ready*.
+    * `drop(FFI, Var)` - Remove current or pending result from FFI.
+    * `list(FFI) : List of Var` - Browse your local environment.
+    * `status(FFI, Var) : VarStatus` - A status per variable:
+      * *undefined* - variable was dropped or never defined
+      * *uncommitted* - query will run between transactions
+      * *pending* - query enqueued, result in the future
+      * *ready* - data is ready, can read it immediately
+      * *error:(text:Message, ...)* - query problem. Does not stop the FFI thread.
+      * *canceled* - FFI thread halted before running query. See FFI status.
+  * `qry.*` - query the FFI environment. Queries are read-only, but there is some risk of breaking things when trying to read pointers beyond their length.
+    * `stack(N) : Qry` - read top N items from stack, or full stack if N is zero.
+    * `stack.at(N) : Qry` - read zero-indexed element from top of stack
+    * `reg(Reg) : Qry` - read a register by name
+  * `ptr.*` - When a pointer value is queried, the abstract, runtime-scoped Ptr type guards against accidents, such as sending a pointer to the wrong FFI process. 
+    * `null() : Ptr` -  special case, can use NULL with any FFI thread.
+    * `addr(FFI, Ptr) : Int` - address according to intptr_t. Asserts same FFI process.
+    * `cast(FFI, Int) : Ptr` - cast address to pointer. Unsafe, but clearly intentional.
+  * `cmd.*` - manipulate the FFI environment. A failed command will generally result in an 'error' state for the FFI thread.
+    * `link.*`- when looking for a symbol, linked last is searched first.
+      * `lib(SharedObject) : Cmd` - load a ".so" or ".dll" into environment (e.g. via dlopen).
+        * *SharedObject* - runtime specific; runtime can check config, translate to file path.
+      * `c.src(Text) : Cmd` - JIT compile a C source text that defines reusable utility functions.
+      * `c.hdr(Text, APIName) : Cmd` - TCC will redirect `#include <APIName>` to this text.
+    * `call(Symbol, TypeHint) : Cmd` - Call a previously loaded symbol using the data stack.
+      * *TypeHint* - initially, `"fip-i"`, a compact string like `"fip-i"`. Interpreted as `int (*)(float, int, void*)`, and taking the top of stack as the first argument. Assumes '`__cdecl`' as the default. This is extensible, e.g. we can support `stdcall:"fip-i"` if needed.
+    * `withc(Text, Cmd) : Cmd` - JIT the C source, run Cmd in scope scope of the C symbols, then free the memory. Users should be cautious regarding lifespan, e.g. for callbacks and threads.
+    * `ctrl.*` - simple control code.
+      * `dip(N, Cmd) : Cmd` - temporarily hide top N items from data stack while running Cmd.
+      * `seq(List of Cmd) : Cmd` - run commands in a sequence. No-op is expressed as empty seq.
+      * `cond(Cmd, Cmd) : Cmd` - pop top item from data stack. If non-zero, run lhs, otherwise rhs.
+      * `loop(Reg, Cmd) : Cmd` - repeat Cmd while a specified Reg is non-zero. Cmd *must* store to Reg.
+    * `data.*` - 
+      * `copy(N) : Cmd` - copy top N items on data stack
+      * `drop(N) : Cmd` - drop top N items on data stack
+      * `move(Text) : Cmd` - ad hoc stack manipulations, e.g. `"abc-abcabc"` will copy three items, while `"xy-yx"` is a swap. Stores then loads temporary registers 'a' to 'z'. In this notation, 'a' is top of stack.
+      * `store(List of Reg) : Cmd` - move from stack to a named register. In this case 'register' is effectively a local variable (but I'm already using 'Var' for the runtime side). An FFI thread can use a few hundred if necessary.
+        * *Reg* - register names should be short texts. The runtime may translate them to indices within an array.
+      * `load(List of Reg) : Cmd` - copy items from registers to data stack. Error if undefined.
+      * `push(List of Data, TypeHint)` - add data to stack. Pushed in reverse order, such that top of stack is head of list. TypeHint is a simple text like `"ibfp"` for 'int, buffer, float, pointer' to guide interpretation. 
+      * `bfr.*` - A binary or text argument can be pushed as a buffer, and a query will copy buffer back to the user as a binary. Reference counted in the FFI environment. 
+        * *impl* - `struct buffer { atomic_int refct; void* data; size_t size; void* (*realloc)(void*, size_t); }`. 
+        * *C strings* - to keep it simple, we'll overallocate then addend a NULL byte.
+        * *call* - a buffer may be used as a pointer argument to 'call'. We decref *after* the call. 
+        * `alloc() : Cmd` - (`i-b`) allocate a new buffer of given size. 
+        * `realloc() : Cmd` - (`bi-b`) resize buffer. Be careful about concurrent use.
+        * `dup() : Cmd` - (`b-b`) allocates a fresh buffer with the same content 
+        * `len() : Cmd` - (`b-i`) obtain length from buffer. This is length of data, does not include extra NULL bytes.
+        * `ptr() : Cmd` - (`b-p`) obtain pointer from buffer. 
+* *TypeHint* - A compact representation of types for efficient interaction with FFI. 
+  * 'b' - buffer. This is used to push or query binaries and texts. We'll implicitly cast a buffer to a pointer for a call, deferring decref until after the call returns.
+  * 'p' - pointer. '`void*`'. The runtime abstracts pointers to guard against some accident, but it's even better to shove pointers into registers and never send them to the runtime. The referent type is not tracked, so it's something users must be careful with.
+  * Integers - the API will use lower-case for signed types, upper-case for unsigned. Sign is relevant when we push or query numbers, as the glas system uses a variable-width integer encoding and negatives are in one's complement. If we attempt to push a number outside the range, we'll reject that transaction and raise an error.
+    * y,Y - int8, uint8
+    * s,S - int16, uint16
+    * w,W - int32, uint32
+    * q,Q - int64, uint64
+    * i,I - int, unsigned int
+    *   Z - size_t
+  * 'f' float, 'd' double. On the runtime side, we use exact rational numbers. Conversion to floating point is lossy. Conversion to rationals is exact except for not-a-number or infinities. Those cases result in a query error, including the original float as a binary. To avoid automatic conversions, users could instead encode floats into a buffer.
+  * Void type - implicit. A call to a function of type `void (*)(int, size_t)` would use TypeHint `"iZ-"`.
 
-Only `void(*)()` functions can be invoked. However, these operations will receive access to a thread-local environment through a simple API with methods such as `env_push_int(42)`. This environment can be used to receive arguments, return results, or pipeline simple data (including pointers) from one command to another. This environment is copied when the FFI is forked, but the heap and library globals are shared.
+For calls, we can use [libffi](https://en.wikipedia.org/wiki/Libffi). The TypeHint options are influenced by what libffi supports. For the C JIT, we can use the [Tiny C Compiler (TCC)](https://bellard.org/tcc/). *Note:* I'd use a [recent version](https://github.com/frida/tinycc/tree/main) that lets callbacks redirect `#include` and resolve missing symbols.
 
-Instead of awkward FFI adapter libraries, we'll leverage [Tiny C Compiler (TCC)](https://bellard.org/tcc/) to let users define adapters and utility code inline. Reusable utilities or commands can be written using 'cmd.load.csrc', while single-use commands can be expressed via 'cmd.cscript'. The original TCC is a bit awkward for this, but [a recent version](https://github.com/frida/tinycc/tree/main) simplifies things with callbacks to redirect `#include` directives and resolve symbols. With 'cmd.load.chdr' we can conveniently declare our APIs for use in csrc or cscript. 
-
-I imagine a C script might have a form similar to:
-
-        #include <myapi>
-        int utility_fn(...) { ... }
-        void do() {
-            int x = env_pop_int();
-            ...  
-            env_push_binary_bycopy(&buffer, bufflen);
-        }
-
-This API incurs moderate overhead for transactions, serialization, and JIT compilation. This should be negligible for long-running or infrequent operations, but it does impact fast operations at high-frequencies. In those cases, users might need to push a little bit more application logic into the C source, running an indefinite loop or starting some background threads.
-
-A remaining question: what should we do with stdin, stdout, and stderr of the FFI process?
-
-*Note:* The Hint and SharedObject types may be runtime specific. We may be relying on configuration-provided adapters for portability!
+*Aside:* We should probably redirect stdin, stdout, and stderr per FFI process. But I'm not sure what to do with them in general. Perhaps make them available via runtime reflection APIs. In the runtime's web interface, we can present an xterm.js per attached FFI process.
 
 ## Content-Addressed Storage and Glas Object (Low Priority!)
 
@@ -286,6 +291,16 @@ Observing the starting node has consequences! A runtime might discover that a tr
 
 ## Filesystem and Network
 
-I propose to implement filesystem and network APIs in terms of FFI. We don't get much out of these APIs other than a safety wrapper around FFI, and that can be left to the application or adapter layers.
+I propose to implement filesystem and network APIs in terms of FFI. We don't get much out of these APIs other than a safety wrapper around FFI, and that can be left to applications or adapters to avoid cluttering the runtime.
 
-There are a few tweaks I would make: better support for pipelining of commands or error handling without going back to the transaction on every little step, reading and writing whole files as a single command, etc..
+The conventional APIs should be adapted for better pipelining. For example, even if 'open' has an error, it's best if we can safely continue applying several operations before checking the result. This might benefit from a null object pattern. Useful utility functions might involve reading or writing whole files in one step, or performing HTTP requests in one step. 
+
+## Securing Applications
+
+Not every program should be trusted with FFI, shared state, and other sensitive resources. This is true within a curated community configuration, and it is even more true with external scripts of ambiguous provenance. So, what can be done?
+
+A configuration can describe who the user trusts or how to find this information. With a few conventions, when loading files we could poke around within a folder or repository for signed manifests and certifications of public signatures. A compiler can generate record of sources contributing to each definition - locations, secure hashes, other definitions, etc. - even accounting for overrides and 'eval' of macros.
+
+Instead of a binary decision for the entire application, perhaps we can isolate trust to specific definitions. Via annotations, some trusted definitions might express that they properly sandbox FFI, permitting calls from less-trusted definitions. And perhaps we can support a gradient of trust with our signatures, e.g. trust with specific roles, such as access to the filesystem instead of full FFI. 
+
+Ultimately, we can run untrusted applications in trusted sandboxes, and a trusted application adapter can construct sandboxes upon request based on application settings. If the application asks for more authority than it's trusted to receive, the adapter won't stop it: the adapter only observes application settings and runtime version info, it's ignorant of security concerns. Instead, it's the runtime that would look at the final web of definitions and say "no, this untrusted definition is using FFI". At that point, we can abandon the app, sandbox the app, or extend trust.

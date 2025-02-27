@@ -32,26 +32,24 @@ A typical user configuration will import a community or company configuration fr
 
 The choice of '--run', '--script' and '--cmd' lets users reference applications in a few ways:
 
-* **--run**: The application is already defined in the configuration namespace. To run "foo" we might access definitions such as "app.foo.settings", "app.foo.start", "app.foo.step", and so on. This translation may be configurable. A user can inherit from a community configuration that defines thousands of useful applications, loading them on demand.
-* **--script**: The namespace model defines a 'load' operation. We 'load' the specified source (e.g. a file, package folder, or URL) in scope of a configurable '%env.\*' environment and primitive '%\*' AST constructors. The generated namespace should define application methods such as 'settings', 'start', 'step', and so on. 
+* **--run**: To run 'app.foo', we'll load 'app.foo.\*' definitions from the user's configuration namespace. This namespace may define thousands of applications, lazily downloading and compiling on demand.
+* **--script**: We 'load' an indicated file, folder, or URL as a namespace. Other than a source, the only parameter to 'load' is a scope of definitions, in this case the '%\*' primitives and '%env.\*' environment may be configurable for scripts, defaulting to the configuration's own toplevel environment. The resulting namespace should define 'app.\*' 
   * **--script.FileExt**: Same as '--script' except we'll assume the given file extension in place of the actual file extension. Intended for use with shebang scripts in Linux, where file extensions are frequently elided.
 * **--cmd.FileExt**: Treated as '--script.FileExt' for an anonymous, read-only file found in the caller's working directory. The assumed motive is to avoid writing a temporary file.
 
-Prior to running the application, the glas executable might download sources, analyze types, evaluate tests, optimize, JIT-compile, and apply application-specific configuration options based on 'settings'. However, these efforts can be cached such that running the same application in the future is a lot faster.
+A runtime can support multiple run modes. A [transaction loop application](GlasApps.md) will define transactional methods such as 'start', 'step', and 'http'. A staged application might express 'build' to compile another application based on command line arguments, OS environment variables, and access to the runtime filesystem.
 
-To run a [transaction loop application](GlasApps.md), we'll evaluate first 'start', repeatedly evaluate 'step', and occasionally handle 'http' requests or other events in separate transactions. This model is especially friendly for live coding and distributed programming. 
+Every application should define 'settings'. This should mostly be used as a pure `Data -> Data` function that accepts ad hoc queries to guide integration. The runtime does not observe settings directly. Instead, it asks the configuration for an adapter based on application settings and runtime version info. As an extreme case, an adapter can generate definitions entirely from settings.
 
-However, the glas executable may support alternative run modes, e.g. staged applications, binary extraction, or a conventional 'main' procedure. The run mode should be expressed as an application-specific configuration option.
+## Installing Applications
 
-### Installing Applications
-
-Users will inevitably want to 'install' applications to ensure they're available for offline use. 
+Users will inevitably 'install' applications to ensure they're available for offline use. 
 
         glas --install AppName*
         glas --uninstall AppName*
         glas --update
 
-To simplify tooling, the configuration will specify a separate text file where installs are managed by 'glas --install' and 'glas --uninstall'. This can be paired with a computed list of installs defined within the configuration. When the user runs 'glas --update', the cache is maintained according to the current list of installs.
+To simplify tooling, a configuration might specify a text file or database where installs via 'glas --install' are recorded. A configuration may also specify default installs, with the text file recording both adds and removes. When a user runs 'glas --update', the cache is maintained according to the intended list of installs.
 
 The proposed interface only supports applications defined within the configuration and referenced by name. It is feasible to extend this to scripts, referencing file paths or URLs. (I would not recommend installing '--cmd' text!)
 
