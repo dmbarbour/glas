@@ -123,6 +123,10 @@ In a distributed runtime, one node is be responsible for updates. This role can 
 
 *Note:* Between incremental computing and acceleration, programmers can also model live coding *within* applications. This may be more convenient in some cases to control the scope and cost of the updates.
 
+## Debugging
+
+The runtime can be configured to listen on a TCP port for debugger interactions. The same port may be shared for 'http' and 'rpc' calls. By convention, we might reserve `"/sys/*"` for runtime use. The runtime could even integrate a browser-based debugger. Access to status, recent logs, profiling information, application state, etc. can be provided through this interface. Administrative tools - pause, continue, update, restart, etc. - are also feasible. Authorization for debugger access should be configurable, too.
+
 ## Annotations
 
 Programs in glas systems will generally embed annotations to support *instrumentation, validation, optimization*, and other non-functional features. As a general rule, annotations should not influence observable behavior except through reflection APIs and performance.
@@ -139,7 +143,7 @@ In each case, we annotate an Operation. We might view annotations as a flavored 
 
 Annotations can also be expressed at other layers. In the namespace layer, we might use 'foo.\#doc' for documentation or 'foo.\#test.\*' for a test suite. The runtime will ignore namespace-layer annotations, but they can be useful for external tools. In the data layer, a runtime might record some annotations to support acceleration or dynamic enforcement of abstract and linear types, but a user can only access this through reflection APIs.
 
-### Instrumentation
+## Instrumentation
 
 We might annotate our programs to record some extra information to support debugging. This includes logging, profiling, or recording a computation.
 
@@ -161,28 +165,9 @@ A runtime can also be asked to record information to replay an Operation, and pe
 
 *Note:* Non-deterministic choice in a log message or recording condition might be interpreted as a composition, i.e. set of messages, all conditions are true. For profiling dynamic index, we might heuristically split costs.
 
-### Validation
-
-Annotations can express assertions, type annotations, even proofs. However, type systems and proof-carrying code are deep subjects and I won't touch them here. Assertions are a lot simpler:
-
-        assert(Chan, Cond, Message) { Operation }
-        (%an (%an.assert Chan Cond Message) Operation)
-
-We might interpret an assertion over an operation as expressing an invariant. Based on configuration for Chan, this could be randomly sampled and tested again for stack traces, or tested continuously for every change that affects Cond (modulo hierarchical transactions). If Cond is non-deterministic, all conditions must be true.
-
-Use of *static* assertions - plus a few conventions for static channel names - might prove a convenient way to express arbitrary unit tests within a program. Non-deterministic conditions could serve as a basis for fuzz testing.
-
-### Optimization
-
-Annotations will guide most performance features - acceleration, caching, laziness, parallelism, use of content-addressed storage. See *Performance* below. They might also guide JIT compilation and optimizers directly, such as inlining calls.
-
-## Debugging
-
-The runtime can be configured to listen on a TCP port for debugger interactions. The same port may be shared for 'http' and 'rpc' calls. By convention, we might reserve `"/sys/*"` for runtime use. The runtime could even integrate a browser-based debugger. Access to status, recent logs, profiling information, application state, etc. can be provided through this interface. Administrative tools - pause, continue, update, restart, etc. - are also feasible. Authorization for debugger access should be configurable, too.
-
 ## Performance
 
-This isn't an exhaustive list, just a few ideas.
+Annotations will guide performance features - acceleration, caching, laziness, parallelism, use of content-addressed storage. They might also guide JIT compilation and optimizers directly, such as guiding partial evaluation or inlining.
 
 ### Acceleration
 
@@ -218,28 +203,73 @@ When applying a pure function to immutable data, we can use a secure hash as a l
 
 We can evaluate application-layer 'start' and 'step' operations at compile time. The compiler would simulate state, non-deterministic choice, and other runtime features, pausing computation for anything it cannot handle. The compiler can decide based on heuristic space-time tradeoffs whether to include initialized state and partially evaluated transactions in a compiled image. With guidance from application settings, a compiler could also perform a series of 'http' requests and cache the results.
 
-## Thoughts
+## Validation
 
-### Type System
+Annotations can express assertions, type annotations, even proofs. I'll explore some of our opportunities here.
 
-The section on abstract and linear data provides a highly simplified dynamic type system. But I hope to gradually support something more sophisticated. I would hope to track unit types on numbers within applications, for example. And perhaps track ad hoc session types for channels, insofar as we use them. It is unclear to me how to best approach this, other than that it will involve annotations within programs or namespaces to guide static analysis. Beyond types, I hope to explore the more general idea of proof-carrying code, using annotations to integrate proof tactics that can adapt to smaller code changes.
+### Assertions and Automatic Testing
 
-*Note:* Because glas programs are mostly transactional in nature, it's relatively easy to treat dynamic type errors at runtime as divergence, same as an infinite loop, effectively aborting the transaction. 
+Assertions are by far the simplest form of validation.
 
-### Program Search
+        assert(Chan, Cond, Message) { Operation }
+        (%an (%an.assert Chan Cond Message) Operation)
 
-I'm interested in a style of metaprogramming where programmers express constraints on the program, both hard and soft, then we discover a program that meets these constraints. However, I don't have a good solution for this that ensures a deterministic outcome and supports incremental compilation. At the moment, probably best to leave this to a separate stage and isolate it within the namespace and call-graph?
+We might interpret an assertion over an operation as expressing an invariant. Based on configuration for Chan, Cond can be randomly sampled, automatically tested upon stack trace, or tested continuously for every relevant change in state. To avoid influencing observable behavior, Cond can be a read-only function or evaluated within a hierarchical transaction. When an assertion fails, we log the message and halt the transaction.
 
-### Dynamic Types
+If Cond is non-deterministic, we'll interpret that as conjunction: every possible condition *should* hold true. However, for performance reasons, we might not evaluate them all every time: we could randomly or heuristically sample several conditions each time we encounter the assertion. This may depend on configuration of Chan.
 
-We can add a little metadata to our data representation to support enforcement of types at runtime. To support abstract data types or 'newtype'-like wrappers, we might extend the Node type:
+In context of staged computing or partial evaluation, we can express static assertions. These may be evaluated before the application runs and effectively serve as unit tests. With non-deterministic conditions, we also get fuzz testing. In the glas program model, some staging and partial evaluation is aligned with the call graph via static parameters. This allows for some custom testing specific to the integration.
+
+### Abstract Data Types
+
+Annotations can express that data should be abstract within a computation. However, it isn't always convenient to enforce types via static analysis. To support dynamic enforcement of abstract data types, we can extend the Node type:
 
         type Node =
             | ... # other Node types
             | Abstract of Key * Tree
 
-An optimizer could avoid the extra wrap/unwrap step in cases where type-safety is proven statically. In special cases, some abstract types with certain keys recognized by a runtime could be encrypted when sent over RPC or stored to a shared database.
+Based on type annotations, a runtime can wrap and unwrap data with this 'Abstract' node. Any attempt to observe abstract data without unwrapping, or an attempt to unwrap with the wrong key, will will raise a runtime type error. This would be treated similar to an assertion failure.
 
-Abstract types may be scoped to the runtime, forbidding use in remote procedure calls or shared storage. This can be efficiently enforced via [tagged pointers](https://en.wikipedia.org/wiki/Tagged_pointer), with a bit that encodes whether the value is transitively scoped to the runtime. 
+Based on static analysis, an optimizer can eliminate many of these wrap/unwrap actions, or at least skip some key comparisons. Based on further annotations, we could insist that some abstract types are fully eliminated within some scope, raising a compile-time error if this is not true. This provides a lightweight basis for gradual typing.
 
-Some abstract types may be *linear*, which forbids copy and drop. Linear types can be useful for enforcing protocols, e.g. that open files are closed. As with scoping, linearity can use a tag bit. In practice, all linear types should be scoped because it's impossible to enforce or clean up linearity in an open system. That said, I'd prefer to avoid linearity in glas if there are good alternative.
+### Scope Control Types
+
+In context of remote procedure calls and shared databases, it is often useful to control the scope of data. For example, we don't want open file handles escaping the runtime boundary. Scopes are most easily expressed as an extension to abstract types, such as files. For dynamic enforcement, we might represent runtime scope as an extra flag on the Abstract node's Key.
+
+However, efficient dynamic enforcement of scopes benefits from a O(1) lookup. Every node should cache metadata for whether it transitively includes runtime-scoped data. To support this efficiently, we could use [tagged pointers](https://en.wikipedia.org/wiki/Tagged_pointer), albeit only for a very small number of scopes.
+
+Fortunately, we don't need many scopes to cover most use-cases in glas systems. Proposed scopes:
+
+        tag     scope
+        00      global (can send over RPC, store to shared databases)
+        01      runtime (open files or network sockets)
+        10      transaction scope (transaction-local vars, RPC objects)
+        11      transaction-scoped linear data (see below!)
+
+As with abstract types, we can potentially eliminate runtime overheads via static analysis.
+
+### Transaction-Scoped Linear Types for Consistency
+
+Linear data is abstract data that cannot be copied or dropped arbitrarily. Instead, they can only be copied or dropped by those with the authority to peek behind the abstraction. This can be very useful for enforcing protocols, e.g. that a file is closed. Similar to scoped types, linear types are easily expressed as a flag on abstract types and enforced at runtime via tagged pointers.
+
+However, linear types are extremely awkward in open systems: they cannot be enforced efficiently, and even if enforced, it's unclear who should clean up when an application dies mid-protocol. Further, at runtime scope, linear types don't play nicely with transaction loop optimizations such as incremental computing and parallel evaluation. We're forced to read the linear data from state, observe or manipulate it, write it back to state.
+
+This leaves an opportunity for linear data at transaction scope, to ensure transaction-local protocols are completed before the transaction commits. These protocols can potentially be very sophisticated in context of higher-order algebraic effects.
+
+### Unit or Shadow Types? Pending.
+
+I want units on my numbers - kilograms, newtons, meters, joules. When I add numbers of incompatible units, I want an error. If I multiply compatible units, I want the composite unit to be generated properly and associated with the result.
+
+Unfortunately, I don't know an efficient solution for tracking units at runtime. We could adapt abstract types, but it's expensive and messy. I suspect we'll want to focus on static analysis of units, with annotations describing units on some numbers as they are introduced, expressing assumptions, or expressing where units should be checked.
+
+It seems feasible to generalize this notion to other associated metadata. We could use associated types to track locations of things in a distributed runtime, the stages of things for a multi-stage computations, or to limit the logical 'latency' of computing results for real-time computations.
+
+### Proof-Carrying Code? Pending.
+
+I'm curious how much can be for proofs with systematic annotations. Perhaps we could express what we want to prove and some tactics. Perhaps we can embed some proof hints closer to certain functions? It isn't clear to me how much should be done with program-layer annotations versus namespace-layer annotations.
+
+## Misc. Thoughts
+
+### Program Search
+
+I'm interested in a style of metaprogramming where programmers express constraints on the program, both hard and soft, then we discover a program that meets these constraints. However, I don't have a good solution for this that ensures a deterministic outcome and supports incremental compilation. At the moment, probably best to leave this to a separate stage and isolate it within the namespace and call-graph?

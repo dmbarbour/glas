@@ -14,6 +14,10 @@ This document proposes and motivates a set of assembly constructors for glas sys
 
 To support incremental computing and loop fusion, we might need some careful design such that we can isolate dependencies from sequential computations. Ideally, our 'procedures' support a fair bit of parallelism internally, and incremental computing within each parallel fragment. Some sort of dataflow?
 
+
+
+The glas program model doesn't support first-class functions. That is, a function cannot be referenced from data. Instead, we use something closer to an additional namespace aligned to the call graph to support .
+
 ## Design Decisions
 
 * Built-in Transactions.

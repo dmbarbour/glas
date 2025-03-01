@@ -31,13 +31,13 @@ A transaction loop application might define several transactional methods:
 * 'rpc' - Transactional inter-process communications. Multiple calls in one transaction. Callback via algebraic effects.
 * 'gui' - Like an immediate-mode GUI. Reflective - renders without commit. See [Glas GUI](GlasGUI.md).
 * 'switch' - First transaction in new code after live update. Old code runs until successful switch.
-* 'settings' - (pure) influences runtime configuration when computing application-specific runtime options.
+* 'settings' - influences integration of the application, e.g. adapters and some runtime options. 
 
 The transactions will interact with the runtime - and through it the underlying systems - with an algebraic effects API. Unfortunately, most external systems - filesystem, network, FFI, etc. - are not transactional. We resolve this by buffering operations to run between transactions. But there are a few exceptions: application state, remote procedure calls, and a convenient escape hatch for safe, cacheable operations like HTTP GET.
 
 ## Application State
 
-Applications receive access to a database with support for atomic transactions, structured data, and content-addressed storage. Portions of this database may be persistent and shared with other applications. I propose to structure this as a key-value database with abstract, runtime-scoped keys. A subset of keys are *ephemeral*, thus referring to runtime memory and permitting runtime-scoped data (including keys). In the persistent database, we're limitied to plain old data, but we can still model *arcs* between things.
+Applications receive access to a database with support for atomic transactions, structured data, and content-addressed storage. I propose a key-value database in this role. The root database may be persistent and shared with other applications. A subset of keys are ephemeral, bound to runtime memory and permitting runtime-scoped data (including keys). We can further support transaction-scoped data, serving a role similar to thread-local storage. In the persistent database, we're limited to plain old data.
 
 A viable API:
 
@@ -47,28 +47,30 @@ A viable API:
     * `dir(Key, Data) : Key` - access subdirectory labeled by plain old data. 
     * `arc(Key, Key) : Key` - access subdirectory labeled by another key. This serves as a basis for associative structure. Unlike dirs, arcs cannot be listed (modulo reflection) so GC can treat the key as a weak reference.  
     * `eph(Key) : Key` - arc via implicit ephemeral key with runtime lifespan.
+    * `txn(Key) : Key` - arc via implicit ephemeral key with *transaction* lifespan. Associated data is logically cleared after the transaction terminates.
     * `gen() : Key` - runtime allocates a new ephemeral key. Subject to garbage collection.
   * `dir.*` - support for browsing the database
     * `list(Key) : List of Data` - list edge labels for active directories in the database. An active directory has at least one defined value. (There is no equivalent for *arcs*, modulo reflection APIs.)
+    * `pick(Key) : Data` - pick active edge non-deterministically. Like 'peek' on a bag.
     * `clear(Key)` - transitively delete everything reachable from this directory (val, dirs, arcs).
-    * `clone(Key, Key)` - transitively copy from one directory to another. Target must be empty.
   * `val.*` - every key may have an associated value
     * `get(Key) : Data` - copy data at key. diverges if key has no associated value.
-    * `set(Key, Data) : Data` - write data into key. 
+    * `set(Key, Data) : Data` - write data into key. The data must not have a shorter lifespan than the key. 
     * `del(Key)` - reset key to an undefined state.  
     * `has(Key) : Bool` - observe if key has value without observing the value
-    * `take(Key) : Data` - remove and return data at key. Diverges if key has no value.
-    * `put(Key, Data)` - place data into undefined key. Diverges if key has a value.
-    * `move(Key, Key)` - blindly 'take' from one key and 'put' to another.
+    * `take(Key) : Data` - get then del data at key. Diverges if key has no value.
+    * `put(Key, Data)` - set only if key is undefined. Diverges if key has a value.
+    * `move(Key, Key)` - blindly 'take' from one key and 'put' to another. Blindness is relevant 
     * `copy(Key, List of Key)` - blindly 'get' from one key and 'set' to one or more keys. 
   * `queue.*` - specialized view of list state. A runtime can evaluate multiple blind writer transactions and a single reader in parallel without risk of serializability conflicts.
     * `read(Key, N) : List of Data` - reader takes items from head of list. Diverges if not a list or insufficient data.
     * `push(Key, List of Data)` - reader pushes items to head of list for future reads (i.e. use as stack or deque)
     * `write(Key, List of Data)` - addends items to tail of list. Diverges if not a list.
     * `wire(Key, N, Key)` - (tentative) blindly read N items from one queue and write them to another 
-  * `bag.*` - essentially, an unordered queue. Reads and writes operate on non-deterministic locations in the list. Useful for distributed systems. 
-    * `read(Bag) : Data` - read and remove data, non-deterministic choice. Diverges if bag is empty.
+  * `bag.*` - essentially, an unordered queue. Reads and writes operate on non-deterministic locations in the list. Many readers and writers can be evaluated in parallel with some heuristic coordination. Useful for distributed systems.
     * `write(Bag, Data)` - add item to bag, non-deterministic position in list.
+    * `read(Bag) : Data` - read and remove data, non-deterministic choice. Diverges if bag is empty. *Note:* An optimizer might look at the *continuation* to heuristically select reads that more likely lead to a commit.
+    * `peek(Bag) : Data` - read data without removing it. Can be useful to manage concurrency.
 * `sys.refl.db.*` - methods for reflection on the database.
 
 When a key is used in a specialized mode, the system may heuristically optimize for this use case. This is especially relevant in a distributed runtime, where reader and writer endpoints of a queue can be split between two nodes, or a bag could be partitioned across many nodes. This optimization can be undone, but it generally requires a distributed transaction, thus a 'get' on a queue might diverge during network disruption. To improve disruption tolerance, extending the API with support for some [CRDTs](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) could be a very effective.
@@ -93,25 +95,36 @@ Ideally, authorization and authentication are separated from the application. We
 
 ## Remote Procedure Calls
 
-If an application implements 'rpc' it may receive remote procedure calls (RPC).
+An RPC API can be declared in application settings. The runtime will inspect this APIs and publish to configured registries. Part of this API may be dynamic, requiring a runtime to repeatedly query the application after it has started. Instead of one monolithic RPC API, it is useful to describe a set of fine-grained APIs, each with their own interfaces, security constraints, roles, topics, and other ad hoc metadata. This allows a runtime to route each interface to a different subset of registries.
 
-        rpc : (MethodRef, UserArg) -> [callback, sys] Result
+To receive RPC calls, the application defines a dispatch method:
 
-The UserArg and Result values are exchanged with the caller. Optionally, limited interaction may be supported as a callback via algebraic effects. The MethodRef is instead a runtime parameter, relating to how RPC is registered and published. The runtime will map between local use of MethodRef and external use of GUIDs or URLs.
+        rpc : (MethodRef, List of Arg) -> [cb, sys] Result
 
-RPC must be configured. The simplest solution is to declare a static API via application settings. Alternatively, settings could specify a MethodRef to fetch a dynamic API. Either way, I propose to organize RPC methods into 'objects' that are published to different registries based on trust and roles. 
+The MethodRef is taken from declared APIs, and should be designed for efficient dynamic dispatch. For security reasons, the runtime must prevent forgery of MethodRef and support revocation in context of dynamic API changes. This is easily supported by building a lookup table, mapping local MethodRefs to external, cryptographically-generated tokens.
 
-A prospective caller will query for RPC objects matching an interface and metadata.
+In addition to the runtime system API, 'rpc' may interact with the caller through a provided 'cb' handler. Because our compiler doesn't work across applications, we'll rely on dynamic dispatch, perhaps a `cb("method-name", List of Arg)` convention. In addition to arguments, callbacks may recursively receive a handler for making callbacks, ad infinitum. In practice, callback depth is constrained by protocols, performance, and quotas.
 
-*Note:* One point I'm still uncertain of is whether we should support 'stateful' subscription for RPC objects, or a more reactive query. I suspect the stateful approach would be more efficient but would result in applications that don't adapt easily to open systems and disruption. Can we mitigate the performance hit? Incremental computing may help.
+A prospective client will search for RPC interfaces matching a certain interface, role, provenance, and other metadata. Instead of expressing this search as a stateful event channel, I propose to model it as a continuous, stable query. This ensures our applications are reactive to changes in the open system. 
 
-* `sys.rpc.*` - discover and invoke RPC resources
-  * 
+A viable API for the client:
 
+        type SearchResult = ok:List of RpcObj | error:(text:Message, ...)
+        type Criteria is runtime specific, for now
+        type RpcObj is abstract and transaction scoped
 
+* `sys.rpc.*` - 
+  * `find(Criteria) : SearchResult` - search for available objects matching some ad hoc criteria.
+  * `find.fork(Criteria) : SearchResult` - as 'find' but will non-deterministically pick one RpcObj on success. That is, on an okay result, the list contains one result. This is more stable than observing the whole list before forking.
+  * `obj.*`
+    * `call(RpcObj, MethodName, List of Arg) : [cb] Result` - initiate a remote operation on RpcObj. The caller must provide the simple callback 'cb' as an algebraic effects. If no callback is needed based on protocols, assert false to terminate the transaction. 
+    * `meta(RpcObj, FieldName) : ok:Data | none` - observe associated metadata fields that were received with the RpcObj. Observing them one at a time is convenient for incremental computing.
 
-To enhance performance, I hope to support annotation-guided code distribution. The 'rpc' method can be partially evaluated based on MethodRef, then have some code extracted for evaluation at the caller. A caller can similarly forward part of the callback code and continuation. These optimizations would mitigate performance pressures, supporting simplified remote APIs.
+This API supports continuous discovery and opportunistic interactions at the expense of long-term connections. But we can model long-term interactions by reusing 'session' GUIDs across multiple transactions, and by including GUIDs or URLs in the metadata.
 
+To enhance performance, I hope to support a little code distribution, such that some calls or callbacks can be handled locally. Guided by annotations, an 'rpc' method may be partially evaluated based on MethodRef and have code extracted for evaluation at the caller. We can do the same with 'cb', partially evaluating based on MethodName. To support pipelining of multiple calls and remote processing of results, we could even send part of the continuation. However, this is all very theoretical at the moment.
+
+*Note:* In general, RPC registries may intercept calls and rewrite metadata. This can be useful if trusted, serving as an adapter layer. We can configure trusted registries and include trust criteria for publish and search. But it is feasible to force end-to-end encryption for introductions through untrusted registries.
 
 ## Graphical User Interface? Defer.
 
@@ -132,7 +145,7 @@ Fair choice means that, given sufficient opportunities, we'll eventually try all
 
 A stateful random number generator is awkward in context of concurrency, distribution, and incremental computing. However, we can easily provide access to a stable, cryptographically random field.
 
-* `sys.random(Seed, N) : Binary` - (pure) return a list of N cryptographically random bytes, uniformly distributed. Unique function per runtime instance.
+* `sys.random(Seed, N) : Binary` - (const) return a list of N cryptographically random bytes, uniformly distributed. Unique function per runtime instance.
 
 An implementation might involve a secure hash of `[Seed, N, Secret]`, where Secret is obtained from `"/dev/random"` or a configurable source when the application starts. In a distributed runtime, all nodes share the secret. To partition a random field within an application, an application can intercept `sys.random` to wrap Seed within a subprogram. The Seed may be structured, but it should be plain old data.
 
@@ -233,8 +246,8 @@ A viable API:
     * `ctrl.*` - simple control code.
       * `dip(N, Cmd) : Cmd` - temporarily hide top N items from data stack while running Cmd.
       * `seq(List of Cmd) : Cmd` - run commands in a sequence. No-op is expressed as empty seq.
-      * `cond(Cmd, Cmd) : Cmd` - pop top item from data stack. If non-zero, run lhs, otherwise rhs.
-      * `loop(Reg, Cmd) : Cmd` - repeat Cmd while a specified Reg is non-zero. Cmd *must* store to Reg.
+      * `cond(Cmd, Cmd) : Cmd` - if top item on data stack is non-zero, run lhs, otherwise rhs.
+      * `loop(Cmd) : Cmd` - repeat Cmd while top of stack is non-zero. Error if Cmd is not stack-balanced (no change in stack size)
     * `data.*` - 
       * `copy(N) : Cmd` - copy top N items on data stack
       * `drop(N) : Cmd` - drop top N items on data stack
@@ -243,26 +256,26 @@ A viable API:
         * *Reg* - register names should be short texts. The runtime may translate them to indices within an array.
       * `load(List of Reg) : Cmd` - copy items from registers to data stack. Error if undefined.
       * `push(List of Data, TypeHint)` - add data to stack. Pushed in reverse order, such that top of stack is head of list. TypeHint is a simple text like `"ibfp"` for 'int, buffer, float, pointer' to guide interpretation. 
-      * `bfr.*` - A binary or text argument can be pushed as a buffer, and a query will copy buffer back to the user as a binary. Reference counted in the FFI environment. 
+      * `bfr.*` - Memory allocated to receive or return binary data, managed by reference counting. Buffers are efficient for bulk data transfer, e.g. a matrix of floats should probably be communicated via buffer.
         * *impl* - `struct buffer { atomic_int refct; void* data; size_t size; void* (*realloc)(void*, size_t); }`. 
-        * *C strings* - to keep it simple, we'll overallocate then addend a NULL byte.
+        * *text* - to let a glas binary easily be read as a C string, overallocate and add a NULL byte.
         * *call* - a buffer may be used as a pointer argument to 'call'. We decref *after* the call. 
         * `alloc() : Cmd` - (`i-b`) allocate a new buffer of given size. 
-        * `realloc() : Cmd` - (`bi-b`) resize buffer. Be careful about concurrent use.
-        * `dup() : Cmd` - (`b-b`) allocates a fresh buffer with the same content 
+        * `realloc() : Cmd` - (`bi-b`) resize buffer. Be very careful in context of concurrent use.
+        * `acquire() : Cmd` - (`b-b`) If shared (refct above one), returns unshared copy of buffer. Otherwise, returns the original buffer. 
         * `len() : Cmd` - (`b-i`) obtain length from buffer. This is length of data, does not include extra NULL bytes.
-        * `ptr() : Cmd` - (`b-p`) obtain pointer from buffer. 
+        * `ptr() : Cmd` - (`b-p`) obtain pointer from buffer. But it's usually wiser use the implicit cast to pointer, to ensure the buffer remains in scope. 
 * *TypeHint* - A compact representation of types for efficient interaction with FFI. 
-  * 'b' - buffer. This is used to push or query binaries and texts. We'll implicitly cast a buffer to a pointer for a call, deferring decref until after the call returns.
-  * 'p' - pointer. '`void*`'. The runtime abstracts pointers to guard against some accident, but it's even better to shove pointers into registers and never send them to the runtime. The referent type is not tracked, so it's something users must be careful with.
-  * Integers - the API will use lower-case for signed types, upper-case for unsigned. Sign is relevant when we push or query numbers, as the glas system uses a variable-width integer encoding and negatives are in one's complement. If we attempt to push a number outside the range, we'll reject that transaction and raise an error.
+  * 'b' - buffer. Use for binaries, including texts. We'll implicitly cast a buffer to a pointer for a call, deferring decref until after the call returns.
+  * 'p' - pointer, i.e. `void*`. The runtime abstracts pointers to resist accidents such as sending the pointer to the wrong FFI process, or interpreting integers as pointers. OTOH, if you're transferring pointer values (other than NULL) through the runtime, you're probably doing FFI wrong. It's best if pointers stay within the FFI process.  
+  * Integers - the API will use lower-case for signed types, upper-case for unsigned. The glas integer representation is variable width, but the runtime will assert data conversion is lossless when pushing integers.
     * y,Y - int8, uint8
     * s,S - int16, uint16
     * w,W - int32, uint32
     * q,Q - int64, uint64
     * i,I - int, unsigned int
     *   Z - size_t
-  * 'f' float, 'd' double. On the runtime side, we use exact rational numbers. Conversion to floating point is lossy. Conversion to rationals is exact except for not-a-number or infinities. Those cases result in a query error, including the original float as a binary. To avoid automatic conversions, users could instead encode floats into a buffer.
+  * 'f' float, 'd' double. On the runtime side, we use exact rational numbers. Conversion to floating point is lossy. Conversion to rationals is exact except for not-a-number or infinities. Those cases result in a query error, including the original float as a binary. To avoid automatic conversions, users may instead encode floats into a buffer.
   * Void type - implicit. A call to a function of type `void (*)(int, size_t)` would use TypeHint `"iZ-"`.
 
 For calls, we can use [libffi](https://en.wikipedia.org/wiki/Libffi). The TypeHint options are influenced by what libffi supports. For the C JIT, we can use the [Tiny C Compiler (TCC)](https://bellard.org/tcc/). *Note:* I'd use a [recent version](https://github.com/frida/tinycc/tree/main) that lets callbacks redirect `#include` and resolve missing symbols.
@@ -301,6 +314,6 @@ Not every program should be trusted with FFI, shared state, and other sensitive 
 
 A configuration can describe who the user trusts or how to find this information. With a few conventions, when loading files we could poke around within a folder or repository for signed manifests and certifications of public signatures. A compiler can generate record of sources contributing to each definition - locations, secure hashes, other definitions, etc. - even accounting for overrides and 'eval' of macros.
 
-Instead of a binary decision for the entire application, perhaps we can isolate trust to specific definitions. Via annotations, some trusted definitions might express that they properly sandbox FFI, permitting calls from less-trusted definitions. And perhaps we can support a gradient of trust with our signatures, e.g. trust with specific roles, such as access to the filesystem instead of full FFI. 
+Instead of a binary decision for the entire application, perhaps we can isolate trust to specific definitions. Via annotations, some trusted definitions might express that they properly sandbox FFI, permitting calls from less-trusted definitions. And perhaps we can express a gradient of trust with our signatures, e.g. that a given definition can be trusted with 'filesystem access' instead of a role like 'full FFI access'. 
 
 Ultimately, we can run untrusted applications in trusted sandboxes, and a trusted application adapter can construct sandboxes upon request based on application settings. If the application asks for more authority than it's trusted to receive, the adapter won't stop it: the adapter only observes application settings and runtime version info, it's ignorant of security concerns. Instead, it's the runtime that would look at the final web of definitions and say "no, this untrusted definition is using FFI". At that point, we can abandon the app, sandbox the app, or extend trust.
