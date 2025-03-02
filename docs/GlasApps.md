@@ -5,8 +5,8 @@
 A *transaction loop* is a very simple idea - a repeating transaction, atomic and isolated. A direct implementation is nothing special; at best, it makes a convenient event dispatch loop, friendly for live coding and orthogonal persistence. However, consider a few optimizations we can apply: 
 
 * *incremental computing* - We don't always need to repeat the entire transaction from the start. Instead, roll-back and recompute based on changed inputs. If repeating the transaction is obviously unproductive, e.g. it aborts, then we don't need to repeat at all until conditions change. If productive, we still get a smaller, tighter repeating transaction that can be optimized with partial evaluation of the stable inputs.
-* *clone on non-deterministic choice* - If the computation is stable up to the choice, cloning is subject to incremental computing. This provides a stateless basis for concurrency, a set of threads reactive to observed conditions. If the computation is unstable, then at most one will commit while the other aborts (due to read-write conflict), representing a race condition or search. Both possibilities are useful.
-* *distributed runtimes* - A runtime can mirror a repeating transaction across multiple nodes then heuristically abort transactions best started on another node due to locality of resources. Under incremental computing and cloning on non-deterministic choice, this results in different transactions running on different nodes. In case of network partitioning, transactions in each partition may run independently insofar as we can guarantee serializability (e.g. by tracking 'ownership' of variables). An application can be architected such that *most* transactions fully evaluate on a single node and communicate asynchronously through runtime-supported queues, bags, or CRDTs. 
+* *duplication on non-deterministic choice* - If the computation is stable up to the choice, then duplication is subject to incremental computing. This provides a basis for concurrency, a set of threads reactive to observed conditions. If the computation is unstable, then at most one will commit while the other aborts (due to read-write conflict), representing a race condition or search. Both possibilities are useful.
+* *distributed runtimes* - A distributed runtime can mirror a repeating transaction across multiple nodes. For performance, we can heuristically abort transactions best started on another node, e.g. due to locality of resources. Under incremental computing and duplication on non-deterministic choice, this results in different transactions running on different nodes. In case of network partitioning, transactions in each partition may run independently insofar as we can guarantee serializability (e.g. by tracking 'ownership' of variables). An application can be architected such that *most* transactions fully evaluate on a single node and communicate asynchronously through runtime-supported queues, bags, or CRDTs. 
 
 If implemented, the transaction loop covers many more use-cases - reactive systems, concurrency, distributed systems with graceful degradation and resilience. Applications must still be designed to fully leverage these features, this is simplified by a comprehensible core: users can easily understand or debug each transaction in isolation. Also, even with these optimizations, the transaction loop remains friendly for live coding and orthogonal persistence. 
 
@@ -139,15 +139,15 @@ In context of a transaction loop, fair non-deterministic choice serves as a foun
 
 Fair choice means that, given sufficient opportunities, we'll eventually try all of them. However, this doesn't imply *random* or *uniform* choice! A scheduler may compute forks in a very predictable pattern, some more frequently than others.
 
-*Note:* Without optimizations for incremental computing and cloning on non-deterministic choice, fork is not very useable. Better off modeling a single-threaded event loop. 
+*Note:* Without transaction-loop optimizations for incremental computing and duplication on non-deterministic choice, a basic single-threaded event-loop will perform better. We can still use sparks for parallelism.
 
 ## Random Data
 
-A stateful random number generator is awkward in context of concurrency, distribution, and incremental computing. However, we can easily provide access to a stable, cryptographically random field.
+Instead of a stateful random number generator, the runtime will provide a stable, cryptographically random field. Of course, users can grab a little data to seed a PRNG.
 
-* `sys.random(Seed, N) : Binary` - (const) return a list of N cryptographically random bytes, uniformly distributed. Unique function per runtime instance.
+* `sys.random(Seed, N) : Binary` - return a list of N cryptographically random bytes, uniformly distributed. Unique function per runtime instance. The Seed may be structured but is limited to plain old data.
 
-An implementation might involve a secure hash of `[Seed, N, Secret]`, where Secret is obtained from `"/dev/random"` or a configurable source when the application starts. In a distributed runtime, all nodes share the secret. To partition a random field within an application, an application can intercept `sys.random` to wrap Seed within a subprogram. The Seed may be structured, but it should be plain old data.
+An implementation might involve a secure hash of `[Seed, N, Secret]`, where Secret is obtained from `"/dev/random"` or a configurable source when the application starts. In a distributed runtime, all nodes share the secret. To partition a random field within an application, an application can intercept `sys.random` to wrap Seed within a subprogram.
 
 ## Background Eval
 
@@ -201,86 +201,69 @@ The control hint is runtime specific, perhaps something like `(icanon:on, ...)`.
 
 ## Foreign Function Interface (FFI)
 
-The only FFI of any relevance for system integration is calling functions on a ".so" or ".dll" using the C ABI. C doesn't have any native support for transactions, but we can freely buffer a sequence of C calls to run between transactions. To ensure sequencing, I propose to stream commands and queries to FFI threads. These FFI threads may run in separate OS processes to control risk. To mitigate latency, a simple environment can pipeline outputs from one C call as inputs to the next without intervention. 
+The only FFI of any relevance for system integration is calling functions on a ".so" or ".dll" using the C ABI. C doesn't have any native support for transactions, but we can freely buffer a sequence of C calls to run between transactions. To ensure sequencing, I propose to stream commands and queries to FFI threads. To mitigate risk, FFI threads may run in separate OS processes. To mitigate latency, a simple environment enables users to pipeline outputs from one C call as input to another.
 
 A viable API:
 
+        struct buffer { atomic_int refct; size_t size; uint8_t* data; }
+
+        TypeHint:
+            p   - pointer (void*)
+            y,Y - int8, uint8
+            s,S - int16, uint16
+            w,W - int32, uint32
+            q,Q - int64, uint64
+            i,I - int, unsigned int
+              Z - size_t
+            f   - float
+            d   - double
+
 * `sys.ffi.*`
-  * `new(Hint) : FFI` - Return a runtime-scoped reference to a new FFI thread. Hint guides integration, such as creating or attaching to a process, or which node in a distributed runtime. The FFI thread will start with with a fresh environment and must link definitions before calling them.
-  * `run(FFI, Cmd)` - Enqueue a command in the FFI thread.
-  * `eval(FFI, Qry, Var)` - Enqueue a query in the FFI thread. The future result is stored to Var. If that Var is already in use, it is implicitly dropped and replaced.
-  * `fork(FFI) : FFI` - Clone the FFI thread. The clone gets copy of query results and the remote thread-local environment (stack and registers), and runs in a new thread. Buffers and heap are shared.
+  * `new(Hint) : FFI` - Return a runtime-scoped reference to a new FFI thread. Hint guides integration, such as creating or attaching to a process, or at which node in a distributed runtime. The FFI thread will start with with a fresh environment.
+  * `fork(FFI) : FFI` - Clone the FFI thread. The clone gets copy of query results and the remote thread-local environment (stacks and registers), and runs in a new thread. The heap is shared between forks.
   * `status(FFI) : FFIStatus` - recent status of FFI thread:
     * *uncommitted* - initial status for a 'new' or 'fork' FFI.
     * *busy* - ongoing activity in the background - setup, commands, or queries
     * *ready* - FFI thread is halted in a good state, can receive more requests.
     * *error:(text:Message, ...)* - FFI thread is halted in a bad state and cannot receive any more commands or queries. The error is a dict with at least a text message. The FFI cannot receive any more commands or queries.
-  * `var.*` - access the local store for query results. The Var may be any plain old data.
+  * `link.lib(FFI, SharedObject)` - SharedObject is runtime or adapter specific, but should indirectly translate to a ".dll" or ".so" file. When looking up a symbol, last linked is first searched.
+  * `link.c.hdr(FFI, APIName, Text)` - redirects `#include<APIName>` to Text in future 'c.src'.
+  * `link.c.src(FFI, Text)` - JIT-compile C source into memory and link (via Tiny C Compiler).
+  * `call(FFI, Symbol, TypeHint)` - call a previously linked symbol. Parameters and results are taken from the data stack. TypeHint for `int (*)(float, size_t, void*)` is `"fZp-i"`. In this case, pointer 'p' should be at the top of the data stack. Void type is elided, e.g. `void (*)()` is simply `"-"`.
+  * `mem.write(FFI, Binary)` - (`"p-"`) copy a runtime Binary into FFI thread memory, starting at a pointer provided on the data stack. A sample usage pattern: push length, call malloc, copy pointer, write. 
+  * `mem.read(FFI, Var)` - (`"pZ-"`) given a pointer and size on the data stack, read FFI process memory into an immutable runtime Binary value. This binary is eventually returned through Var.
+  * `push(FFI, List of Data, TypeHint)` - adds primitive data to the stack. TypeHint should have form `"-fZp"`. In this example, pointer should be last item in list and is pushed last to top of data stack. The TypeHint influences data conversion, and may raise an error - blocking the transaction - for lossy integer conversions. See 'sys.ffi.ptr.\*' for pointers.
+  * `peek(FFI, Var, N)` - copy N items from top of stack into future Var. If N is 0, this reduces to a status check. Some caveats: a floating-point NaN or infinity will result in error queries, and FFI pointers are abstracted (see 'sys.ffi.ptr.\*').
+  * `copy(FFI, N)` - copy top N items on stack
+  * `drop(FFI, N)` - remove top N items from stack
+  * `xchg(FFI, Text)` - ad hoc stack manipulation, described visually. The Text `"abc-abcabc"` is equivalent to 'copy(3)'. In this example, 'c' is top of stack. Mechanically, we find '-', scan backwards popping values from stack into single-assignment temporary local variables 'a-z', then scan forwards from '-' to push variables back onto the stack.
+  * `stash(FFI, N)` - move top N items from data stack to top of auxilliary stack, called stash. Preserves order: top of stack becomes top of stash.
+  * `stash.pop(FFI, N)` - move top N items from top of auxilliary stack to top of data stack.
+  * `reg.store(FFI, Reg)` - pop data from stack into a local register of the FFI thread. Register names should be short strings.
+  * `reg.load(FFI, Reg)` - copy data from local register of FFI thread onto data stack.    
+  * `var.*` - a future result for 'peek', 'mem.read', and other feedback from FFI thread. Vars must be dropped before reuse.
     * `read(FFI, Var) : Data` - Receive result from a prior query. Will diverge if not *ready*.
-    * `drop(FFI, Var)` - Remove current or pending result from FFI.
-    * `list(FFI) : List of Var` - Browse your local environment.
-    * `status(FFI, Var) : VarStatus` - A status per variable:
+    * `drop(FFI, Var)` - Remove result and enable reuse of Var.
+    * `list(FFI) : List of Var` - Browse local environment of query results.
+    * `status(FFI, Var) : VarStatus`
       * *undefined* - variable was dropped or never defined
-      * *uncommitted* - query will run between transactions
+      * *uncommitted* - commit transaction to send the query
       * *pending* - query enqueued, result in the future
-      * *ready* - data is ready, can read it immediately
-      * *error:(text:Message, ...)* - query problem. Does not stop the FFI thread.
-      * *canceled* - FFI thread halted before running query. See FFI status.
-  * `qry.*` - query the FFI environment. Queries are read-only, but there is some risk of breaking things when trying to read pointers beyond their length.
-    * `stack(N) : Qry` - read top N items from stack, or full stack if N is zero.
-    * `stack.at(N) : Qry` - read zero-indexed element from top of stack
-    * `reg(Reg) : Qry` - read a register by name
-  * `ptr.*` - When a pointer value is queried, the abstract, runtime-scoped Ptr type guards against accidents, such as sending a pointer to the wrong FFI process. 
-    * `null() : Ptr` -  special case, can use NULL with any FFI thread.
-    * `addr(FFI, Ptr) : Int` - address according to intptr_t. Asserts same FFI process.
-    * `cast(FFI, Int) : Ptr` - cast address to pointer. Unsafe, but clearly intentional.
-  * `cmd.*` - manipulate the FFI environment. A failed command will generally result in an 'error' state for the FFI thread.
-    * `link.*`- when looking for a symbol, linked last is searched first.
-      * `lib(SharedObject) : Cmd` - load a ".so" or ".dll" into environment (e.g. via dlopen).
-        * *SharedObject* - runtime specific; runtime can check config, translate to file path.
-      * `c.src(Text) : Cmd` - JIT compile a C source text that defines reusable utility functions.
-      * `c.hdr(Text, APIName) : Cmd` - TCC will redirect `#include <APIName>` to this text.
-    * `call(Symbol, TypeHint) : Cmd` - Call a previously loaded symbol using the data stack.
-      * *TypeHint* - initially, `"fip-i"`, a compact string like `"fip-i"`. Interpreted as `int (*)(float, int, void*)`, and taking the top of stack as the first argument. Assumes '`__cdecl`' as the default. This is extensible, e.g. we can support `stdcall:"fip-i"` if needed.
-    * `withc(Text, Cmd) : Cmd` - JIT the C source, run Cmd in scope scope of the C symbols, then free the memory. Users should be cautious regarding lifespan, e.g. for callbacks and threads.
-    * `ctrl.*` - simple control code.
-      * `dip(N, Cmd) : Cmd` - temporarily hide top N items from data stack while running Cmd.
-      * `seq(List of Cmd) : Cmd` - run commands in a sequence. No-op is expressed as empty seq.
-      * `cond(Cmd, Cmd) : Cmd` - if top item on data stack is non-zero, run lhs, otherwise rhs.
-      * `loop(Cmd) : Cmd` - repeat Cmd while top of stack is non-zero. Error if Cmd is not stack-balanced (no change in stack size)
-    * `data.*` - 
-      * `copy(N) : Cmd` - copy top N items on data stack
-      * `drop(N) : Cmd` - drop top N items on data stack
-      * `move(Text) : Cmd` - ad hoc stack manipulations, e.g. `"abc-abcabc"` will copy three items, while `"xy-yx"` is a swap. Stores then loads temporary registers 'a' to 'z'. In this notation, 'a' is top of stack.
-      * `store(List of Reg) : Cmd` - move from stack to a named register. In this case 'register' is effectively a local variable (but I'm already using 'Var' for the runtime side). An FFI thread can use a few hundred if necessary.
-        * *Reg* - register names should be short texts. The runtime may translate them to indices within an array.
-      * `load(List of Reg) : Cmd` - copy items from registers to data stack. Error if undefined.
-      * `push(List of Data, TypeHint)` - add data to stack. Pushed in reverse order, such that top of stack is head of list. TypeHint is a simple text like `"ibfp"` for 'int, buffer, float, pointer' to guide interpretation. 
-      * `bfr.*` - Memory allocated to receive or return binary data, managed by reference counting. Buffers are efficient for bulk data transfer, e.g. a matrix of floats should probably be communicated via buffer.
-        * *impl* - `struct buffer { atomic_int refct; void* data; size_t size; void* (*realloc)(void*, size_t); }`. 
-        * *text* - to let a glas binary easily be read as a C string, overallocate and add a NULL byte.
-        * *call* - a buffer may be used as a pointer argument to 'call'. We decref *after* the call. 
-        * `alloc() : Cmd` - (`i-b`) allocate a new buffer of given size. 
-        * `realloc() : Cmd` - (`bi-b`) resize buffer. Be very careful in context of concurrent use.
-        * `acquire() : Cmd` - (`b-b`) If shared (refct above one), returns unshared copy of buffer. Otherwise, returns the original buffer. 
-        * `len() : Cmd` - (`b-i`) obtain length from buffer. This is length of data, does not include extra NULL bytes.
-        * `ptr() : Cmd` - (`b-p`) obtain pointer from buffer. But it's usually wiser use the implicit cast to pointer, to ensure the buffer remains in scope. 
-* *TypeHint* - A compact representation of types for efficient interaction with FFI. 
-  * 'b' - buffer. Use for binaries, including texts. We'll implicitly cast a buffer to a pointer for a call, deferring decref until after the call returns.
-  * 'p' - pointer, i.e. `void*`. The runtime abstracts pointers to resist accidents such as sending the pointer to the wrong FFI process, or interpreting integers as pointers. OTOH, if you're transferring pointer values (other than NULL) through the runtime, you're probably doing FFI wrong. It's best if pointers stay within the FFI process.  
-  * Integers - the API will use lower-case for signed types, upper-case for unsigned. The glas integer representation is variable width, but the runtime will assert data conversion is lossless when pushing integers.
-    * y,Y - int8, uint8
-    * s,S - int16, uint16
-    * w,W - int32, uint32
-    * q,Q - int64, uint64
-    * i,I - int, unsigned int
-    *   Z - size_t
-  * 'f' float, 'd' double. On the runtime side, we use exact rational numbers. Conversion to floating point is lossy. Conversion to rationals is exact except for not-a-number or infinities. Those cases result in a query error, including the original float as a binary. To avoid automatic conversions, users may instead encode floats into a buffer.
-  * Void type - implicit. A call to a function of type `void (*)(int, size_t)` would use TypeHint `"iZ-"`.
+      * *ready* - data is ready, can read in current transaction
+      * *error:(text:Message, ...)* - problem that does not halt FFI thread.
+      * *canceled* - FFI thread halted before query returned. See FFI status.
+  * `ptr.*` - safety on a footgun; abstract Ptr is runtime scoped, explicitly cast, bound to a process
+    * `addr(FFI, Ptr) : Int` - view pointer as integer (per intptr_t). Error if FFI thread does not belong to same OS process as Ptr.
+    * `cast(FFI, Int) : Ptr` - treat any integer as a pointer
+    * `null() : Ptr` - pointer with 0 addr, accepted by any FFI
 
-For calls, we can use [libffi](https://en.wikipedia.org/wiki/Libffi). The TypeHint options are influenced by what libffi supports. For the C JIT, we can use the [Tiny C Compiler (TCC)](https://bellard.org/tcc/). *Note:* I'd use a [recent version](https://github.com/frida/tinycc/tree/main) that lets callbacks redirect `#include` and resolve missing symbols.
+This API is designed in context of [libffi](https://en.wikipedia.org/wiki/Libffi) and the [Tiny C Compiler (TCC)](https://bellard.org/tcc/). For the latter, a [recent version](https://github.com/frida/tinycc/tree/main) lets us redirect `#include` and resolve missing symbols via callbacks.
 
-*Aside:* We should probably redirect stdin, stdout, and stderr per FFI process. But I'm not sure what to do with them in general. Perhaps make them available via runtime reflection APIs. In the runtime's web interface, we can present an xterm.js per attached FFI process.
+*Aside:* It is unclear what should happen with the FFI process stdin, stdout, and stderr file streams. These can feasibly be redirected to the runtime and made available through reflection. Perhaps we can present an xterm.js per FFI process via `"/sys/ffi"`.
+
+## Filesystem, Network, Native GUI, Etc.
+
+These APIs are specialized wrappers for FFI. Instead of implementing them in the runtime, I will leave them to application or adapter. Where feasible, we should extend these APIs a little to be more friendly for pipelining, and perhaps to cover useful utility patterns such as full file reads or HTTP requests.
 
 ## Content-Addressed Storage and Glas Object (Low Priority!)
 
@@ -302,18 +285,12 @@ This API is useful for keeping associative state per node in a key-value store.
 
 Observing the starting node has consequences! A runtime might discover that a transaction started on node A is better initiated on node B. Normally, we abort the transaction on node A and let B handle it. After observing that we started on node A, we instead *migrate* to node B. With optimizations, we can repeatedly evaluate on node B, *but only while connected to node A*. Thus, carelessly observing the node results in a system more vulnerable to disruption.
 
-## Filesystem and Network
-
-I propose to implement filesystem and network APIs in terms of FFI. We don't get much out of these APIs other than a safety wrapper around FFI, and that can be left to applications or adapters to avoid cluttering the runtime.
-
-The conventional APIs should be adapted for better pipelining. For example, even if 'open' has an error, it's best if we can safely continue applying several operations before checking the result. This might benefit from a null object pattern. Useful utility functions might involve reading or writing whole files in one step, or performing HTTP requests in one step. 
-
 ## Securing Applications
 
-Not every program should be trusted with FFI, shared state, and other sensitive resources. This is true within a curated community configuration, and it is even more true with external scripts of ambiguous provenance. So, what can be done?
+Not every program should be trusted with FFI, shared state, and other sensitive resources. This is true within a curated community configuration, and even more true with external scripts of ambiguous provenance. So, what can be done?
 
 A configuration can describe who the user trusts or how to find this information. With a few conventions, when loading files we could poke around within a folder or repository for signed manifests and certifications of public signatures. A compiler can generate record of sources contributing to each definition - locations, secure hashes, other definitions, etc. - even accounting for overrides and 'eval' of macros.
 
 Instead of a binary decision for the entire application, perhaps we can isolate trust to specific definitions. Via annotations, some trusted definitions might express that they properly sandbox FFI, permitting calls from less-trusted definitions. And perhaps we can express a gradient of trust with our signatures, e.g. that a given definition can be trusted with 'filesystem access' instead of a role like 'full FFI access'. 
 
-Ultimately, we can run untrusted applications in trusted sandboxes, and a trusted application adapter can construct sandboxes upon request based on application settings. If the application asks for more authority than it's trusted to receive, the adapter won't stop it: the adapter only observes application settings and runtime version info, it's ignorant of security concerns. Instead, it's the runtime that would look at the final web of definitions and say "no, this untrusted definition is using FFI". At that point, we can abandon the app, sandbox the app, or extend trust.
+Ultimately, we can run untrusted applications in trusted sandboxes, and a trusted application adapter can construct sandboxes upon request based on application settings. If an application asks for more authority than it's trusted to receive, the adapter won't stop it: the adapter observes only application settings and runtime version info. Instead, the runtime will examine the final application, see that FFI or abstract resources are being used by untrusted functions without sufficient sandboxing, and reject the application. At that point, we can abandon the app, further sandbox the app, or extend trust.

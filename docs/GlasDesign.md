@@ -241,10 +241,10 @@ However, efficient dynamic enforcement of scopes benefits from a O(1) lookup. Ev
 Fortunately, we don't need many scopes to cover most use-cases in glas systems. Proposed scopes:
 
         tag     scope
-        00      global (can send over RPC, store to shared databases)
-        01      runtime (open files or network sockets)
-        10      transaction scope (transaction-local vars, RPC objects)
-        11      transaction-scoped linear data (see below!)
+        00      global scope (can send over RPC, store to shared databases)
+        01      runtime scope (e.g. open files, network sockets)
+        10      transaction scope (e.g. RPC objects)
+        11      transaction-scoped linear data (see below)
 
 As with abstract types, we can potentially eliminate runtime overheads via static analysis.
 
@@ -256,17 +256,21 @@ However, linear types are extremely awkward in open systems: they cannot be enfo
 
 This leaves an opportunity for linear data at transaction scope, to ensure transaction-local protocols are completed before the transaction commits. These protocols can potentially be very sophisticated in context of higher-order algebraic effects.
 
-### Unit or Shadow Types? Pending.
+### Units on Numbers?
 
-I want units on my numbers - kilograms, newtons, meters, joules. When I add numbers of incompatible units, I want an error. If I multiply compatible units, I want the composite unit to be generated properly and associated with the result.
+I want to express physical units on numbers - kilograms, newtons, meters, joules, etc. - and enforce safe use of units. However, I'm not certain of the best approach. Some options:
 
-Unfortunately, I don't know an efficient solution for tracking units at runtime. We could adapt abstract types, but it's expensive and messy. I suspect we'll want to focus on static analysis of units, with annotations describing units on some numbers as they are introduced, expressing assumptions, or expressing where units should be checked.
+* *staged computing* - model units as a 'static' parameter and result. Likely to be awkward syntactically, but perhaps front-end language support can mitigate this. A big advantage compared to annotations is that this makes units accessible for 'print' statements and such.
+* *enum in accelerated number rep* - we're likely to accelerate our number types, e.g. rationals of form `(N/2^K)`, allowing for negative K, are very useful as floating-points. It isn't expensive to add an enum to this representation for units, covering most units encountered in practice, and handle it across the basic arithmetic operations.
+* *static analysis* - add units to our type annotations, analyze at compile time. I'm reluctant on this option, mostly because I want to put off static analysis, but I want support for units relatively early.
 
-It seems feasible to generalize this notion to other associated metadata. We could use associated types to track locations of things in a distributed runtime, the stages of things for a multi-stage computations, or to limit the logical 'latency' of computing results for real-time computations.
+### Proof-Carrying Code?
 
-### Proof-Carrying Code? Pending.
+I'm curious how well proofs can be supported via systematic annotations within programs.
 
-I'm curious how much can be for proofs with systematic annotations. Perhaps we could express what we want to prove and some tactics. Perhaps we can embed some proof hints closer to certain functions? It isn't clear to me how much should be done with program-layer annotations versus namespace-layer annotations.
+A reasonable question is what a 'proof' should look like. We could support some sort of user-defined reflective judgement over an AST and call graph, ideally while abstracting names and the namespace. No need to prove the prover works or terminates in general. We can let users define ever more provers to their own satisfaction.
+
+These judgements might be extended with an opportunity to annotate the AST or call graph for future passes or future proofs.
 
 ## Misc. Thoughts
 
