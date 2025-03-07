@@ -69,6 +69,12 @@ Direct representation of lists is inefficient for many use-cases, such as random
 
 Binaries receive special handling because they're a very popular type at system boundaries (reading files, network communication, etc.). Logically, a binary is a list of small integers (0..255). For byte 14, we'd use `0b1110` not `0b00001110`. But under the hood, binaries will be encoded as compact byte arrays.
 
+### Optional Data and Booleans
+
+The convention for encoding 'optional' data in glas is to use an empty list for no data, and a singleton list for some data. The convention for encoding Boolean is optional unit, i.e. empty list for 'false' and a singleton list containing the empty list for 'true'.
+
+For 'Either' types, we'll usually switch to symbolic data like `ok:Result | error:(text:Message, ...)`. 
+
 ### Numbers, Vectors, and Matrices
 
 Arbitrary rational numbers can be encoded as a dict `(n, d)` of integers. The rational subset of complex or hypercomplex numbers can be modeled as dicts `(r, i)` or `(r, i, j, k)` of rationals or integers. A vector is encoded as a list of numbers. A matrix is encoded as list of vectors or matrices of identical dimensions. Arithmetic operators in glas systems should be overloaded to handle these different number types where it makes sense to do so. 
@@ -238,23 +244,20 @@ In context of remote procedure calls and shared databases, it is often useful to
 
 However, efficient dynamic enforcement of scopes benefits from a O(1) lookup. Every node should cache metadata for whether it transitively includes runtime-scoped data. To support this efficiently, we could use [tagged pointers](https://en.wikipedia.org/wiki/Tagged_pointer), albeit only for a very small number of scopes.
 
-Fortunately, we don't need many scopes to cover most use-cases in glas systems. Proposed scopes:
+Fortunately, we don't need many scopes to cover most use-cases in glas systems. A useful hierarchy of scopes:
 
-        tag     scope
-        00      global scope (can send over RPC, store to shared databases)
-        01      runtime scope (e.g. open files, network sockets)
-        10      transaction scope (e.g. RPC objects)
-        11      transaction-scoped linear data (see below)
+* global scope - can send or receive over RPC
+* shared scope - can read or store to shared database
+* runtime scope - open files, network sockets
+* transaction scope - RPC objects, namespace refs
 
-As with abstract types, we can potentially eliminate runtime overheads via static analysis.
+Whether we need all these scopes depends on the application API. For example, database scope is necessary only if we want abstract database references as first-class values within the database. Note that *transaction scope* is compatible with incremental computing and partial evaluation. It may be computed before a transaction, but it cannot leave a transaction.
 
-### Transaction-Scoped Linear Types for Consistency
+### Linear Types
 
-Linear data is abstract data that cannot be copied or dropped arbitrarily. Instead, they can only be copied or dropped by those with the authority to peek behind the abstraction. This can be very useful for enforcing protocols, e.g. that a file is closed. Similar to scoped types, linear types are easily expressed as a flag on abstract types and enforced at runtime via tagged pointers.
+Linear data is abstract data that cannot be arbitrarily copied or dropped. This is useful when modeling resources, protocols, or promises. Linear types are potentially useful to ensure a transaction is 'complete' upon commit, i.e. to check there are no unfulfilled promises. Like scope, linear types can be expressed as a flag on abstract data then enforced efficiently using tagged pointers. 
 
-However, linear types are extremely awkward in open systems: they cannot be enforced efficiently, and even if enforced, it's unclear who should clean up when an application dies mid-protocol. Further, at runtime scope, linear types don't play nicely with transaction loop optimizations such as incremental computing and parallel evaluation. We're forced to read the linear data from state, observe or manipulate it, write it back to state.
-
-This leaves an opportunity for linear data at transaction scope, to ensure transaction-local protocols are completed before the transaction commits. These protocols can potentially be very sophisticated in context of higher-order algebraic effects.
+Linear types are extremely awkward in open systems: they cannot be enforced, and they shouldn't be enforced - it's unclear how to clean up after an application dies mid-protocol. At runtime scope, linear types interact awkwardly with transaction-loop optimizations, such as incremental computing: we're forced to repeatedly read the linear data from state, observe or manipulate it, write it back to state. The best opportunity for linear types is at transaction scope, to enforce that transaction-local protocols are completed before the transaction commits.
 
 ### Units on Numbers?
 

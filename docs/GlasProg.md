@@ -1,22 +1,26 @@
 # Program Model for Glas
 
-In the intermediate representation, a program is an abstract [namespace](GlasNamespaces.md) of definitions using a Lisp-like intermediate language. An application namespace must define methods recognized by the runtime, e.g. start, step, switch, signal, settings, http, and rpc. The abstract assembly references undefined names, typically with a '%' prefix, as primitive AST constructors or keywords. 
+The [glas namespace model](GlasNamespaces.md) covers modularity, user-defined front-end syntax, and and a Lisp-like intermediate representation called abstract assembly. The primitive AST constructors - a set of names prefixed with '%' for convenience of recognition and propagation - are specified in this document. Together with namespaces, this describes the intermediate language for glas programs.
 
- and ' an interface via this namespace. 
+The [glas application model](GlasApps.md) assumes several features of this program model: higher-order algebraic effects, incremental computing, hierarchical transactions, efficient snapshot and duplication. Support for live coding also influences this program model. Some conventional features are rejected. For example, there are no first-class functions or objects, but we can support second-class forms and integrate accelerated interpreters.
 
-Assembly constructors are provided via names with a '%' prefix, e.g. `(%sum Expr1 Expr2)` might represent a primitive expression to compute and return the sum of two expressions. 
+## Design Thoughts
 
-Abstraction through the namespace ensures extension, restriction, and intervention on subprograms is supported via systematic rewrites of names. However, such rewrites are expensive, resulting in a bloated and redundant namespace. Ideally, the abstract assembly should support additional layers of abstraction, e.g. parameters, external wiring, algebraic effects. 
+I hope to model concurrent computation within the program, such that incremental computing isn't limited to a simple prefix of stable operations. This is feasible insofar as we can partition our algebraic effects. However, partitioning effects on references is difficult.
 
-In glas systems, programs are transactional and [applications](GlasApps.md) are expressed as transaction loops, leveraging non-deterministic choice and incremental computing as the basis for concurrency. Distributed transactions and remote procedure calls form a basis for larger systems. Live coding is assumed, so we should avoid entangling application state with the current codebase.
-
-This document proposes and motivates a set of assembly constructors for glas systems.
-
-To support incremental computing and loop fusion, we might need some careful design such that we can isolate dependencies from sequential computations. Ideally, our 'procedures' support a fair bit of parallelism internally, and incremental computing within each parallel fragment. Some sort of dataflow?
+It seems feasible to organize algebraic effects into static objects within a call graph. 
 
 
+such that code can be organized as a composition of generators and consumers, without any first-class structures. Most interaction models won't play nicely with hierarchical transactions. However, this *might* be achieved via capturing some local variables into 'objects' for algebraic effects. Perhaps there is something simple we can use, based on explicit yield and continue.
 
-The glas program model doesn't support first-class functions. That is, a function cannot be referenced from data. Instead, we use something closer to an additional namespace aligned to the call graph to support .
+## Basic Operations
+
+* `(%seq Op1 Op2 ...)` - 
+
+
+
+
+
 
 ## Design Decisions
 

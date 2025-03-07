@@ -31,53 +31,77 @@ A transaction loop application might define several transactional methods:
 * 'rpc' - Transactional inter-process communications. Multiple calls in one transaction. Callback via algebraic effects.
 * 'gui' - Like an immediate-mode GUI. Reflective - renders without commit. See [Glas GUI](GlasGUI.md).
 * 'switch' - First transaction in new code after live update. Old code runs until successful switch.
-* 'settings' - influences integration of the application, e.g. adapters and some runtime options. 
+
+The exact interface may vary between runtimes. The configuration may generate an adapter based on application 'settings' and runtime version information.
 
 The transactions will interact with the runtime - and through it the underlying systems - with an algebraic effects API. Unfortunately, most external systems - filesystem, network, FFI, etc. - are not transactional. We resolve this by buffering operations to run between transactions. But there are a few exceptions: application state, remote procedure calls, and a convenient escape hatch for safe, cacheable operations like HTTP GET.
 
 ## Application State
 
-Applications receive access to a database with support for atomic transactions, structured data, and content-addressed storage. I propose a key-value database in this role. The root database may be persistent and shared with other applications. A subset of keys are ephemeral, bound to runtime memory and permitting runtime-scoped data (including keys). We can further support transaction-scoped data, serving a role similar to thread-local storage. In the persistent database, we're limited to plain old data.
+The runtime can provide a heap-like API for state, with a first-class reference to mutable cells, garbage collection, and extensible structure. Based on configuration, a portion of this state may be persistent, shared with concurrent applications and future instances of the application. This API must carefully handle scope, such that open files, network connections, etc. are not accidentally written to the shared database. 
 
 A viable API:
 
-* `sys.db.*` - a key-value database with abstract keys. 
-  * `root : Key` - initial access to a database. Runtime-scoped, but usually persistent.
-  * `key.*` - referencing the database
-    * `dir(Key, Data) : Key` - access subdirectory labeled by plain old data. 
-    * `arc(Key, Key) : Key` - access subdirectory labeled by another key. This serves as a basis for associative structure. Unlike dirs, arcs cannot be listed (modulo reflection) so GC can treat the key as a weak reference.  
-    * `eph(Key) : Key` - arc via implicit ephemeral key with runtime lifespan.
-    * `txn(Key) : Key` - arc via implicit ephemeral key with *transaction* lifespan. Associated data is logically cleared after the transaction terminates.
-    * `gen() : Key` - runtime allocates a new ephemeral key. Subject to garbage collection.
-  * `dir.*` - support for browsing the database
-    * `list(Key) : List of Data` - list edge labels for active directories in the database. An active directory has at least one defined value. (There is no equivalent for *arcs*, modulo reflection APIs.)
-    * `pick(Key) : Data` - pick active edge non-deterministically. Like 'peek' on a bag.
-    * `clear(Key)` - transitively delete everything reachable from this directory (val, dirs, arcs).
-  * `val.*` - every key may have an associated value
-    * `get(Key) : Data` - copy data at key. diverges if key has no associated value.
-    * `set(Key, Data) : Data` - write data into key. The data must not have a shorter lifespan than the key. 
-    * `del(Key)` - reset key to an undefined state.  
-    * `has(Key) : Bool` - observe if key has value without observing the value
-    * `take(Key) : Data` - get then del data at key. Diverges if key has no value.
-    * `put(Key, Data)` - set only if key is undefined. Diverges if key has a value.
-    * `move(Key, Key)` - blindly 'take' from one key and 'put' to another. Blindness is relevant 
-    * `copy(Key, List of Key)` - blindly 'get' from one key and 'set' to one or more keys. 
-  * `queue.*` - specialized view of list state. A runtime can evaluate multiple blind writer transactions and a single reader in parallel without risk of serializability conflicts.
-    * `read(Key, N) : List of Data` - reader takes items from head of list. Diverges if not a list or insufficient data.
-    * `push(Key, List of Data)` - reader pushes items to head of list for future reads (i.e. use as stack or deque)
-    * `write(Key, List of Data)` - addends items to tail of list. Diverges if not a list.
-    * `wire(Key, N, Key)` - (tentative) blindly read N items from one queue and write them to another 
-  * `bag.*` - essentially, an unordered queue. Reads and writes operate on non-deterministic locations in the list. Many readers and writers can be evaluated in parallel with some heuristic coordination. Useful for distributed systems.
-    * `write(Bag, Data)` - add item to bag, non-deterministic position in list.
-    * `read(Bag) : Data` - read and remove data, non-deterministic choice. Diverges if bag is empty. *Note:* An optimizer might look at the *continuation* to heuristically select reads that more likely lead to a commit.
-    * `peek(Bag) : Data` - read data without removing it. Can be useful to manage concurrency.
+* `sys.db.*` - 
+  * `scope.*` - a transaction-scoped abstract type describing scope. Scope is contravariant: a Ref may hold data from the same or larger scope, and may be stored into a Ref of the same or smaller scope. If necessary, scopes are enforced dynamically via tagged pointers.
+    * `shared : Scope` - the largest, longest-live scope for state. Supports persistent, shared state through a configured database. There is one larger scope for RPC calls, excluding db Refs to simplify garbage collection.
+    * `runtime : Scope` - the middle scope. Supports stateful, process-specific resources, such as open files, network connections, and FFI threads. 
+    * `transaction : Scope` - the smallest scope. Data is implicitly dropped immediately before a transaction commits. Together with linear types, transaction vars can enforce remote procedure call *protocols*, where intermediate calls lead to an inconsistent state and closing calls are required before commit.
+    * `cmp.eq(Scope, Scope) : Boolean` - returns whether two scopes are the same.
+    * `cmp.ge(Scope, Scope) : Boolean` - returns whether the left scope is larger or the same as the right scope.
+  * `var(Scope, Name) : Ref` - returns a named reference in the given scope. If this name is not previously in use, we'll initialize Ref with value zero. Conversely, a var may be garbage collected if it has value zero and no external Refs. The Name should be meaningful text, not overly large, something we can usefully print in a debug view.
+  * `ref.*` - new refs, weak refs, reference equality
+    * `new(Scope, Data) : Ref` - obtain a new reference, initially associated with the given data. This Ref and associated data may be garbage collected if it becomes unreachable.
+    * `scope(Ref) : Scope` - return scope of a given reference
+    * `weak(Ref) : WeakRef` - produces a [weak reference](https://en.wikipedia.org/wiki/Weak_reference). The garbage collector may ignore WeakRefs when determining what can be collected. The WeakRef must be fetched to use the associated Ref.
+    * `weak.fetch(WeakRef) : Ref` - obtain the reference associated with a weak reference. If the reference has already been collected, this operation will diverge. Use reflection API 'sys.refl.db.ref.weak.tryfetch' to fetch without diverging!
+    * `weak.cache(Ref, CacheHint) : WeakRef` - integrate manual caching and garbage collection. Instead of collecting the WeakRef at first opportunity, the garbage collector will make a heuristic decision based on CacheHint, memory pressure, history of use, and so on. Similar to a 'soft' reference in Java.
+    * `cmp.eq(Ref, Ref) : Boolean` - reference equality, asks whether two db references are the same.
+  * `cell.*` - view a ref as a cell containing a single value. This is the simplest view, but it doesn't support fine-grained read-write conflict analysis.
+    * `get(Ref) : Data` - access full value.
+    * `set(Ref, Data)` - modify the value for future access.
+    * `swap(Ref, Data) : Data` - get and set, but as one operation. Useful with linear types.
+    * `swap.ref(Ref, Ref)` - swap two references without observing the data.
+    * `copy(Ref, List of Ref)` - copy from one cell to many others without fully observing the data. This diverges if the data has a linear type.
+  * `slot.*` - a cell containing optional data, i.e. empty or singleton list. This is a useful pattern for synchronization of concurrent tasks in some cases, though queues are more flexible.
+    * `take(Ref) : Data` - if cell has a singleton list, set the empty list and return the data. Otherwise diverge.
+    * `put(Ref, Data)` - if cell has empty list (zero), write singleton list containing Data. Otherwise diverge.
+    * `move(Ref, Ref)` - 'take' from first Ref and 'put' to the second, without observing the data.
+  * `queue.*` - a cell containing a list can be viewed as a double-ended queue. Usefully, a runtime can support multiple writer transactions in parallel with a single reader transaction, with each writer buffering locally then ordering writes from each transaction based on a conflict analysis for other properties.
+    * `read(Ref, N) : List of Data` - remove and return exactly N items from head of list, or diverge
+    * `unread(Ref, List of Data)` - reader adds items to head of list for a future read
+    * `write(Ref, List of Data)` - add data to end of queue for a future reader.
+    * `wire(Ref, N, List of Ref)` - read from source queue and write to multiple sink queues without observing data. Wiring to more than one sink will diverge if the data has linear type.
+  * `bag.*` - essentially, an unordered queue. Reads and writes operate on non-deterministic locations in the list. Many reader and writer transactions can be evaluated in parallel.
+    * `write(Ref, Data)` - add item to bag, non-deterministic position in list.
+    * `read(Ref) : Data` - read and remove data from a non-deterministic position in the list. Diverge if bag is empty. 
+    * `peek(Ref) : Data` - read data non-deterministically without removing it. Can be useful for concurrency.
+  * *etc.* - We can introduce specialized views for dicts and arrays for fine-grained conflict analysis at the level of indices. I'm not convinced that is better than directly modeling a dict or array of refs. Database support for CRDTs could prove useful for distributed runtimes. See *Distributed State.* 
 * `sys.refl.db.*` - methods for reflection on the database.
+  * `ref.weak.tryfetch(WeakRef) : opt Ref` - returns an optional Ref, i.e. a singleton list containing Ref if available, otherwise the empty list. This operation indirectly observes the garbage collector. Without 'tryfetch', users can still 
+  * `ref.usage(Ref, Hint)` - describe how a Ref will be used for optimization purposes, an annotation of sorts
+  * `var.iter(Scope, Binary) : Name` - iteration through var names in use. Returns the next name lexicographically after a given binary, or the empty string if we've reached the end. This operation indirectly observes the garbage collector, which may heuristically delete vars if they contain zero and have no external Refs.
 
-When a key is used in a specialized mode, the system may heuristically optimize for this use case. This is especially relevant in a distributed runtime, where reader and writer endpoints of a queue can be split between two nodes, or a bag could be partitioned across many nodes. This optimization can be undone, but it generally requires a distributed transaction, thus a 'get' on a queue might diverge during network disruption. To improve disruption tolerance, extending the API with support for some [CRDTs](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) could be a very effective.
+A persistent heap is far more convenient than the filesystem due to runtime support for atomic transactions, structured data, content-addressed storage, and distributed mirroring. However, shared state is still very messy. To mitigate this, application adapters can serve as coordinators. A var name such as `"~varname"` within the application might translate to `"/home/appname/varname"` using 'appname' from application settings. Meanwhile, `"/shm/var"` is an unstructured shared var, and the adapter may support ad hoc asynchronous IPC patterns: databus, publish-subscribe, perhaps even a relational database.
 
-An application adapter could easily hide 'root' and instead present an API with an application home, inbox, outbox, commons, perhaps a relational database, etc.. 
+*Note:* This API is very dynamic. This makes it difficult to statically reason about behavior or optimize allocations. To mitigate this, we can specialize type annotations for Refs, infer Ref types, and favor static 'var' where feasible.
 
-Regarding security, a configuration may describe some security policies at the granularity of specific directories. This can feasibly be enforced per call-site, based on which portions of an application are trusted. Based on application settings, a trusted application adapter can provide controlled access to an untrusted application, e.g. limiting an application to a 'home' directory, inbox, outbox, and a dedicated commons area. See *Securing Applications*.
+### Distributed State
+
+A runtime can optimize based on usage patterns such as 'queue'. This is especially relevant in a distributed runtime: the reader and writer endpoints of a queue can be 'owned' by separate remote nodes. However, if we later attempt to read the distributed queue or bag as a cell, we'll be forced to perform a distributed transaction, i.e. to undo this optimization. 
+
+What optimizations are viable?
+
+* cell - owned by a writer node, cached read-only on other nodes
+* slot - single owner for read and write, migrate as needed, no caching 
+* queue - reader and writer ends may be owned by separate nodes, writer buffers data while the network is partitioned. The runtime heuristically cancels write transactions if the buffer is too large. Both reader and writer may eventually react to the disruption via timeouts. (In theory, we could support multiple writer nodes for a queue, but this interacts very non-intuitively with 'sys.time.\*'.)
+* bag - can partition the list across multiple nodes. Each node can read and write to the local partition while network is down. The runtime can freely shuffle data between partitions when the network is restored. We might need to extract stable filters from the 'continuation' after read for heuristic shuffling.
+* dict/array - if we introduce APIs to operate on indexed data, we could effectively distribute ownership per index.
+* [CRDTs](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) - can replicate to every node, interact with locally, and synchronize replicas when nodes interact. Like a queue, we might heuristically cancel write transactions if we've built up too many synch events. Unlike a queue, we can potentially simplify and reduce the event stream. 
+
+The current API doesn't specify any CRDTs, but if we get serious about distributed runtimes, APIs to observe and update refs as general-purpose CRDTs (e.g. modeling texts, trees, graphs) could help a great deal. *Aside:* We could further extend with support for a 'dict' or 'array' views, allowing edits on individual names or indices without observing the full dict or array. However, I'm not convinced this is better than a a cell containing a dict or list of cells.
+
+In general we must consider *permanent* network disruptions, e.g. destruction of a node. In this context, 'ownership' by a single node can be a problem. For critical resources - such as shared or runtime vars - we might instead model ownership by a conglomerate, using a consensus algorithm and distributed transaction per update. This trades performance for reliability. To mitigate performance, we then apply a little indirection: instead of serving as a queue directly, the important var introduces an intermediate new Ref to serve as the queue. If things go badly, we can replace the Ref after a timeout, perhaps dropping the bad Ref into a bag to be processed later. 
 
 ## HTTP Interface
 
@@ -166,7 +190,7 @@ Intriguingly, stable bgeval integrates with incremental computing, and non-deter
 A transaction can query a clock. A repeating transaction can wait on that clock, i.e. by aborting the transaction until the time is right. However, repeatedly querying the clock and aborting is extremely inefficient, so we'll want to optimize this pattern.
 
 * `sys.time.now()` - Returns a TimeStamp for estimated time of commit. By default, this timestamp is a rational number of seconds since Jan 1, 1601 UTC, i.e. Windows NT epoch with flexible precision. Multiple queries to the same clock within a transaction will return the same value.
-* `sys.time.await(TimeStamp)` - Diverge unless `sys.time.now() >= TimeStamp`. A runtime can easily optimize this to wait for the specified time. The runtime can also precompute the transaction slightly ahead of time and hold it ready to commit, a viable basis for soft real-time systems.
+* `sys.time.await(TimeStamp)` - Diverge unless `sys.time.now() >= TimeStamp`. A runtime can easily optimize a stable computation to wait for the specified time. The runtime can also precompute the transaction slightly ahead of time and hold it ready to commit, a viable basis for soft real-time systems.
 
 In context of a distributed runtime and network partitioning, each node maintains a local estimate of the runtime clock. When the nodes interact, we don't need to synchronize clocks, but we must track the maximum observed timestamp (received from 'now' or passed to 'await') that might have contributed to an interaction to ensure we observe a monotonic distributed clock. Fixing clock drift and aligning with true time is best left to NTP or PTP.
 
@@ -220,20 +244,21 @@ A viable API:
 
 * `sys.ffi.*`
   * `new(Hint) : FFI` - Return a runtime-scoped reference to a new FFI thread. Hint guides integration, such as creating or attaching to a process, or at which node in a distributed runtime. The FFI thread will start with with a fresh environment.
-  * `fork(FFI) : FFI` - Clone the FFI thread. The clone gets copy of query results and the remote thread-local environment (stacks and registers), and runs in a new thread. The heap is shared between forks.
+  * `fork(FFI) : FFI` - Clone the FFI thread. This involves a copy of of the data stack, stash, registers, and runtime-local vars. The next command will run in a new thread. The heap is shared between forks.
   * `status(FFI) : FFIStatus` - recent status of FFI thread:
     * *uncommitted* - initial status for a 'new' or 'fork' FFI.
     * *busy* - ongoing activity in the background - setup, commands, or queries
     * *ready* - FFI thread is halted in a good state, can receive more requests.
     * *error:(text:Message, ...)* - FFI thread is halted in a bad state and cannot receive any more commands or queries. The error is a dict with at least a text message. The FFI cannot receive any more commands or queries.
   * `link.lib(FFI, SharedObject)` - SharedObject is runtime or adapter specific, but should indirectly translate to a ".dll" or ".so" file. When looking up a symbol, last linked is first searched.
-  * `link.c.hdr(FFI, APIName, Text)` - redirects `#include<APIName>` to Text in future 'c.src'.
-  * `link.c.src(FFI, Text)` - JIT-compile C source into memory and link (via Tiny C Compiler).
+  * `link.c.hdr(FFI, Name, Text)` - redirects `#include<Name>` to Text in future use of 'link.c.src' or 'cscript'. There is no implicit access to filesystem headers, so this is the most convenient way to declare APIs, support `#define` parameters or macros, etc.
+  * `link.c.src(FFI, Text)` - JIT-compile C source in memory and link (via Tiny C Compiler). Consider including a `#line 1 "source-hint"` directive as the first line of text to improve debug output from the JIT comiler.
   * `call(FFI, Symbol, TypeHint)` - call a previously linked symbol. Parameters and results are taken from the data stack. TypeHint for `int (*)(float, size_t, void*)` is `"fZp-i"`. In this case, pointer 'p' should be at the top of the data stack. Void type is elided, e.g. `void (*)()` is simply `"-"`.
-  * `mem.write(FFI, Binary)` - (`"p-"`) copy a runtime Binary into FFI thread memory, starting at a pointer provided on the data stack. A sample usage pattern: push length, call malloc, copy pointer, write. 
-  * `mem.read(FFI, Var)` - (`"pZ-"`) given a pointer and size on the data stack, read FFI process memory into an immutable runtime Binary value. This binary is eventually returned through Var.
-  * `push(FFI, List of Data, TypeHint)` - adds primitive data to the stack. TypeHint should have form `"-fZp"`. In this example, pointer should be last item in list and is pushed last to top of data stack. The TypeHint influences data conversion, and may raise an error - blocking the transaction - for lossy integer conversions. See 'sys.ffi.ptr.\*' for pointers.
-  * `peek(FFI, Var, N)` - copy N items from top of stack into future Var. If N is 0, this reduces to a status check. Some caveats: a floating-point NaN or infinity will result in error queries, and FFI pointers are abstracted (see 'sys.ffi.ptr.\*').
+  * `cscript(FFI, Text, Symbol, TypeHint)` - JIT compile a C source text, call one function defined in this source, then unload. This is convenient for one-off operations or long-running operations, but it has *a lot* of overhead per op. 
+  * `mem.write(FFI, Binary)` - (type `"p-"`) copy a runtime Binary into FFI thread memory, starting at a pointer provided on the data stack. A sample usage pattern: push length, call malloc, copy pointer, write. This operation is the be
+  * `mem.read(FFI, Var)` - (type `"pZ-"`) given a pointer and size on the data stack, read FFI process memory into an immutable runtime Binary value. This binary is eventually returned through Var.
+  * `push(FFI, List of Data, TypeHint)` - adds primitive data to the stack. TypeHint should have form `"fZp"`, one character per datum in the list, as the RHS of a call. In this example, pointer should be last item in list and is pushed last to top of data stack. Caveats: Conversion to floating point numbers may be lossy. Integer conversions must not be lossy, or we'll block the transaction. For pointers, must use abstract Ptr bound to same FFI process (see 'sys.ffi.ptr.\*').
+  * `peek(FFI, Var, N)` - read N items from top of stack into runtime Var. If N is 0, this reduces to a status check. Some caveats: a floating-point NaN or infinity will result in error queries, and FFI pointers are abstracted (see 'sys.ffi.ptr.\*').
   * `copy(FFI, N)` - copy top N items on stack
   * `drop(FFI, N)` - remove top N items from stack
   * `xchg(FFI, Text)` - ad hoc stack manipulation, described visually. The Text `"abc-abcabc"` is equivalent to 'copy(3)'. In this example, 'c' is top of stack. Mechanically, we find '-', scan backwards popping values from stack into single-assignment temporary local variables 'a-z', then scan forwards from '-' to push variables back onto the stack.
@@ -241,7 +266,7 @@ A viable API:
   * `stash.pop(FFI, N)` - move top N items from top of auxilliary stack to top of data stack.
   * `reg.store(FFI, Reg)` - pop data from stack into a local register of the FFI thread. Register names should be short strings.
   * `reg.load(FFI, Reg)` - copy data from local register of FFI thread onto data stack.    
-  * `var.*` - a future result for 'peek', 'mem.read', and other feedback from FFI thread. Vars must be dropped before reuse.
+  * `var.*` - future return value from 'peek' or 'mem.read' 
     * `read(FFI, Var) : Data` - Receive result from a prior query. Will diverge if not *ready*.
     * `drop(FFI, Var)` - Remove result and enable reuse of Var.
     * `list(FFI) : List of Var` - Browse local environment of query results.
@@ -257,9 +282,9 @@ A viable API:
     * `cast(FFI, Int) : Ptr` - treat any integer as a pointer
     * `null() : Ptr` - pointer with 0 addr, accepted by any FFI
 
-This API is designed in context of [libffi](https://en.wikipedia.org/wiki/Libffi) and the [Tiny C Compiler (TCC)](https://bellard.org/tcc/). For the latter, a [recent version](https://github.com/frida/tinycc/tree/main) lets us redirect `#include` and resolve missing symbols via callbacks.
+This API is designed assuming use of [libffi](https://en.wikipedia.org/wiki/Libffi) and the [Tiny C Compiler (TCC)](https://bellard.org/tcc/). For the latter, a [recent version](https://github.com/frida/tinycc/tree/main) lets us redirect `#include` and resolve missing symbols via callbacks.
 
-*Aside:* It is unclear what should happen with the FFI process stdin, stdout, and stderr file streams. These can feasibly be redirected to the runtime and made available through reflection. Perhaps we can present an xterm.js per FFI process via `"/sys/ffi"`.
+*Aside:* It is unclear what should happen with the FFI process stdin, stdout, and stderr file streams. These can feasibly be redirected to the runtime and made available through reflection. Perhaps we can present an xterm.js per FFI process via `"/sys/ffi"`. Alternatively, we could let the user manage this.
 
 ## Filesystem, Network, Native GUI, Etc.
 
@@ -279,11 +304,12 @@ Rough API sketch:
 
 A distributed transaction doesn't have a location, but it must start somewhere. With runtime reflection, we can take a peek.
 
-* `sys.refl.txn.node() : NodeRef` - return a stable identifier for the node where the current transaction started.
+* `sys.refl.txn.node() : NodeRef` - return a reference to the node where the current transaction started. NodeRef is a runtime-scoped type.
+* `sys.refl.node.name(NodeRef) : Name` - stable name for a node, name is a short text.
 
-This API is useful for keeping associative state per node in a key-value store. 
+Observing node allows for an application to vary its behavior based on where a transaction runs, e.g. to select different vars for storage. 
 
-Observing the starting node has consequences! A runtime might discover that a transaction started on node A is better initiated on node B. Normally, we abort the transaction on node A and let B handle it. After observing that we started on node A, we instead *migrate* to node B. With optimizations, we can repeatedly evaluate on node B, *but only while connected to node A*. Thus, carelessly observing the node results in a system more vulnerable to disruption.
+Observing the starting node has consequences! A runtime might discover that a transaction started on node A would be better initiated on node B. Normally, we cancel the transaction on node A and let B handle it. However, after observing that we started on node A, we instead *migrate* to node B. With optimizations, we can skip the migration step and run the transaction on node B directly, but *only while connected to node A*. Thus, carelessly observing the node results in a system more vulnerable to disruption, but this can also be useful to help detect disruption.
 
 ## Securing Applications
 
