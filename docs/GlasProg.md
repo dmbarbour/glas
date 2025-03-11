@@ -1,19 +1,20 @@
 # Program Model for Glas
 
-The [glas namespace model](GlasNamespaces.md) covers modularity, user-defined front-end syntax, and and a Lisp-like intermediate representation called abstract assembly. The primitive AST constructors - a set of names prefixed with '%' for convenience of recognition and propagation - are specified in this document. Together with namespaces, this describes the intermediate language for glas programs.
-
-The [glas application model](GlasApps.md) assumes several features of this program model: higher-order algebraic effects, incremental computing, hierarchical transactions, efficient snapshot and duplication. Support for live coding also influences this program model. Some conventional features are rejected. For example, there are no first-class functions or objects, but we can support second-class forms and integrate accelerated interpreters.
+This document describes the primitive AST constructors for glas programs, i.e. the intermediate language. See [glas namespace model](GlasNamespaces.md) for context, and [glas application model](GlasApps.md) for an even wider context. The glas system supports user-defined front-end syntax, but see [glas lang](GlasLang.md) for an initial synax.
 
 ## Design Thoughts
 
-I hope to model concurrent computation within the program, such that incremental computing isn't limited to a simple prefix of stable operations. This is feasible insofar as we can partition our algebraic effects. However, partitioning effects on references is difficult.
+We can build a namespace of algebraic effects handlers aligned with a call graph. Some 'calls' might actually be more about defining handlers than about an immediate outcome. Some handlers may introduce some local state, like static objects on the stack. Ultimately, this results in a fractal namespace.
 
-It seems feasible to organize algebraic effects into static objects within a call graph. 
+Recursion is troublesome with this approach to handlers. We might avoid recursive definitions, or at least avoid unbounded recursion. Static recursion might be acceptable, so long as it terminates statically. Consequently, we'll want good support for loops that don't rely on recursion. For stuff like 'tree' processing, we could use recursion with a maximum tree depth, or we could use a built-in primitive-recursive loop on tree structures.
 
+Ideally, our program model can support more incremental computing that isn't aligned with a procedural prefix, based on fine-grained dataflows. This might benefit from structurally distinguishing a few forms of algebraic effects, e.g. constant / read-only (reader monad), monoidal output (writer monad), and threaded (state monad).
 
 such that code can be organized as a composition of generators and consumers, without any first-class structures. Most interaction models won't play nicely with hierarchical transactions. However, this *might* be achieved via capturing some local variables into 'objects' for algebraic effects. Perhaps there is something simple we can use, based on explicit yield and continue.
 
 ## Basic Operations
+
+Everything is an expression and has a value. For procedural operations, that value is often unit.
 
 * `(%seq Op1 Op2 ...)` - 
 

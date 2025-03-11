@@ -13,7 +13,7 @@ If implemented, the transaction loop covers many more use-cases - reactive syste
 Further, there are several lesser optimizations we might apply:
 
 * *congestion control* - A runtime can heuristically favor repeating transactions that fill empty queues or empty full queues.
-* *conflict avoidance* - A runtime can arrange for transactions that frequently conflict to evaluate in different time slots.
+* *conflict avoidance* - A runtime can arrange for transactions that will likely conflict to evaluate in different time slots. This reduces the amount of rework.
 * *soft real-time* - A repeating transaction can 'wait' for a point in time by observing a clock then diverging. A runtime can precompute the transaction slightly ahead of time and have it ready to commit.
 * *loop fusion* - A runtime can identify repeating transactions that compose nicely and create larger transactions, allowing for additional optimizations. 
 
@@ -38,74 +38,72 @@ The transactions will interact with the runtime - and through it the underlying 
 
 ## Application State
 
-The runtime can provide a heap-like API for state, with a first-class reference to mutable cells, garbage collection, and extensible structure. Based on configuration, a portion of this state may be persistent, shared with concurrent applications and future instances of the application. This API must carefully handle scope, such that open files, network connections, etc. are not accidentally written to the shared database. 
+A runtime can provide a familiar and flexible heap-allocation API. Part of this heap may be persistent, with a global variables shared between applications. To simplify garbage collection, control scope, and support type annotations, heap references will be abstracted. A viable API (tentative):
 
-A viable API:
-
-* `sys.db.*` - 
-  * `scope.*` - a transaction-scoped abstract data type describing scope. Scope is contravariant: a Ref may hold data from the same or larger scope, and may be stored into a Ref of the same or smaller scope. If necessary, scopes are enforced dynamically via tagged pointers.
-    * `shared : Scope` - the largest, longest-live scope for database Refs. Persistent, shared state through a configured database. 
-    * `runtime : Scope` - the middle scope. Supports stateful, OS process specific resources, such as open files, network connections, and FFI threads.
-    * `transaction : Scope` - the smallest scope. Useful for enforcing protocols. Commit is blocked if transaction-scoped refs contain linear data.
+* `sys.heap.*` - 
+  * `scope.*` - We divide the heap into a few scopes. The larger the scope, the more restrictive of abstract data. Conversely, data from a larger scope can be stored into a smaller scope. Scope can be enforced dynamically via tagged pointers.
+    * `shared : Scope` - persistent, shared state through a configured database, with flexible heap refs.
+    * `runtime : Scope` - runtime-local resources, such as open files, network connections, FFI threads.
+    * `transaction : Scope` - implicitly cleared before commit, can enforce protocols via linear types.
     * `cmp.eq(Scope, Scope) : Boolean` - returns whether two scopes are the same.
-    * `cmp.ge(Scope, Scope) : Boolean` - returns whether the left scope is larger or the same as the right scope.
-  * `var(Scope, Name) : Ref` - Returns a rooted reference at the given scope. If this name is not previously in use, we'll initialize Ref to zero. Conversely, a var may be garbage collected if it has value zero and no external Ref. Name must be a binary excluding NULL, and should be a short, meaningful text - something we can usefully print in a debug view.
+    * `cmp.ge(Scope, Scope) : Boolean` - is left scope is greater or equal to right scope?
+  * `var(Scope, Name) : Ref` - global variable of given scope, default value zero. Name should be a short, meaningful text. Adapters or handlers may translate names, e.g. add a prefix, for fine-grained scope within applications.
   * `ref.*` - new refs, weak refs, reference equality
     * `new(Scope, Data) : Ref` - obtain a new reference, initially associated with the given data. This Ref and associated data may be garbage collected if it becomes unreachable.
     * `scope(Ref) : Scope` - return scope of a given reference
-    * `weak(Ref) : WeakRef` - returns a [weak reference](https://en.wikipedia.org/wiki/Weak_reference). The garbage collector may ignore WeakRefs when determining what can be collected. The WeakRef must be fetched to use the associated Ref.
-    * `weak.fetch(WeakRef) : Ref` - obtain the strong reference associated with a weak reference. If the reference has already been collected, 'fetch' will diverge. Use reflection API's 'sys.refl.db.ref.weak.tryfetch' to fetch without diverging!
-    * `weak.cache(Ref, CacheHint) : WeakRef` - integrate manual caching with garbage collection! Instead of collecting this WeakRef at first opportunity, the garbage collector will make a heuristic decision based on CacheHint, memory pressure, history of use, and so on. Like 'soft' references in Java.
+    * `weak(Ref) : WeakRef` - returns a [weak reference](https://en.wikipedia.org/wiki/Weak_reference). A garbage collector may collect Refs only reachable through WeakRefs. To access the Ref, use 'fetch' or 'tryfetch'.
+    * `weak.fetch(WeakRef) : Ref` - obtain the strong reference associated with a weak reference. If the associated Ref has already been garbage collected, this operation will diverge. See also: 'tryfetch' from the reflection API.
+    * `weak.cache(Ref, CacheHint) : WeakRef` - a variant WeakRef to support manual caching. The garbage collector keeps Ref in memory until there is sufficient memory pressure, with heuristic guidance from CacheHint and history of use.
     * `cmp.eq(Ref, Ref) : Boolean` - reference equality, asks whether two Refs are the same.
-  * `cell.*` - view a ref as a cell containing a single value. This is the simplest view, but it doesn't support fine-grained read-write conflict analysis.
-    * `get(Ref) : Data` - access full value.
-    * `set(Ref, Data)` - modify the value for future access.
-    * `swap(Ref, Data) : Data` - get and set, but as one operation. Useful with linear types.
-    * `swap.ref(Ref, Ref)` - swap two references without observing the data.
-    * `copy(Ref, List of Ref)` - copy from one cell to many others without fully observing the data. This diverges if the data has a linear type.
-  * `slot.*` - a cell containing optional data, i.e. empty or singleton list. This is useful for synchronization of some concurrent tasks.
-    * `take(Ref) : Data` - if cell has a singleton list, set the empty list and return the data. Otherwise diverge.
-    * `put(Ref, Data)` - if cell has empty list (zero), write singleton list containing Data. Otherwise diverge.
-    * `move(Ref, Ref)` - 'take' from first Ref and 'put' to the second, without observing the data.
-  * `queue.*` - a cell containing a list can be viewed as a double-ended queue. Usefully, a runtime can support multiple writer transactions in parallel with a single reader transaction, with each writer buffering locally then ordering writes from each transaction based on a conflict analysis for other properties.
+  * `cell.*` - whole-value heap ops
+    * `get(Ref) : Data` - read the heap value, returns a copy.
+    * `set(Ref, Data)` - modify the value for future access, drops prior value.
+    * `swap(Ref, Data) : Data` - get and set as one operation (for linear types).
+  * `slot.*` - option values (singleton or empty list) can be treated like a mutex.
+    * `take(Ref) : Data` - if Ref has data, swap with empty and return data. Otherwise diverge.
+    * `put(Ref, Data)` - if Ref has no data, swap with singleton containing data. Otherwise diverge.
+  * `queue.*` - a cell containing a list can be treated as a queue. A runtime can potentially optimize queue operations, supporting a single reader and multiple writers in parallel. This involves buffering writes locally then ordering write buffers based on final serialization of transactions.
     * `read(Ref, N) : List of Data` - remove and return exactly N items from head of list, or diverge
     * `unread(Ref, List of Data)` - reader adds items to head of list for a future read
+    * `peek(Ref, N) : List of Data` - same as read then unread a copy.
     * `write(Ref, List of Data)` - add data to end of queue for a future reader.
-    * `wire(Ref, N, List of Ref)` - read from source queue and write to multiple sink queues without observing data. Wiring to more than one sink will diverge if the data has linear type.
-  * `bag.*` - essentially, an unordered queue. Reads and writes operate on non-deterministic locations in the list. Many reader and writer transactions can be evaluated in parallel.
+  * `bag.*` - an unordered queue. Reads and writes operate on non-deterministic locations in the list. Allows multiple readers and writers in parallel, each operating on a partition. However, also at risk from combinatorial explosions of 
     * `write(Ref, Data)` - add item to bag, non-deterministic position in list.
     * `read(Ref) : Data` - read and remove data from a non-deterministic position in the list. Diverge if bag is empty. 
-    * `peek(Ref) : Data` - read data non-deterministically without removing it. Can be useful for concurrency.
-  * `index.*` - logically view a cell containing a dict as a dict of cells, or similar for arrays. This allows fine-grained read-write conflict analysis per index and occasional whole-value operations. Indexed refs may be (perhaps temporarily) invalid, e.g. binding index 42 of a 40-element array. Data operations on invalid refs diverge.
+    * `peek(Ref) : Data` - read data non-deterministically without removing it.
+  * `index.*` - (tentative) logically view a cell containing a dict as a dict of cells, and similar for arrays. This allows fine-grained read-write conflict analysis per index and whole-value operations. Indexed refs may be (perhaps temporarily) invalid, e.g. binding index 42 of a 40-element array. Data operations on invalid refs diverge. *Caveats:* Need to try this out, see if it's difficult to implement efficiently.
     * `dict(Ref, Name) : Ref` - Return Ref to access a field in referenced dict. Name is binary excluding NULL.  
     * `array(Ref, N) : Ref` - Return Ref to access an offset into referenced list or array.
   * *CRDTs* - (tentative) runtime support for cells modeling [conflict-free replicated data types (CRDTs)](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) are useful for network partitioning tolerance in a distributed system. See *Distributed State*. However, a lot of research is needed to choose suitable CRDTs.
-* `sys.refl.db.*` - methods for reflection on the database.
-  * `ref.weak.tryfetch(WeakRef) : opt Ref` - returns an optional Ref, i.e. a singleton list containing Ref if available, otherwise the empty list. This operation indirectly observes the garbage collector.
-  * `ref.usage(Ref, Hint)` - describe how a Ref will be used for optimization purposes, an annotation of sorts
-  * `ref.uid(Ref) : Text` - returns a text representing an internal, runtime-specific unique identifier for a reference. May be determined upon allocation.
-  * `var.iter(Scope, Binary) : Name` - iteration through var names in use. Returns the next name lexicographically after a given binary, or the empty string if we've reached the end. This operation indirectly observes the garbage collector, which may heuristically delete vars if they contain zero and have no external Refs.
-  * `queue.reader.buffer(Ref) : Ref` - access the read buffer as a separate Ref from the main list ref. If you want to read 'all available' data, this provides the means to do so.
-  * `queue.writer.buffer(Ref) : Ref` - access the write buffer as a separate Ref from the main list ref. Note that content from the write buffer may transfer to the read buffer at any moment between transactions.
+* `sys.refl.heap.*` - methods for reflection on the database.
+  * `ref.weak.tryfetch(WeakRef) : opt Ref` - returns a singleton list containing Ref if available, otherwise empty list. This operation indirectly observes the garbage collector.
+  * `ref.hash(Ref) : N` - returns a stable natural number per Ref, on average above 2^60, suitable for use with hashmaps or hashtables.
+  * `var.iter(Scope, Binary) : Name` - iteration through var names in use. Returns the next name lexicographically after a given binary, or an empty string if we've reached the end. The garbage collector may remove vars from use if they contain zero and nobody is holding a Ref.
+  * `queue.reader.buffer(Ref) : Ref` - access the read buffer as a separate Ref from the main list ref. If you want to read 'all available' data, this provides a means to do so.
+  * `queue.writer.buffer(Ref) : Ref` - access the write buffer as a separate Ref from the main list ref. Content in the write buffer may implicitly transfer to the read buffer between transactions.
 
-A persistent heap is far more convenient than the filesystem due to runtime support for atomic transactions, structured data, content-addressed storage, and distributed mirroring. However, shared state is still very messy. To mitigate this, application adapters can serve as coordinators. A var name such as `"~varname"` within the application might translate to `"/home/appname/varname"` using 'appname' from application settings. Meanwhile, `"/shm/var"` is an unstructured shared var, and the adapter may support ad hoc asynchronous IPC patterns: databus, publish-subscribe, perhaps even a relational database.
-
-*Note:* This API is very dynamic. This makes it difficult to statically reason about behavior or optimize allocations. To mitigate this, we can specialize type annotations for Refs, infer Ref types, and favor static 'var' where feasible. 
+The heap should support atomic transactions, structured data, and content-addressed storage. Transactions significantly mitigate many problems with shared state, but schema versioning and trust are remaining issues. To mitigate this, application adapters might present volumes of shared state in terms of mailboxes, databuses, publish-subscribe, perhaps a relational database.
 
 ### Distributed State
 
-A runtime can optimize based on usage patterns such as 'queue'. This is especially relevant in a distributed runtime: the reader and writer endpoints of a queue can be 'owned' by separate remote nodes. However, if we later attempt to read the distributed queue or bag as a cell, we'll be forced to perform a distributed transaction, i.e. to undo this optimization. 
+A distributed runtime can be configured to use a distributed database as a shared heap. Both shared and runtime heaps may distribute 'partial' cells, e.g. splitting a queue into a read buffer and write buffer. This allows reader and writer to continue processing during a temporary network disruption, and lets us separate the writer transaction from a distributed operation to move data between buffers.
 
 What optimizations are viable?
 
-* cell - owned by a writer node, cached read-only on other nodes
-* slot - single owner for read and write, migrate as needed, no caching 
-* queue - reader and writer buffers may implicitly be owned by separate nodes, writer buffers data while the network is partitioned. The runtime heuristically cancels write transactions if the buffer is too large. Both reader and writer may eventually react to the disruption via timeouts. (In theory, we could support multiple writer nodes for a queue, but this interacts very non-intuitively with 'sys.time.\*'.)
-* bag - can partition the list across multiple nodes. Each node can read and write to the local partition while network is down. The runtime can freely shuffle data between partitions when the network is restored. We might need to extract stable filters from the 'continuation' after read for heuristic shuffling.
-* index - can distribute ownership per index, but requires a distributed transaction for most whole-value operations.
-* CRDTs - can replicate to every node, interact with locally, and synchronize replicas when nodes interact. Like a queue, we might heuristically cancel write transactions if we've buffered too many pending updates locally.
+* cell - owned by a writer, may be cached read-only on reader nodes
+* slot - single owner for read and write, migrate as needed, no caching
+* queue - reader and writer buffers may implicitly be owned by separate nodes, writer buffers data while the network is partitioned. Reader may eventually react to the disruption via timeouts.
+* bag - partition list across multiple nodes. Each node can read and write to local partition while network. The runtime opportunistically shuffles data between partitions when the network is up. Useful for load balancing.
+* index - distribute ownership per index based on how the ref is used.
+* CRDTs - replicate to every node, interact with locally, and synchronize replicas when nodes interact.
 
-In general we must consider *permanent* network disruptions, e.g. destruction of a node. In this context, 'ownership' by a single node can be a problem. For critical refs, especially shared or runtime vars, we might favor ownership by a conglomerate. Update then requires a consensus algorithm and distributed transaction, trading performance for reliability. To recover some performance, we can add a little indirection: instead of modifying a var directly, introduce an intermediate Ref that may be updated on a single node but detached (with consensus) after a long timeout.
+In general we should consider *permanent* network disruptions, e.g. destruction of a node. In this context, ownership by a single node can be a problem. For critical Refs, such as shared or runtime vars, we might favor use consensus algorithms instead of ownership by a single Ref. But requiring consensus for every update is expensive. We might favor indirection, such that a non-critical intermediate Ref can be updated efficiently by a node, or detached and replaced (with consensus) after a timeout.
+
+### Static Allocations
+
+The heap API is more dynamic than I'd prefer. This can be mitigated to some degree via static 'var' name, scope, and type annotations. With enough detail, perhaps we can support unboxed representations and layout. For a shared heap, a runtime could also write type information to support schema consistency between apps.
+
+However, my vision for glas suggests more robust static allocation and layout. This might be feasible if we instead integrate state in terms of declaring and binding external objects with compile time algebraic effects. These objects could be logically provided on the call stack instead of through a heap. TBD: This is an opportunity I cannot detail without further developing the program model.
 
 ## HTTP Interface
 
@@ -291,7 +289,7 @@ This API is designed assuming use of [libffi](https://en.wikipedia.org/wiki/Libf
 
 ## Filesystem, Network, Native GUI, Etc.
 
-These APIs are specialized wrappers for FFI. Instead of implementing them in the runtime, I intend to leave them to libaries or adapters. Instead of providing these APIs directly, we can adjust them for pipelining and cover utility code.
+Many APIs are essentially specialized wrappers for FFI. Instead of implementing them in the runtime, I intend to leave them to libaries or adapters. Instead of providing these APIs directly, we can adjust them for pipelining and cover utility code.
 
 ## Content-Addressed Storage and Glas Object (Low Priority!)
 
