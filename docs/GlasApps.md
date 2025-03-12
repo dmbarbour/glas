@@ -38,18 +38,18 @@ The transactions will interact with the runtime - and through it the underlying 
 
 ## Application State
 
-A runtime can provide a familiar and flexible heap-allocation API. Part of this heap may be persistent, with a global variables shared between applications. To simplify garbage collection, control scope, and support type annotations, heap references will be abstracted. A viable API (tentative):
+A runtime can provide a familiar and flexible heap-allocation API. Part of this heap may be persistent, with a global variables shared between applications through a configured database. Heap references are abstracted to simplify garbage collection, control scope, and support type annotations. A viable API (tentative):
 
 * `sys.heap.*` - 
-  * `scope.*` - We divide the heap into a few scopes. The larger the scope, the more restrictive of abstract data. Conversely, data from a larger scope can be stored into a smaller scope. Scope can be enforced dynamically via tagged pointers.
+  * `scope.*` - We divide the heap into a few scopes. The longer-lived the scope, the more restrictive of abstract data. Conversely, data from a longer-lived scope can be stored into a shorter-lived scope. Scope can be enforced dynamically via tagged pointers.
     * `shared : Scope` - persistent, shared state through a configured database, with flexible heap refs.
-    * `runtime : Scope` - runtime-local resources, such as open files, network connections, FFI threads.
+    * `runtime : Scope` - runtime or process resources like open files, network connections, FFI threads.
     * `transaction : Scope` - implicitly cleared before commit, can enforce protocols via linear types.
     * `cmp.eq(Scope, Scope) : Boolean` - returns whether two scopes are the same.
-    * `cmp.ge(Scope, Scope) : Boolean` - is left scope is greater or equal to right scope?
-  * `var(Scope, Name) : Ref` - global variable of given scope, default value zero. Name should be a short, meaningful text. Adapters or handlers may translate names, e.g. add a prefix, for fine-grained scope within applications.
+    * `cmp.ge(Scope, Scope) : Boolean` - is lifespan of left scope greater than or equal to right scope?
+  * `var(Scope, Name) : Ref` - global variable of given scope and name, serves as a garbage collection root. Name should be a short, meaningful text. The default value for a unassigned variable is zero, but this may be influenced by declared schema or usage hints.
   * `ref.*` - new refs, weak refs, reference equality
-    * `new(Scope, Data) : Ref` - obtain a new reference, initially associated with the given data. This Ref and associated data may be garbage collected if it becomes unreachable.
+    * `new(Scope, Data) : Ref` - new anonymous reference at given scope, garbage collected upon becoming unreachable. A new shared-scope Ref may be represented entirely within the runtime until it must be serialized to the shared database. Diverges with type error if scope is incompatible with data.
     * `scope(Ref) : Scope` - return scope of a given reference
     * `weak(Ref) : WeakRef` - returns a [weak reference](https://en.wikipedia.org/wiki/Weak_reference). A garbage collector may collect Refs only reachable through WeakRefs. To access the Ref, use 'fetch' or 'tryfetch'.
     * `weak.fetch(WeakRef) : Ref` - obtain the strong reference associated with a weak reference. If the associated Ref has already been garbage collected, this operation will diverge. See also: 'tryfetch' from the reflection API.
@@ -74,15 +74,19 @@ A runtime can provide a familiar and flexible heap-allocation API. Part of this 
   * `index.*` - (tentative) logically view a cell containing a dict as a dict of cells, and similar for arrays. This allows fine-grained read-write conflict analysis per index and whole-value operations. Indexed refs may be (perhaps temporarily) invalid, e.g. binding index 42 of a 40-element array. Data operations on invalid refs diverge. *Caveats:* Need to try this out, see if it's difficult to implement efficiently.
     * `dict(Ref, Name) : Ref` - Return Ref to access a field in referenced dict. Name is binary excluding NULL.  
     * `array(Ref, N) : Ref` - Return Ref to access an offset into referenced list or array.
+    * `array.slice(Ref, Offset, Len) : Ref` - Ref to a slice of an array. Operations that would shrink or grow the array will instead diverge.
   * *CRDTs* - (tentative) runtime support for cells modeling [conflict-free replicated data types (CRDTs)](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) are useful for network partitioning tolerance in a distributed system. See *Distributed State*. However, a lot of research is needed to choose suitable CRDTs.
 * `sys.refl.heap.*` - methods for reflection on the database.
   * `ref.weak.tryfetch(WeakRef) : opt Ref` - returns a singleton list containing Ref if available, otherwise empty list. This operation indirectly observes the garbage collector.
-  * `ref.hash(Ref) : N` - returns a stable natural number per Ref, on average above 2^60, suitable for use with hashmaps or hashtables.
-  * `var.iter(Scope, Binary) : Name` - iteration through var names in use. Returns the next name lexicographically after a given binary, or an empty string if we've reached the end. The garbage collector may remove vars from use if they contain zero and nobody is holding a Ref.
-  * `queue.reader.buffer(Ref) : Ref` - access the read buffer as a separate Ref from the main list ref. If you want to read 'all available' data, this provides a means to do so.
-  * `queue.writer.buffer(Ref) : Ref` - access the write buffer as a separate Ref from the main list ref. Content in the write buffer may implicitly transfer to the read buffer between transactions.
+  * `ref.hash(Ref) : N` - returns a stable natural number per Ref suitable for use with hashmaps or hashtables. 
+  * `ref.usage(Ref, Hint)` - runtime-specific hints regarding usage of a ref. This may include representation schema, initial values for vars, or migration suggestions for a distributed runtime.
+  * `queue.avail(Ref) : N` - returns number of items are locally available to a reader, i.e. without divergence or a distributed transaction.
 
-The heap should support atomic transactions, structured data, and content-addressed storage. Transactions significantly mitigate many problems with shared state, but schema versioning and trust are remaining issues. To mitigate this, application adapters might present volumes of shared state in terms of mailboxes, databuses, publish-subscribe, perhaps a relational database.
+The shared heap should support atomic transactions, structured data, and content-addressed storage. Transactions significantly mitigate many challenges with coordinating shared state. Structured data and content-addressed storage enable a shared heap to work with *very large* values, especially in context of [persistent data structures](https://en.wikipedia.org/wiki/Persistent_data_structure). Large binaries could be represented as finger-tree ropes.
+
+Trust and access control for shared state require attention. See *Securing Applications*. A configurable security policy might express role restrictions in terms of regex on var names. Trusted application adapters or libraries can provide sandboxed access to shared state, presenting some volumes of shared state in terms of mailboxes, databuses, publish-subscribe, or a relational database.
+
+*Note:* Ideally, we can support static allocation, memory layout, unboxed representations. This seems feasible insofar as we insist on static 'var' (scope and name), and static 'ref.usage' hints and type annotations on those vars.
 
 ### Distributed State
 
@@ -98,12 +102,6 @@ What optimizations are viable?
 * CRDTs - replicate to every node, interact with locally, and synchronize replicas when nodes interact.
 
 In general we should consider *permanent* network disruptions, e.g. destruction of a node. In this context, ownership by a single node can be a problem. For critical Refs, such as shared or runtime vars, we might favor use consensus algorithms instead of ownership by a single Ref. But requiring consensus for every update is expensive. We might favor indirection, such that a non-critical intermediate Ref can be updated efficiently by a node, or detached and replaced (with consensus) after a timeout.
-
-### Static Allocations
-
-The heap API is more dynamic than I'd prefer. This can be mitigated to some degree via static 'var' name, scope, and type annotations. With enough detail, perhaps we can support unboxed representations and layout. For a shared heap, a runtime could also write type information to support schema consistency between apps.
-
-However, my vision for glas suggests more robust static allocation and layout. This might be feasible if we instead integrate state in terms of declaring and binding external objects with compile time algebraic effects. These objects could be logically provided on the call stack instead of through a heap. TBD: This is an opportunity I cannot detail without further developing the program model.
 
 ## HTTP Interface
 
@@ -121,36 +119,30 @@ Ideally, authorization and authentication are separated from the application. We
 
 ## Remote Procedure Calls
 
-An RPC API can be declared in application settings. The runtime will inspect this APIs and publish to configured registries. Part of this API may be dynamic, requiring a runtime to repeatedly query the application after it has started. Instead of one monolithic RPC API, it is useful to describe a set of fine-grained APIs, each with their own interfaces, security constraints, roles, topics, and other ad hoc metadata. This allows a runtime to route each interface to a different subset of registries.
-
-To receive RPC calls, the application defines a dispatch method:
+To receive RPC calls, an application should declare an RPC API in application settings, and define a dispatch method:
 
         rpc : (MethodRef, List of Arg) -> [cb, sys] Result
 
-The MethodRef is taken from declared APIs, and should be designed for efficient dynamic dispatch. For security reasons, the runtime must prevent forgery of MethodRef and support revocation in context of dynamic API changes. This is easily supported by building a lookup table, mapping local MethodRefs to external, cryptographically-generated tokens.
+The MethodRef is application specific and should be suitable for efficient dynamic dispatch. Initial MethodRefs are declared in application settings, but settings may specify a protocol to discover more methods at runtime. For security reasons, MethodRef is not directly published to the client. Instead, the client receives a cryptographic token that the runtime maps to MethodRef. This supports non-homogenous publishing and efficient revocation of published interfaces.
 
-In addition to the runtime system API, 'rpc' may interact with the caller through a provided 'cb' handler. Because our compiler doesn't work across applications, we'll rely on dynamic dispatch, perhaps a `cb("method-name", List of Arg)` convention. In addition to arguments, callbacks may recursively receive a handler for making callbacks, ad infinitum. In practice, callback depth is constrained by protocols, performance, and quotas.
+An application's RPC API is organized as a set of objects, each with methods and metadata. Based on metadata, the runtime publishes each object to a subset of configured registries. For example, an object that requires high trust might be published only to a private registry. Concurrently, the prospective client subscribes for RPC objects meeting some arbitrary criteria, with methods, metadata, and provenance.
 
-A prospective client will search for RPC interfaces matching a certain interface, role, provenance, and other metadata. Instead of expressing this search as a stateful event channel, I propose to model it as a continuous, stable query. This ensures our applications are reactive to changes in the open system. 
+A viable API:
 
-A viable API for the client:
+* `sys.rpc.sub(Criteria) : RpcSub` - subscription for RPC objects. RpcSub is runtime scoped. Criteria is runtime specific. May start in a ready status due to caching. Is not explicitly closed, but may be garbage collected.
+* `sys.rpc.sub.ready(RpcSub) : Boolean` - returns whether an RpcObj is available for 'recv'.
+* `sys.rpc.sub.recv(RpcSub) : RpcObj` -  return the next available RpcObj, or diverge if not ready. RpcObj is runtime scoped.
+* `sys.rpc.sub.reset(RpcSub)` - resets every RpcObj previously received from this RpcSub.
+* `sys.rpc.obj.valid(RpcObj) : Boolean` - an RpcObj may be marked invalid due to remote applications closing, network disruption, or manually via 'reset'. If marked invalid, calls diverge, but the object may be received anew from the origin RpcSub.
+* `sys.rpc.obj.reset(RpcObj)` - marks RpcObj invalid. Idempotent.
+* `sys.rpc.obj.call(RpcObj, MethodName, List of Arg) : [cb] Result` - initiate a remote call to a valid RpcObj. In addition to data arguments, a callback handler is integrated as an algebraic effect to support interaction with the caller. Args and Result are limited to global-scoped data (i.e. no Refs, FFI thread handles, RpcObj or RpcSub, etc.)
+  * `cb : (MethodName, List of Arg) -> [cb] Result` - Callbacks recursively receive callback handlers. Depth of recursion is limited by protocols or quotas.
+* `sys.rpc.obj.prop(RpcObj, Name) : opt Data` - return metadata associated with RpcObj; basically, any property we could filter in Criteria. Properties are immutable, but a runtime may stabilize RpcObj over changes to unobserved properties. 
+* `sys.rpc.obj.prop.list(RpcObj) : List of Name` - list all available properties.
 
-        type SearchResult = ok:List of RpcObj | error:(text:Message, ...)
-        type Criteria is runtime specific, for now
-        type RpcObj is abstract and transaction scoped
+To enhance performance, I hope to support systematic code distribution, such that some calls or callbacks can be handled locally. Guided by annotations, an 'rpc' method may be partially evaluated based on MethodRef and have code extracted for evaluation at the caller. We can do the same with 'cb', partially evaluating based on MethodName. To support pipelining of multiple calls and remote processing of results, we could even send part of the continuation. However, this is all very theoretical at the moment.
 
-* `sys.rpc.*` - 
-  * `find(Criteria) : SearchResult` - search for available objects matching some ad hoc criteria.
-  * `find.fork(Criteria) : SearchResult` - as 'find' but will non-deterministically pick one RpcObj on success. That is, on an okay result, the list contains one result. This is more stable than observing the whole list before forking.
-  * `obj.*`
-    * `call(RpcObj, MethodName, List of Arg) : [cb] Result` - initiate a remote operation on RpcObj. The caller must provide the simple callback 'cb' as an algebraic effects. If no callback is needed based on protocols, assert false to terminate the transaction. 
-    * `meta(RpcObj, FieldName) : ok:Data | none` - observe associated metadata fields that were received with the RpcObj. Observing them one at a time is convenient for incremental computing.
-
-This API supports continuous discovery and opportunistic interactions at the expense of long-term connections. But we can model long-term interactions by reusing 'session' GUIDs across multiple transactions, and by including GUIDs or URLs in the metadata.
-
-To enhance performance, I hope to support a little code distribution, such that some calls or callbacks can be handled locally. Guided by annotations, an 'rpc' method may be partially evaluated based on MethodRef and have code extracted for evaluation at the caller. We can do the same with 'cb', partially evaluating based on MethodName. To support pipelining of multiple calls and remote processing of results, we could even send part of the continuation. However, this is all very theoretical at the moment.
-
-*Note:* In general, RPC registries may intercept calls and rewrite metadata. This can be useful if trusted, serving as an adapter layer. We can configure trusted registries and include trust criteria for publish and search. But it is feasible to force end-to-end encryption for introductions through untrusted registries.
+The notion that network disruption invalidates an RpcObj is debatable in context of distributed runtimes. Even if one node loses access, another might retain access. In context of distributed runtimes, we might indicate how multi-homing is handled in the search Criteria.
 
 ## Graphical User Interface? Defer.
 
@@ -169,23 +161,21 @@ Fair choice means that, given sufficient opportunities, we'll eventually try all
 
 ## Random Data
 
-Instead of a stateful random number generator, the runtime will provide a stable, cryptographically random field. Of course, users can grab a little data to seed a PRNG.
+Instead of a stateful random number generator, the runtime will provide a stable, cryptographically random field. 
 
-* `sys.random(Seed, N) : Binary` - return a list of N cryptographically random bytes, uniformly distributed. Unique function per runtime instance. The Seed may be structured but is limited to plain old data.
+* `sys.random(Seed, N) : Binary` - return a list of N cryptographically random bytes, uniformly distributed. The result varies on Seed, N, and runtime instance. The Seed may be structured but is limited to plain old data.
 
-An implementation might involve a secure hash of `[Seed, N, Secret]`, where Secret is obtained from `"/dev/random"` or a configurable source when the application starts. In a distributed runtime, all nodes share the secret. To partition a random field within an application, an application can intercept `sys.random` to wrap Seed within a subprogram.
+An implementation might involve a secure hash of `[Seed, N, Secret]`, where Secret is obtained from `"/dev/random"` or a configurable source when the application starts. In a distributed runtime, all nodes share the secret. 
 
-## Background Eval
+## Pre Calls
 
-In some scenarios, we can reasonably assume operations are 'safe' such as HTTP GET, triggering a lazy computation, or writing some metadata only for reflection-like purposes. In these cases, we might want an escape hatch from the transaction system, i.e. such that we can trigger the computation, await the result, and pretend this result is already present. 
+In some use cases, we want an escape hatch from transactional isolation. This occurs frequently when wrapping FFI with 'safe' APIs. We might support HTTP GET within a single transaction, trigger lazy computations, or manually manage a cache. To support these scenarios, I propose pre calls:
 
-A proposed mechanism is background eval:
+* `sys.refl.pre.rpc(MethodRef, List of Args) : Result` - asks the runtime to call application 'rpc' in a separate transaction, wait for commit, then continue the current transaction with the result. The implicit callback handler will diverge with error.
 
-* `sys.refl.bgeval(StaticMethodName, UserArg) : Result` - Evaluate `StaticMethodName(UserArg)` in a separate transaction. The caller waits for this to commit then continues with the returned Result. 
+Pre calls are compatible with transaction-loop optimizations. We can use a stable pre call in the incremental computing prefix. In case of a stable non-deterministic pre call, we can fork the caller per result. Intriguingly, we can also use an *unstable* pre call with a stable result in an incremental computing prefix, e.g. to continuously process a queue in the background while the caller is waiting on some condition.
 
-Intriguingly, stable bgeval integrates with incremental computing, and non-deterministic bgeval can implicitly fork the caller for each Result. We can apply transaction-loop optimizations. We can also abort bgeval together with the caller, in case of read-write conflict or live coding.
-
-*Caveats:* Computation may 'thrash' if bgeval repeatedly conflicts with the caller. But this is easy to detect and debug. The new transaction receives the original 'sys.\*' effects API, which may constitute a privilege escalation. But we should restrict untrusted code from reflection APIs in general.
+The pre call logically runs before the caller. It's time travel of a very limited nature. There is risk of transaction conflict, a time travel 'paradox' where the pre call modifies something the caller previously observed. In this case, the caller is aborted, the result is dropped. In context of a transaction loop, the caller is rolled back and replayed from point of conflict. Pre calls can benefit from manual caching to ensure expensive results aren't lost, and to mitigate thrashing where computations would repeatedly conflict.
 
 ## Time
 
@@ -314,10 +304,10 @@ Observing the starting node has consequences! A runtime might discover that a tr
 
 ## Securing Applications
 
-Not every program should be trusted with FFI, shared state, and other sensitive resources. This is true within a curated community configuration, and even more true with external scripts of ambiguous provenance. So, what can be done?
+Not every program should be trusted with FFI, shared state vars, and other sensitive resources. This is true within a curated community configuration, and even more true with external scripts of ambiguous provenance. But what can be done?
 
-A configuration can describe who the user trusts or how to find this information. With a few conventions, when loading files we could poke around within a folder or repository for signed manifests and certifications of public signatures. A compiler can generate record of sources contributing to each definition - locations, secure hashes, other definitions, etc. - even accounting for overrides and 'eval' of macros.
+A configuration can describe who the user trusts and in which roles, how to find this information. When loading files we could poke around within a folder or repository for signed manifests and certifications of public signatures (e.g. in `".glas/"` subfolders). A compiler can track sources contributing to each definition - locations, secure hashes, other definitions, etc. - even accounting for overrides and 'eval' of macros.
 
-Instead of a binary decision for the entire application, perhaps we can isolate trust to specific definitions. Via annotations, some trusted definitions might express that they properly sandbox FFI, permitting calls from less-trusted definitions. And perhaps we can express a gradient of trust with our signatures, e.g. that a given definition can be trusted with 'filesystem access' instead of a role like 'full FFI access'. 
+Instead of a binary decision for the entire application, we can isolate trust to specific definitions. We can also express a gradient of trust via annotations, e.g. a trusted adapter that implements filesystem access in terms of FFI, but sandboxes the FFI, can reduce the trust role to 'filesystem'. Another API might further reduce 'filesystem/*' access to 'filesystem/appdata'. Each constraint on role would require less user trust.
 
-Ultimately, we can run untrusted applications in trusted sandboxes, and a trusted application adapter can construct sandboxes upon request based on application settings. If an application asks for more authority than it's trusted to receive, the adapter won't stop it: the adapter observes only application settings and runtime version info. Instead, the runtime will examine the final application, see that FFI or abstract resources are being used by untrusted functions without sufficient sandboxing, and reject the application. At that point, we can abandon the app, further sandbox the app, or extend trust.
+Ultimately, we can run untrusted applications within trusted sandboxes. The trusted sandbox can be implemented as a flexible combination of libraries and adapters. Applications that anticipate running in untrusted mode should request a suitable adapter via application settings. If an application requires more trust than the user offers, the runtime will report role violations and prevent the application from starting (or switching, in case of live code). At that point, users can abandon the application, manually extend trust, or (for power users) manually sandbox the application. 

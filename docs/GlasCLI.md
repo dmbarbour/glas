@@ -43,15 +43,16 @@ Every application should define 'settings'. This should mostly be used as a pure
 
 ## Installing Applications
 
-Users will inevitably 'install' applications to ensure they're available for offline use. 
+Users will inevitably want to install some applications to ensure they're available for offline use. This might be supported through an installer extension on the CLI. Perhaps we take inspiration from Debian's 'apt':
 
-        glas --install AppName*
-        glas --uninstall AppName*
-        glas --update
+        glas --apt install AppName*
+        glas --apt remove AppName*
+        glas --apt update
+        glas --apt upgrade
 
-To simplify tooling, a configuration might specify a text file or database where installs via 'glas --install' are recorded. A configuration may also specify default installs, with the text file recording both adds and removes. When a user runs 'glas --update', the cache is maintained according to the intended list of installs.
+To simplify tooling, a configuration might specify separate files where installs are tracked. This allows us to easily modify and share installs separate from the main configuration sources. The configuration may also specify a set of default installs that must be explicitly removed. 
 
-The proposed interface only supports applications defined within the configuration and referenced by name. It is feasible to extend this to scripts, referencing file paths or URLs. (I would not recommend installing '--cmd' text!)
+*Note:* It is feasible to extend this API to install scripts, referencing file paths or URLs.
 
 ### Shared Memo-Cache
 
@@ -74,6 +75,7 @@ The glas executable may be extended with useful built-in tools, insofar as they 
 * `--db` - query, watch, or edit persistent data
 * `--rpc` - inspect RPC registries, perhaps issue some RPC calls directly from command line
 * `--app` - debug or manipulate running apps through runtime provided HTTP or RPC APIs
+* `--trust` - tools to manage trust of scripts or app providers, adding, removing, or inspecting roles
 
 However, it is awkward to provide built-in tooling for application-specific resources, especially in context of '--cmd' and staged applications. To mitigate this, we might limit exactly how much choice applications have, e.g. select between three configured database options.
 
