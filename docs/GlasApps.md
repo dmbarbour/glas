@@ -167,15 +167,16 @@ Instead of a stateful random number generator, the runtime will provide a stable
 
 An implementation might involve a secure hash of `[Seed, N, Secret]`, where Secret is obtained from `"/dev/random"` or a configurable source when the application starts. In a distributed runtime, all nodes share the secret. 
 
-## Pre Calls
+## Background Calls
 
-In some use cases, we want an escape hatch from transactional isolation. This occurs frequently when wrapping FFI with 'safe' APIs. We might support HTTP GET within a single transaction, trigger lazy computations, or manually manage a cache. To support these scenarios, I propose pre calls:
+In some use cases, we want an escape hatch from transactional isolation. This occurs frequently when wrapping FFI with 'safe' APIs. We might support HTTP GET within a single transaction, trigger lazy computations, or manually maintain a cache. To support these scenarios, I propose a reflection API:
 
-* `sys.refl.pre.rpc(MethodRef, List of Args) : Result` - asks the runtime to call application 'rpc' in a separate transaction, wait for commit, then continue the current transaction with the result. The implicit callback handler will diverge with error.
+* `sys.refl.bgcall(ProcRef, List of Args) : Result` - asks the runtime to call the indicated method in a separate transaction, wait for commit, then continue the current transaction with the result. The args and result must be global scoped. 
+  * *ProcRef* - I propose initially `rpc:MethodRef`, binding to 'rpc' interface (non-interactive: 'cb' will diverge with error). This leaves an opportunity to extend ProcRef with scripts or staging.
 
-Pre calls are compatible with transaction-loop optimizations. We can use a stable pre call in the incremental computing prefix. In case of a stable non-deterministic pre call, we can fork the caller per result. Intriguingly, we can also use an *unstable* pre call with a stable result in an incremental computing prefix, e.g. to continuously process a queue in the background while the caller is waiting on some condition.
+This is compatible with transaction-loop optimizations. We can use a stable bgcall in the incremental computing prefix. In case of a stable non-deterministic bgcall, we can fork the caller per result. Intriguingly, we can also use an *unstable* bgcall with a stable result in an incremental computing prefix, e.g. to continuously process a queue in the background while the caller is waiting on some condition.
 
-The pre call logically runs before the caller. It's time travel of a very limited nature. There is risk of transaction conflict, a time travel 'paradox' where the pre call modifies something the caller previously observed. In this case, the caller is aborted, the result is dropped. In context of a transaction loop, the caller is rolled back and replayed from point of conflict. Pre calls can benefit from manual caching to ensure expensive results aren't lost, and to mitigate thrashing where computations would repeatedly conflict.
+The bgcall logically runs before the caller. It's time travel of a very limited nature. There is risk of transaction conflict, a time travel 'paradox' where the bgcall modifies something the caller previously observed. In this case, the caller is aborted, and the result is dropped. In context of a transaction loop, the caller is rolled back and replayed from point of conflict, which might result in another conflict. Use of bgcall can benefit from manual caching to ensure expensive results aren't lost, and to mitigate thrashing where computations would repeatedly conflict.
 
 ## Time
 
