@@ -105,7 +105,7 @@ In general we should consider *permanent* network disruptions, e.g. destruction 
 
 ## HTTP Interface
 
-The runtime should recognize the 'http' interface and support requests over the same channels we use for remote procedure calls and debugging. Based on application settings, the runtime might intercept `"/sys/*"` for debugging and reflection as a web app. But every other subdirectory will be handled by 'http'.
+The runtime should recognize the 'http' interface and support requests over the same channels we use for remote procedure calls and debugging. Based on application settings, the runtime will intercept a directory such as `"/sys/*"` for debugging and reflection as a web app. Applications can access this via 'sys.refl.http'. But every other subdirectory will be handled by 'http'.
 
         http : Request -> [sys] Response
 
@@ -114,6 +114,7 @@ The Request and Response types are binaries. However, these will often be *accel
 Each 'http' request is handled in a separate transaction. If this transaction aborts voluntarily, it is logically retried until it successfully produces a response or times out, providing a simple basis for long polling. A 303 See Other response is suitable in cases where multiple transactions are required to compute a response. Runtimes may eventually support multiple requests within one transaction via dedicated HTTP headers, but that will wait for the future.
 
 Ideally, authorization and authentication are separated from the application. We could instead model them as application-specific runtime configuration, perhaps integrating with SSO.
+
 
 *Aside:* It is feasible to configure a runtime to automatically launch the browser and attach to the application.
 
@@ -144,6 +145,8 @@ To enhance performance, I hope to support systematic code distribution, such tha
 
 The notion that network disruption invalidates an RpcObj is debatable in context of distributed runtimes. Even if one node loses access, another might retain access. In context of distributed runtimes, we might indicate how multi-homing is handled in the search Criteria.
 
+*Note:* A runtime may publish RPC methods to support integrated development environments and debuggers. The application should have an opportunity to access these via 'sys.refl.rpc("MethodName", List of Arg)'.
+
 ## Graphical User Interface? Defer.
 
 My vision for [GUI](GlasGUI.md) involves users participating in transactions indirectly via reflection on a user agent. There are many interesting opportunities with this perspective. However, implementing a new GUI framework is a non-trivial task that should be done well or not at all. Thus, I'll defer support until I'm able to dedicate sufficient effort. Use HTTP or FFI in the meanwhile.
@@ -167,16 +170,16 @@ Instead of a stateful random number generator, the runtime will provide a stable
 
 An implementation might involve a secure hash of `[Seed, N, Secret]`, where Secret is obtained from `"/dev/random"` or a configurable source when the application starts. In a distributed runtime, all nodes share the secret. 
 
-## Background Calls
+## Background Transactions
 
-In some use cases, we want an escape hatch from transactional isolation. This occurs frequently when wrapping FFI with 'safe' APIs. We might support HTTP GET within a single transaction, trigger lazy computations, or manually maintain a cache. To support these scenarios, I propose a reflection API:
+In some use cases, we want an escape hatch from transactional isolation. This occurs frequently when wrapping FFI with 'safe' APIs. We might support HTTP GET within a single transaction, trigger lazy computations, or manually maintain a cache. To support these scenarios, I propose a reflection API to run a transaction prior to the calling transaction:
 
-* `sys.refl.bgcall(ProcRef, List of Args) : Result` - asks the runtime to call the indicated method in a separate transaction, wait for commit, then continue the current transaction with the result. The args and result must be global scoped. 
-  * *ProcRef* - I propose initially `rpc:MethodRef`, binding to 'rpc' interface (non-interactive: 'cb' will diverge with error). This leaves an opportunity to extend ProcRef with scripts or staging.
+* `sys.refl.bgcall(StaticMethodName, List of Args) : Result` - asks the runtime to call the indicated method in a separate transaction, wait for commit, then continue the current transaction with the result. If the caller aborts, e.g. due to read-write conflict with a concurrent transaction, an incomplete bgcall may be aborted. If bgcall aborts, it is implicitly retried. In general, args and result must be non-linear and global scoped. 
+  * *StaticMethodName* - for example 'n:"MethodName"' in the abstract assembly, subject to namespace translations. The indicated method will receive the same 'sys.\*' environment passed to application 'step', independent of the caller's environment.
 
-This is compatible with transaction-loop optimizations. We can use a stable bgcall in the incremental computing prefix. In case of a stable non-deterministic bgcall, we can fork the caller per result. Intriguingly, we can also use an *unstable* bgcall with a stable result in an incremental computing prefix, e.g. to continuously process a queue in the background while the caller is waiting on some condition.
+The bgcall logically runs before the caller, time travel of a limited nature. There is risk of transaction conflict, a time travel 'paradox' where the bgcall modifies something the caller previously observed. In this case, we still commit the bgcall, but then we abort the caller. In context of transaction loops, we rollback and replay the caller from where change is observed. If careless this leads to data loss or thrashing, but is easily mitigated by manual caching.
 
-The bgcall logically runs before the caller. It's time travel of a very limited nature. There is risk of transaction conflict, a time travel 'paradox' where the bgcall modifies something the caller previously observed. In this case, the caller is aborted, and the result is dropped. In context of a transaction loop, the caller is rolled back and replayed from point of conflict, which might result in another conflict. Use of bgcall can benefit from manual caching to ensure expensive results aren't lost, and to mitigate thrashing where computations would repeatedly conflict.
+Insofar as paradoxes are avoided, background transactions are compatible with transaction-loop optimizations: a bgcall with stable results can be part of an incremental computing prefix, and a non-deterministic bgcall can fork a stable caller per result. Intriguingly, only the result needs to be stable: the bgcall could be processing an event queue in the background and returning 'ok' every time, modeling a background 'step' function active only while a caller is waiting.
 
 ## Time
 
@@ -246,18 +249,18 @@ A viable API:
   * `link.c.src(FFI, Text)` - JIT-compile C source in memory and link (via Tiny C Compiler). Consider including a `#line 1 "source-hint"` directive as the first line of text to improve debug output from the JIT comiler.
   * `call(FFI, Symbol, TypeHint)` - call a previously linked symbol. Parameters and results are taken from the data stack. TypeHint for `int (*)(float, size_t, void*)` is `"fZp-i"`. In this case, pointer 'p' should be at the top of the data stack. Void type is elided, e.g. `void (*)()` is simply `"-"`.
   * `cscript(FFI, Text, Symbol, TypeHint)` - JIT compile a C source text, call one function defined in this source, then unload. This is convenient for one-off operations or long-running operations, but it has *a lot* of overhead per op. 
-  * `mem.write(FFI, Binary)` - (type `"p-"`) copy a runtime Binary into FFI thread memory, starting at a pointer provided on the data stack. A sample usage pattern: push length, call malloc, copy pointer, write. This operation is the be
-  * `mem.read(FFI, Var)` - (type `"pZ-"`) given a pointer and size on the data stack, read FFI process memory into an immutable runtime Binary value. This binary is eventually returned through Var.
+  * `mem.write(FFI, Binary)` - (type `"p-"`) copy a runtime Binary into FFI thread memory, starting at a pointer provided on the data stack. A sample usage pattern: push length, call malloc, copy pointer, write. When writing text, consider addending a NULL byte to the binary.
+  * `mem.read(FFI, Var)` - (type `"pZ-"`) given a pointer and size on the data stack, copy FFI process memory into a runtime Binary. This binary is returned through Var.
   * `push(FFI, List of Data, TypeHint)` - adds primitive data to the stack. TypeHint should have form `"fZp"`, one character per datum in the list, as the RHS of a call. In this example, pointer should be last item in list and is pushed last to top of data stack. Caveats: Conversion to floating point numbers may be lossy. Integer conversions must not be lossy, or we'll block the transaction. For pointers, must use abstract Ptr bound to same FFI process (see 'sys.ffi.ptr.\*').
   * `peek(FFI, Var, N)` - read N items from top of stack into runtime Var. If N is 0, this reduces to a status check. Some caveats: a floating-point NaN or infinity will result in error queries, and FFI pointers are abstracted (see 'sys.ffi.ptr.\*').
   * `copy(FFI, N)` - copy top N items on stack
   * `drop(FFI, N)` - remove top N items from stack
-  * `xchg(FFI, Text)` - ad hoc stack manipulation, described visually. The Text `"abc-abcabc"` is equivalent to 'copy(3)'. In this example, 'c' is top of stack. Mechanically, we find '-', scan backwards popping values from stack into single-assignment temporary local variables 'a-z', then scan forwards from '-' to push variables back onto the stack.
+  * `xchg(FFI, Text)` - ad hoc stack manipulation, described visually. The Text `"abc-abcabc"` is equivalent to 'copy(3)'. In this example, 'c' is top of stack. Mechanically, we find '-', scan backwards popping values from stack into single-assignment local variables 'a' to 'z', then scan forward pushing variables back onto the stack.
   * `stash(FFI, N)` - move top N items from data stack to top of auxilliary stack, called stash. Preserves order: top of stack becomes top of stash.
-  * `stash.pop(FFI, N)` - move top N items from top of auxilliary stack to top of data stack.
-  * `reg.store(FFI, Reg)` - pop data from stack into a local register of the FFI thread. Register names should be short strings.
-  * `reg.load(FFI, Reg)` - copy data from local register of FFI thread onto data stack.    
-  * `var.*` - future return value from 'peek' or 'mem.read' 
+  * `stash.pop(FFI, N)` - move top N items from top of stash to top of data stack.
+  * `reg.store(FFI, Reg)` - pop data from stack into a local register of the FFI thread. Register names should be short texts.
+  * `reg.load(FFI, Reg)` - copy data from local register of FFI thread onto data stack.   
+  * `var.*` - receiving data from 'peek' or 'mem.read'. Var should be a short text.
     * `read(FFI, Var) : Data` - Receive result from a prior query. Will diverge if not *ready*.
     * `drop(FFI, Var)` - Remove result and enable reuse of Var.
     * `list(FFI) : List of Var` - Browse local environment of query results.
@@ -305,10 +308,9 @@ Observing the starting node has consequences! A runtime might discover that a tr
 
 ## Securing Applications
 
-Not every program should be trusted with FFI, shared state vars, and other sensitive resources. This is true within a curated community configuration, and even more true with external scripts of ambiguous provenance. But what can be done?
+Not every application should be trusted with full access to FFI, shared state, and other sensitive resources. This is true within a curated community configuration, and even more true with external scripts of ambiguous provenance. What can be done?
 
-A configuration can describe who the user trusts and in which roles, how to find this information. When loading files we could poke around within a folder or repository for signed manifests and certifications of public signatures (e.g. in `".glas/"` subfolders). A compiler can track sources contributing to each definition - locations, secure hashes, other definitions, etc. - even accounting for overrides and 'eval' of macros.
+A configuration can describe who the user trusts and in which roles, or how to find this information. We can build a cache of signed manifests and public keys, e.g. by searching `".glas/"` subfolders when loading sources. Each signature can scope trust to ad hoc 'roles' like 'filesystem/\*' or 'filesystem/appdata'. A program that uses FFI, thus requiring full trust, can include annotations indicating which operations may be safely called from a client trusted only with 'filesystem/\*'.
 
-Instead of a binary decision for the entire application, we can isolate trust to specific definitions. We can also express a gradient of trust via annotations, e.g. a trusted adapter that implements filesystem access in terms of FFI, but sandboxes the FFI, can reduce the trust role to 'filesystem'. Another API might further reduce 'filesystem/*' access to 'filesystem/appdata'. Each constraint on role would require less user trust.
+Instead of a binary decision for the entire application, I propose to track fine-grained trust for individual definitions. Before running an application, we can analyze call graphs to ensure sensitive resources are accessed only from code with a suitable level of trust. If there are any issues, we can warn users then let them abort the application, temporarily extend trust, or run in a degraded mode where transactions that would violate security policies are blocked.
 
-Ultimately, we can run untrusted applications within trusted sandboxes. The trusted sandbox can be implemented as a flexible combination of libraries and adapters. Applications that anticipate running in untrusted mode should request a suitable adapter via application settings. If an application requires more trust than the user offers, the runtime will report role violations and prevent the application from starting (or switching, in case of live code). At that point, users can abandon the application, manually extend trust, or (for power users) manually sandbox the application. 
