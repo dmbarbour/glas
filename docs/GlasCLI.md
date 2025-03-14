@@ -20,21 +20,29 @@ My vision and intention is that end users mostly operate through user-defined op
 
 ## Configuration
 
-The glas executable starts by reading a `GLAS_CONF` environment variable and loading the specified file as a [namespace](GlasNamespaces.md). If unspecified, the default location is `"~/.config/glas/conf.glas"` in Linux or `"%AppData%\glas\conf.glas"` on Windows.
+The glas executable will read a user configuration based on a `GLAS_CONF` environment variable, loading the specified file as a [namespace](GlasNamespaces.md). If unspecified, the default location is `"~/.config/glas/conf.glas"` in Linux or `"%AppData%\glas\conf.glas"` on Windows.
 
-The configuration namespace may define some applications directly. It also defines an environment of languages and shared libraries that will be used loading externally defined applications. Further, for portability, the configuration defines various adapters, such as how to interpret application 'settings' and overrides for 'sys.\*' effects APIs, with reference to application settings and runtime version info.
+The configuration may directly define applications, shared libraries, and user-defined syntax under 'env.\*'. This configured environment is effectively the community and user space of the configuration. We'll translate '%env.\*' to 'env.\*' when compiling the configuration or scripts. This ensures scripts have access to shared libraries and can efficiently express composition of common applications.
 
-A typical user configuration will import a community or company configuration from DVCS, then apply a few overrides for user-specific preferences, projects, and resources. A community configuration can define thousands of applications. This is mitigated by lazy loading and caching. DVCS tags, hashes, and conventions such as pull requests serve as the foundation for curation, version control, and package management.
+A typical user configuration will import a community or company configuration from DVCS, which may define hundreds of applications and libraries under 'env.\*'. For performance, we rely on lazy loading, caching, and explicit cache control in terms of 'installing' applications or libraries. Effectively, a community configuration serves as a package distribution, while DVCS branches become the basis for curation and version control.
 
-*Note:* The initial configuration file must use a recognized file extension with a built-in compiler, such as ".glas" files. However, the glas executable may support independent extension of built-in compilers.
+Definitions outside of 'env.\*' may be read by a runtime to determine where to store persistent state, where to publish RPC APIs, which ports to open for HTTP requests, which log channels to enable and where to record logs, and so on. A subset of these features may be application specific via opportunity to query application 'settings' when evaluating the option. For maximum portability, a runtime might first generate an application adapter based on application settings and runtime version info.
+
+*Note:* The user configuration must be expressed in terms of a built-in syntax. However, if the configuration defines 'env.lang.FileExt' we'll attempt to bootstrap and reload the configuration under the user's definition. 
+
+## Extension
+
+The glas executable may also read a default configuration, e.g. looking for `"/etc/glas/conf.glas"`. This can provide default options for runtime features, or extend the set of built-in compilers by defining 'env.lang.FileExt'. However, there should be no direct entanglement with the user configuration: the user configuration cannot *reference* definitions in the default configuration.
+
+Akin to extending the set of built-in compilers, we can feasibly treat this default configuration as a sort of extension to the 'glas' executable, perhaps defining new '--operations' for the command line in a runtime-specific manner.
 
 ## Running Applications
 
 The choice of '--run', '--script' and '--cmd' lets users reference applications in a few ways:
 
-* **--run**: To run 'app.foo', we'll load 'app.foo.\*' definitions from the user's configuration namespace. This namespace may define thousands of applications, lazily downloading and compiling on demand.
-* **--script**: We 'load' an indicated file, folder, or URL as a namespace. Other than a source, the only parameter to 'load' is a scope of definitions, in this case the '%\*' primitives and '%env.\*' environment may be configurable for scripts, defaulting to the configuration's own toplevel environment. The resulting namespace should define 'app.\*' 
-  * **--script.FileExt**: Same as '--script' except we'll assume the given file extension in place of the actual file extension. Intended for use with shebang scripts in Linux, where file extensions are frequently elided.
+* **--run**: To run 'foo', the runtime will compile 'env.foo.app.settings' and 'env.foo.app.step' and related definitions in the configuration namespace. A community configuration might define hundreds of applications to be lazily downloaded, cached, and compiled on demand.
+* **--script**: We 'load' an indicated file, folder, or URL as a namespace (in context of '%\*'). This script should define 'app.settings', 'app.step', and related methods.
+  * **--script.FileExt**: Same as '--script' except we use the given file extension in place of the actual file extension for purpose of user-defined syntax. Mostly for use with shebang scripts in Linux, where file extensions may be elided.
 * **--cmd.FileExt**: Treated as '--script.FileExt' for an anonymous, read-only file found in the caller's working directory. The assumed motive is to avoid writing a temporary file.
 
 A runtime can support multiple run modes. A [transaction loop application](GlasApps.md) will define transactional methods such as 'start', 'step', and 'http'. A staged application might express 'build' to compile another application based on command line arguments, OS environment variables, and access to the runtime filesystem.
@@ -50,7 +58,7 @@ Users will inevitably want to install some applications to ensure they're availa
         glas --apt update
         glas --apt upgrade
 
-To simplify tooling, a configuration might specify separate files where installs are tracked. This allows us to easily modify and share installs separate from the main configuration sources. The configuration may also specify a set of default installs that must be explicitly removed. 
+To simplify tooling, the configuration might specify a separate file to track which applications are installed. This allows us to easily modify and share installs separate from the main configuration sources. The configuration may also specify a set of default installs that must be explicitly removed. 
 
 *Note:* It is feasible to extend this API to install scripts, referencing file paths or URLs.
 

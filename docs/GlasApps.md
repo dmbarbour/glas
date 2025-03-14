@@ -310,7 +310,16 @@ Observing the starting node has consequences! A runtime might discover that a tr
 
 Not every application should be trusted with full access to FFI, shared state, and other sensitive resources. This is true within a curated community configuration, and even more true with external scripts of ambiguous provenance. What can be done?
 
-A configuration can describe who the user trusts and in which roles, or how to find this information. We can build a cache of signed manifests and public keys, e.g. by searching `".glas/"` subfolders when loading sources. Each signature can scope trust to ad hoc 'roles' like 'filesystem/\*' or 'filesystem/appdata'. A program that uses FFI, thus requiring full trust, can include annotations indicating which operations may be safely called from a client trusted only with 'filesystem/\*'.
+A configuration can describe who the user trusts and in which roles, or how to find this information. We can build a cache of signed manifests and public keys, e.g. by searching `".glas/"` subfolders when loading sources. Each signature can scope trust to ad hoc roles like 'filesystem/\*' or 'filesystem/appdata'. A function that uses FFI, thus requiring full trust, can include annotations indicating which operations may be safely called from a client trusted only with 'filesystem/\*'.
 
 Instead of a binary decision for the entire application, I propose to track fine-grained trust for individual definitions. Before running an application, we can analyze call graphs to ensure sensitive resources are accessed only from code with a suitable level of trust. If there are any issues, we can warn users then let them abort the application, temporarily extend trust, or run in a degraded mode where transactions that would violate security policies are blocked.
 
+An application that anticipates running without user trust should voluntarily sandbox itself, relying on trusted shared libraries or adapters. Of course, it is also feasible for users to manually restrict an application via staged computing. That would mostly be the prerogative of power users, but even regular users may know of a few standard sandboxes they can easily apply.
+
+## Composing Applications
+
+Compared to the conventional 'main' procedure, composition of individual transactional methods such as 'start', 'step', 'http', 'rpc', and 'gui' is much simpler. We can start all components, fork steps, route RPC requests, route or compose GUI views, etc.. Algebraic effects further support composition: the application can restrict or redirect effects used by components. My vision for glas systems calls for convenient composition of applications, both for [notebook apps](GlasNotebooks.md) and sandboxing purposes.
+
+To compose applications, we must first reference applications. One option is to reference applications by filename or URL, loading them redundantly into the namespace. However, more efficient composition is possible by presenting applications alongside shared libraries, i.e. such that '%env.app.foo.step' is as easily accessed as '%env.lib.math.cosine' when developing applications. Thus, convenient composition of applications influences layout of the user's configuration namespace.
+
+*Note:* Application 'settings' are runtime specific and not inherently composable. Developers may need to manually override individual settings that lack a natural composition.
