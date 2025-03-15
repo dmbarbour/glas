@@ -16,7 +16,7 @@ A simple syntactic sugar supports user-defined operations:
           # implicitly rewrites to
         glas --run cli.opname Args
 
-My vision and intention is that end users mostly operate through user-defined operations. To fit the aesthetic, we must avoid cluttering the command line with runtime switches. Instead, we'll push most configuration options into application 'settings', a configuration file, and environment variables.
+My vision and intention is that end users mostly operate through user-defined operations. To avoid cluttering the command line with runtime switches, we'll push all configuration options into application 'settings' and the configuration file.
 
 ## Configuration
 
@@ -26,28 +26,20 @@ The configuration may directly define applications, shared libraries, and user-d
 
 A typical user configuration will import a community or company configuration from DVCS, which may define hundreds of applications and libraries under 'env.\*'. For performance, we rely on lazy loading, caching, and explicit cache control in terms of 'installing' applications or libraries. Effectively, a community configuration serves as a package distribution, while DVCS branches become the basis for curation and version control.
 
-Definitions outside of 'env.\*' may be read by a runtime to determine where to store persistent state, where to publish RPC APIs, which ports to open for HTTP requests, which log channels to enable and where to record logs, and so on. A subset of these features may be application specific via opportunity to query application 'settings' when evaluating the option. For maximum portability, a runtime might first generate an application adapter based on application settings and runtime version info.
-
-*Note:* The user configuration must be expressed in terms of a built-in syntax. However, if the configuration defines 'env.lang.FileExt' we'll attempt to bootstrap and reload the configuration under the user's definition. 
-
-## Extension
-
-The glas executable may also read a default configuration, e.g. looking for `"/etc/glas/conf.glas"`. This can provide default options for runtime features, or extend the set of built-in compilers by defining 'env.lang.FileExt'. However, there should be no direct entanglement with the user configuration: the user configuration cannot *reference* definitions in the default configuration.
-
-Akin to extending the set of built-in compilers, we can feasibly treat this default configuration as a sort of extension to the 'glas' executable, perhaps defining new '--operations' for the command line in a runtime-specific manner.
+Definitions outside of 'env.\*' may determine where to store persistent state, where to publish RPC, which ports to open for HTTP requests, which log channels to enable and where to record log messages, and so on. For portability, the configuration may define an adapter based on application settings and runtime version info. For extensibility, a configuration might define accelerators, optimizers, or typecheckers.
 
 ## Running Applications
 
 The choice of '--run', '--script' and '--cmd' lets users reference applications in a few ways:
 
-* **--run**: To run 'foo', the runtime will compile 'env.foo.app.settings' and 'env.foo.app.step' and related definitions in the configuration namespace. A community configuration might define hundreds of applications to be lazily downloaded, cached, and compiled on demand.
+* **--run**: To run 'foo', look for 'env.foo.app.settings' and 'env.foo.app.step' and related definitions in the configuration namespace. A community configuration might define hundreds of applications to be lazily downloaded, cached, and compiled on demand.
 * **--script**: We 'load' an indicated file, folder, or URL as a namespace (in context of '%\*'). This script should define 'app.settings', 'app.step', and related methods.
   * **--script.FileExt**: Same as '--script' except we use the given file extension in place of the actual file extension for purpose of user-defined syntax. Mostly for use with shebang scripts in Linux, where file extensions may be elided.
 * **--cmd.FileExt**: Treated as '--script.FileExt' for an anonymous, read-only file found in the caller's working directory. The assumed motive is to avoid writing a temporary file.
 
-A runtime can support multiple run modes. A [transaction loop application](GlasApps.md) will define transactional methods such as 'start', 'step', and 'http'. A staged application might express 'build' to compile another application based on command line arguments, OS environment variables, and access to the runtime filesystem.
+The glas executable may support multiple run modes. A [transaction loop application](GlasApps.md) will define methods such as 'start', 'step', and 'rpc'. A staged application can 'build' another application based on command-line arguments. The conventional 'main' procedure may also be supported.
 
-Every application should define 'settings'. This should mostly be used as a pure `Data -> Data` function that accepts ad hoc queries to guide integration. The runtime does not observe settings directly. Instead, it asks the configuration for an adapter based on application settings and runtime version info. As an extreme case, an adapter can generate definitions entirely from settings.
+When evaluating application-specific options such as logging or run mode, the configuration can query 'app.settings'. This should be a pure `Data -> Data` function that accepts ad hoc queries to guide integration.
 
 ## Installing Applications
 
@@ -82,7 +74,7 @@ The glas executable may be extended with useful built-in tools, insofar as they 
 * `--cache` - manage storage used for persistent memoization and incremental compilation
 * `--db` - query, watch, or edit persistent data
 * `--rpc` - inspect RPC registries, perhaps issue some RPC calls directly from command line
-* `--app` - debug or manipulate running apps through runtime provided HTTP or RPC APIs
+* `--app` - debug or manipulate running apps through HTTP or RPC APIs
 * `--trust` - tools to manage trust of scripts or app providers, adding, removing, or inspecting roles
 
 However, it is awkward to provide built-in tooling for application-specific resources, especially in context of '--cmd' and staged applications. To mitigate this, we might limit exactly how much choice applications have, e.g. select between three configured database options.

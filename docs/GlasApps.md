@@ -318,7 +318,7 @@ An application that anticipates running without user trust should voluntarily sa
 
 ## Composing Applications
 
-Compared to the conventional 'main' procedure, composition of individual transactional methods such as 'start', 'step', 'http', 'rpc', and 'gui' is much simpler. We can start all components, fork steps, route RPC requests, route or compose GUI views, etc.. Algebraic effects further support composition: the application can restrict or redirect effects used by components. My vision for glas systems calls for convenient composition of applications, both for [notebook apps](GlasNotebooks.md) and sandboxing purposes.
+Compared to the conventional 'main' procedure, composition of individual transactional methods such as 'start', 'step', 'http', 'rpc', and 'gui' is much simpler. We can start all components, fork steps, route and extend RPC requests, route or compose GUI views, etc.. Algebraic effects further support composition: the application can restrict or redirect effects used by components. My vision for glas systems calls for convenient composition of applications, both for [notebook apps](GlasNotebooks.md) and sandboxing purposes.
 
 To compose applications, we must first reference applications. One option is to reference applications by filename or URL, loading them redundantly into the namespace. However, more efficient composition is possible by presenting applications alongside shared libraries, i.e. such that '%env.app.foo.step' is as easily accessed as '%env.lib.math.cosine' when developing applications. Thus, convenient composition of applications influences layout of the user's configuration namespace.
 
