@@ -155,10 +155,10 @@ My vision for [GUI](GlasGUI.md) involves users participating in transactions ind
 
 In context of a transaction loop, fair non-deterministic choice serves as a foundation for task-based concurrency. Proposed API:
 
-* `sys.fork(N)` - fairly chooses and returns an integer in the range 0..(N-1). Diverges if N is not a positive integer.
-* `(%fork Op1 Op2 ...)` - (tentative) AST primitive for non-deterministic choice, convenient for static analysis.
+* `sys.select(N)` - fairly chooses and returns an integer in the range 0..(N-1). Diverges if N is not a positive integer.
+* `(%select Op1 Op2 ...)` - (tentative) AST primitive for non-deterministic choice, convenient for static analysis.
 
-Fair choice means that, given sufficient opportunities, we'll eventually try all of them. However, this doesn't imply *random* or *uniform* choice! A scheduler may compute forks in a very predictable pattern, some more frequently than others.
+Fair choice means that, given sufficient opportunities, we'll eventually try all of them. However, this doesn't imply *random* or *uniform* choice! A scheduler may be very predictable, and may heuristically choose for performance reasons.
 
 *Note:* Without transaction-loop optimizations for incremental computing and duplication on non-deterministic choice, a basic single-threaded event-loop will perform better. We can still use sparks for parallelism.
 
@@ -174,12 +174,12 @@ An implementation might involve a secure hash of `[Seed, N, Secret]`, where Secr
 
 In some use cases, we want an escape hatch from transactional isolation. This occurs frequently when wrapping FFI with 'safe' APIs. We might support HTTP GET within a single transaction, trigger lazy computations, or manually maintain a cache. To support these scenarios, I propose a reflection API to run a transaction prior to the calling transaction:
 
-* `sys.refl.bgcall(StaticMethodName, List of Args) : Result` - asks the runtime to call the indicated method in a separate transaction, wait for commit, then continue the current transaction with the result. If the caller aborts, e.g. due to read-write conflict with a concurrent transaction, an incomplete bgcall may be aborted. If bgcall aborts, it is implicitly retried. In general, args and result must be non-linear and global scoped. 
+* `sys.refl.bgcall(StaticMethodName, Args) : Result` - asks the runtime to call the indicated method in a separate transaction, wait for commit, then continue the current transaction with the result. If the caller aborts, e.g. due to read-write conflict with a concurrent transaction, an incomplete bgcall may be aborted. If bgcall aborts, it is implicitly retried. In general, args and result must be non-linear and global scoped. 
   * *StaticMethodName* - for example 'n:"MethodName"' in the abstract assembly, subject to namespace translations. The indicated method will receive the same 'sys.\*' environment passed to application 'step', independent of the caller's environment.
 
 The bgcall logically runs before the caller, time travel of a limited nature. There is risk of transaction conflict, a time travel 'paradox' where the bgcall modifies something the caller previously observed. In this case, we still commit the bgcall, but then we abort the caller. In context of transaction loops, we rollback and replay the caller from where change is observed. If careless this leads to data loss or thrashing, but is easily mitigated by manual caching.
 
-Insofar as paradoxes are avoided, background transactions are compatible with transaction-loop optimizations: a bgcall with stable results can be part of an incremental computing prefix, and a non-deterministic bgcall can fork a stable caller per result. Intriguingly, only the result needs to be stable: the bgcall could be processing an event queue in the background and returning 'ok' every time, modeling a background 'step' function active only while a caller is waiting.
+Insofar as paradoxes are avoided, background transactions are compatible with transaction-loop optimizations: a bgcall with stable results can be part of an incremental computing prefix, and a non-deterministic bgcall can clone a stable caller per result. Intriguingly, only the result needs to be stable: the bgcall could be processing an event queue in the background and returning 'ok' every time, modeling a background 'step' function active only while a caller is waiting.
 
 ## Time
 
@@ -318,8 +318,32 @@ An application that anticipates running without user trust should voluntarily sa
 
 ## Composing Applications
 
-Compared to the conventional 'main' procedure, composition of individual transactional methods such as 'start', 'step', 'http', 'rpc', and 'gui' is much simpler. We can start all components, fork steps, route and extend RPC requests, route or compose GUI views, etc.. Algebraic effects further support composition: the application can restrict or redirect effects used by components. My vision for glas systems calls for convenient composition of applications, both for [notebook apps](GlasNotebooks.md) and sandboxing purposes.
+Compared to the conventional 'main' procedure, composition of individual transactional methods such as 'start', 'step', 'http', 'rpc', and 'gui' is much simpler. We can start all components, non-deterministically choose steps, route and extend RPC requests, route or compose GUI views, etc.. Algebraic effects further support composition: the application can restrict or redirect effects used by components. My vision for glas systems calls for convenient composition of applications, both for [notebook apps](GlasNotebooks.md) and sandboxing purposes.
 
-To compose applications, we must first reference applications. One option is to reference applications by filename or URL, loading them redundantly into the namespace. However, more efficient composition is possible by presenting applications alongside shared libraries, i.e. such that '%env.app.foo.step' is as easily accessed as '%env.lib.math.cosine' when developing applications. Thus, convenient composition of applications influences layout of the user's configuration namespace.
+To compose applications, we must first reference applications. One option is to reference applications by filename or URL, loading them redundantly into the namespace. However, more efficient composition is possible by presenting applications alongside shared libraries, i.e. such that '%env.foo.app.step' is as easily accessed as '%env.lib.math.cosine' when developing applications. Thus, convenient composition of applications influences layout of the user's configuration namespace.
 
 *Note:* Application 'settings' are runtime specific and not inherently composable. Developers may need to manually override individual settings that lack a natural composition.
+
+## Alternative Application Models
+
+### Staged Applications
+
+Staged applications may define 'build' as a [namespace procedure](GlasNamespaces.md) with access to command-line arguments and OS environment variables ('sys.env.\*'). This could load files or URLs as additional sources.
+
+### Conventional Applications
+
+We can implement the conventional 'main' procedure, i.e. `int main()`. Arguments are still accessible via 'sys.env.\*'. 
+
+An evaluator can logically divide the main procedure into a series of small transactional steps, maintaining the continuation across steps. Programmers can express larger 'atomic' sections via hierarchical transactions as needed. For concurrency, we can feasibly express multi-threading with additional continuations. 
+
+One viable API:
+
+* `sys.thread.spawn(StaticExpr) : Thread` - arrange to evaluate StaticExpr in a separate thread. Shares algebraic effects handlers and local mutable vars with the caller.
+* `sys.thread.kill(Thread)` - upon commit, forcibly terminate a thread that has not already halted.
+* `sys.thread.join(Thread) : opt Result` - diverge if thread has not terminated, otherwise return the result if the thread wasn't killed.
+
+To support this API, any local mutable var reachable from multiple threads will implicitly be represented as a heap ref. 
+
+Use of 'sys.select' for non-deterministic choice is still useful: it can express search or waiting on multiple options within a hierarchical transaction, such as reading from multiple queues or 'sys.time.await' timeout. Intriguingly, a 'while' loop stable condition and a transactional body can feasibly express a full transaction loop because the *continuation* is stable, allowing transaction loop optimizations. 
+
+*Note:* Live coding for conventional applications is fragile. It is difficult to robustly switch to new code in context of algebraic effects, local mutable variables, and arbitrary continuations. We could attempt incremental transition at procedure call boundaries, or we could just leave dynamic code to accelerated eval.

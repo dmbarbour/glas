@@ -24,9 +24,11 @@ The glas executable will read a user configuration based on a `GLAS_CONF` enviro
 
 The configuration may directly define applications, shared libraries, and user-defined syntax under 'env.\*'. This configured environment is effectively the community and user space of the configuration. We'll translate '%env.\*' to 'env.\*' when compiling the configuration or scripts. This ensures scripts have access to shared libraries and can efficiently express composition of common applications.
 
-A typical user configuration will import a community or company configuration from DVCS, which may define hundreds of applications and libraries under 'env.\*'. For performance, we rely on lazy loading, caching, and explicit cache control in terms of 'installing' applications or libraries. Effectively, a community configuration serves as a package distribution, while DVCS branches become the basis for curation and version control.
+A typical user configuration will import a community or company configuration from DVCS, which may define hundreds of applications and libraries. For performance, we rely on lazy loading and caching. To 'install' a defined application is understood as a manual form of cache control. Effectively, a community configuration serves as a package distribution, while DVCS branches become the basis for curation and version control.
 
-Definitions outside of 'env.\*' may determine where to store persistent state, where to publish RPC, which ports to open for HTTP requests, which log channels to enable and where to record log messages, and so on. For portability, the configuration may define an adapter based on application settings and runtime version info. For extensibility, a configuration might define accelerators, optimizers, or typecheckers.
+Definitions outside of 'env.\*' determine where to store persistent state, where to publish RPC, which ports to open for HTTP requests, which log channels to enable and where to record log messages, and so on. Extensions such as extra accelerators, optimizers, or typecheckers should also be represented. 
+
+A subset of these options are application specific, such as logging. To support this, 'app.settings' becomes an implicit argument when evaluating those options. For portability, the configuration may define an application adapter based on application settings and runtime version info.
 
 ## Running Applications
 
@@ -37,22 +39,21 @@ The choice of '--run', '--script' and '--cmd' lets users reference applications 
   * **--script.FileExt**: Same as '--script' except we use the given file extension in place of the actual file extension for purpose of user-defined syntax. Mostly for use with shebang scripts in Linux, where file extensions may be elided.
 * **--cmd.FileExt**: Treated as '--script.FileExt' for an anonymous, read-only file found in the caller's working directory. The assumed motive is to avoid writing a temporary file.
 
-The glas executable may support multiple run modes. A [transaction loop application](GlasApps.md) will define methods such as 'start', 'step', and 'rpc'. A staged application can 'build' another application based on command-line arguments. The conventional 'main' procedure may also be supported.
+The glas executable may support multiple run modes as an application-specific configuration option. A [transaction loop application](GlasApps.md) will define methods such as 'start', 'step', and 'rpc'. A staged application can 'build' another application based on command-line arguments. The conventional 'main' procedure may also be supported.
 
-When evaluating application-specific options such as logging or run mode, the configuration can query 'app.settings'. This should be a pure `Data -> Data` function that accepts ad hoc queries to guide integration.
+*Aside:* The implicit 'app.\*' prefix simplifies discovery and scoping of applications mixed with library code.
 
 ## Installing Applications
 
-Users will inevitably want to install some applications to ensure they're available for offline use. This might be supported through an installer extension on the CLI. Perhaps we take inspiration from Debian's 'apt':
+Users can 'install' applications to ensure they're available for offline use. This can be understood as a form of manual cache management. To simplify tooling, the configuration might specify a separate file or folder to track which applications are installed. This allows us to easily modify and share installs separately from the main configuration. 
 
-        glas --apt install AppName*
-        glas --apt remove AppName*
-        glas --apt update
-        glas --apt upgrade
+As for the interface, I'm uncertain. Still need to explore aesthetics. One option:
 
-To simplify tooling, the configuration might specify a separate file to track which applications are installed. This allows us to easily modify and share installs separate from the main configuration sources. The configuration may also specify a set of default installs that must be explicitly removed. 
+        glas --app install AppName*
+        glas --app remove AppName*
+        glas --app update
 
-*Note:* It is feasible to extend this API to install scripts, referencing file paths or URLs.
+It is feasible to extend this API to install scripts, referencing file paths or URLs.
 
 ### Shared Memo-Cache
 
