@@ -21,9 +21,9 @@ These optimizations don't open new opportunities, but they can simplify life for
 
 *Note:* A conventional process or procedure can be modeled in terms of a repeating transaction that always writes state about the next step. Of course, there is a performance hit compared to directly running concurrent procedures.
 
-## Transaction Loop Application Model
+## Transaction-Loop Applications
 
-A transaction loop application might define several transactional methods:
+A transaction-loop application might define several transactional methods:
 
 * 'start' - Set initial state, perform initial checks. Retried until it commits once.
 * 'step' - After a successful start, repeatedly run 'step' until it voluntarily halt or killed externally.
@@ -318,7 +318,7 @@ An application that anticipates running without user trust should voluntarily sa
 
 ## Composing Applications
 
-Compared to the conventional 'main' procedure, composition of individual transactional methods such as 'start', 'step', 'http', 'rpc', and 'gui' is much simpler. We can start all components, non-deterministically choose steps, route and extend RPC requests, route or compose GUI views, etc.. Algebraic effects further support composition: the application can restrict or redirect effects used by components. My vision for glas systems calls for convenient composition of applications, both for [notebook apps](GlasNotebooks.md) and sandboxing purposes.
+Composition of most transaction-loop interfaces such as 'start', 'step', 'http', 'rpc', and 'gui' is simple. We can start all components, non-deterministically choose steps, route and extend RPC requests, route or compose GUI views, etc.. Algebraic effects further support composition: the application can restrict or redirect effects used by components. My vision for glas systems calls for convenient composition of applications, both for [notebook apps](GlasNotebooks.md) and sandboxing purposes.
 
 To compose applications, we must first reference applications. One option is to reference applications by filename or URL, loading them redundantly into the namespace. However, more efficient composition is possible by presenting applications alongside shared libraries, i.e. such that '%env.foo.app.step' is as easily accessed as '%env.lib.math.cosine' when developing applications. Thus, convenient composition of applications influences layout of the user's configuration namespace.
 
@@ -326,24 +326,36 @@ To compose applications, we must first reference applications. One option is to 
 
 ## Alternative Application Models
 
+The glas executable can support multiple run modes. The configuration will select a run mode based on application 'settings'. This allows for more flexible integration. Users aren't stuck with transaction-loop applications. However, what is feasible depends on what can easily integrate the same APIs we're using for other tasks.
+
 ### Staged Applications
 
-Staged applications may define 'build' as a [namespace procedure](GlasNamespaces.md) with access to command-line arguments and OS environment variables ('sys.env.\*'). This could load files or URLs as additional sources.
+Staged applications may define 'build' as a [namespace procedure](GlasNamespaces.md) with access to command-line arguments as 'source code', and perhaps to OS environment variables. This could load files or URLs as additional sources.
 
 ### Conventional Applications
 
-We can implement the conventional 'main' procedure, i.e. `int main()`. Arguments are still accessible via 'sys.env.\*'. 
+In some use cases, developers may prefer the conventional 'main' procedure, returning an exit code, receiving arguments via 'sys.env.\*'.
 
-An evaluator can logically divide the main procedure into a series of small transactional steps, maintaining the continuation across steps. Programmers can express larger 'atomic' sections via hierarchical transactions as needed. For concurrency, we can feasibly express multi-threading with additional continuations. 
+        main : () -> [sys] int
 
-One viable API:
+The evaluator will heuristically partition the main procedure into a sequence of atomic steps. Minimum step size can be controlled by annotating 'atomic' sections, e.g. `(%an (%an.atomic) Operation)`, while maximum step size might be guided by labeled 'yield' annotations. If a step fails it is implicitly retried. The runtime may optimize retry to wait for relevant changes in observed conditions. A successful step will implicitly update hidden state representing the program continuation and environment. That environment includes local mutable variables, algebraic effects handlers, invariant assertions, and instrumentation.
 
-* `sys.thread.spawn(StaticExpr) : Thread` - arrange to evaluate StaticExpr in a separate thread. Shares algebraic effects handlers and local mutable vars with the caller.
-* `sys.thread.kill(Thread)` - upon commit, forcibly terminate a thread that has not already halted.
-* `sys.thread.join(Thread) : opt Result` - diverge if thread has not terminated, otherwise return the result if the thread wasn't killed.
+In case of 'assert(Chan, Cond, Message) { Operation }' we could verify Cond holds before and after every atomic step in Operation, refusing to commit a step if Cond is violated. Of course, this behavior depends on configuration of Chan.
 
-To support this API, any local mutable var reachable from multiple threads will implicitly be represented as a heap ref. 
+For concurrency, we can extend the API for multi-threading. A viable API:
 
-Use of 'sys.select' for non-deterministic choice is still useful: it can express search or waiting on multiple options within a hierarchical transaction, such as reading from multiple queues or 'sys.time.await' timeout. Intriguingly, a 'while' loop stable condition and a transactional body can feasibly express a full transaction loop because the *continuation* is stable, allowing transaction loop optimizations. 
+* `sys.thread.*`
+  * `spawn(Expr) : Thread` - evaluates Expr in a separate thread, but shares the caller's environment, e.g. algebraic effects, local mutable vars, and invariant assertions.
+  * `kill(Thread)` - forces a running thread to terminate. Threads do not error out, i.e. even a thread that halts on a type error is still logically retrying that last step forever, until code is updated or the thread is killed. 
+  * `join(Thread) : opt Result` - Returns a thread's final result, or nothing if the thread was killed. Diverges if the thread is still running. Join on a newly spawned thread within an atomic section will always diverge.
 
-*Note:* Live coding for conventional applications is fragile. It is difficult to robustly switch to new code in context of algebraic effects, local mutable variables, and arbitrary continuations. We could attempt incremental transition at procedure call boundaries, or we could just leave dynamic code to accelerated eval.
+This API benefits from specialized compiler support to represent shared local vars as runtime-scoped heap refs, and perform escape analysis to minimize sharing. Implicit sharing can be difficult to reason about, so we should also introduce annotations to express ownership assumptions for local mutable vars. The API does not support naming threads, but we can also introduce annotations for assigning debug names to operations in general.
+
+Conventional applications can be usefully hybridized with transaction-loop applications. The runtime could include support for transactional 'http', 'rpc', and even 'step' as an implicit background thread. However, use of 'main' or 'sys.thread.\*' does have an opportunity cost: it becomes difficult to robustly update the continuation in context of live coding. This can be mitigated with heuristics and annotations to identify safe transition opportunities.
+
+        # reinventing the transaction loop
+        while(atomic { Cond }) { atomic {
+            Body
+        }}
+
+Intriguingly, any procedural loop with a stable atomic condition and atomic body can potentially be optimized as a transaction loop, to the extent of using 'sys.select' as a basis for concurrency. This works because the 'continuation' is the same after each loop step. There is no read-write conflict to execute the loop an infinite number of times while the condition holds.
