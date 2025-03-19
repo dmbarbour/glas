@@ -1,12 +1,41 @@
 # Program Model for Glas
 
-This document describes the primitive AST constructors for glas programs, i.e. the intermediate language. See [glas namespace model](GlasNamespaces.md) for context, and [glas application model](GlasApps.md) for an even wider context. The glas system supports user-defined front-end syntax, but see [glas lang](GlasLang.md) for an initial synax.
+This document describes primitive AST constructors for glas programs. See [glas namespace model](GlasNamespaces.md) and [glas application model](GlasApps.md) for context.
 
 ## Design Thoughts
 
-We can build a namespace of algebraic effects handlers aligned with a call graph. Some 'calls' might actually be more about defining handlers than about an immediate outcome. Some handlers may introduce some local state, like static objects on the stack. Ultimately, this results in a fractal namespace.
+We can build a namespace of algebraic effects handlers aligned with a call graph. Access to local vars or function parameters could also be modeled as part of this namespace.
 
-Recursion is troublesome with this approach to handlers. We might avoid recursive definitions, or at least avoid unbounded recursion. Static recursion might be acceptable, so long as it terminates statically. Consequently, we'll want good support for loops that don't rely on recursion. For stuff like 'tree' processing, we could use recursion with a maximum tree depth, or we could use a built-in primitive-recursive loop on tree structures.
+I would like to insist that call stack depth is statically bounded. This doesn't entirely prohibit recursion, but it does limit unbounded recursion to tail-calls with a fixpoint on the 'environment' of algebraic effects handlers. In practice, we might mostly avoid recursive definitions, favoring built-in loops. Thus, we need some good built-in loops.
+
+Regarding loops: foreach loops over lists are good. We could support 'while' loops. But it might be interesting to model loops with tail recursion within a call stack frame as something like 'goto' with arguments. 
+
+When a local var is used as a queue or stack - or when a ref is used this way in general
+
+
+I would like effective built-in loops for primitive recursion over a tree structure. However, I'm not sure how to best express this. One option is to ass
+
+
+
+I would like effective built-in loops for primitive recursion over tree structures. In this role, we could feasibly implement an extended 'data' stack to support the loop (e.g. via 'alloca'), with efficient chunked transfer to the heap whenever certain thresholds are reached. The loop itself could structurally restrict recursion, perhaps presenting it as an algebraic effect we can apply to elements of a data structure.
+
+Perhaps we can make this extended data stack explicit 
+
+
+Support for 'letrec' with tail recursion could be convenient. But we'll need to abstract over 'letrec' blocks and generation of extended namespaces.
+
+
+
+
+
+The lack of first-class functions or function-pointers does complicate use of unbounded recursion. 
+
+
+Some 'calls' might actually be more about defining handlers than producing an outcome. Some handlers may introduce some local state, like static objects on the stack. Ultimately, this results in a fractal namespace.
+
+Unbounded recursion is troublesome with this approach to handlers. This is because computing handlers is expensive.  
+
+We might avoid recursive definitions, or at least avoid unbounded recursion. Static recursion might be acceptable, so long as it terminates statically. Consequently, we'll want good support for loops that don't rely on recursion. For stuff like 'tree' processing, we could use recursion with a maximum tree depth, or we could use a built-in primitive-recursive loop on tree structures.
 
 Ideally, our program model can support more incremental computing that isn't aligned with a procedural prefix, based on fine-grained dataflows. This might benefit from structurally distinguishing a few forms of algebraic effects, e.g. constant / read-only (reader monad), monoidal output (writer monad), and threaded (state monad).
 

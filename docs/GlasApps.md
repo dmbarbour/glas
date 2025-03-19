@@ -332,30 +332,25 @@ The glas executable can support multiple run modes. The configuration will selec
 
 Staged applications may define 'build' as a [namespace procedure](GlasNamespaces.md) with access to command-line arguments as 'source code', and perhaps to OS environment variables. This could load files or URLs as additional sources.
 
-### Conventional Applications
+### Threaded Applications
 
-In some use cases, developers may prefer the conventional 'main' procedure, returning an exit code, receiving arguments via 'sys.env.\*'.
+In some use cases, developers may prefer the conventional 'main' procedure. The evaluator will heuristically partition the main procedure into a sequence of atomic steps. Minimum step size can be controlled by annotating 'atomic' sections, e.g. `(%an (%an.atomic) Operation)`, while maximum step size could be guided by 'yield' annotations (reporting an error if 'yield' appears within an 'atomic' operation). 
 
-        main : () -> [sys] int
+Every successful step will implicitly update stateful thread environment representing the call stack or continuation, local mutable vars, algebraic effects handlers, invariant assertions, instrumentation, and so on. Every aborted or divergent step is implicitly retried, much like a 'step' function for a transaction loop. This retry provides a basis to wait on a mutex, queue, or arbitrary conditions. Use of 'sys.select' together with 'atomic' can express flexible waits, e.g. wait on a queue OR a timeout, and bounded searches.
 
-The evaluator will heuristically partition the main procedure into a sequence of atomic steps. Minimum step size can be controlled by annotating 'atomic' sections, e.g. `(%an (%an.atomic) Operation)`, while maximum step size might be guided by labeled 'yield' annotations. If a step fails it is implicitly retried. The runtime may optimize retry to wait for relevant changes in observed conditions. A successful step will implicitly update hidden state representing the program continuation and environment. That environment includes local mutable variables, algebraic effects handlers, invariant assertions, and instrumentation.
+Support for invariant assertions or instrumentation extends easily to threads. For example, in case of 'assert(Chan, Cond, Message) { Operation }' we might verify Cond holds across every atomic step in Operation. If Cond fails, we can log the error and abort the step, continuing when conditions change. Of course, this behavior would be configurable per Chan.
 
-In case of 'assert(Chan, Cond, Message) { Operation }' we could verify Cond holds before and after every atomic step in Operation, refusing to commit a step if Cond is violated. Of course, this behavior depends on configuration of Chan.
-
-For concurrency, we can extend the API for multi-threading. A viable API:
+For concurrency, we can support multi-threading. A viable API:
 
 * `sys.thread.*`
-  * `spawn(Expr) : Thread` - evaluates Expr in a separate thread, but shares the caller's environment, e.g. algebraic effects, local mutable vars, and invariant assertions.
-  * `kill(Thread)` - forces a running thread to terminate. Threads do not error out, i.e. even a thread that halts on a type error is still logically retrying that last step forever, until code is updated or the thread is killed. 
+  * `spawn(Expr) : Thread` - evaluates Expr in a separate thread, but shares the caller's environment. Expr cannot reference any transaction-scoped resources.
+  * `kill(Thread)` - forces a running thread to terminate. Threads do not error out, i.e. even a thread that halts on a type error is still logically retrying that last step forever, until code is updated or the thread is killed.
   * `join(Thread) : opt Result` - Returns a thread's final result, or nothing if the thread was killed. Diverges if the thread is still running. Join on a newly spawned thread within an atomic section will always diverge.
 
-This API benefits from specialized compiler support to represent shared local vars as runtime-scoped heap refs, and perform escape analysis to minimize sharing. Implicit sharing can be difficult to reason about, so we should also introduce annotations to express ownership assumptions for local mutable vars. The API does not support naming threads, but we can also introduce annotations for assigning debug names to operations in general.
+Instead of 'main' as a special thread, I propose a hybrid model: the runtime offers 'sys.thread.\*' to the transaction-loop application. Users may manually spawn a main thread upon 'start'. Conversely, a thread loop with a *stable condition and atomic body* can be optimized as a transaction loop, evaluating the body many times in parallel while the condition holds.
 
-Conventional applications can be usefully hybridized with transaction-loop applications. The runtime could include support for transactional 'http', 'rpc', and even 'step' as an implicit background thread. However, use of 'main' or 'sys.thread.\*' does have an opportunity cost: it becomes difficult to robustly update the continuation in context of live coding. This can be mitigated with heuristics and annotations to identify safe transition opportunities.
+Multi-threading requires representing local mutable vars shared between threads as runtime-scoped heap refs. Ideally, an optimizer will perform analyses to minimize sharing, keeping most data on the call stack. We can also introduce annotations to express and enforce ownership assumptions.
 
-        # reinventing the transaction loop
-        while(atomic { Cond }) { atomic {
-            Body
-        }}
+Use of 'sys.thread.\*' does have an opportunity cost: there is no general means to conveniently or robustly update thread environments in context of live coding. As we switch to new functions, we provide old arguments and algebraic effects handlers. This can feasibly be mitigated with conventions, annotations, and reflection, essentially asking users to stabilize APIs and design for live coding.
 
-Intriguingly, any procedural loop with a stable atomic condition and atomic body can potentially be optimized as a transaction loop, to the extent of using 'sys.select' as a basis for concurrency. This works because the 'continuation' is the same after each loop step. There is no read-write conflict to execute the loop an infinite number of times while the condition holds.
+*Note:* The thread API does not support naming threads. Instead, I suggest annotations for assigning debug names to operations in general.
