@@ -103,11 +103,9 @@ By aligning user-defined syntax with file extensions, we can easily integrate wi
 
 ### Folders as Packages
 
-To simplify sharing of folders, we forbid loading of parent-relative and absolute file paths. Files within a folder may only reference other files in the same folder or subfolders, or remote DVCS resources. Thus, a folder is effectively location-independent.
+To simplify sharing and distribution of code, we'll generally forbid loading of parent-relative ("..") and absolute ("/") file paths. Files within a folder may only reference other files in the same folder or subfolders, or remote files via DVCS URLs. Thus, each folder is effectively location independent.
 
-Users may refer to a folder as the target for 'load'. In this case, we search for the 'package' file of any extension. If the package file exists, it is loaded. Otherwise, we generate a simple namespace that mimics the hierarchical structure of the folder content, albeit hiding file extensions. Files or subfolders whose names start with '.' would be fully hidden.
-
-Reference to specific files within a subfolder can bypass interface abstractions and hinder refactoring of code. We might raise a linter-level warning to encourage developers to properly treat folders as packages.
+A package folder further contains a single "package" file of any extension. Clients may 'load' a package folder directly, implicitly loading the package file. Further, this is the expected usage: we'll warn upon loading specific files from a package folder because doing so bypasses export control and thus hinders software maintenance. OTOH, if a folder does not contain a package file, clients must load specific files.
 
 ### Ad hoc SourceRef
 

@@ -2,11 +2,9 @@
 
 Extending a read-eval-print loop (REPL) to support graphical inputs and outputs, live coding, and fancy comments essentially results in a [notebook interface](https://en.wikipedia.org/wiki/Notebook_interface). In my vision for glas systems, this interactive development experience should be the default. Even when applications present a conventional front-end, users should be able to peek under the hood to understand system behavior, and potentially modify code and behavior.
 
-Ideally, notebooks are modular, and every glas module is also a notebook. In the notebook metaphor, a module might represent a page or chapter or widget. Pages could be hyperlinked, and we could automatically maintain a table of contents. In context of user-defined syntax, we'll also need a common intermediate representation for composing notebooks. This might be achieved by compiling glas modules to `g:(ns:Namespace, Metadata)` program values, where the compiler adds hooks to the namespace for the notebook view, and adds a little metadata to simplify integration. 
+In the notebook metaphor, a module might represent a page or chapter or widget. Pages could be inlined or hyperlinked into a view. We could automatically maintain a table of contents. We might introduce extra definitions to simplify composition of notebooks.
 
-Although not every user-defined syntax will be suitable for mixed source and output, we'll at least want the projectional editor. For example, instead of compiling ".json" files directly to structured data, we might compile to a program value that defines 'data' but also includes hooks for rendering and editing the file. 
-
-In case of syntax errors, we should still compile the notebook view. For example, if a ".json" file has errors, we might render that file with the errors highlighted. In this case, 'data' might diverge or could return a best-effort corrected version based on implicit parameters. Regardless, we should also log warnings or errors at compile time to inform the developer before the application is run.
+Although not every user-defined syntax is suitable for mixed source and output, we'll at least want the projectional editor. For example, we might normally compile ".json" files and simply define 'data'. But now we'll want data AND the projectional editor. And perhaps we even exclude 'data' if the JSON file happens to have non-recoverable syntax errors.
 
 Notebooks can support a conventional application view. If the developer overrides 'gui' or 'http' they may choose to drop the notebook view or integrate it. If dropped, the unused code for projectional editing is subject to dead code elimination by an optimizer. Consistency of integration across applications and languages deserves some attention but isn't essential. It is also feasible to support separate compilation of notebooks, presenting a read-only view of the relevant sources.
 
@@ -24,7 +22,7 @@ To mitigate this, we might extend our filesystem APIs to better integrate DVCS a
 
 It is feasible to compose interactive development sessions or notebooks in various ways in accordance with the metaphor: we could continue a prior session, include pages or link chapters into a notebook, or merely import some definitions. Ideally, we'd also automatically build a table of contents and some useful indices. 
 
-To support concise composition, we should extend our program values with a little metadata, e.g. `g:(ns:ProgramNamespace, app:(http, step), nbi:(toc))` to let the compilers easily identify which resources are available for composition. This would be used when including or linking conent to automatically compose things.
+*Aside:* A weakness of the namespace model is that we cannot actually ask whether a name is defined. Thus, we cannot use the presence or absence of 'table-of-contents' to support automatic composition. As a workaround, we could assume '~META' is defined and indicates which other features are defined.
 
 ## Indices
 

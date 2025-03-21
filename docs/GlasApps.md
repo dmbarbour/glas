@@ -1,5 +1,17 @@
 # Glas Applications
 
+Applications are represented as a set of methods within a [namespace](GlasNamespaces.md). The [glas executable](GlasCLI.md) can reference applications in the user's configuration namespace, typically at 'env.appname.app.\*', or by loading a script and extracting 'app.\*'. These naming conventions simplify composition, recognition, and extraction of applications.
+
+Every application must define 'app.settings' to guide integration. The executable does not observe settings directly. Instead, for reasons of portability and security, the configuration generates an adapter based on application settings and runtime version info.
+
+The glas executable may support multiple run modes. For example:
+
+* *transaction-loop applications* - repeatedly evaluate 'step' in separate transactions, rely on incremental computing and non-deterministic choice as basis for concurrency.
+* *threaded applications* - long-running procedure evaluated over the course of multiple transactions, may spawn many such 'threads'. Conventional 'main' procedure.
+* *staged applications* - generate another application based on command-line arguments, then run that.
+
+The adapter must heuristically select the best run mode based on application settings and runtime version info. This document focuses on the transaction loop, which is a very nice fit for my vision of glas systems. However, threaded applications and staging are discussed towards the end.
+
 ## The Transaction Loop
 
 A *transaction loop* is a very simple idea - a repeating transaction, atomic and isolated. A direct implementation is nothing special; at best, it makes a convenient event dispatch loop, friendly for live coding and orthogonal persistence. However, consider a few optimizations we can apply: 
@@ -25,16 +37,14 @@ These optimizations don't open new opportunities, but they can simplify life for
 
 A transaction-loop application might define several transactional methods:
 
-* 'start' - Set initial state, perform initial checks. Retried until it commits once.
-* 'step' - After a successful start, repeatedly run 'step' until it voluntarily halt or killed externally.
-* 'http' - Handle HTTP requests between steps. Our initial basis for GUI and events.
-* 'rpc' - Transactional inter-process communications. Multiple calls in one transaction. Callback via algebraic effects.
-* 'gui' - Like an immediate-mode GUI. Reflective - renders without commit. See [Glas GUI](GlasGUI.md).
-* 'switch' - First transaction in new code after live update. Old code runs until successful switch.
+* 'app.start' - Set initial state, perform initial checks. Retried until it commits once.
+* 'app.step' - After start, repeatedly run 'step' until voluntary 'sys.halt' or killed.
+* 'app.http' - Handle HTTP requests between steps. Our initial basis for GUI and events.
+* 'app.rpc' - Transactional inter-process communications. Multiple calls in one transaction. Callback via algebraic effects.
+* 'app.gui' - Like an immediate-mode GUI. Reflective - renders without commit. See [Glas GUI](GlasGUI.md).
+* 'app.switch' - First transaction in new code after live update. Old code runs until successful switch.
 
-The exact interface may vary between runtimes. The configuration may generate an adapter based on application 'settings' and runtime version information.
-
-The transactions will interact with the runtime - and through it the underlying systems - with an algebraic effects API. Unfortunately, most external systems - filesystem, network, FFI, etc. - are not transactional. We resolve this by buffering operations to run between transactions. But there are a few exceptions: application state, remote procedure calls, and a convenient escape hatch for safe, cacheable operations like HTTP GET.
+Naturally, there are limits on what can be achieved in a single transaction. FFI is expressed in terms of buffering commands to an FFI 'thread', then reading results in a future transaction.
 
 ## Application State
 
@@ -105,24 +115,21 @@ In general we should consider *permanent* network disruptions, e.g. destruction 
 
 ## HTTP Interface
 
-The runtime should recognize the 'http' interface and support requests over the same channels we use for remote procedure calls and debugging. Based on application settings, the runtime will intercept a directory such as `"/sys/*"` for debugging and reflection as a web app. Applications can access this via 'sys.refl.http'. But every other subdirectory will be handled by 'http'.
+        app.http : Request -> [sys] Response
 
-        http : Request -> [sys] Response
+The runtime can provide a web server, perhaps reserving `"/sys/*"` for debugger integration and routing everything else to 'app.http'. This port can be shared with RPC, recognizing protocol based on header. Applications may access the runtime's built-in server via 'sys.refl.http', bypassing configured authorization.
 
-The Request and Response types are binaries. However, these will often be *accelerated* binaries, i.e. with a structured representation under-the-hood that can be efficiently queried and manipulated through built-in functions. The application receives a complete request from the runtime, and must return a complete respon, no chunks. There is no support for WebSockets or SSE.
+The Request and Response are binaries. They may be *accelerated* binaries with structure under-the-hood that can be efficiently queried, manipulated, and validated. The application receives complete requests and returns complete responses - no WebSockets, chunking, or SSE. If a request fails to generate a response, it is logically retried until timeout, providing a simple basis for long polling. Use "303 See Other" responses for requests that are handled asynchronously.
 
-Each 'http' request is handled in a separate transaction. If this transaction aborts voluntarily, it is logically retried until it successfully produces a response or times out, providing a simple basis for long polling. A 303 See Other response is suitable in cases where multiple transactions are required to compute a response. Runtimes may eventually support multiple requests within one transaction via dedicated HTTP headers, but that will wait for the future.
+Eventually, we might support for multiple requests within a transaction via dedicated HTTP headers. A runtime could also support 'app.http.ws' to receive runtime-scoped WebSockets.
 
-Ideally, authorization and authentication are separated from the application. We could instead model them as application-specific runtime configuration, perhaps integrating with SSO.
-
-
-*Aside:* It is feasible to configure a runtime to automatically launch the browser and attach to the application.
+*Aside:* Based on configuration and application settings, the runtime might automatically launch a browser pointing to the application.
 
 ## Remote Procedure Calls
 
 To receive RPC calls, an application should declare an RPC API in application settings, and define a dispatch method:
 
-        rpc : (MethodRef, List of Arg) -> [cb, sys] Result
+        app.rpc : (MethodRef, List of Arg) -> [cb, sys] Result
 
 The MethodRef is application specific and should be suitable for efficient dynamic dispatch. Initial MethodRefs are declared in application settings, but settings may specify a protocol to discover more methods at runtime. For security reasons, MethodRef is not directly published to the client. Instead, the client receives a cryptographic token that the runtime maps to MethodRef. This supports non-homogenous publishing and efficient revocation of published interfaces.
 
@@ -279,7 +286,7 @@ A viable API:
 
 This API is designed assuming use of [libffi](https://en.wikipedia.org/wiki/Libffi) and the [Tiny C Compiler (TCC)](https://bellard.org/tcc/). For the latter, a [recent version](https://github.com/frida/tinycc/tree/main) lets us redirect `#include` and resolve missing symbols via callbacks.
 
-*Aside:* It is unclear what should happen with the FFI process stdin, stdout, and stderr file streams. These can feasibly be redirected to the runtime and made available through reflection. Perhaps we can present an xterm.js per FFI process via `"/sys/ffi"`. Alternatively, we could let the user manage this.
+*Aside:* It is unclear what should happen with the FFI process stdin, stdout, and stderr file streams. These can feasibly be redirected to the runtime and made available through reflection. Perhaps we can present an xterm.js per FFI process via `"/sys/ffi/name"`. Alternatively, we could let the user manage this.
 
 ## Filesystem, Network, Native GUI, Etc.
 
@@ -306,16 +313,6 @@ Observing node allows for an application to vary its behavior based on where a t
 
 Observing the starting node has consequences! A runtime might discover that a transaction started on node A would be better initiated on node B. Normally, we cancel the transaction on node A and let B handle it. However, after observing that we started on node A, we instead *migrate* to node B. With optimizations, we can skip the migration step and run the transaction on node B directly, but *only while connected to node A*. Thus, carelessly observing the node results in a system more vulnerable to disruption. Observing *after* a node is determined for other reasons (such as FFI usage) avoids this issue.
 
-## Securing Applications
-
-Not every application should be trusted with full access to FFI, shared state, and other sensitive resources. This is true within a curated community configuration, and even more true with external scripts of ambiguous provenance. What can be done?
-
-A configuration can describe who the user trusts and in which roles, or how to find this information. We can build a cache of signed manifests and public keys, e.g. by searching `".glas/"` subfolders when loading sources. Each signature can scope trust to ad hoc roles like 'filesystem/\*' or 'filesystem/appdata'. A function that uses FFI, thus requiring full trust, can include annotations indicating which operations may be safely called from a client trusted only with 'filesystem/\*'.
-
-Instead of a binary decision for the entire application, I propose to track fine-grained trust for individual definitions. Before running an application, we can analyze call graphs to ensure sensitive resources are accessed only from code with a suitable level of trust. If there are any issues, we can warn users then let them abort the application, temporarily extend trust, or run in a degraded mode where transactions that would violate security policies are blocked.
-
-An application that anticipates running without user trust should voluntarily sandbox itself, relying on trusted shared libraries or adapters. Of course, it is also feasible for users to manually restrict an application via staged computing. That would mostly be the prerogative of power users, but even regular users may know of a few standard sandboxes they can easily apply.
-
 ## Composing Applications
 
 Composition of most transaction-loop interfaces such as 'start', 'step', 'http', 'rpc', and 'gui' is simple. We can start all components, non-deterministically choose steps, route and extend RPC requests, route or compose GUI views, etc.. Algebraic effects further support composition: the application can restrict or redirect effects used by components. My vision for glas systems calls for convenient composition of applications, both for [notebook apps](GlasNotebooks.md) and sandboxing purposes.
@@ -324,17 +321,11 @@ To compose applications, we must first reference applications. One option is to 
 
 *Note:* Application 'settings' are runtime specific and not inherently composable. Developers may need to manually override individual settings that lack a natural composition.
 
-## Alternative Application Models
-
-The glas executable can support multiple run modes. The configuration will select a run mode based on application 'settings'. This allows for more flexible integration. Users aren't stuck with transaction-loop applications. However, what is feasible depends on what can easily integrate the same APIs we're using for other tasks.
-
-### Staged Applications
-
-Staged applications may define 'build' as a [namespace procedure](GlasNamespaces.md) with access to command-line arguments as 'source code', and perhaps to OS environment variables. This could load files or URLs as additional sources.
+## Alternative Run Modes
 
 ### Threaded Applications
 
-In some use cases, developers may prefer the conventional 'main' procedure. The evaluator will heuristically partition the main procedure into a sequence of atomic steps. Minimum step size can be controlled by annotating 'atomic' sections, e.g. `(%an (%an.atomic) Operation)`, while maximum step size could be guided by 'yield' annotations (reporting an error if 'yield' appears within an 'atomic' operation). 
+In some use cases, developers may prefer the conventional 'app.main' procedure. The evaluator will heuristically partition the main procedure into a sequence of atomic steps. Minimum step size can be controlled by annotating 'atomic' sections, e.g. `(%an (%an.atomic) Operation)`, while maximum step size could be guided by 'yield' annotations (reporting an error if 'yield' appears within an 'atomic' operation). 
 
 Every successful step will implicitly update stateful thread environment representing the call stack or continuation, local mutable vars, algebraic effects handlers, invariant assertions, instrumentation, and so on. Every aborted or divergent step is implicitly retried, much like a 'step' function for a transaction loop. This retry provides a basis to wait on a mutex, queue, or arbitrary conditions. Use of 'sys.select' together with 'atomic' can express flexible waits, e.g. wait on a queue OR a timeout, and bounded searches.
 
@@ -347,10 +338,16 @@ For concurrency, we can support multi-threading. A viable API:
   * `kill(Thread)` - forces a running thread to terminate. Threads do not error out, i.e. even a thread that halts on a type error is still logically retrying that last step forever, until code is updated or the thread is killed.
   * `join(Thread) : opt Result` - Returns a thread's final result, or nothing if the thread was killed. Diverges if the thread is still running. Join on a newly spawned thread within an atomic section will always diverge.
 
-Instead of 'main' as a special thread, I propose a hybrid model: the runtime offers 'sys.thread.\*' to the transaction-loop application. Users may manually spawn a main thread upon 'start'. Conversely, a thread loop with a *stable condition and atomic body* can be optimized as a transaction loop, evaluating the body many times in parallel while the condition holds.
-
 Multi-threading requires representing local mutable vars shared between threads as runtime-scoped heap refs. Ideally, an optimizer will perform analyses to minimize sharing, keeping most data on the call stack. We can also introduce annotations to express and enforce ownership assumptions.
 
-Use of 'sys.thread.\*' does have an opportunity cost: there is no general means to conveniently or robustly update thread environments in context of live coding. As we switch to new functions, we provide old arguments and algebraic effects handlers. This can feasibly be mitigated with conventions, annotations, and reflection, essentially asking users to stabilize APIs and design for live coding.
+We can hybridize threaded and transaction-loop run modes. In this case, the runtime offers 'sys.thread.\*' to a transaction-loop application. Users may spawn a main thread upon 'app.start'. A thread loop with a *stable condition and atomic body* can be optimized as a transaction loop, evaluating the body many times in parallel while the condition holds.
+
+Use of 'sys.thread.\*' does have an opportunity cost: there is no general means to conveniently or robustly update thread environments in context of live coding. As we switch to *new* functions, we'll provide *old* arguments and algebraic effects handlers. This can feasibly be mitigated with conventions, annotations, and reflection, essentially asking users to stabilize APIs and design with live coding in mind.
 
 *Note:* The thread API does not support naming threads. Instead, I suggest annotations for assigning debug names to operations in general.
+
+### Staged Applications
+
+Staged applications might define 'app.build' as a [namespace procedure](GlasNamespaces.md), generating another application based on command-line arguments. The procedure can be parameterized by a list of command-line arguments. It has access to the same '%env.\*' environment of shared libraries, languages, and configured applications as scripts.
+
+By default, the arguments might be split between stages at the first "--" argument. However, we could easily configure other patterns to split arguments.
