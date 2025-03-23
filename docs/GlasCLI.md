@@ -51,21 +51,23 @@ Ideally, 'installing' an application reduces to downloading an executable binary
 
 ## Security
 
-Not every application should be trusted with full access to FFI, shared state, and other sensitive resources. This is true within a curated community configuration, and for external scripts of ambiguous provenance. What can be done?
+Not every application should be trusted with full access to FFI, shared state, and other sensitive resources. This is true within a curated community configuration, and even more so for external scripts of ambiguous provenance. What can be done?
 
-A configuration describes who the user trusts and in which roles, or how to lookup this information. The glas executable can build an extended cache of signed manifests and certified public keys, e.g. by searching `".glas/"` subfolders when loading sources. Trust can be scoped by signatures and extended by annotations, and tracked at a fine granularity based on contributing sources.
+Trust can be tracked for individual definitions based on contributing sources. This can be supported via public key infrastructure, with trusted developers signing manifests and having their own public keys signed in turn. The user configuration can specify the 'root' trust, or how to look it up. The glas executable might heuristically search `".glas/"` subfolders when loading sources for those signed manifests and derived certifications.
 
-A trusted library might use FFI to implement a GUI framework. Based on annotations, that library can extend trust for specific methods in the library's public interface to a client trusted only with GUI. Of course, specific features such as a web-engine view may require greater trust. An application that anticipates running without much trust can voluntarily sandbox itself by restricting which interfaces it uses.
+Trust can be scoped. For example, when signing a manifest, a developer can indicate they trust code only with GUI and audio, not full FFI or network access. Unfortunately, we cannot count upon developers precisely scoping trust, nor will most end-users be security savvy. Instead, communities scope trust of developers. A developer might be trusted with GUI and 'public domain' network access, and this extends to code signed by that developer.
 
-Before running an application, the glas executable will analyze the call graph for violations of the configured security policy. If there are any concerns, we can warn users then let them abort the application, extend trust, or run in a degraded mode where some transactions are blocked for security reasons. Of course, exactly how this is handled will also be configurable.
+Trust requirements can be attenuated via annotations. For example, a trusted shared library might implement a GUI using FFI. FFI requires a very high level of trust, but GUI does not. Based on annotations, the library could indicate that a subset of public methods only require the client is trusted with GUI access. A developer can voluntarily sandbox an application by interacting with the system only through such libraries.
+
+Before running an application, the glas executable can analyze the call graph for violations. If there are any concerns, we might warn users and let them abort the application, extend trust, or run in a degraded mode where some transactions are blocked for security reasons. Of course, exactly how this is handled should be configurable.
 
 ## Glas Shell
 
-A user configuration may also be an application, defining 'app.\*' at the toplevel. In context of [notebook applications](GlasNotebooks.md) this application will often represent a live-coding projectional editor for the configuration and its transitive dependencies. Users can run this application via `"glas --run . Args To App"` without any special features. 
+A user configuration may define 'app.\*' at the toplevel. In context of [notebook applications](GlasNotebooks.md) this application likely represents a live-coding projectional editor for the configuration and its transitive dependencies. Users can run this application via `"glas --run . Args To App"` without any special features. 
 
-We can feasibly present this notebook as the main [shell](https://en.wikipedia.org/wiki/Shell_(computing)) for a glas system. Instead of running applications as separate OS processes, user actions can compose applications into the notebook, integrating with 'app.step', 'app.http', 'app.gui', and so on. This shell could support both graphical and command-line interfaces, the latter via 'sys.tty.\*'.
+A community can feasibly tweak this notebook application to serve as a [shell](https://en.wikipedia.org/wiki/Shell_(computing)) for the glas system. Instead of running multiple applications as separate OS processes, user actions would compose applications into the notebook. This shell could support conventional graphical and command-line interfaces alongside HTTP.
 
-In practice, we'll want instanced shells. Instancing can be implemented by copying a configuration folder, logically overlaying part of the filesystem, or introducing an intermediate configuration file that inherits and overrides definitions. A glas executable might have built-in support for instanced shells via `"glas --shell ..."`, perhaps naming the shell for persistence.
+In practice, we'll want instanced shells. Instancing can feasibly be implemented by copying a configuration folder, logically overlaying the filesystem, or introducing an intermediate configuration file that inherits and overrides definitions. A glas executable might provide built-in support for instanced shells via `"glas --shell ..."`, optionally naming the shell for persistence.
 
 ## Built-in Tooling
 
@@ -73,27 +75,15 @@ The glas executable may be extended with useful built-in tools. Some tools that 
 
 * **--conf** - inspect and debug the configuration, perhaps initialize one
 * **--cache** - manage installed applications and resources, clean up
-* **--db** - query, watch, or edit persistent data.
-* **--rpc** - inspect RPC registries, perhaps issue some RPC calls directly from command line
+* **--db** - query, browse, watch, or edit persistent data in the shared heap
+* **--rpc** - inspect RPC registries or issue RPC calls from command line
 * **--debug** - debug or manipulate running apps from the command line
-* **--trust** - tools to manage trust of scripts or app providers, adding, removing, or inspecting roles
+* **--trust** - tools to manage trust of scripts or app providers
 
 Heuristics to guide tooling: First, any function available via CLI tools must also be accessible within glas applications. This might involve introducing 'sys.refl.conf.\*' or similar methods. Even 'sys.refl.cli.help' and 'sys.refl.cli.version' may be included. Second, we should aim to keep glas executables small, assigning code bloat a significant weight.
 
 ## Implementation Roadmap
 
-The initial implementation of the glas executable must be developed outside the glas system. This implementation will lack many features, especially all the optimizations that would let transaction loops scale beyond a simple event dispatch loop. But it should be feasible to provide basic file system access and console IO, HTTP integration, simple persistent state, lazy evaluation of namespaces and simplistic caching, and loading of DVCS resources.
+The initial implementation of the glas executable must be developed outside the glas system. This implementation will lack many features, especially the optimizations that would let transaction loops scale beyond a simple event dispatch loop. Fortunately, simple event dispatch loops are still very useful, and we can fully utilize a system between FFI, accelerators, and sparks. We also have access to conventional threaded applications.
 
-Ideally, we'll eventually bootstrap the glas executable by extracting another executable binary. Something like:
-
-    # build
-    /usr/bin/glas --run glas-bin > ~/.glas/tmp/glas
-    chmod +x ~/.glas/tmp/glas
-
-    # verify
-    ~/.glas/tmp/glas --run glas-bin | cmp ~/.glas/tmp/glas
-
-    # install
-    sudo mv ~/.glas/tmp/glas /usr/bin/glas
-
-Early forms of bootstrap could be adjusted to instead generate C or LLVM or similar to be further compiled instead of directly to executable format. But I hope to eliminate such dependencies.
+Ideally, we'll eventually bootstrap the glas executable within the glas system. Early forms of bootstrap could generate C or LLVM, but I hope to swiftly eliminate external dependencies and integrate relevant optimizations into the glas libraries.

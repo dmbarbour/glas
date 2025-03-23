@@ -313,13 +313,17 @@ Observing node allows for an application to vary its behavior based on where a t
 
 Observing the starting node has consequences! A runtime might discover that a transaction started on node A would be better initiated on node B. Normally, we cancel the transaction on node A and let B handle it. However, after observing that we started on node A, we instead *migrate* to node B. With optimizations, we can skip the migration step and run the transaction on node B directly, but *only while connected to node A*. Thus, carelessly observing the node results in a system more vulnerable to disruption. Observing *after* a node is determined for other reasons (such as FFI usage) avoids this issue.
 
+## Reflection on Definitions
+
+We'll eventually need to look at the namespace, e.g. to extract an executable binary or a web application. We can dedicate 'sys.refl.ns.\*' for this role. However, we might restrict this to compile-time computations (perhaps lazy) to simplify separate compilation of an executable.
+
 ## Composing Applications
 
-Composition of most transaction-loop interfaces such as 'start', 'step', 'http', 'rpc', and 'gui' is simple. We can start all components, non-deterministically choose steps, route and extend RPC requests, route or compose GUI views, etc.. Algebraic effects further support composition: the application can restrict or redirect effects used by components. My vision for glas systems calls for convenient composition of applications, both for [notebook apps](GlasNotebooks.md) and sandboxing purposes.
+We can compose applications by composing their public interfaces, and by wrapping the algebraic effects handlers to redirect resources like heap vars. My vision for glas systems calls for convenient composition of applications, both for [notebook apps](GlasNotebooks.md) and sandboxing purposes.
 
-To compose applications, we must first reference applications. One option is to reference applications by filename or URL, loading them redundantly into the namespace. However, more efficient composition is possible by presenting applications alongside shared libraries, i.e. such that '%env.foo.app.step' is as easily accessed as '%env.lib.math.cosine' when developing applications. Thus, convenient composition of applications influences layout of the user's configuration namespace.
+For efficient composition of applications, and to enable scripts to compose applications, we should include most applications in '%env.appname.app.\*' alongside shared libraries. This influences the user's configuration namespace.
 
-*Note:* Application 'settings' are runtime specific and not inherently composable. Developers may need to manually override individual settings that lack a natural composition.
+A lot of composition can be automated into namespace macros or user-defined syntax. Ideally, users can very easily express composite applications where components can communicate according to simple conventions (e.g. databus, publish-subscribe, internal RPC).
 
 ## Alternative Run Modes
 
@@ -348,6 +352,4 @@ Use of 'sys.thread.\*' does have an opportunity cost: there is no general means 
 
 ### Staged Applications
 
-Staged applications might define 'app.build' as a [namespace procedure](GlasNamespaces.md), generating another application based on command-line arguments. The procedure can be parameterized by a list of command-line arguments. It has access to the same '%env.\*' environment of shared libraries, languages, and configured applications as scripts.
-
-By default, the arguments might be split between stages at the first "--" argument. However, we could easily configure other patterns to split arguments.
+Staged applications might define 'app.build' as a [namespace procedure](GlasNamespaces.md), generating another application based on command-line arguments. The procedure can be parameterized by a list of command-line arguments. It receives access to the same '%env.\*' environment of shared libraries, languages, and configured applications as scripts.

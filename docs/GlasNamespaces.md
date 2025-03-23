@@ -26,10 +26,10 @@ Algebraic effects API:
 * `move(TL)` - apply translation to future defined names
 * `link(TL)` - apply translation to future definition or eval ASTs
 * `fork(N)` - returns non-deterministic choice of natural number 0..(N-1)
-* `eval(AST)` - returns result of evaluating anonymous procedure
-* `eval.eff` - used by eval; default implementation raises an error
-* `load(SourceRef)` - compile module in scope of current translation 
-* `source` - returns an abstract, runtime-specific reference to source
+* `eval(AST) : [cb] Result` - evaluate AST under the current translation, limited interaction with the caller via callback and Result.
+  * `cb : List of Arg -> [cb] Result` - generic, recursive callback handler, similar to remote procedure calls.
+* `load(SourceRef)` - load and compile a file in scope of current translation. Returns immediately, runs as a separate thread.
+* `source : Source` - (tentative) returns an abstract, runtime-scoped Source for the file being loaded.
 
 ## Evaluation Strategy
 
@@ -37,9 +37,9 @@ The 'fork' effect supports non-deterministic choice as a basis for iteration and
 
 However, to ensure a deterministic outcome in case of ambiguity, we prioritize definitions from lower-numbered forks. Thus, we must not accept definitions from higher-numbered forks before all lower-numbered forks are finished or paused. Further, 'move' translations restrict which definitions a branch can produce: we can lazily defer computation of branches if we determine that they do not produce definitions we need.
 
-In case of long-running computations, we might heuristically garbage-collect intermediate definitions. This can be understood as an aggressive form of dead-code elimination. We can forget 'private' definitions if they are not reachable from 'public' definitions or any pending computation. The 'link' translation influences what is reachable from a namespace procedure. We can also collect computations that wait on definitions not in scope of any 'move' translation. See *Namespace Processes and Channels* for a design pattern that relies on garbage-collection.
+In case of long-running computations, we might heuristically garbage-collect intermediate definitions. This can be understood as an aggressive form of dead-code elimination: we can eliminate 'private' definitions if they are not reachable from 'public' definitions or any pending computation. The 'link' translation determines what is reachable from a pending computation. We can also collect computations that wait on definitions not in scope of any 'move' translation. See *Namespace Processes and Channels* for a design pattern that relies on garbage-collection.
 
-The 'eval' and 'load' effects both invoke the current namespace. If necessary, they wait for definitions. Although these can be implemented via interpreter, for performance we might run post-processing of definitions concurrently with computation of the namespace. This post-processing may include type-checking, testing, optimizations, JIT compilation to lower-level code, and so on.
+Post-processing of definitions - type checkers, optimizers, JIT compilers, etc. - can run concurrently with evaluation of the namespace. And generally must do so, in context of 'eval' and user-defined language modules for 'load'.
 
 ## Abstract Assembly
 
@@ -51,7 +51,7 @@ We can evaluate AST to a canonical form by applying scope translations then simp
 
 ## Aliasing
 
-Aliasing is expressed by defining one name to another, e.g. 'define(Name1, n:Name2)'. These two names should then be equivalent under evaluation within the program model, excepting reflection APIs. 
+Aliasing is expressed by defining one name to another, e.g. 'define(Name1, n:Name2)'. These two names should then be equivalent under evaluation within the program model modulo reflection APIs. (Whether names are distinguished in context of reflection would be non-deterministic, depending on implementation and optimization level.)
 
 ## Translations
 
@@ -85,11 +85,11 @@ The proposed ".!" suffix further ensures every definition "bar.!" is implicitly 
 
 The 'eval' operation is the basis for namespace macros. This operation interprets an AST argument as the body of an anonymous procedure. Although I say 'interpret', I assume a just-in-time compiler is involved for performance. The return value is returned to the caller, while failure will abort the caller. A special exception is failure due to a missing definition: we can arrange the namespace procedure to wait for the definition settle before continuing.
 
-The AST may interact with the caller via algebraic effects. To keep integration simple, the interpreter routes all requests to `eval.eff : (HandlerName, List of Arg) -> Result`. The caller is expected to override this handler in scope of calling 'eval', with the default raising an error.
+The AST may interact with the caller via algebraic effects. To keep integration simple, the interpreter will bottleneck interaction through generic, recursive callback handlers, similar to RPC calls, `cb : List of Arg -> [cb] Result`. 
 
 ## Modularity
 
-The 'load' operation is the basis for modular namespaces. This call returns immediately, merely arranging to compile and integrate the module after the caller returns. Only the caller's 'link' and 'move' translations are inherited, and the module is compiled in an otherwise fresh environment of algebraic effects.
+The 'load' operation is the basis for modular namespaces. The SourceRef will primarily include loading files and folders, perhaps from DVCS.
 
 ### User-Defined Syntax
 
@@ -97,27 +97,66 @@ Support for modularity is entangled with support for user-defined syntax. Instea
 
 We assume built-in support for a few file extensions, such as ".glas" files. However, '%env.lang.glas' is favored. If this is self-referentially defined, we'll attempt a bootstrap via the built-in then verify a fixpoint. Multiple built-in languages can be mutually bootstrapped in one step. 
 
-By aligning user-defined syntax with file extensions, we can easily integrate with external tools. A file-based database or a ".zip" file can generously be viewed as 'syntax'. Graphical and textual programming can be freely mixed. Users can develop DSLs for a project. Simple ".txt" or ".json" files might merely define 'data', but we can warn for spelling errors or report compile-time errors for structure errors, and we can easily apply partial evaluation optimizations.
-
-*Note:* File extensions will be rewritten a little in translation to a name: utf-8, lower-case ('A-Z' only), replace '.' with '-'. We'll also add the ".!" suffix for prefix uniqueness.
+By aligning user-defined syntax with file extensions, we can easily integrate with external tools. A file-based database can generously be viewed as syntax. Structured, graphical, and textual programming can be freely mixed. Users can develop DSLs for a project. Even simple ".txt" or ".json" files can be usefully imported as sources defining 'data', supporting compile-time assertions and partial evaluation.
 
 ### Folders as Packages
 
-To simplify sharing and distribution of code, we'll generally forbid loading of parent-relative ("..") and absolute ("/") file paths. Files within a folder may only reference other files in the same folder or subfolders, or remote files via DVCS URLs. Thus, each folder is effectively location independent.
+To simplify sharing and distribution of code, we'll generally forbid loading of parent-relative ("..") and absolute file paths in context of processing a file. Files within a folder may only reference other files in the same folder or subfolders, or remote files via DVCS URLs. Thus, each folder is effectively location independent.
 
-A package folder further contains a single "package" file of any extension. Clients may 'load' a package folder directly, implicitly loading the package file. Further, this is the expected usage: we'll warn upon loading specific files from a package folder because doing so bypasses export control and thus hinders software maintenance. OTOH, if a folder does not contain a package file, clients must load specific files.
+Any folder that contains a "package" file (of any extension) is recognized as a package folder. In this case, users are expected to reference the *folder* as the source. The package file is implicitly selected and loaded. Reference to other files will generate a warning or error about bypassing the package abstraction, which may hinder future refactoring and maintenance.
 
-### Ad hoc SourceRef
+*Note:* Users can work around restrictions on parent-relative and absolute file paths by use of filesystem-layer links. I would discourage this in the general case, but it's convenient for integrating user-local projects into the user configuration.
 
-In 'load(SourcRef)', the SourceRef type is runtime specific. A runtime can heuristically recognize short texts as file paths or URLs. It may also support 'file:(path:Text, as:FileExt)' and 'dvcs:(url:URL, ...)'.  I assume this will eventually settle on some de facto standards. But integration with remote sources will inevitably be piecemeal, and flexible interpretation of SourceRef allows for this evolution.
+### Eliding File Extensions
 
-To mitigate portability, a configuration can define the final `SourceRef -> SourceRef` adapter, with reference to runtime version info. This does introduce a bootstrapping problem, but the runtime can maintain a history of loads before the adapter is defined, and retrospectively review that the adapter is irrelvant for those specific loads. This verifies a *stable* interpretation of SourceRef. At other layers, user-defined syntax can be extended for common sources and also support 'eval' of a SourceRef to ensure extensibility.
+File extension is always elided for a package folder. However, users could also elide extensions for other files. One motive to do so is to abstract 'language' as an implementation detail, allowing code to be refactored more flexibly. However, it's an error to elide file extension if doing so results in an ambiguous referent, e.g. "foo" is ambiguous in context of "foo.c" and "foo.o" or "foo/". Some external tools may force users to favor full filenames.
+
+### Undefined Sources or Languages
+
+In context of live coding and [notebook applications](GlasNotebooks.md), it is often convenient to 'import' a file or package before it is defined. Instead of a compile-time error, this should be presented as a to-be-defined source. We might implement this in terms of 'compiling' an empty string with '%env.lang.FileExt', providing a projectional editor for the indicated file extension. If the file extension is elided, the runtime may use '%env.lang.undefined' to serve this role.
+
+### Filename Restrictions
+
+I propose to restrict things a little for portable reference and distribution:
+
+* forbidden characters: C0, C1, SP, all ASCII punctuation except for "-./". 
+  * forbidden codepoints: 0x00-0x2C, 0x3A-0x40, 0x5B-0x60, 0x7B-0x9F
+* Files or folders whose name start with "." are also forbidden (hidden).
+* Use "/" as directory separator when referencing files, regardless of OS.
+* Use ASCII or utf-8 encodings when referencing files, regardless of OS.
+* Case Insensitive in ASCII range: 'A-Z' implicitly rewritten to 'a-z'.
+
+When binding file extensions to '%env.lang.FileExt' we'll further rewrite the file extension to lower-case and also replace "." with "-". For example, "foo.TAR.GZ" would be processed by '%env.lang.tar-gz' (then name mangling would add a ".!" suffix).
+
+### Auxilliary Data
+
+A runtime might implicitly scan and load content from hidden `".glas/"` subfolders when loading content from DVCS and local filesystem folders. Useful content for these folders:
+
+* signed manifests and certifications to support security analysis
+* additional proofs or shared cache resources to support compilation 
+* stable location-independent GUIDs or URLs for external shared cache
+
+Basically, it's a final layer for annotations that aren't conveniently annotated within code.
+
+### SourceRef
+
+The SourceRef type is runtime specific, but should generally include local files and DVCS sources. A starting point:
+
+* *Text* - heuristically parsed 
+* `file:(path:Text, as?FileExt, ...)` - a local file or subfolder, relative to the current source. Allows users to override the file extension.
+* `dvcs:(repo:URL, file:(...), ...)` - a DVCS resource.
+
+We could extend this with 'const:(data:Text, as:FileExt)' or 'ns:AST', but it's unclear how that should interact with live coding. We could also support 'http:(url:Path, as?FileExt)', but I'm not convinced it's a good idea in context of live coding and version control.
+
+To mitigate portability, a configuration can define a final `SourceRef -> SourceRef` adapter with reference to runtime version info. We may need to "bootstrap" this adapter, or at least verify in retrospect that the configuration is stable up to loading the adapter.
+
+### Circular Dependencies
+
+Circular loads between files aren't necessarily a problem for the namespace layer, but likely indicates a bug. I propose to simply assume an error unless annotations indicate the cycle is anticipated.
 
 ## Abstract Source
 
-The implicit 'source' parameter to a namespace procedure is intended primarily to support [notebook applications](GlasNotebooks.md), where an application defines its own live-coding projectional editor and live-coding. However, it can also support self-modifying code in general, and there may be other use cases.
-
-In context of incremental compilation, and especially shared caching, the abstract source reference must be stabilized across most source edits. This is supported by heuristic tactics: A runtime can check for `".glas/guid"` to stabilize relocation of folders. A user can add metadata to SourceRef to resolve an ambiguous GUID.
+The 'source : Source' operation exists mostly to support live coding. This source should be abstract but stable across minor code changes and multiple users sharing a memo-cache. This is quite heuristic in nature. We could search for `".glas/guid"` for a GUID or URL to stabilize content of a folder, and simply report an error if ambiguity is discovered.
 
 ## Design Patterns
 
@@ -147,7 +186,7 @@ Some language features involve aggregating content across multiple modules. For 
 
 It is awkward and error-prone for users to manually gather and integrate definitions. Instead, we'll rely on the front-end compiler to automate things. However, in context of extension with new syntax and new aggregates, we'll want a generic solution. There are limitations to work around: we cannot query whether a definition exists, we should not pass arbitrary names between scopes, and there is risk of interference with lazy loading and caching.
 
-At the moment, I lack a solid generic solution. However, I do have an intuition: Reserve prefix "@" for public, compiler-generated definitions. Separate the logic from the compilers; provide it via '%env.\*'. At a 'leaf' node, use a call to write compiler metadata and bind to local definitions in scope. Align most aggregation of metadata with forks, such that each fork defines its own metadata then we locally compose them. A compiler can optimize a little, skipping a few writes or aggregations where obviously unnecessary.
+At the moment, I lack a solid generic solution. However, I do have an intuition: Reserve a prefix for compiler-generated definitions. Separate the logic from the compilers; provide it via '%env.\*'. At a 'leaf' node, use a call to write compiler metadata and bind to local definitions in scope. Align most aggregation of metadata with forks, such that each fork defines its own metadata then we locally compose them. A compiler can optimize a little, skipping a few writes or aggregations where obviously unnecessary.
 
 ### Namespace Processes and Channels
 
