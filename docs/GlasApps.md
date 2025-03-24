@@ -115,13 +115,13 @@ In general we should consider *permanent* network disruptions, e.g. destruction 
 
 ## HTTP Interface
 
+Based on application-specific configuration, a runtime will open TCP ports to receive HTTP and RPC requests. A configurable subset of HTTP requests, perhaps `"/sys/*"`, will be routed to the runtime-provided 'sys.refl.dbg.http' to support administration and debugging. Other HTTP requests are routed to the application via 'app.http', if defined. 
+
         app.http : Request -> [sys] Response
 
-The Request and Response are binaries. They may be *accelerated* binaries with structure under-the-hood that can be efficiently queried, manipulated, and validated. The application receives complete requests and returns complete responses - no WebSockets, chunking, or SSE. If a request fails to generate a response, it is logically retried until timeout, providing a simple basis for long polling. Use "303 See Other" responses for requests that are handled asynchronously.
+The Request and Response are binaries. They may be *accelerated* binaries with structure under-the-hood that can be efficiently queried, manipulated, and validated. Each request runs in a separate transaction. If a request fails to generate a valid response, it is logically retried until timeout, serving as a simple basis for long polling. Asynchronous operations can immediately return "303 See Other", allowing the caller to fetch the result in a future query.
 
-Eventually, we might support for multiple requests within a transaction via dedicated HTTP headers. A runtime could also support 'app.http.ws' to receive runtime-scoped WebSockets.
-
-The runtime will also provide a web service for debugger and IDE integration. Depending on the user configuration and application settings, this service might receive requests to `"/sys/*"` and require specific authorization. Applications can access this server via 'sys.refl.dbg.http', bypassing configured authorization.
+If there is sufficient demand, we can extend this API to accept WebSockets, perhaps via 'app.http.ws'. We can also invent HTTP headers to handle multiple requests in one atomic transaction. To effectively use 'app.http' as an early basis for GUI, we could configure the runtime to open a browser window when the application is started.
 
 ## Remote Procedure Calls
 
