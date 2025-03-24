@@ -61,13 +61,15 @@ Trust requirements can be attenuated via annotations. For example, a trusted sha
 
 Before running an application, the glas executable can analyze the call graph for violations. If there are any concerns, we might warn users and let them abort the application, extend trust, or run in a degraded mode where some transactions are blocked for security reasons. Of course, exactly how this is handled should be configurable.
 
+*Aside:* In context of 'http' interfaces and such, we might also secure user access to the application by configuring authorizations. Perhaps we could integrate SSO at the configuration layer.
+
 ## Glas Shell
 
 A user configuration may define 'app.\*' at the toplevel. In context of [notebook applications](GlasNotebooks.md) this application likely represents a live-coding projectional editor for the configuration and its transitive dependencies. Users can run this application via `"glas --run . Args To App"` without any special features. 
 
 A community can feasibly tweak this notebook application to serve as a [shell](https://en.wikipedia.org/wiki/Shell_(computing)) for the glas system. Instead of running multiple applications as separate OS processes, user actions would compose applications into the notebook. This shell could support conventional graphical and command-line interfaces alongside HTTP.
 
-In practice, we'll want instanced shells. Instancing can feasibly be implemented by copying a configuration folder, logically overlaying the filesystem, or introducing an intermediate configuration file that inherits and overrides definitions. A glas executable might provide built-in support for instanced shells via `"glas --shell ..."`, optionally naming the shell for persistence.
+In practice, we'll often want instanced shells. This can feasibly be implemented by copying or logically overlaying the configuration folder. The glas executable might provide built-in support for instanced shells via `"glas --shell ..."`.
 
 ## Built-in Tooling
 
@@ -77,10 +79,9 @@ The glas executable may be extended with useful built-in tools. Some tools that 
 * **--cache** - manage installed applications and resources, clean up
 * **--db** - query, browse, watch, or edit persistent data in the shared heap
 * **--rpc** - inspect RPC registries or issue RPC calls from command line
-* **--debug** - debug or manipulate running apps from the command line
-* **--trust** - tools to manage trust of scripts or app providers
+* **--dbg** - debug or manipulate running apps from the command line
 
-Heuristics to guide tooling: First, any function available via CLI tools must also be accessible within glas applications. This might involve introducing 'sys.refl.conf.\*' or similar methods. Even 'sys.refl.cli.help' and 'sys.refl.cli.version' may be included. Second, we should aim to keep glas executables small, assigning code bloat a significant weight.
+Heuristics to guide tooling: First, where feasible, every function available via built-in CLI tools should be accessible through applications. This might involve introducing 'sys.refl.conf.\*', 'sys.refl.cache.\*', and similar methods. Even 'sys.refl.cli.help' and 'sys.refl.cli.version' can be included. Second, we should ultimately aim to keep the glas executable small, assigning code bloat a significant weight.
 
 ## Implementation Roadmap
 

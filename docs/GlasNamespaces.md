@@ -103,13 +103,13 @@ By aligning user-defined syntax with file extensions, we can easily integrate wi
 
 To simplify sharing and distribution of code, we'll generally forbid loading of parent-relative ("..") and absolute file paths in context of processing a file. Files within a folder may only reference other files in the same folder or subfolders, or remote files via DVCS URLs. Thus, each folder is effectively location independent.
 
-Any folder that contains a "package" file (of any extension) is recognized as a package folder. In this case, users are expected to reference the *folder* as the source. The package file is implicitly selected and loaded. Reference to other files will generate a warning or error about bypassing the package abstraction, which may hinder future refactoring and maintenance.
+Any folder that contains a "package" file (of any extension) is recognized as a package folder. In this case, users are expected to reference the *folder* as a source. The package file is implicitly selected and loaded. Reference to other files will generate a warning or error about bypassing the package abstraction, which may hinder future refactoring and maintenance. An entire DVCS repo could be a package folder, and individual subfolders could be packages.
 
-*Note:* Users can work around restrictions on parent-relative and absolute file paths by use of filesystem-layer links. I would discourage this in the general case, but it's convenient for integrating user-local projects into the user configuration.
+*Note:* Users can work around restrictions on parent-relative and absolute file paths by use of filesystem-layer links. I would discourage this in the general case, but it seems convenient for integrating filesystem-local projects into the user configuration.
 
 ### Eliding File Extensions
 
-File extension is always elided for a package folder. However, users could also elide extensions for other files. One motive to do so is to abstract 'language' as an implementation detail, allowing code to be refactored more flexibly. However, it's an error to elide file extension if doing so results in an ambiguous referent, e.g. "foo" is ambiguous in context of "foo.c" and "foo.o" or "foo/". Some external tools may force users to favor full filenames.
+Users may elide file extensions in SourceRef. However, it's an error to elide file extension if doing so results in an ambiguous referent, e.g. "foo" is ambiguous in context of "foo.c" and "foo.o" or "foo/". One reason to elide extensions is to abstract 'language' as an implementation detail, allowing language to be updated without rewriting the client. For "package" files the extension is always elided.
 
 ### Undefined Sources or Languages
 
@@ -126,7 +126,7 @@ I propose to restrict things a little for portable reference and distribution:
 * Use ASCII or utf-8 encodings when referencing files, regardless of OS.
 * Case Insensitive in ASCII range: 'A-Z' implicitly rewritten to 'a-z'.
 
-When binding file extensions to '%env.lang.FileExt' we'll further rewrite the file extension to lower-case and also replace "." with "-". For example, "foo.TAR.GZ" would be processed by '%env.lang.tar-gz' (then name mangling would add a ".!" suffix).
+When binding file extensions to '%env.lang.FileExt' we'll further rewrite the file extension to lower-case and also replace "." with "-". For example, "foo.XYZ.ZY" would be processed by '%env.lang.xyz-zy' (then name mangling would add a ".!" suffix). 
 
 ### Auxilliary Data
 
@@ -144,15 +144,17 @@ The SourceRef type is runtime specific, but should generally include local files
 
 * *Text* - heuristically parsed 
 * `file:(path:Text, as?FileExt, ...)` - a local file or subfolder, relative to the current source. Allows users to override the file extension.
-* `dvcs:(repo:URL, file:(...), ...)` - a DVCS resource.
+* `dvcs:(repo:URL, file:(...), ...)` - a file within a DVCS repository. May need to include a branch, hash, or version tag if not implicit to the URL. Might need some extra protocol specification like 'gitlab'. 
 
-We could extend this with 'const:(data:Text, as:FileExt)' or 'ns:AST', but it's unclear how that should interact with live coding. We could also support 'http:(url:Path, as?FileExt)', but I'm not convinced it's a good idea in context of live coding and version control.
+We could extend this with 'const:(data:Text, as:FileExt)' or 'ns:(proc:AST, ...)', but it's unclear how that should interact with live coding. Perhaps an extra 'const' or 'ns' field can add metadata to 'source'? We could also support 'http:(url:Path, as?FileExt, ...)', but that seems awkward in context of live coding, version control, packaging, and analyzing security. In any case, there is plenty room for extensions.
 
-To mitigate portability, a configuration can define a final `SourceRef -> SourceRef` adapter with reference to runtime version info. We may need to "bootstrap" this adapter, or at least verify in retrospect that the configuration is stable up to loading the adapter.
+To mitigate portability, a configuration can define a `SourceRef -> SourceRef` adapter with reference to runtime version info. We may need to "bootstrap" this adapter, or perhaps it is sufficient to verify retrospectively that configuration dependencies are stable up to defining the adapter.
+
+*Aside:* an alternative API might abstract references as `src.file : (Source, Path) -> Source` and support `load(Source)`. This would be more flexible, letting developers defer 'load' or express indexing of files. However, this complicates the API, reasoning, and refactoring. It's also mostly redundant between namespace macros, lazy loading, and shared libraries. So, I've chosen to use a concrete SourceRef.
 
 ### Circular Dependencies
 
-Circular loads between files aren't necessarily a problem for the namespace layer, but likely indicates a bug. I propose to simply assume an error unless annotations indicate the cycle is anticipated.
+Circular loads between files or DVCS repos aren't inherently a problem for the namespace layer. They can be resolved via lazy loading and ambiguity analysis. However, they are easily unintended bugs. I propose to simply report an error unless flags in SourceRef or other annotations indicate the cycle is anticipated.
 
 ## Abstract Source
 
@@ -170,15 +172,17 @@ We might further add a weak enforcement mechanism: raise an error when a name co
 
 ### Implicit Environment
 
-I propose to reserve "%env.\*" to serve as a read-only context. This piggybacks on the default rules for propagating primitives. I assume "%" is read-only via implicit move rule `{ "%" => NULL }`. Instead of defining '%' words, we use link rules to redirect them within a given scope, such as `{ "%env.x." => "my.x." }`. The runtime may apply a default link rule `{ "%env." => "env." }` to close the loop.
+I propose to reserve "%env.\*" to serve as a read-only context. This piggybacks on the default rules for propagating primitives. I assume "%" is read-only via implicit move rule `{ "%" => NULL }`. Instead of defining '%' words, we use link rules to redirect them within a given scope, such as `{ "%env.x." => "my.x." }`. 
+
+The runtime can apply a default link rule `{ "%env." => "env." }` to the initial user configuration, letting the initial environment be configured like a global namespace. The implicit environment will be used for shared libraries, user-defined languages, efficient composition of applications, and (via libraries) as configurable compilation parameters.
 
 ### Shared Libraries
 
 Instead of directly loading common utility code such as math libraries, we can insist these definitions are provided through the implicit environment, such as "%env.lib.math.\*". If the symbol isn't defined, the user would receive a clear error such as "no definition for env.lib.math.whatever". This is easily corrected by importing the library into the client's environment. It isn't a problem to import many shared libraries: they'll be lazily loaded, and the cached code will be shared between apps.
 
-Shared libraries do introduce versioning and maintenance challenges. This can be mitigated by controlling the scope of sharing, e.g. loading shared libraries at the scope of a curated community or project. In general, sharing will restrict overloads, i.e. we cannot move and replace a shared definition, but we can redirect "%env.lib.abc.xyz" to "my.xyz" within scope of defining a subprogram.
+Shared libraries do introduce versioning and maintenance challenges. This can be mitigated by controlling the scope of sharing. Instead of loading every library into the user configuration, we can add a link translation `{ "%env.lib.foo." => "myproj.lib.foo." }` within scope of of the project.
 
-*Note:* Even without shared libraries, an optimizer could apply a compression pass to merge redundant code. But that optimization is relatively expensive, and it's convenient to start with 'hand-optimized' code that shares utility code.
+*Note:* An optimization pass can compress a namespace. Even without shared libraries, we can eliminate most runtime overhead of loading the same utility code many times. However, the shared library pattern is more robust and also avoids compile-time overheads. 
 
 ### Aggregate Definitions
 

@@ -117,13 +117,11 @@ In general we should consider *permanent* network disruptions, e.g. destruction 
 
         app.http : Request -> [sys] Response
 
-The runtime can provide a web server, perhaps reserving `"/sys/*"` for debugger integration and routing everything else to 'app.http'. This port can be shared with RPC, recognizing protocol based on header. Applications may access the runtime's built-in server via 'sys.refl.http', bypassing configured authorization.
-
 The Request and Response are binaries. They may be *accelerated* binaries with structure under-the-hood that can be efficiently queried, manipulated, and validated. The application receives complete requests and returns complete responses - no WebSockets, chunking, or SSE. If a request fails to generate a response, it is logically retried until timeout, providing a simple basis for long polling. Use "303 See Other" responses for requests that are handled asynchronously.
 
 Eventually, we might support for multiple requests within a transaction via dedicated HTTP headers. A runtime could also support 'app.http.ws' to receive runtime-scoped WebSockets.
 
-*Aside:* Based on configuration and application settings, the runtime might automatically launch a browser pointing to the application.
+The runtime will also provide a web service for debugger and IDE integration. Depending on the user configuration and application settings, this service might receive requests to `"/sys/*"` and require specific authorization. Applications can access this server via 'sys.refl.dbg.http', bypassing configured authorization.
 
 ## Remote Procedure Calls
 
@@ -150,9 +148,9 @@ A viable API:
 
 To enhance performance, I hope to support systematic code distribution, such that some calls or callbacks can be handled locally. Guided by annotations, an 'rpc' method may be partially evaluated based on MethodRef and have code extracted for evaluation at the caller. We can do the same with 'cb', partially evaluating based on MethodName. To support pipelining of multiple calls and remote processing of results, we could even send part of the continuation. However, this is all very theoretical at the moment.
 
-The notion that network disruption invalidates an RpcObj is debatable in context of distributed runtimes. Even if one node loses access, another might retain access. In context of distributed runtimes, we might indicate how multi-homing is handled in the search Criteria.
+The notion that network disruption invalidates an RpcObj is debatable in context of distributed runtimes. Even if one node loses access, another might retain access. In context of distributed runtimes, we might indicate how multi-homing is handled in the search criteria.
 
-*Note:* A runtime may publish RPC methods to support integrated development environments and debuggers. The application should have an opportunity to access these via 'sys.refl.rpc("MethodName", List of Arg)'.
+*Note:* A runtime may publish RPC methods to support integrated development environments and debuggers. This might be presented within an application as 'sys.refl.dbg.rpc'. We'll additionally want reflection on RPC registries and resources, perhaps 'sys.refl.rpc.\*'. 
 
 ## Graphical User Interface? Defer.
 
@@ -346,7 +344,7 @@ Multi-threading requires representing local mutable vars shared between threads 
 
 We can hybridize threaded and transaction-loop run modes. In this case, the runtime offers 'sys.thread.\*' to a transaction-loop application. Users may spawn a main thread upon 'app.start'. A thread loop with a *stable condition and atomic body* can be optimized as a transaction loop, evaluating the body many times in parallel while the condition holds.
 
-Use of 'sys.thread.\*' does have an opportunity cost: there is no general means to conveniently or robustly update thread environments in context of live coding. As we switch to *new* functions, we'll provide *old* arguments and algebraic effects handlers. This can feasibly be mitigated with conventions, annotations, and reflection, essentially asking users to stabilize APIs and design with live coding in mind.
+Use of 'sys.thread.\*' does have an opportunity cost: there is no general means to conveniently or robustly update thread environments (continuations, handlers, mutable local vars, etc.) in context of live coding. As we 'app.switch' to *new* functions, we'll continue to provide *old* arguments and environments, modulo use of reflection APIs to rewrite running threads. This can feasibly be mitigated with conventions or annotations: let users stabilize APIs and design with live coding in mind.
 
 *Note:* The thread API does not support naming threads. Instead, I suggest annotations for assigning debug names to operations in general.
 
