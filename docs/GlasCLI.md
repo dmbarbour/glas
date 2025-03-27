@@ -17,31 +17,31 @@ A simple syntactic sugar supports user-defined operations:
           # implicitly rewrites to
         glas --run cli.opname Args
 
-My vision and intention is that end users mostly operate through user-defined operations. To avoid cluttering the command line with runtime switches, we'll push all configuration options into application 'settings' and the configuration file.
+My vision for early use of glas systems is that end users mostly operate through user-defined operations. To avoid cluttering the command line with runtime switches, we push runtime options into the configuration file, application settings, or (rarely) OS environment variables.
 
 ## Configuration
 
 The glas executable will read a user configuration based on a `GLAS_CONF` environment variable, loading the specified file as a [namespace](GlasNamespaces.md). If unspecified, the default location is `"~/.config/glas/conf.glas"` in Linux or `"%AppData%\glas\conf.glas"` on Windows.
 
-A typical user configuration will inherit from a community or company configuration from DVCS, then override some definitions for the user's projects, preferences, and resources. The community configuration may define hundreds of applications and libraries. For performance, we rely on lazy loading and caching. The DVCS repository becomes the basis for curation and version control. For precise control, maintainers could link repositories by version hash instead of branch names.
+A typical user configuration will inherit from a community or company configuration from DVCS, then override some definitions for the user's projects, preferences, and resources. The community configuration may define hundreds of shared libraries and applications and in 'env.\*'. For performance, we rely on lazy loading and caching. The DVCS repository becomes the basis for curation and version control. For precise control, maintainers could link repositories by version hash instead of branch names.
 
-Shared libraries, languages, and applications are typically defined under 'env.\*'. We'll link '%env.\*' to 'env.\*' when loading the configuration, scripts, and staged applications. The user configuration may also define a toplevel application under 'app.\*', which can serve as the basis for a *Glas Shell* (described later).
-
-Outside of 'env.\*' and 'app.\*', definitions are ad hoc, runtime-specific, subject to de facto standardization. The glas executable may expect definitions for shared heap storage locations, RPC registries, trusted certification authorities, and so on. An extensible executable may support user-defined accelerators, optimizers, and typecheckers, also defined in the user configuration.
-
-Applications define 'app.settings' to guide configuration of application-specific options, such as where to write log files or which ports to open for HTTP and RPC. The glas executable does not observe settings directly, instead enabling the configuration to query and interpret application settings when deciding the configured value. For maximimum portability, the runtime may ask the configuration to generate an adapter based on application settings and runtime version info.
+Aside from applications and libraries, ad hoc configuration options should be presented under 'conf.\*'. The glas executable may expect definitions for shared heap storage, RPC registries, rooted trust for public key infrastructure, and so on. An extensible executable may support user-defined accelerators, optimizers, and typecheckers via the user configuration. We could maximize portability by asking a configuration to generate an adapter based on application settings and runtime version info.
 
 ## Running Applications
 
-Users can reference applications in a few ways:
+Users can reference and run applications in a few ways:
 
-* **--run**: To run 'foo', we look for 'env.foo.app.\*' in the configuration namespace. A community configuration might define hundreds of applications to be lazily downloaded and compiled on demand, or installed by name.
-  * To reference outside 'env.\*' users may add a '.' prefix, e.g. '.foo' binds to 'foo.app.\*'.
-* **--script**: Load the indicated file, package folder, or URL as a namespace. This namespace defines 'app.\*'.
+* **--run**: To run 'foo', we look for 'env.foo.app.\*' in the user configuration. This application is lazily downloaded and compiled on demand, usually caching to avoid redundant effort.
+  * *note:* users may reference 'hidden' apps outside of 'env.\*' if necessary, e.g. '.foo => foo.app.\*'. 
+* **--script**: Build indicated file, package folder, or URL. The resulting namespace must define 'app.\*' at the toplevel.
   * **--script.FileExt**: Same as '--script' except we use the given file extension in place of the actual file extension for purpose of user-defined syntax. Mostly for use with shebang scripts in Linux, where file extensions may be elided.
-* **--cmd.FileExt**: Treated as '--script.FileExt' for an anonymous, read-only file found in the caller's working directory. The assumed motive is to avoid writing a temporary file.
+* **--cmd.FileExt**: Treated as '--script.FileExt' for an anonymous, read-only file in the caller's working directory.
 
-The glas executable may support more than one run mode as an application-specific configuration option. For example, the executable might expect 'app.start' and 'app.step' for a transaction-loop application, 'app.main' for a threaded application, or 'app.build' for a staged application. The only method every application needs is 'app.settings' to guide configuration. See [glas applications](GlasApps.md).
+As a convention, application methods are always named with an 'app.\*' prefix. This simplifies recognition, translation, or extraction of applications. Every application must define 'app.settings' to guide integration. The runtime does not observe settings directly. Instead, an 'app.settings' handler is passed when querying the configuration for application-specific options.
+
+Among the application-specific configuration options, a glas executable may support multiple run modes. For example, a transaction-loop application uses 'app.start' and 'app.step', a threaded application defines 'app.main', a staged application could specifies another namespace procedure 'app.build'. Thus, exactly what happens when we run an application depends on 'app.settings', and is independent of application source. 
+
+See [glas applications](GlasApps.md).
 
 ## Installing Applications
 
@@ -63,14 +63,6 @@ Before running an application, the glas executable can analyze the call graph fo
 
 *Aside:* In context of 'http' interfaces and such, we might also secure user access to the application by configuring authorizations. Perhaps we could integrate SSO at the configuration layer.
 
-## Glas Shell
-
-A user configuration may define 'app.\*' at the toplevel. In context of [notebook applications](GlasNotebooks.md) this application likely represents a live-coding projectional editor for the configuration and its transitive dependencies. Users can run this application via `"glas --run . Args To App"` without any special features. 
-
-A community can feasibly tweak this notebook application to serve as a [shell](https://en.wikipedia.org/wiki/Shell_(computing)) for the glas system. Instead of running multiple applications as separate OS processes, user actions would compose applications into the notebook. This shell could support conventional graphical and command-line interfaces alongside HTTP.
-
-In practice, we'll often want instanced shells. This can feasibly be implemented by copying or logically overlaying the configuration folder. The glas executable might provide built-in support for instanced shells via `"glas --shell ..."`.
-
 ## Built-in Tooling
 
 The glas executable may be extended with useful built-in tools. Some tools that might prove useful:
@@ -83,8 +75,34 @@ The glas executable may be extended with useful built-in tools. Some tools that 
 
 Heuristics to guide tooling: First, where feasible, every function available via built-in CLI tools should be accessible through applications. This might involve introducing 'sys.refl.conf.\*', 'sys.refl.cache.\*', and similar methods. Even 'sys.refl.cli.help' and 'sys.refl.cli.version' can be included. Second, we should ultimately aim to keep the glas executable small, assigning code bloat a significant weight.
 
+## Glas Shell
+
+A user configuration may define 'app.\*' at the toplevel namespace. In context of [notebook applications](GlasNotebooks.md) this may represent a live-coding projectional editor for the configuration file and its transitive dependencies. Users can run this application via `"glas --run . Args To App"`. 
+
+A community can extend this notebook application to serve as a root [shell](https://en.wikipedia.org/wiki/Shell_(computing)) for a glas system. Instead of running individual glas applications within an OS, users can compose applications into this shell, treating it as an operating system of sorts.
+
+In practice, we'll often want instanced shells, perhaps expressed as `"glas --shell ..."`, with users optionally naming an instanced shell for persistence. This can feasibly be implemented by copying or logically overlaying a configuration folder.
+
+## Initial Namespace
+
+The initial namespace includes [program primitives](GlasProg.md) under '%\*', and links '%env.\*' to 'env.\*' in the user configuration. Further, the glas executable may write a few '@\*' compiler dataflow definitions. For example, we might automatically define '@src.set(...)' to support notebook applications. This integration with compiler dataflow may be configurable.
+
+In scope of compiling the user configuration, '%\*' is read-only and '%~' is unlinkable. We'll reserve the latter as a runtime private space for scripts, staged applications, and optimizer integration. Corresponding translations:
+
+        # user configuration
+        move: { "%" => WARN }
+        link: { "%env." => "env.", "%~" => WARN }
+
+        # script or staged app, at addr
+        move: { "%" => WARN, "" => "%~addr." }
+        link: { "%env." => "env.", "%~" => WARN, "" => "%~addr." }
+
+However, '%\*' and '@\*' are frequently hidden by front-end compilers. In that context, the namespace might be viewed as empty, modulo keywords and potential access to shared library functions without declaring them.
+
 ## Implementation Roadmap
 
 The initial implementation of the glas executable must be developed outside the glas system. This implementation will lack many features, especially the optimizations that would let transaction loops scale beyond a simple event dispatch loop. Fortunately, simple event dispatch loops are still very useful, and we can fully utilize a system between FFI, accelerators, and sparks. We also have access to conventional threaded applications.
 
 Ideally, we'll eventually bootstrap the glas executable within the glas system. Early forms of bootstrap could generate C or LLVM, but I hope to swiftly eliminate external dependencies and integrate relevant optimizations into the glas libraries.
+
+

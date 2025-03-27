@@ -350,4 +350,7 @@ Use of 'sys.thread.\*' does have an opportunity cost: there is no general means 
 
 ### Staged Applications
 
+In some cases, we might want to write an application that builds another application based on command-line arguments. 
+
+
 Staged applications might define 'app.build' as a [namespace procedure](GlasNamespaces.md), generating another application based on command-line arguments. The procedure can be parameterized by a list of command-line arguments. It receives access to the same '%env.\*' environment of shared libraries, languages, and configured applications as scripts.
