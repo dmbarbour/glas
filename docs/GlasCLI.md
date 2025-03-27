@@ -29,11 +29,11 @@ Aside from applications and libraries, ad hoc configuration options should be pr
 
 ## Running Applications
 
-Users can reference and run applications in a few ways:
+An application is expressed within a namespace, using 'app.\*' methods to simplify recognition, access control, and extraction. Users can reference and run applications in a few ways:
 
 * **--run**: To run 'foo', we look for 'env.foo.app.\*' in the user configuration. This application is lazily downloaded and compiled on demand, usually caching to avoid redundant effort.
   * *note:* users may reference 'hidden' apps outside of 'env.\*' if necessary, e.g. '.foo => foo.app.\*'. 
-* **--script**: Build indicated file, package folder, or URL. The resulting namespace must define 'app.\*' at the toplevel.
+* **--script**: Compile indicated file, package folder, or URL. The generated namespace must define 'app.\*' at the toplevel.
   * **--script.FileExt**: Same as '--script' except we use the given file extension in place of the actual file extension for purpose of user-defined syntax. Mostly for use with shebang scripts in Linux, where file extensions may be elided.
 * **--cmd.FileExt**: Treated as '--script.FileExt' for an anonymous, read-only file in the caller's working directory.
 
@@ -48,6 +48,22 @@ See [glas applications](GlasApps.md).
 Installing applications - ensuring they're available for low-latency or offline use - can be understood as a form of manual cache management. A user configuration might recommend that a set of definitions is maintained locally. To simplify tooling, we might add a little indirection, perhaps referencing a local file or shared-heap variable. This is easily extended to installing scripts.
 
 Ideally, 'installing' an application reduces to downloading an executable binary or whatever low-level JIT-compiled representation is cached by the glas executable. Or if not the that, then at least avoiding rework for the more expensive computations. This is feasible using an approach similar to Nix package manager, i.e. downloading from a shared cache based on transitive secure hashes of contributing sources. The user configuration could specify one or more trusted, shared caches.
+
+## Initial Namespace
+
+The glas executable provides an initial namespace containing only a few [program primitives](GlasProg.md) under '%\*'. The space of primitives is marked read-only. Scripts or staged applications are written into the same namespace as the user configuration, albeit in separate volumes for access control. Viable translations:
+
+        # user configuration
+        move: { "%" => WARN, "" => "u." }
+        link: { "%" => "%", "%env." => "u.env.", "" => "u." }
+
+        # script or staged app (at addr)
+        move: { "%" => WARN, "" => "addr." }
+        link: { "%" => "%", "%env." => "u.env.", "" => "addr." }
+
+The front-end compiler will further introduce '@\*' compiler dataflow definitions to support automatic integration across module boundaries. This is also the case for a built-in front-end compiler. However, from the runtime's perspective, these are normal definitions and receive no special attention.
+
+From a regular programmer's perspective, '%\*' and '@\*' are implementation details, and the initial namespace is effectively empty. However, regular users will also inherit from a community configuration
 
 ## Security
 
@@ -82,22 +98,6 @@ A user configuration may define 'app.\*' at the toplevel namespace. In context o
 A community can extend this notebook application to serve as a root [shell](https://en.wikipedia.org/wiki/Shell_(computing)) for a glas system. Instead of running individual glas applications within an OS, users can compose applications into this shell, treating it as an operating system of sorts.
 
 In practice, we'll often want instanced shells, perhaps expressed as `"glas --shell ..."`, with users optionally naming an instanced shell for persistence. This can feasibly be implemented by copying or logically overlaying a configuration folder.
-
-## Initial Namespace
-
-The initial namespace includes [program primitives](GlasProg.md) under '%\*', and links '%env.\*' to 'env.\*' in the user configuration. Further, the glas executable may write a few '@\*' compiler dataflow definitions. For example, we might automatically define '@src.set(...)' to support notebook applications. This integration with compiler dataflow may be configurable.
-
-In scope of compiling the user configuration, '%\*' is read-only and '%~' is unlinkable. We'll reserve the latter as a runtime private space for scripts, staged applications, and optimizer integration. Corresponding translations:
-
-        # user configuration
-        move: { "%" => WARN }
-        link: { "%env." => "env.", "%~" => WARN }
-
-        # script or staged app, at addr
-        move: { "%" => WARN, "" => "%~addr." }
-        link: { "%env." => "env.", "%~" => WARN, "" => "%~addr." }
-
-However, '%\*' and '@\*' are frequently hidden by front-end compilers. In that context, the namespace might be viewed as empty, modulo keywords and potential access to shared library functions without declaring them.
 
 ## Implementation Roadmap
 

@@ -96,14 +96,17 @@ Sample queries:
 * `ns.read(file:Path) : opt Binary` - ask for content of a file. Optional result in case file does not exist. Diverges with a suitable error message for troublesome cases like permissions errors or irregular files.
 * `ns.read(dir:Pattern) : List of Path` - ask for a list of files and subfolders matching a given pattern.
 * `ns.read(dvcs:(repo:URL, query:Query)) : Result` - apply a query in context of a DVCS repo. Diverges if the DVCS cannot be accessed.
+* `ns.read(env:Name) : opt Data` - extended set of implicit parameters. Not necessarily bound to the OS environment. The runtime might support configuration of env reads.
 
 This API is a little awkward to use directly, requiring the client to be careful regarding relative file paths and such. However, this is significantly mitigated in context of *User-Defined Syntax* pushing the burden to front-end compilers and shared libraries.
 
 *Aside:* For portability, the glas executable may support configuration of an 'ns.read' adapter. This may require bootstrapping the adapter together with user-defined syntax.
 
+*Note:* It is feasible to treat a configured shared heap database or HTTP as read sources. I'm not convinced it's a good idea, but perhaps we can revisit the idea when the system is more mature.
+
 ### User-Defined Syntax
 
-To load a file into a namespace, we can 'ns.read' file contents then 'ns.eval' a user-defined front-end compiler based on file extension. I propose '%env.lang.FileExt'. The generated namespace and abstract assembly serve as an [intermediate representation](https://en.wikipedia.org/wiki/Intermediate_representation). This supports user-defined syntax aligned with file extensions.
+To load a file into a namespace, we can 'ns.eval' a user-defined front-end compiler based on file extension. I propose '%env.lang.FileExt'. The generated namespace and abstract assembly serve as an [intermediate representation](https://en.wikipedia.org/wiki/Intermediate_representation). This supports user-defined syntax aligned with file extensions.
 
 Aligning with file extensions simplifies integration with external tools. Graphical and textual programming can be freely mixed. A file-based database can generously be viewed as syntax. Arbitrary ".txt" or ".json" files can be treated as sources, perhaps defining 'data' yet subject to staging, partial evaluation, compile-time assertions. DSLs can be developed. Experimental language extensions can be scoped to a community or project through the namespace.
 
@@ -159,11 +162,13 @@ Shared libraries do introduce versioning and maintenance challenges, i.e. an upd
 
 ### Compiler Dataflow
 
-Multimethods let users describe specialized implementations of generic operations across multiple modules, then compose them. A soft constraint-logic program might declare assumptions and preferences across multiple modules, then solve constraints holistically. Notebook applications can build a table of contents across multiple modules, and need logic to propagate proposed source updates to their sources. 
+Multimethods let users describe specialized implementations of generic operations across multiple modules, heuristically integrating them. A soft constraint-logic program might declare assumptions and preferences across multiple modules, then solve constraints holistically. Notebook applications should build a table of contents across multiple modules and robustly route proposed updates to their sources.
 
-Implementing these patterns manually is awkward and error-prone. Instead, I propose to push this to front-end compilers and libraries shared between them. As a simple convention, we reserve '@\*' for compiler-supported dataflow between modules and their clients. Compilers can implement a variety of ad hoc, fine-grained dataflows. In contrast, '%env.\*' is controlled by the user and supports only one dataflow pattern.
+Implementing these patterns manually is awkward and error-prone. Instead, I propose to push this to front-end compilers and libraries shared between them. As a simple convention, we reserve '@\*' names for compiler-supported dataflow between modules and their clients. Compilers can implement ad hoc, fine-grained dataflows through the namespace. In contrast, '%env.\*' is controlled by the user and supports only one dataflow pattern.
 
-The glas executable should support compiler dataflow for a toplevel namespace, providing input definitions for integration with the runtime. This integration can  be based on built-in front-end compilers or a configured namespace procedure.
+Some dataflow computations may require closure via extra processing at the 'root' source. Ideally, this is separated from source to simplify further composition, can guide partial closure, and defaults to the correct behavior by a glas executable. One viable solution is 'ns.read(env:"@")' returning a set of flags (as a dict) describing which dataflow features are integrated by the client.
+
+A relevant concern with compiler dataflow is that it can easily interfere with lazy loading. This can be mitigated with syntactic support for scoping or translating dataflows, and by avoiding features that would entangle modules too aggressively.
 
 ### Namespace Processes and Channels
 
@@ -190,13 +195,3 @@ Errors that abort a namespace procedure - assertion failures, quota constraints,
 Ambiguous definitions are possible if the same name is assigned multiple distinct definitions. (Assigning the same definition many times is idempotent.) In context of lazy evaluation, it is awkward to treat ambiguity as an error. Instead, we raise a warning then deterministically favor the 'first' definition from the lowest-numbered fork. When ambiguity errors are noticed, users should resolve them by tweaking import or export lists, or considering use of the *Shared Libraries* pattern.
 
 A cyclic dependency error is observed when a higher-priority 'ambiguous' definition can only be computed after observing the lower-priority version. If the definitions were the same, there is no error. If the cycle was not resolved, we did not observe the error. Essentially, this error is observed when a namespace macro should depend on its own output. Cyclic dependencies are perhaps the only errors at the namespace layer where we'll firmly insist on a resolution by programmers.
-
-## Source Setters
-
-In context of [notebook applications](GlasNotebooks.md), front-end compilers systematically implement editable projections of the application's source code. However, this introduces a design challenge: how do we route apply updates back to sources? 
-
-One seemingly viable approach is to introduce source setters as compiler dataflow definitions, e.g. '@src.set(Ref, Data)'. A toplevel setter would be provided by the glas executable, perhaps via configured namespace procedure. We could extend this API with functions to support cooperative work, e.g. tracking attention, proposed edits, comments, curation. 
-
-The Ref for a setter could be a simple 'file:Path' or similar, but we could support more flexible refs. Importantly, we can systematically align '@src.set' with 'ns.read' when localizing references. This is necessary when working with hierarchical folder structures, mixed DVCS, or treating a ".zip" file as a package folder.
-
-Anyhow, this could use a lot more detail. But I don't see any blockers at the moment.

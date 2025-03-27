@@ -2,6 +2,13 @@
 
 This document describes primitive AST constructors for glas programs. See [glas namespace model](GlasNamespaces.md) and [glas application model](GlasApps.md) for context.
 
+## Desiderata
+
+* static stack allocation
+* support for tail call recursion (convenient for live coding of threaded apps)
+* 
+
+
 ## Design Thoughts
 
 We can build a namespace of algebraic effects handlers aligned with a call graph. Access to local vars or function parameters could also be modeled as part of this namespace.

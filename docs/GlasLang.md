@@ -2,6 +2,18 @@
 
 The glas system can support multiple programming languages, but there 
 
+## Access to Env
+
+I propose to optimize for library refs over application refs.
+
+        foo.x       # local foo.x
+        :foo.x      # %env.lib.foo.x
+        ::foo.x     # %env.foo.x
+
+## Overrides and Hyperstatic Env
+
+When we import from a source, we might want to hide some definitions and override others. This could be expressed as part of the import alias list, or perhaps by syntactically discriminating  '=' (let, hide prior) vs. ':=' (assign, update in place) or similar. Need to find a solution that makes both comfortable.
+
 ## Outcome
 
 A ".g" file should compile to `glas:(Dict of (Namespace of AbstractAssembly))`. In this context, a dict is a simple trie of `(symbol:Value, ...)` with no direct reference between symbols. A [namespace](GlasNamespaces.md) is a more sophisticated 

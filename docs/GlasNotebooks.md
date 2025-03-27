@@ -6,18 +6,26 @@ In the notebook metaphor, a module might represent a page or chapter or widget. 
 
 ## Implementation Thoughts
 
-Editable projections are defined as shared libraries, such that front-end compilers can efficiently reference these projections without reimplementing them.
+### Source Setters
 
-We'll widely rely on '@\*' compiler dataflow definitions for generating tables of contents, providing 'prev' and 'next' navigation, and perhaps providing setters and getters for source code, abstracting the source locations.
+How shall we route proposed updates back to original source files? In context of user-defined syntax and ".zip" files, this must be abstracted and aligned with 'ns.read'. But it is feasible for a compiler to systematically support '@src.set(FilePath, Data)' or similar. The intermediate '@src.set' would rewrite SrcRef then pass each request onwards. A rooted '@src.set' will instead engage the filesystem or network.
 
-We arrange things such that lazy loading and dead-code elimination can efficiently remove the notebook view if users do not want one.
+### Auxilliary Output
 
-The notebook application might define 'app.http' and such if the user does not, but could put relevant logic into 'nbi.\*' or similar such that users can easily override the notebook and still integrate it.
+Tables of contents, table of illustrations or interactions, navigation support (e.g. 'prev' and 'next' buttons), etc.. 
 
-Instead of assuming 'ownership' of a file, we might want to support cooperative work by multiple users as the default. Thus, instead of simple 'setters' for source, we might need some notion of 'attention', 'proposed edits', 'comments', 'curation', perhaps even integrating pull requests with DVCS.
+### Cooperative Work
 
-## Extension to AR or VR
+Use of '@src.set' may be a little simplistic in context of communities, concurrent users, and DVCS. We could extend this API with functions to support cooperative work, e.g. tracking attention, proposed edits, comments, curation, pull requests. But what should this API look like? '@src.op(MethodName, SrcRef, Args)' or similar?
 
-The notebook metaphor is useful for literate programming or a graphical REPL. But perhaps we can move from 2D into 3D with augmented reality (AR) or virtual reality (VR) devices. 
+### Avoiding Bloat
+
+We'll need to rely heavily on shared libraries for the editable projections. It's probably also a good idea to bottleneck the source setter/getter/etc. so we can easily modify source references and further delegate without a lot of extra code in the namespace.
+
+Ideally, the notebook is also designed such that unused features are subject to lazy loading and dead-code elimination.
+
+### Extension to AR or VR
+
+We can move from 2D into 3D with augmented reality (AR) or virtual reality (VR) devices. Use of AR would require some extra index binding views to visual fingerprints. What exactly would this entail? We'll probably need to extend '.gui' to 3D, or use some form of VRML via 'http'?
 
 
