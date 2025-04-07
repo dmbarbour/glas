@@ -123,6 +123,8 @@ The Request and Response are binaries. They may be *accelerated* binaries with s
 
 If there is sufficient demand, we can extend this API to accept WebSockets, perhaps via 'app.http.ws'. We can also invent HTTP headers to handle multiple requests in one atomic transaction. To effectively use 'app.http' as an early basis for GUI, we could configure the runtime to open a browser window when the application is started.
 
+*Note:* The application-specific configuration might also describe integration with SSO to support multiple users and roles for the built-in HTTP interface.
+
 ## Remote Procedure Calls
 
 To receive RPC calls, an application should declare an RPC API in application settings, and define a dispatch method:
@@ -327,7 +329,7 @@ A lot of composition can be automated into namespace macros or user-defined synt
 
 ### Threaded Applications
 
-In some use cases, developers may prefer the conventional 'app.main' procedure. The evaluator will heuristically partition the main procedure into a sequence of atomic steps. Minimum step size can be controlled by annotating 'atomic' sections, e.g. `(%an (%an.atomic) Operation)`, while maximum step size could be guided by 'yield' annotations (reporting an error if 'yield' appears within an 'atomic' operation). 
+In some use cases, developers may prefer a conventional 'app.main' procedure. The evaluator will heuristically partition the main procedure into a sequence of atomic steps. Minimum step size can be controlled by annotating 'atomic' sections, e.g. `(%an (%an.atomic) Operation)`, while maximum step size could be guided by 'yield' annotations (reporting an error if 'yield' appears within an 'atomic' operation). 
 
 Every successful step will implicitly update stateful thread environment representing the call stack or continuation, local mutable vars, algebraic effects handlers, invariant assertions, instrumentation, and so on. Every aborted or divergent step is implicitly retried, much like a 'step' function for a transaction loop. This retry provides a basis to wait on a mutex, queue, or arbitrary conditions. Use of 'sys.select' together with 'atomic' can express flexible waits, e.g. wait on a queue OR a timeout, and bounded searches.
 
@@ -342,15 +344,13 @@ For concurrency, we can support multi-threading. A viable API:
 
 Multi-threading requires representing local mutable vars shared between threads as runtime-scoped heap refs. Ideally, an optimizer will perform analyses to minimize sharing, keeping most data on the call stack. We can also introduce annotations to express and enforce ownership assumptions.
 
-We can hybridize threaded and transaction-loop run modes. In this case, the runtime offers 'sys.thread.\*' to a transaction-loop application. Users may spawn a main thread upon 'app.start'. A thread loop with a *stable condition and atomic body* can be optimized as a transaction loop, evaluating the body many times in parallel while the condition holds.
+We can hybridize threaded and transaction-loop run modes. In this case, the runtime offers 'sys.thread.\*' to a transaction-loop application. Instead of 'app.main', users spawn a main thread from 'app.start'. Intriguingly, a threaded 'while' loop can potentially be optimized as another transaction loop when the condition is stable and body is atomic.
 
-Use of 'sys.thread.\*' does have an opportunity cost: there is no general means to conveniently or robustly update thread environments (continuations, handlers, mutable local vars, etc.) in context of live coding. As we 'app.switch' to *new* functions, we'll continue to provide *old* arguments and environments, modulo use of reflection APIs to rewrite running threads. This can feasibly be mitigated with conventions or annotations: let users stabilize APIs and design with live coding in mind.
+However, any use of 'sys.thread.\*' will hinder live coding. It is easy to update new function calls, but difficult to update the thread continuation. Users can mitigate this by maintaining stable APIs within a program, e.g. don't change function arguments or algebraic effects handlers, excepting optional arguments. At least in theory, we could also introduce 'sys.refl.thread.\*' APIs for discovering threads and rewriting continuations during 'app.switch'.
 
-*Note:* The thread API does not support naming threads. Instead, I suggest annotations for assigning debug names to operations in general.
+*Note:* We could also provide a lower-level interface for small-step eval of an abstract AST or Expr. I'm also exploring program models that have some built-in concurrency, which could significantly reduce need for arbitrary threads. 
 
 ### Staged Applications
 
-In some cases, we might want to write an application that builds another application based on command-line arguments. 
+In some cases, we might want to write an application that generates or selects another application based on command-line arguments, perhaps integrating some local files. Staged applications might define 'app.build' as a [namespace procedure](GlasNamespaces.md), generating another application based on command-line arguments. The procedure can be parameterized by a list of command-line arguments. It receives access to the same '%env.\*' environment of shared libraries, languages, and configured applications as scripts.
 
-
-Staged applications might define 'app.build' as a [namespace procedure](GlasNamespaces.md), generating another application based on command-line arguments. The procedure can be parameterized by a list of command-line arguments. It receives access to the same '%env.\*' environment of shared libraries, languages, and configured applications as scripts.

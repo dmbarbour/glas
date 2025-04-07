@@ -89,20 +89,20 @@ In case of missing definitions, we can evaluate as far as possible without those
 
 ## Modularity
 
-The 'ns.read' operation provides a basis for modularity. Supported queries should be idempotent, commutative, cacheable, such as reading a stable source file. This section describes my vision for what is built upon that foundation. The [glas executable](GlasCLI.md) will enforce or enhance some patterns.
+The 'ns.read' operation provides a basis for modularity. All queries should be idempotent, commutative, and cacheable. For example, reading a local file, browsing a folder, access to a remote DVCS, or implicit parameters, is a viable basis for such a query.
 
 Sample queries:
 
 * `ns.read(file:Path) : opt Binary` - ask for content of a file. Optional result in case file does not exist. Diverges with a suitable error message for troublesome cases like permissions errors or irregular files.
 * `ns.read(dir:Pattern) : List of Path` - ask for a list of files and subfolders matching a given pattern.
-* `ns.read(dvcs:(repo:URL, query:Query)) : Result` - apply a query in context of a DVCS repo. Diverges if the DVCS cannot be accessed.
-* `ns.read(env:Name) : opt Data` - extended set of implicit parameters. Not necessarily bound to the OS environment. The runtime might support configuration of env reads.
+* `ns.read(dvcs:(repo:URL, read:Query)) : Result` - apply a query in context of a DVCS repo. Diverges if the DVCS cannot be accessed.
+* `ns.read(env:Name) : opt Data` - extended set of implicit parameters. Use of '%env.\*' and 'ns.eval' more flexibly serves this role, but 'ns.read' may prove more convenient in many cases. Could bind to OS environment or runtime version info.
 
-This API is a little awkward to use directly, requiring the client to be careful regarding relative file paths and such. However, this is significantly mitigated in context of *User-Defined Syntax* pushing the burden to front-end compilers and shared libraries.
+This API pushes most responsibility for managing relative file paths to the client, though this can be mitigated by systematic override of 'ns.read' within a controlled scope. I propose to enforce a *Folders as Packages* pattern in the syntax layer, as a default.
 
-*Aside:* For portability, the glas executable may support configuration of an 'ns.read' adapter. This may require bootstrapping the adapter together with user-defined syntax.
+The user configuration can feasibly define an adapter for 'ns.read', especially useful for implicit parameters. This should be subject to bootstrap together with user-defined syntax, verifying a stable fixpoint is reached after a few iterations. 
 
-*Note:* It is feasible to treat a configured shared heap database or HTTP as read sources. I'm not convinced it's a good idea, but perhaps we can revisit the idea when the system is more mature.
+*Note:* It is technically feasible to treat a configured shared heap database or HTTP GET as read sources. However, I'm not convinced it's a good idea. For now, I propose to stick with files and DVCS, and a few implicit parameters.
 
 ### User-Defined Syntax
 
@@ -124,17 +124,9 @@ User-defined namespace procedures can implement this restriction by overriding '
 
 *Note:* Filesystem-layer links can work around restrictions on relative or absolute paths. I don't recommend this in general because it complicates sharing and distribution of code. But it's convenient for adding local projects to a user configuration.
 
-### Auxilliary Sources
+### Linear Files
 
-A glas executable will implicitly scan content from associated `".glas/"` subfolders whenever we 'ns.read' from a filesystem or DVCS. Content from these folders doesn't contribute to meaning or formal behavior, but it can serve as an additional layer of annotations to support performance, debugging, or security. Some useful items that might be included:
-
-* signed manifests and certificates for public key infrastructure
-* cached 'proofs' for expensive static analyses, efficiently verified
-* GUIDs to stabilize abstract references for shared cache or live code
-* reference to a shared cache where a compiled version might exist
-* track canonical source locations to support automatic maintenance
-
-Basically, this folder contains metadata that is extrinsically associated with code, especially at the filesystem layer instead of the namespace or program layers.
+Reading a file more than once is not an error at the namespace layer in context of lazy loading and distinct compilation environments. Even cyclic file dependencies are possible. However, it's *probably* an error at other layers, suggesting use of a shared library, namespace macro, or copy for independent editing in a notebook application. I propose that, by default, a runtime reports a warning if a file is read more than once for any reason. The runtime can also support annotations or configuration options to suppress this warning for specific files, folders, or DVCS repos.
 
 ## Design Patterns
 
@@ -162,13 +154,13 @@ Shared libraries do introduce versioning and maintenance challenges, i.e. an upd
 
 ### Compiler Dataflow
 
-Multimethods let users describe specialized implementations of generic operations across multiple modules, heuristically integrating them. A soft constraint-logic program might declare assumptions and preferences across multiple modules, then solve constraints holistically. Notebook applications should build a table of contents across multiple modules and robustly route proposed updates to their sources.
+Multimethods let users describe specialized implementations of generic operations across multiple modules, heuristically integrating them. A soft constraint-logic program might declare assumptions and preferences across multiple modules, then solve constraints holistically. Notebook applications should build a table of contents across multiple modules and robustly route proposed updates to their sources. Implementing these patterns manually is awkward and error-prone. Instead, I propose to push this to front-end compilers and libraries shared between them. 
 
-Implementing these patterns manually is awkward and error-prone. Instead, I propose to push this to front-end compilers and libraries shared between them. As a simple convention, we reserve '@\*' names for compiler-supported dataflow between modules and their clients. Compilers can implement ad hoc, fine-grained dataflows through the namespace. In contrast, '%env.\*' is controlled by the user and supports only one dataflow pattern.
+As a simple convention, we reserve '@\*' names for compiler-supported dataflow between modules and their clients. Compilers can implement ad hoc, fine-grained dataflows through the namespace. In contrast, '%env.\*' is controlled by the user and supports only one dataflow pattern. The glas executable does not need to be aware of specific compiler dataflow patterns except insofar as they are embedded into built-in front-end compilers.
 
-Some dataflow computations may require closure via extra processing at the 'root' source. Ideally, this is separated from source to simplify further composition, can guide partial closure, and defaults to the correct behavior by a glas executable. One viable solution is 'ns.read(env:"@")' returning a set of flags (as a dict) describing which dataflow features are integrated by the client.
+In some cases, dataflow computations require closure via specialized processing at the root source. Ideally, this is separate from the source code, such that we can compile any module as a root or further compose it. This can be supported by letting 'ns.read(env:"@")' return a set of flags (as a dict) describing compiler dataflows closed by the client.
 
-A relevant concern with compiler dataflow is that it can easily interfere with lazy loading. This can be mitigated with syntactic support for scoping or translating dataflows, and by avoiding features that would entangle modules too aggressively.
+A relevant concern with compiler dataflow is that it easily interferes with lazy loading. This is unavoidable, given we are integrating content orthogonally to loading modules. This can be mitigated by syntactic support for scoping and translating dataflows, and avoiding automation of dataflow where it confuses most users.
 
 ### Namespace Processes and Channels
 
@@ -190,8 +182,8 @@ To ensure a reproducible outcome, quotas must be based on a heuristic cost funct
 
 ## Failure Modes
 
-Errors that abort a namespace procedure - assertion failures, quota constraints, etc. - can be reduced to a warning, with evaluation continuing on other branches. Errors that are localized to specific definitions - malformed AST, link violations, etc. - might raise a warning then arrange for a runtime error when the erroneous code is evaluated. The choice between compile-time errors and warnings is subject to user configuration and guidance by annotations.
+Errors that abort a namespace procedure - assertion failures, quota constraints, etc. - are reduced to a warning, with evaluation proceeding on other 'ns.fork' branches. In case of invalid definitions - malformed AST, links to NULL or WARN - we can report appropriate compile-time warnings and arrange to diverge at runtime. After namespace computation halts (due to return and commit, abort on error, 'ns.eval' waiting on definitions, or lazily paused after 'ns.move') we implicitly invalidate missing definitions.
 
-Ambiguous definitions are possible if the same name is assigned multiple distinct definitions. (Assigning the same definition many times is idempotent.) In context of lazy evaluation, it is awkward to treat ambiguity as an error. Instead, we raise a warning then deterministically favor the 'first' definition from the lowest-numbered fork. When ambiguity errors are noticed, users should resolve them by tweaking import or export lists, or considering use of the *Shared Libraries* pattern.
+Ambiguous definitions are possible if the same name is assigned multiple distinct definitions. (Assigning the same definition many times is idempotent.) In context of lazy evaluation, it is awkward to treat ambiguity as an error. Instead, we raise a warning then deterministically prioritize the first definition from the lowest-numbered fork. If a lower-priority definition must be observed (via 'ns.eval') to compute the higher-priority version, we can report an additional warning (or error) for the priority inversion, then deterministically favor the observed definition for consistency. Either way, the outcome should be deterministic, and programmers should manually resolve ambiguity.
 
-A cyclic dependency error is observed when a higher-priority 'ambiguous' definition can only be computed after observing the lower-priority version. If the definitions were the same, there is no error. If the cycle was not resolved, we did not observe the error. Essentially, this error is observed when a namespace macro should depend on its own output. Cyclic dependencies are perhaps the only errors at the namespace layer where we'll firmly insist on a resolution by programmers.
+The heuristic policy for which namespace-layer errors or warnings should block applications from running should be configurable and application specific. That is, the runtime evaluates a configured function with access to the list of namespace errors and 'app.settings' to decide whether we abandon the effort. If we do run the application, this list of issues may also be visible through a 'sys.refl.ns.\*' API.

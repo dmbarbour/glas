@@ -137,17 +137,17 @@ The runtime can be configured to listen on a TCP port for debugger interactions.
 
 Programs in glas systems will generally embed annotations to support *instrumentation, validation, optimization*, and other non-functional features. As a general rule, annotations should not influence observable behavior except through reflection APIs and performance.
 
-A proposed representation in the abstract assembly is `(%an AnnoAST Operation)`, such as:
+Proposed representation in abstract assembly: 
 
-        (%an (%an.log ConfigChan Message) Operation)
-        (%an (%an.assert ConfigChan Expr Message) Operation)
-        (%an (%an.type TypeExpr) Operation)
+        (%an (%an.dbg.log Chan Message) Operation)
 
-        (%an (%an.nowarn AnnoAST) Operation)
+In this case '(%an.dbg.log ...)' can be replaced by any annotation AST constructor. If '%an.dbg.log' is not recognized by the runtime, we can warn on the first encounter then ignore further such annotations. Users could suppress warnings if the runtime recognizes '(%an.nowarn AnnoAST)' or through configuration. 
 
-In each case, we annotate an Operation. We might view annotations as a flavored identity function. If an annotation constructor is not recognized by a runtime, we can warn on the first encounter. To suppress warnings in certain cases, we could support composite annotation constructors such as '%an.nowarn'.
+Annotations can also be expressed at other layers:
 
-Annotations can also be expressed at other layers. In the namespace layer, we might use 'foo.\#doc' for documentation or 'foo.\#test.\*' for a test suite. The runtime will ignore namespace-layer annotations, but they can be useful for external tools. In the data layer, a runtime might record some annotations to support acceleration or dynamic enforcement of abstract and linear types, but a user can only access this through reflection APIs.
+* In the data layer, a runtime might record some annotations to support acceleration or dynamic enforcement of abstract and linear types, but a user can only access this through reflection APIs.
+* In the namespace layer, we might use 'foo.\#doc' for documentation or 'foo.\#test.\*' for a test suite. The runtime will usually ignore namespace-layer annotations, but they can be useful for external tools. 
+* In the source layer, annotations are expressed as associated hidden subfolders. For example, a ".pki/" subfolder could contain signed manifests and signed certifificates for signators. 
 
 ## Instrumentation
 
@@ -157,17 +157,22 @@ We might annotate our programs to record some extra information to support debug
         prof (Chan, DynamicIndex) { Operation }
         record (Chan, Cond) { Operation }
 
-        (%an (%an.log Chan Message) Operation)
-        (%an (%an.prof Chan DynamicIndex) Operation)
-        (%an (%an.record Chan Cond) Operation)
+        (%an (%an.dbg.log Chan Message) Operation)
+        (%an (%an.dbg.prof Chan DynamicIndex) Operation)
+        (%an (%an.dbg.rec Chan Cond) Operation)
 
-For performance reasons, instrumentation can be enabled and disabled based on a static Chan. This could be via application settings and conditional compilation, or statefully via reflection APIs.
-
-The log Message should either be a read-only computation or computable within a hierarchical transaction. Conditional logging is supported by returning an 'empty' message. Logging over an operation is interesting; depending on configuration for Chan, this could be taken as outputting random samples or adding Message to a stack trace. In context of transaction loop applications - with forks and incremental computing - we might render logs to a user as a time-varying tree instead of a message stream.
+The log Message should either be a read-only computation or computable within a hierarchical transaction. Conditional logging is supported by returning an 'empty' message. Logging over an operation is interesting; depending on configuration for Chan, this can support random samples or adding Message to a stack trace. In context of transaction loop applications - with forks and incremental computing - we might render logs to a user as a time-varying tree instead of a message stream.
 
 Profiling should record things useful for understanding performance. Entry and exit counts, time spent, memory allocated, etc.. In context of transaction loop applications, we might keep stats related to stability and incremental computing, aborting on read-write conflict, and so on.
 
 A runtime can also be asked to record information to replay an Operation, and perhaps more based on configuration. Recording can be a convenient alternative to breakpoints in cases where users don't intend to interfere with the computation. We might keep the recording based on whether Cond was true at any point in Operation.
+
+In each case 'Chan' is a statically evaluated expression to support configuration, i.e. such that we can disable certain log messages, or configure logging to sample randomly during Operation. We can easily extend this with a scope to 'translate' channels within Operation. Perhaps:
+
+        debug-scope (ChanRewrite) { Operation }
+        (%an (%an.dbg.scope ChanRewrite) Operation)
+
+In this case ChanRewrite represents a static `Chan -> Chan` function that is logically applied to '%an.dbg.\*' channels within Operation. This allows more precise configuration of logging, but it does complicate efficient implementation.
 
 *Note:* Non-deterministic choice in a log message or recording condition might be interpreted as a composition, i.e. set of messages, all conditions are true. For profiling dynamic index, we might heuristically split costs.
 
@@ -188,8 +193,8 @@ There are caveats. Acceleration of floating point arithmetic is a hassle due to 
 A subset of computations, especially pure functions, can be safely deferred. The deferred computation can later be forced, or sent to a background worker to handle in parallel.
 
         (%an (%an.lazy.thunk) Expr)        # defer eval of type of Expr, immediately return thunk
-        (%an (%an.lazy.force) Expr)        # force evaluation of a thunk, returning the data
-        (%an (%an.lazy.spark) Expr)        # add thunk to a pool, eventually will be forced
+        (%an (%an.lazy.force) Thunk)       # force evaluation of a thunk, returning the data
+        (%an (%an.lazy.spark) Thunk)       # add thunk to a pool, eventually will be forced
 
 I assume *explicit* laziness for glas systems. Under this assumption, it would be a type error to 'force' or 'spark' data that is not a thunk, and we can construct have lazy lazy values that must be forced twice. This discourages unnecessary use of laziness, and also reduces the burden for a superbly efficient implementation of laziness. 
 
