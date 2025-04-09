@@ -51,12 +51,12 @@ Naturally, there are limits on what can be achieved in a single transaction. FFI
 A runtime can provide a familiar and flexible heap-allocation API. Part of this heap may be persistent, with a global variables shared between applications through a configured database. Heap references are abstracted to simplify garbage collection, control scope, and support type annotations. A viable API (tentative):
 
 * `sys.heap.*` - 
-  * `scope.*` - We divide the heap into a few scopes. The longer-lived the scope, the more restrictive of abstract data. Conversely, data from a longer-lived scope can be stored into a shorter-lived scope. Scope can be enforced dynamically via tagged pointers.
-    * `shared : Scope` - persistent, shared state through a configured database, with flexible heap refs.
-    * `runtime : Scope` - runtime or process resources like open files, network connections, FFI threads.
-    * `transaction : Scope` - implicitly cleared before commit, can enforce protocols via linear types.
+  * `scope.*` - Data from a longer-lived scope may be stored into a shorter-lived scope, but not vice versa. Dynamically enforced via tagged pointers.
+    * `db : Scope` - persistent, shared state through a configured database, with flexible heap refs.
+    * `rt : Scope` - runtime or process resources like open files, network connections, FFI threads.
+    * `tn : Scope` - implicitly cleared before commit, can enforce protocols via linear types.
     * `cmp.eq(Scope, Scope) : Boolean` - returns whether two scopes are the same.
-    * `cmp.ge(Scope, Scope) : Boolean` - is lifespan of left scope greater than or equal to right scope?
+    * `cmp.ge(Scope, Scope) : Boolean` - true iff lifespan of left scope greater or equal to right scope
   * `var(Scope, Name) : Ref` - global variable of given scope and name, serves as a garbage collection root. Name should be a short, meaningful text. The default value for a unassigned variable is zero, but this may be influenced by declared schema or usage hints.
   * `ref.*` - new refs, weak refs, reference equality
     * `new(Scope, Data) : Ref` - new anonymous reference at given scope, garbage collected upon becoming unreachable. A new shared-scope Ref may be represented entirely within the runtime until it must be serialized to the shared database. Diverges with type error if scope is incompatible with data.
@@ -90,6 +90,7 @@ A runtime can provide a familiar and flexible heap-allocation API. Part of this 
   * `ref.weak.tryfetch(WeakRef) : opt Ref` - returns a singleton list containing Ref if available, otherwise empty list. This operation indirectly observes the garbage collector.
   * `ref.hash(Ref) : N` - returns a stable natural number per Ref suitable for use with hashmaps or hashtables. 
   * `ref.usage(Ref, Hint)` - runtime-specific hints regarding usage of a ref. This may include representation schema, initial values for vars, or migration suggestions for a distributed runtime.
+  * `var.iter(Scope, Text) : Name | empty` - seeks Name of next defined var in lexicographic order from given Text. Returns empty name if there is no successor. A var may be garbage collected if the Ref contains zero and is unreachable except via 'var'. 
   * `queue.avail(Ref) : N` - returns number of items are locally available to a reader, i.e. without divergence or a distributed transaction.
 
 The shared heap should support atomic transactions, structured data, and content-addressed storage. Transactions significantly mitigate many challenges with coordinating shared state. Structured data and content-addressed storage enable a shared heap to work with *very large* values, especially in context of [persistent data structures](https://en.wikipedia.org/wiki/Persistent_data_structure). Large binaries could be represented as finger-tree ropes.
@@ -112,6 +113,14 @@ What optimizations are viable?
 * CRDTs - replicate to every node, interact with locally, and synchronize replicas when nodes interact.
 
 In general we should consider *permanent* network disruptions, e.g. destruction of a node. In this context, ownership by a single node can be a problem. For critical Refs, such as shared or runtime vars, we might favor use consensus algorithms instead of ownership by a single Ref. But requiring consensus for every update is expensive. We might favor indirection, such that a non-critical intermediate Ref can be updated efficiently by a node, or detached and replaced (with consensus) after a timeout.
+
+### Stack State
+
+Instead of a dynamic heap, we could present application state as a set of local vars allocated on a call stack below 'step' or 'rpc', available to application methods through a set of algebraic effects handlers. A subset of state can bind to a shared database, perhaps based on prefix in the naming convention.
+
+There are no first-class heap 'Refs' to local vars. However, we will need a robust alternative to 'sys.heap.index.\*' for stable, efficient dynamic structure and fine-grained conflict analysis. Perhaps we could approach this in terms of lenses or prisms in the program model, or perhaps some means of passing higher-order 'queries' through handlers. In any case, this is a problem for the program model to resolve in general.
+
+My intuition is that avoiding heap Refs is a good thing. Local vars on a call stack are easier to render, comprehend, compose, and extend compared to a mess of heap refs, and we'll get static types and layout much more conveniently. Of course, the two models are easily combined, and it is very conventional to do so. Perhaps this will mostly replace 'sys.heap.var', serving as application root state.
 
 ## HTTP Interface
 

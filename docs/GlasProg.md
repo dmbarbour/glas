@@ -2,14 +2,94 @@
 
 This document describes primitive AST constructors for glas programs. See [glas namespace model](GlasNamespaces.md) and [glas application model](GlasApps.md) for context.
 
-## Desiderata
-
-* static stack allocation
-* support for tail call recursion (convenient for live coding of threaded apps)
-* 
-
-
 ## Design Thoughts
+
+### Recursion Depth Control
+
+Arbitrary recursion is expensive in context of staged computing and algebraic effects handlers. I propose that, at least by default, unbounded runtime recursion is treated as an error. That said, we can feasibly support tail recursion as a form of bounded recursion. And we can support limited lambdas and closures on a dynamic call stack if truly needed.
+
+* `(%an (%an.stack.unbounded) Operation)` - permit Operation to have an ad hoc dynamic call stack. Without this annotation, it's an error to have unbounded recursion at runtime. Use of unbounded recursion in context of effects handlers has performance implications.
+* `(%an (%an.stack.bounded) Operation)` - forbid Operation to have dynamic stack. This makes unbounded recursion at runtime an error even where Operation includes 'unbounded' annotations (though the 'unbounded' annotation is not, itself, an error). Note compile-time 'static' eval may still have an unbounded stack.
+
+This would strongly encourage programs to favor bounded recursion. We can also add an explicit annotation for tail-recursive calls, to ensure a bounded stack in context of recursion.
+
+### Effects Handlers Namespace
+
+Algebraic effects handlers could be modeled as another 'stage' of namespace, propagating through the call graph. Fractally, each handler itself may receive handlers from their callers, as yet another stage. But to support flexible computation across stages, perhaps we merge all these handlers into a single shared namespace together with the original application namespace, separated by translations instead of hard stages. 
+
+ instead relying on systematic translations and scoping within one global namespace as a basis for pseudo-stages.
+
+### Non-Semantic Transactions
+
+We can use annotations to constrain concurrent interference.
+
+* `(%an (%an.atomic) Expr)` - evaluate Expr without concurrent interference. Use of transactions is a viable implementation, but programmers don't actually observe the transaction, only the lack of interference.
+* `(%an (%an.yield) d:())` - used within a non-atomic sequence to guide heuristic functions for partitioning procedures into atomic steps. It's a type error if 'yield' appears within 'atomic'.
+
+Originally, I wanted explicit hierarchical transactions, allowing for explicit testing and rollback. However, hierarchical transactions significantly complicates efficient implementation and opportunities for concurrency within a 'procedure'. 
+
+### Non-Semantic Partial Eval
+
+We can guide partial evaluation via annotations.
+
+* `(%an (%an.static) Expr)` - express that Expr should evaluate at compile time. 
+
+This annotation is quite flexible and doesn't limit use of effects, but it very easily conflicts with them. For example, partial evaluation that reads state cannot be computed statically unless the state in question can be determined statically. This includes protection from concurrent inteference, which may require adding '%an.atomic' somewhere.
+
+Although partial evaluation isn't semantic, it can interact with static analysis. For example, we could support:
+
+        if(static Cond) then Expr1 else Expr2
+
+Normally, static type safety analysis might report an error if Expr1 and Expr2 have different types, but this may be acceptable as a static condition. Having multiple return types may also be acceptable under dependent type analysis. It's really left to the analysis methods.
+
+*Note:* Some primitives may also require static expressions as arguments. But I'm uncertain that there's anything that requires staged eval, other than maybe defining handlers as a namespace.
+
+### Abstract Types
+
+We could bind keys to a namespace as a basis for access control. But that would apply only to runtime-scoped or transaction-scoped keys. 
+
+* `(%an (%an.type.wrap KeyExpr) Expr)`
+* `(%an (%an.type.unwrap KeyExpr) Expr)`
+
+
+
+### Type Annotations
+
+### Static Context Dataflow
+
+Perhaps a basis for unit types?
+
+### Instrumentation
+
+Describe where we are within a computation. This is mostly to support stack traces or debug views.
+
+* `(%an (%an.dbg.name DebugName) Operation)` - name a subtask for debugging purposes. 
+* `(%an (%an.dbg.scope Channel) Operation)` - enable or disable control asserts, log messages, profiling in scope of Operation. The Channel must be statically computed for easy configuration.
+
+### Lazy Eval and Sparks
+
+A useful performance pattern. Limited to Exprs with 'read-only' effects. May snapshot reachable vars into the thunk. The 'spark' pattern provides a simple basis for parallelism without full concurrency.
+
+        (%an (%an.lazy.thunk) Expr)        # defer eval of type of Expr, returns a thunk
+        (%an (%an.lazy.force) Thunk)       # force evaluation of a thunk, returning the data
+        (%an (%an.lazy.spark) Thunk)       # add thunk to a pool, eventually will be forced
+
+### Stowage
+
+### Memoization
+
+
+### First Class Objects?
+
+I'm not fond of first-class functions, objects, or function pointers. They are awkward in context of live coding, staging, and distribution. However, I would like some effective approach to modeling dynamic objects and dispatch.  
+
+Some thoughts:
+
+* we could try to systematically accelerate user-defined interpreters
+* defunctionalization is viable, but rebuilding large values from step to step is awkward for incremental computing
+* it might be feasible to use fine-grained, stable heap refs for defunctionalization instead
+
+### Misc.
 
 We can build a namespace of algebraic effects handlers aligned with a call graph. Access to local vars or function parameters could also be modeled as part of this namespace.
 
