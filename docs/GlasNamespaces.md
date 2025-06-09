@@ -12,7 +12,7 @@ Useful types:
 
         type Name = prefix-unique Binary, excluding NULL, as bitstring
         type Prefix = any byte-aligned prefix of Name, empty to full
-        type TL = Map of Prefix to (Prefix | NULL | WARN), as radix tree
+        type TL = Map of Prefix to (Prefix | NULL | WARN), as radix tree dict
         type WARN = NULL 'w'                # 0x00 0x77, as bitstring
         type AST = (Name, List of AST)      # constructor
                  | d:Data                   # embedded data
@@ -26,12 +26,14 @@ A viable algebraic effects API:
   * `write(Name, AST)` - write a definition. This is modified by prior move and link translations. 
   * `move(TL)` - apply translation to future defined Names (for 'write').
   * `link(TL)` - apply translation to future ASTs (for 'write' or 'eval').
-  * `fork(N)` - returns non-deterministic choice of natural number 0..(N-1), basis for iteration.
+  * `read(Query) : Result` - access external environment with a cacheable Query, e.g. load a file.
+  * `fork(N)` - returns non-deterministic choice of natural number 0..(N-1), basis for iteration. 
+    * *Alternative:* non-deterministic choice via AST primitive, e.g. `(%select ...)`.
   * `eval(AST, List of Arg) : [cb] Result` - interprets AST as the body of an anonymous procedure, providing a list of arguments and permitting interaction with the caller via generic callback handler 'cb' 
     * `cb : List of Arg -> [cb] Result` - generic, recursive callback handler, like remote procedure calls.
-  * `read(Query) : Result` - access external environment with a cacheable Query, e.g. load a file.
+    * *Alternative:* `scope() : Localization` - capture abstract Localization based on link translation, for use with a primitive 'eval'. Complicates namespace GC, but more flexible!
 
-Aliasing is expressed by defining one name to another, e.g. 'ns.write(Name1, n:Name2)'. These two names should be equivalent under evaluation within the program model (modulo reflection APIs). I assume 'eval' will often just use 'n:Name' for binding a definition.
+Aliasing is expressed by defining one name to another, e.g. 'ns.write(Name1, n:Name2)'. These two names should be equivalent under evaluation within the program model (modulo reflection APIs). I assume 'eval' will often just use 'n:Name' for the AST.
 
 ## Evaluation Strategy
 
@@ -57,7 +59,7 @@ A translation is expressed as a prefix-to-prefix map. We'll find the longest mat
 
 To cover a few additional cases, we permit NULL or WARN (NULL 'w') in place of the RHS prefix. These are context-dependent. For a move translation, NULL quietly removes names while WARN represents removal with a warning. For a link translation, NULL becomes a compile-time error, while WARN instead reports a compile-time warning and wraps the problematic code to raise an error at runtime. A user configuration can feasibly adjust this behavior.
 
-Translations compose sequentially. Within a scoped AST, list of TL `[A, B, C]` will apply A, B, then C in sequence. However, we can evaluate this to one large translation. To compose 'A fby (followed-by) B' we first expand A to include redundant rules with longer suffixes on both sides such that the RHS of A matches every possible LHS prefix in B. Then we apply B's rules to the RHS of A. For example:
+Translations compose sequentially. Within a scoped AST a list of TL `[A, B, C]` will apply A, B, then C in sequence. However, we can 'simplify' this list into one larger translation. To compose 'A fby (followed-by) B' we first expand A to include redundant rules such that the RHS of A matches every possible LHS prefix in B. Then we apply B's rules to the RHS of A. For example:
 
         { "bar" => "fo" } fby { "f" => "xy", "foo" => "z"  }                    # start
         { "bar" => "fo", "baro" => "foo", "f" => "f", "foo" => "foo" }          # extend suffixes
@@ -65,13 +67,13 @@ Translations compose sequentially. Within a scoped AST, list of TL `[A, B, C]` w
         { "bar" => "xyo", "baro" => "z", "f" => "xy", "foo" => "z" }            # rewrite
         # Note that NULL and WARN are never rewritten under 'fby'.
 
-We can further simplify the resulting TL by recognizing and removing redundant rules. For example, we don't need rule `"xy" => "zy"` if `"x" => "z"` exists. We don't need rule `"xy" => NULL` if `"x" => NULL` exists.
+We finally recognize and remove redundant rules introduced by this rewrite. For example, we don't need rule `"xy" => "zy"` if `"x" => "z"` exists, and we don't need rule `"xy" => NULL` if `"x" => NULL` exists.
 
 ## Localizations
 
-Localizations allow programs to capture a 'link' scope for deferred use in multi-stage programming. For example, we could support a primitive like `(%ast.eval Localization ASTDataExpr)` that will evaluate an AST under a specific view of the namespace. 
+Localizations allow programs to capture a 'link' scope for deferred use. In glas systems, this should be deferred to a later compile-time stage, perhaps contingent on static parameters through the call graph. Use of localizations at runtime is technically feasible but would contradict many optimizations that I want for glas. 
 
-*Note:* Localizations are best used in context of compile-time computations. Any potential use of localizations at runtime will hinder dead-code elimination, lazy evaluation, static analysis, and convenient nice features.
+*Note:* This namespace-layer localization only captures linking to the namespace layer. In practice, we'll want to also capture local stack variables and algebraic effects handlers for operations such as 'eval'. This might be reified by a `(%scope z:(List of TL) StackScope)` wrapper.
 
 ## Prefix Uniqueness and Name Mangling
 
@@ -81,9 +83,9 @@ The proposed ".!" suffix serves prefix uniqueness, and further ensures every def
 
 ## Namespace Macros and Eval
 
-The 'ns.eval' operation is the basis for namespace macros. This operation interprets an AST argument as the body of an anonymous procedure. In addition to returning a result, the 'ns.eval' operation may interact with the caller through a generic callback handler.
+The 'ns.eval' operation is the basis for namespace macros. This operation interprets an AST argument as the body of an anonymous procedure. In addition to returning a result, the 'ns.eval' operation may interact with the caller through a generic callback handler 'cb'.
 
-In case of missing definitions, we can evaluate as far as possible without those definitions (in some cases, definitions are only conditionally required) then wait for missing definitions to be provided by other forks. This provides a basis for lazy evaluation or interactive computation between namespace 'threads'.
+In case of missing definitions, we can evaluate as far as possible without those definitions (allowing progress in cases where definitions are only conditionally required) then wait for missing definitions to be provided by other forks. This provides a basis for lazy evaluation or interactive computation between namespace 'threads'.
 
 *Note:* I assume, for performance, that this interpreter is augmented with a just-in-time compiler.
 
@@ -127,6 +129,10 @@ User-defined namespace procedures can implement this restriction by overriding '
 ### Linear Files
 
 Reading a file more than once is not an error at the namespace layer in context of lazy loading and distinct compilation environments. Even cyclic file dependencies are possible. However, it's *probably* an error at other layers, suggesting use of a shared library, namespace macro, or copy for independent editing in a notebook application. I propose that, by default, a runtime reports a warning if a file is read more than once for any reason. The runtime can also support annotations or configuration options to suppress this warning for specific files, folders, or DVCS repos.
+
+## Embedded Data
+
+The 'd:Data' node within an AST allows for embedding data without further processing at the namespace layer. However, it is not recommended to use 'd:Data' directly as a parameter within most operations. Instead, a thin data wrapper such as `(%i d:42)` for integers should apply in most cases. This provides a convenient opportunity for the program to integrate type safety analysis, accelerated representations, and similar features. 
 
 ## Design Patterns
 
@@ -188,10 +194,8 @@ Ambiguous definitions are possible if the same name is assigned multiple distinc
 
 The heuristic policy for which namespace-layer errors or warnings should block applications from running should be configurable and application specific. That is, the runtime evaluates a configured function with access to the list of namespace errors and 'app.settings' to decide whether we abandon the effort. If we do run the application, this list of issues may also be visible through a 'sys.refl.ns.\*' API.
 
-## Tentative Unification with Algebraic Effects Handlers
+## AST as ADT? Tentative Rejection
 
-Above, I present namespace constructors 'ns.\*' as a set of algebraic effects handlers. This is viable. However, I'm contemplating a program model where algebraic effects handlers are instead expressed as procedural construction of a namespace, built-in to a program model's AST.
+It is technically feasible to tweak the procedural 'ns.\*' API to instead take an ADT for definitions, and to pass one or more localizations as ADTs. This allows for more flexible scope control, metaprogramming, bindings between definitions, since not everything needs to be managed via one implicit 'ns.link' localization. This does slightly complicate GC - we'll need special handling of first-class localizations - but it isn't a big problem. However, it also becomes difficult to reason about or track sources for a definition.
 
-In this context, it seems feasible to unify things such that a toplevel configuration namespace or application namespace is also expressed as a set of handlers, depending only on static parameters and computation. We can still support some lightweight staging, e.g. providing access to runtime state only in a later stage when calling definitions produced during a compile-time stage. The few compile-time effects such as 'ns.read' can be restricted to static parameters, and we can also insist that the namespace is statically computed.
-
-A significant benefit of modeling handlers as a namespace is that we can override or extend names, and generate handlers interactively. This supports flexible coordination and staging within a call graph, and it simplifies debugging. Also, if an application is modeled as a set of handlers, it might be easier to model application state as part of a call stack.
+I'd prefer to avoid this and favor algebraic effects (and abstraction thereof) for passing behavior between definitions. Less flexible, but easy to reason about and better aligns definitions to user-meaningful scopes.

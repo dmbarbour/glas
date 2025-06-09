@@ -12,11 +12,11 @@ This involves *reflection* on the user agent, together with manipulation of user
 
 Reasonable modes for user participation:
 
-* *read-only view* - The user agent continuously or infrequently renders the GUI then aborts.
-* *live action* - The user agent continuously renders the GUI and commits when possible.
-* *approved action* - The transaction is aborted unless the user explicitly submits. The GUI system tracks user observations and presents a summary of relevant changes for approval in proximity to a submit button. 
+* *read-only view* - never commits - The user agent continuously or infrequently renders the GUI then aborts. Not *necessarily* read-only in context of reflection APIs, but should be safe and cacheable like HTTP GET.
+* *live action* - always commits - The user agent continuously renders the GUI and commits when possible.
+* *approved action* - controlled commit - The transaction is aborted unless the user explicitly submits or commits, in some way that is clearly under control of the user. The GUI system tracks user observations and may present a summary of relevant changes for approval in proximity to a submit button. To account for continuous background updates, a user agent may track tolerances for 'irrelevant' changes based on user policy, user action, and app recommendations.
 
-The *approved action* mode gives users the most stake in each transaction. Approving a summary of relevant changes even simulates a read-write conflict analysis. However, it's slow and deliberate, not suitable for every context. The *live action* mode is close to [immediate mode GUI](https://en.wikipedia.org/wiki/Immediate_mode_GUI), while the *read-only view* is suitable for maintaining user awareness.
+The *approved action* mode gives users the most stake in each transaction. Approving a summary of relevant changes even simulates a read-write conflict analysis. However, it's slow and deliberate, not suitable for every context. The *live action* mode is close to [immediate mode GUI](https://en.wikipedia.org/wiki/Immediate_mode_GUI) and can be used for almost any conventional GUI design, while the *read-only view* is suitable for maintaining user awareness. 
 
 In context of *live action* mode, we may need to buffer or latch user inputs. For example, pushing a button sets a 'button-pushed' variable to 'true' until it is read and reset. The button would continue to render in a depressed state while 'button-pushed' remains true.
 
@@ -41,8 +41,6 @@ In general, the queries and rendered outputs may be stable, subject to increment
 In some cases, we may 'fork' the GUI with non-deterministic choice, which a user agent might render in terms of multiple windows. We render without commit; the final 'commit' decision is left to the user through the user agent.
 
 A user agent can help users systematically explore different outcomes. This involves heuristically maintaining history, checkpoints and bookmarks based on which values are observed. An application can help, perhaps suggesting alternatives to a query or using naming conventions to guide heuristics (e.g. distinguishing navigation and control).
-
-
 
 *Note:* It is feasible to introduce a notion of user-local state or session-local state. However, it is not clear to me how such state would be integrated between sessions, other than as queries. A few exceptions include passing files and such over the GUI, e.g. drag and drop, which may require special attention.
 

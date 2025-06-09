@@ -1,130 +1,107 @@
 # Program Model for Glas
 
-This document describes primitive AST constructors for glas programs. See [glas namespace model](GlasNamespaces.md) and [glas application model](GlasApps.md) for context.
+A program is defined in context of a [namespace](GlasNamespaces.md). An [application](GlasApps.md) program is represented within a namespace by defining a few toplevel names with simple naming conventions. Other names are useful for modularization of programs, abstraction and reuse of program fragments across applications. A subset of names are primitives, defined by interpreters or compilers and standardized for consistency. The convention in glas is to favor the '%' prefix for primitive names, simplifying recognition and propagation of primitives through the namespace.
+
+This document designs and defines an initial set of primitive names.
 
 ## Design Thoughts
 
-### Recursion Depth Control
+### Extensible Intermediate Language
 
-Arbitrary recursion is expensive in context of staged computing and algebraic effects handlers. I propose that, at least by default, unbounded runtime recursion is treated as an error. That said, we can feasibly support tail recursion as a form of bounded recursion. And we can support limited lambdas and closures on a dynamic call stack if truly needed.
+A user-defined front-end language is supported based on the namespace model. Definitions are represented in the intermediate language. Ideally, this intermediate language is similarly subject to extension and evolution as the front-end.
 
-* `(%an (%an.stack.unbounded) Operation)` - permit Operation to have an ad hoc dynamic call stack. Without this annotation, it's an error to have unbounded recursion at runtime. Use of unbounded recursion in context of effects handlers has performance implications.
-* `(%an (%an.stack.bounded) Operation)` - forbid Operation to have dynamic stack. This makes unbounded recursion at runtime an error even where Operation includes 'unbounded' annotations (though the 'unbounded' annotation is not, itself, an error). Note compile-time 'static' eval may still have an unbounded stack.
+To support this, every definition in the namespace should have a toplevel AST wrapper of form `(%Lang AST)`, where Lang indicates how to interpret AST. Relevantly, the AST may be invalid in some languages or interpreted differently in others. Calls or references between definitions may be restricted based on language or program compatibility.
 
-This would strongly encourage programs to favor bounded recursion. We can also add an explicit annotation for tail-recursive calls, to ensure a bounded stack in context of recursion.
+This immediately introduces an opportunity for specialized sublanguages to define types, tests, tables, or constraint systems separately from procedural programs. How such things are integrated could be ad hoc and flexible. But the primary motive is to provide an opportunity to retract and deprecate old features and introduce new ones, to simplify static analysis for compatibility issues separately from a type system. 
 
-### Effects Handlers Namespace
+### Application State
 
-Algebraic effects handlers could be modeled as another 'stage' of namespace, propagating through the call graph. Fractally, each handler itself may receive handlers from their callers, as yet another stage. But to support flexible computation across stages, perhaps we merge all these handlers into a single shared namespace together with the original application namespace, separated by translations instead of hard stages. 
+I propose to model state as an ad hoc collection of implicit parameters in a structured environment. Essentially, these parameters are allocated on demand and pass-by-reference, but are passed implicitly to avoid messy calling conventions. Instead, a program can translate names, control the names visible to a subprogram, and introduce local spaces (masking any names that weren't translated). 
 
- instead relying on systematic translations and scoping within one global namespace as a basis for pseudo-stages.
+To support dynamic state, the environment will support limited dynamic structures akin to tables, maps, or arrays. I haven't decided the nature of these tables yet. There will be mechanisms to browse these tables and to alias records or entries. However, there are no first-class references. Thus, each step must access state, mitigated by incremental computing.
 
-### Non-Semantic Transactions
+Avoiding references simplifies schema update, static analysis of opportunities for parallelism and concurrency, and avoids implicit garbage collection. It is also consistent with glas programs avoiding first-class functions, objects, and function pointers.
 
-We can use annotations to constrain concurrent interference.
+### Scoped State
 
-* `(%an (%an.atomic) Expr)` - evaluate Expr without concurrent interference. Use of transactions is a viable implementation, but programmers don't actually observe the transaction, only the lack of interference.
-* `(%an (%an.yield) d:())` - used within a non-atomic sequence to guide heuristic functions for partitioning procedures into atomic steps. It's a type error if 'yield' appears within 'atomic'.
+I propose to divide application state into a few scopes: persistent, ephemeral, transaction-local, and method-local. 
 
-Originally, I wanted explicit hierarchical transactions, allowing for explicit testing and rollback. However, hierarchical transactions significantly complicates efficient implementation and opportunities for concurrency within a 'procedure'. 
+* Persistent state is ultimately stored in a shared database and may serve as shared memory between applications, or a basis for maintaining data between past and future instances of a single application. 
+* Ephemeral state is local to the process or runtime, implicitly cleared when the application is halted or reset. Open files or network sockets would generally be modeled as abstract ephemeral state, but developers may introduce their own.
+* Transaction-local state is ephemeral state that is implicitly cleared when a transaction commits. This is useful in context of multi-step transactions, such as remote procedure calls.
+* Method-local state is essentially local vars, introduced structurally within a program then reset when that structure exits.
 
-### Non-Semantic Partial Eval
+Only method-local state is introduced within a program. The other scopes might instead be distinguished based on naming conventions, i.e. by introducing special characters into names.
 
-We can guide partial evaluation via annotations.
+### Accept States
 
-* `(%an (%an.static) Expr)` - express that Expr should evaluate at compile time. 
+We can introduce annotations or naming conventions to indicate that specific variables must be in a specific state before a transaction terminates, otherwise the transaction is not accepted. Naming conventions could involve a simple suffix on the variable name. 
 
-This annotation is quite flexible and doesn't limit use of effects, but it very easily conflicts with them. For example, partial evaluation that reads state cannot be computed statically unless the state in question can be determined statically. This includes protection from concurrent inteference, which may require adding '%an.atomic' somewhere.
+Use of accept states is convenient for ensuring consistency, especially in context of multi-step transactions like remote procedure calls or use of coroutines. It can also serve a similar role as linear types.
 
-Although partial evaluation isn't semantic, it can interact with static analysis. For example, we could support:
+### Data Stack
 
-        if(static Cond) then Expr1 else Expr2
+It is feasible to model a data stack in terms of method-local variables. However, it may be more convenient to assume a local data stack of sorts for primitive operations, i.e. for concision and simplicity of expression (instead of parameterizing every operation with var names). In that case, we'll likely want program operators or annotations that control access to the stack. 
 
-Normally, static type safety analysis might report an error if Expr1 and Expr2 have different types, but this may be acceptable as a static condition. Having multiple return types may also be acceptable under dependent type analysis. It's really left to the analysis methods.
+It should be feasible to verify static arity of the data stack, and also support dynamic data stack for recursive methods. However, we might introduce some annotations restricting subprograms to a static data stack. That restriction might even apply to glas systems by default.
 
-*Note:* Some primitives may also require static expressions as arguments. But I'm uncertain that there's anything that requires staged eval, other than maybe defining handlers as a namespace.
+### Abstraction of State
 
-### Abstract Types
+Abstraction of vars is convenient for working with open files, network sockets, and user-defined abstract objects that are held in client-provided state. We could use annotations to logically 'seal' a volume of vars, such that the same seal must be used to access that state. Abstraction of state serves a similar role as abstract data types but is much easier to eliminate at compile-time and avoids potential schema update concerns.
 
-We could bind keys to a namespace as a basis for access control. But that would apply only to runtime-scoped or transaction-scoped keys. 
+### Typed State
 
-* `(%an (%an.type.wrap KeyExpr) Expr)`
-* `(%an (%an.type.unwrap KeyExpr) Expr)`
+We can use annotations to express assumptions on the type of state. These assumptions can be checked for consistency within a program, and also tracked for persistent state shared between apps. We might indicate some types such as 32-bit integers even though glas supports unbounded integers, influencing representation. A transaction that attempts to assign data outside the accepted type may be aborted.
 
+### Shadow Guard
 
+It should be feasible to annotate an assumption that certain var names or handler names aren't in use, such that we can extend without accidental shadowing. We could use a similar mechanism as the toplevel namespace, reporting a warning or error names are shadowed by non-equivalent definitions.
 
-### Type Annotations
+### Parallelism and Concurrency
 
-### Static Context Dataflow
+The simple call-return structure in most procedural or functional programming is not always the most convenient. In some cases, we might want to express a program as a set of subprograms cooperating to achieve an answer. 
 
-Perhaps a basis for unit types?
+I propose to express this in terms of coroutine-inspired structures. A program may 'yield' and await some condition or signal from other coroutines. This signal or condition may be tied to vars or state, could feasibly be coupled to a notion of "channels" or similar. Logically, there is a single thread of control and scheduling is deterministic. However, with careful design - partitioning of state and signals, waiting on and writing to different channels, etc. - it should be feasible to evaluate multiple coroutines in parallel. 
 
-### Instrumentation
+I'm still very unclear on the details here, but it should be feasible to express many procedures as Kahn Process Networks. Conveniently, this approach - together with avoidance of first-class references for state or channels - allows me to start with conventional call-return structure and extend later.
 
-Describe where we are within a computation. This is mostly to support stack traces or debug views.
+*Note:* compatible with other forms of parallelism: lazy eval and sparks, evaluating multiple 'step' transactions in parallel, dataflow parallelism, potential SIMD, and possible use of accelerated models.
 
-* `(%an (%an.dbg.name DebugName) Operation)` - name a subtask for debugging purposes. 
-* `(%an (%an.dbg.scope Channel) Operation)` - enable or disable control asserts, log messages, profiling in scope of Operation. The Channel must be statically computed for easy configuration.
+## Partial and Static Eval
 
-### Lazy Eval and Sparks
+I propose to support partial eval primarily via annotations, e.g. we could indicate our assumption that a certain var is computed statically, and raise a fuss at compile time if this assumption is invalid. In context of non-deterministic choice, static eval could also have multiple static outcomes.
 
-A useful performance pattern. Limited to Exprs with 'read-only' effects. May snapshot reachable vars into the thunk. The 'spark' pattern provides a simple basis for parallelism without full concurrency.
+I've contemplated more structural approaches to static eval, e.g. staged arguments, but most such approaches seem awkward and complicated, especially in context of conurrency. I hope to to avoid code being written several times for different "temporal alignment". So, separate our assumptions.
 
-        (%an (%an.lazy.thunk) Expr)        # defer eval of type of Expr, returns a thunk
-        (%an (%an.lazy.force) Thunk)       # force evaluation of a thunk, returning the data
-        (%an (%an.lazy.spark) Thunk)       # add thunk to a pool, eventually will be forced
+Static eval can interact flexibly with static analysis, e.g. in case of `if (Cond) then Expr1 else Expr2` we could permit Expr1 and Expr2 to have different data stack arity and return types in context of a static condition. Of course, this generalizes to dependent types.
+
+## Non-Deterministic Choice
+
+Non-deterministic choice should be explicit within a program. It could be modeled as an algebraic effect or a primitive, but I currently lean towards algebraic effects because they allow for more flexible processing of non-deterministic code.
+
+## Metaprogramming
+
+The namespace layer has metaprogramming. In addition to namespace macros, it should be possible to capture definitions introduced by a namespace procedure. However, this isn't trivial in context of non-deterministic choice, and it cannot capture primitive definitions or those introduced by shared libraries, and it isn't specific to a call site or static parameters.
+
+I'll want additional metaprogramming at the program model to interpret static data into local subprograms. We'll need a recursive or fractal namespace within the program, perhaps integrated with algebraic effects and local variables. Further, for the general case, we'll need an effects API to query the runtime or compiler for global definitions. This might require a mechanism to 'quote' a name or AST into data for lookup, and some mechanism to 'eval' with global names independent of localization. These might be modeled as reflection APIs, secured similarly to FFI.
+
+These features can simplify metaprogramming in cases not explicitly designed for it, but users may also explicitly model intermediate languages, staging, accelerated interpreters, etc. to support metaprogramming.
+
+### Effects Handlers
+
+Algebraic effects handlers can share a namespace with application state and local vars. 
+
+It seems feasible to integrate the full namespace model, including iterative definitions and lazy loading via non-deterministic choice. This might be convenient for metaprogramming. But it's also fractal in nature, which might prove awkward. Anyhow, even if we lack the full namespace model, we should at least have 
+
+An effects handler will need access to two scopes: the caller's scope (parameters and local algebraic effects of caller) and the host scope (where the effect is defined). This might be supported via implicit translation. 
+
+### Unit Types
+
+I would like good support for unit types early on when developing glas systems. But I don't have a good approach for this yet. Annotations seem the simplest option to start, perhaps bound to the vars.
 
 ### Stowage
 
 ### Memoization
-
-
-### First Class Objects?
-
-I'm not fond of first-class functions, objects, or function pointers. They are awkward in context of live coding, staging, and distribution. However, I would like some effective approach to modeling dynamic objects and dispatch.  
-
-Some thoughts:
-
-* we could try to systematically accelerate user-defined interpreters
-* defunctionalization is viable, but rebuilding large values from step to step is awkward for incremental computing
-* it might be feasible to use fine-grained, stable heap refs for defunctionalization instead
-
-### Misc.
-
-We can build a namespace of algebraic effects handlers aligned with a call graph. Access to local vars or function parameters could also be modeled as part of this namespace.
-
-I would like to insist that call stack depth is statically bounded. This doesn't entirely prohibit recursion, but it does limit unbounded recursion to tail-calls with a fixpoint on the 'environment' of algebraic effects handlers. In practice, we might mostly avoid recursive definitions, favoring built-in loops. Thus, we need some good built-in loops.
-
-Regarding loops: foreach loops over lists are good. We could support 'while' loops. But it might be interesting to model loops with tail recursion within a call stack frame as something like 'goto' with arguments. 
-
-When a local var is used as a queue or stack - or when a ref is used this way in general
-
-
-I would like effective built-in loops for primitive recursion over a tree structure. However, I'm not sure how to best express this. One option is to ass
-
-
-
-I would like effective built-in loops for primitive recursion over tree structures. In this role, we could feasibly implement an extended 'data' stack to support the loop (e.g. via 'alloca'), with efficient chunked transfer to the heap whenever certain thresholds are reached. The loop itself could structurally restrict recursion, perhaps presenting it as an algebraic effect we can apply to elements of a data structure.
-
-Perhaps we can make this extended data stack explicit 
-
-
-Support for 'letrec' with tail recursion could be convenient. But we'll need to abstract over 'letrec' blocks and generation of extended namespaces.
-
-
-
-
-
-The lack of first-class functions or function-pointers does complicate use of unbounded recursion. 
-
-
-Some 'calls' might actually be more about defining handlers than producing an outcome. Some handlers may introduce some local state, like static objects on the stack. Ultimately, this results in a fractal namespace.
-
-Unbounded recursion is troublesome with this approach to handlers. This is because computing handlers is expensive.  
-
-We might avoid recursive definitions, or at least avoid unbounded recursion. Static recursion might be acceptable, so long as it terminates statically. Consequently, we'll want good support for loops that don't rely on recursion. For stuff like 'tree' processing, we could use recursion with a maximum tree depth, or we could use a built-in primitive-recursive loop on tree structures.
-
-Ideally, our program model can support more incremental computing that isn't aligned with a procedural prefix, based on fine-grained dataflows. This might benefit from structurally distinguishing a few forms of algebraic effects, e.g. constant / read-only (reader monad), monoidal output (writer monad), and threaded (state monad).
 
 such that code can be organized as a composition of generators and consumers, without any first-class structures. Most interaction models won't play nicely with hierarchical transactions. However, this *might* be achieved via capturing some local variables into 'objects' for algebraic effects. Perhaps there is something simple we can use, based on explicit yield and continue.
 
@@ -134,294 +111,9 @@ Everything is an expression and has a value. For procedural operations, that val
 
 * `(%seq Op1 Op2 ...)` - 
 
-
-
-
-
-
-## Design Decisions
-
-* Built-in Transactions.
-  * Transactions independent of conditionals, but easy to compose.
-  * Transactions should have useable return value even on abort.
-  * Some sort of return value or transaction-scoped vars not reset.
-  * Scoped as blocks. Perhaps set a transaction var to indicate commit.
-* Algebraic Effects.
-  * Implicit parameter namespace of algebraic effects independent of program namespace.
-  * Second-class algebraic effects also serve limited roles of first-class functions.
-  * No dynamic 'return' of a function, macros may abstract definition of effect handlers.
-  * Should support higher-order handlers that access effects from caller, not just of host.
-  * Support static parameters and partial eval of algebraic effects, flexible integration.
-* Stack Objects.
-  * A second-class way to 'return' functions, or abstract over algebraic effects handlers.
-  * An effective basis for multi-step interaction and composition of staged subprograms.    
-* Built-in Staging.
-  * Explicit support for staged algebraic effects and operations.
-  * Explicit support for partial evaluation with static parameters and results.
-* Linear abstract data, runtime scoped.
-  * Dynamic enforcement as needed, e.g. via metadata bit in packed pointers.
-  * Viable basis for open files, network sockets, and FFI bindings. 
-  * Generally conflate with runtime scoped data.
-* Reject dynamic channel references.
-  * Technically feasible, via linear reference understood by runtime or database.
-  * Entangles connectivity with state, hindering live coding and open systems.
-  * Difficult to simulate with parallelism via algebraic effects and local state.
-  * Favor algebraic effects and remote procedure calls for interactions, instead.
-  * Do support static second-class queues, distinct ops to read and write queue.
-
-
-## Design Goals
-
-Without first-class channels, we can still simulate second-class channels in terms of reading and writing a shared queue in the database. But without linear channel refs, it is also difficult to achieve parallelism for dynamic channels.
-
-Perhaps the solution is closer to programmable switching fabrics. We could try to make it easy to 'optimize' stable routing, with mux and demux. Both within a parallel loop and between transactions. What would this look like? Static routing is easier, but can we extract stable conditionals for dynamic routing?
-
-A static optimization is essentially that a predictable future series of data moves can be integrated into a single move. 
-
-
-
-Could support channels within app more generally, but:
-    * Results in inconsistency between apps.
-
-* Reject channels or wormholes within apps. 
-  * In theory, could support via linear abstract data. 
-  * In theory, could support channels or wormholes for internal use in app.
-
-  * 
-  * Avoid first-class channels as linear objects (for both live coding and consistency with IPC)
-
-
-  
-
 ## Design Thoughts
 
-* Parallel and concurrent computation within a transaction is very convenient for incremental computing of distributed transactions. Ideally, opportunities for parallelism can be recognized statically, and concurrency is separate from non-deterministic choice, and concurrency allows for flexible staged computing. 
-  * For parallelism, it would be convenient if we can statically distinguish operations that write to one end of a 'list' or queue variable from those that read at the other end. There are likely many similar specialized cases.
-  * Concurrency can complicate the effects API. Perhaps solving this is the biggest issue: can we model concurrent, distributed effects without loss of determinism or confluence? How do we model a concurrent runtime object?
-* A program should be able to control (extend, sandbox, etc.) the 'abstract environment' exposed to its subprograms in a manner consistent with the environment presented to the program. That is, consistency across layers of abstraction is a priority.
-  * All access to effects should be algebraic or otherwise provided implicitly through the call graph. It should be feasible to restrict a subprogram's access to effects, and also to rename or wrap effects visible to a subprogram.
-  * In context of references or linear objects from the runtime, the user must be able to introduce similar references or linear objects connected to the environment exposed to subprograms. 
-  * We should have effective support for unwind behavior when we exit a scope, e.g. to clean up abstract environment.
-* Managing scope and aliasing of references is troublesome, requiring careful attention and sophisticated types in context of stack objects, live coding, orthogonal persistence, and remote procedure calls. Aliasing tends to hinder parallelism. I'd prefer to avoid the sophisticated type systems that needed to truly get references right.
-* In most cases, it is feasible to replace references with abstract linear data. Users can introduce their abstract linear data types via annotations to wrap or unwrap data. Runtime APIs for filesystem or network can transparently wrap OS provided handles or sockets as abstract linear data, allowing for safe parallel file access.
-  * Linearity can be encoded into data for efficient dynamic enforcement using a metadata bit in packed pointers.
-  * OS-provided references wrapped as linear objects  - e.g. open files or sockets - also benefit from 'runtime' scope. This would block storing the object into a persistent database or passing it over RPC.
-  * Runtime scope also makes linearity a lot more robust, easier to track and enforce. Consider conflating runtime scope and linearity into a single type to simplify the system. 
-* Channels are convenient for modeling flexible dataflows in a concurrent system. A runtime could let users allocate channels, returning a connected pair of linear objects for one-way communication. Further, channels could also transfer linear objects. We might want something like session types for channels.
-  * The inability to transfer linear channels across RPC boundaries would result in an inconsistency between inter-process communications and local concurrency.
-  * Stateful entanglements of channels will likely hinder live coding, insofar as we interface through dynamic channels instead of code and stable state resources.
-  * Might prefer to avoid channels for these reasons.
-* Recursion is convenient for processing of tree-structured data and provides opportunity to represent extensible loops in the namespace. However, recursion will hinder some forms of static computing, i.e. it cannot be directly aligned with the call graph.
-  * If we don't have recursion, we end up implementing it indirectly via lists and such. No reason to block recursion for memory reasons without also blocking allocation.
-  * Perhaps annotations could constrain recursion for some subprograms.
-
-
-* Support for hierarchical transactions is very convenient for modeling grammars. However, it should be separate from backtracking conditionals, otherwise we cannot easily refactor backtracking transactions that share a common prefix. We may also need some output that is dependent on observations within a transaction. Interaction with concurrency requires careful attention.
-* I would like effective support for staging, including static parameters and partial results from a computation. Ideally, staging supports ad hoc interactive definitions rather than just a single call-return. An intriguing possibility is to support a fractal namespace aligned with the call graph as a medium for concurrent staging.
 * For number types, I want unbounded integers, rationals, complex numbers, and vectors or matrices to be the default. But ideally the program model should make it easy to identify and isolate subprograms where we can use bounded number representations to optimize things. 
-* I want to support unit types for numbers and other useful context, ideally propagating through a computation at compile time. And I'd like users to have flexible support to define similar context for other roles. I'm not sure how to approach this yet.
-* I would like to automate support for indexed and editable relational database views. It is feasible to model the database as an accelerated data type or linear object, but it might be easier to support static analysis of views if the database model is built-in to the program model.
 * Ideally, every program has a clear small-step rewrite semantics. This greatly simplifies debugging.
 
 Embedded data is the only type that doesn't contain names, and is thus not rewritten based on scope. However, we should wrap most embedded data with a suitable node that can validate its type and represent intentions, e.g. favoring `(%i.const 42)` where an integer expression is expected. Some languages might restrict which data can be embedded.
-
-
-# Old Stuff
-
-The proposed program model is procedural, albeit extended with transactions and algebraic effects. I'm still exploring the possibility to reduce need for first-class references and support parallelism within the transaction. 
-
-* Transactional - In general, we assume toplevel application methods like 'start', 'step', or 'http' are evaluated in implicit transactions. The constructors include further support for hierarchical transactions. Transactions are separated from backtracking, and it is permitted to return limited information from an aborted transaction.
-* Algebraic Effects - Conventional procedural languages provide effects through abstract definitions in the application namespace. This hinders intervention and sandboxing. I propose to instead model the abstract environment as an implicit object with methods, subject to override when presenting parts of the environment to subprograms.
-* Explicit Context - I would like to track some flexible ad hoc static context across operations, both for safety checks and comprehension. One use case includes tracking units for numbers across a computation. TBD: still working out how this should be modeled. Ideas include: constraint model with namespace or overlay of abstract environment.
-* Stable Graph - As much as possible, we should stabilize and control interaction with the environment both within and between procedures. This provides a basis for unchecked parallel evaluation. Ideally, we can reduce most cases to 'static' connections, but there may be some cases (e.g. 'eval' or dynamic references) where we must bind to the environment dynamically. In those cases, we should still be able to reason about and restrict which references are used.
-* Pervasive Parallelism - It should be possible to evaluate different parts of a large procedure in parallel, especially including loops (so we can start processing the next loop before the last cycle finishes), such that we can model concurrency both within and between procedures. In addition to the stable graph of relationships, this may require restricting the effects on each resource, such as writing versus reading a queue or network socket, potential support for CRDTs.
-
-These features have a widespread impact on program expression. For example, a request-response pattern over the network will require at least two transactions (so we can commit the request). We'll avoid first-class references like sockets or file handles, instead binding responses to a stable environment. With careful design, it should be feasible to model parallel interaction with multiple network connections and open files even within a single procedure.
-
-## Resources, Registers, and References?
-
-A procedure operates on an abstract environment and may restrict or extend the abstract environment presented to subprograms (i.e. via algebraic effects). This should be mostly independent from the program namespace (modulo reflection or 'eval'), yet is similar in nature insofar as it is convenient to 'name' features or methods of the abstract environment for purpose of operations, extensions, and restrictions. To support parallelism, restrictions must be precise and amenable to static analysis. Extending this environment is a simple basis for algebraic effects.
-
-For open files, network sockets, dynamic channels, etc.. I intend to avoid first-class references (i.e. references as data) because they make it difficult to reason statically about sharing and parallelism. In theory, this can be solved using substructural types for linearity and lifespan (e.g. runtime or ephemeral). However, I prefer a robust structural solution instead of an optional analytic solution.
-
-A viable structure is to introduce named 'registers' for linear objects in the environment, separate from the normal data registers. A procedure can then operate on objects through these registers, and potentially move objects between registers. In theory, we could generalize registers to model named channels or stacks, allowing them to contain a simple sequence of values and support a higher level of parallelism based on how read and write access are used.
-
-Recursive functions need some careful attention. One option is to forbid recursion, but that is awkward for a lot of use cases. Instead, I would prefer to carefully design recursion to use conventional stacks of ephemeral resources, and support parallel operations across past, present, and future stacks. 
-
-## Dynamic Collections
-
-A program might need to open multiple files or sockets, iterate through them or process them concurrently. Each resource might be associated with some working state and metadata. This will be difficult to express if we're directly binding resources to registers, i.e. we'd also need all the associated data to be presented as registers. It would be more convenient if we have linear reference types for the open file or socket.
-
-
-
- without adequate support from the environment. 
-
-However, expressing it will hinder static computation. 
-
-
-
-Dynamic resources and eval also need some attention. It is feasible to model 'scoped' dynamic references, i.e. where register names are runtime expressions but subject to static translations. It is feasible to statically analyze for sharing and parallelism at the level of scopes instead of individual names. However, this makes the 'pointers' very dependent on context of translation, and some users would inevitably attempt to translate pointers between scopes. This complicates the system.
-
-A viable alternative is instead to model a static set of dynamic collections in the environment. Perhaps we could model 'channels' of data and linear objects. And some databases. However, if we start trying to support logical 'slices' and editable projections or views, I think we won't have much benefit compared to scoped access to a dynamic namespace of registers.
-
-Anyhow, I feel that the solution to dynamic collections should not be arbitrary. It should be justified as either an optimization of what we could (in theory) do with static collections - e.g. avoiding big dispatch tables, awkward views and slicing - or we should go the other way and take static environments as an optimizable subset of dynamic. 
-
-...
-
-In any case, we can then arrange for different parts of a large procedure to operate in parallel on different registers with minimal synchronization, providing a basis for parallelism that is much simpler compared to extracting dataflow just one stack. It might also be feasible to also model deterministic concurrent interaction directly in the semantics, e.g. based on Kahn process networks instead of parallel evaluation of loops.
-
-*Note:* It isn't necessary to discriminate stacks and channels and bags. They could all be the same thing with different access flags or methods. But it might be useful to ensure that loops are either invariant on a channel or stack, or explicitly test for empty.
-
-## Pseudo Concurrency
-
-I don't intend to support concurrency directly within a procedure. But, it should be feasible to model concurrency in terms of running multiple iterations of a top-level loop in parallel. Basically, the top-level loop becomes a simulated 'time-step', and steps in each iteration should receive input both from earlier steps in the same loop and later steps in the prior iteration, threaded through these named registers and linear objects. The difficulty is identifying how many loops can usefully run in parallel, and evaluating the conditions to start the next loop before the prior loop completes.
-
-# Older Stuff
-
-## Parallelism Within Programs
-
-Although the program model is procedural, there is an opportunity for parallelism between mostly independent subprograms. This can be augmented by careful attention to the nature of effects, e.g. multiple reads or multiple writes can occur in parallel, but stateful read-write cannot. Ideally, we can analyze our programs statically to extract a lot of useful parallelism at compile time, or with minimal overhead at runtime.
-
-Even better if we can model concurrent interaction between subprograms with some parallel evaluation. This might be feasible with some attention to channels and parallel loop unrolling, i.e. such that we can determine conditions and start the next few loops before the prior loop completes. Interactions between subprograms can be modeled across loops.
-
-However, use of dynamic references for the filesystem or network APIs will likely hinder implicit parallelism. Is there a good alternative or solution for this? Perhaps we could restrict such resource references to be linear, such that dataflow and parallelism can be aligned.
-
-## Semantic Foundation
-
-I've decided on a simple procedural foundation, albeit with scoped hierarchical transactions. 
-
-At the moment, I'm still deciding the semantic foundation for this program model. A few approaches that seem good to me include [static process networks](GlasKPN.md) and [grammar logic](GrammarLogicProg.md). The simple procedural foundation is also a good choice, but might be a little too simple without mitigation strategies.
-
-### Static Process Networks
-
-A program can be modeled as a sequence of operations that read and write a finite set of named channels, including some arithmetic operations. However, operations are only ordered if they both read (or unread) the same channel, or both write the same channel. Sequential writes can generally be buffered to immediately support further progress. Reads can potentially proceed immediately after setting a dynamic forwarding rule.
-
-When composing programs, we'll apply a static *translation* to channel names. To support intervention, we could translate read channels and write channels separately. To express usage assumptions and access control, we could use 'failed' translations to raise an error if a name is unexpectedly used in a subprogram.
-
-It is possible to explicitly model a bounded data stack as a finite set of named channels, e.g. `s.h, s.th, s.tth, s.ttth, ...`, that we read, write, and translate as needed, each channel holding exactly one value. However, it is more convenient and efficient to let the compiler allocate specialized channels. The data stack can serves as the implicit destination for reads, source for writes, and working space for arithmetic. Concurrent subprograms must operate on different stack elements. A loop must have static stack arity. 
-
-Compared to plain stack-based programming, channels add a lot of flexibility and extensibility, e.g. for optional arguments, higher order programming (via wiring a loop to an input and output channel), bi-directional computing, and concurrency.
-
-An effects API could be modeled in terms of interaction with special channels bound to the runtime. However, it may prove awkward to multiplex a 'filesystem' channel between concurrent processes within a larger computation. This could be mitigated with temporal semantics for logical latency and time-share of channels. Temporal semantics would essentially treat every program as a loop over time. Or perhaps we could let users manually loop over time.
-
-It is feasible to encode static metadata into our channel names. This would support the equivalent of 'templated' channels, or encoding operations that might interact with multiple base channels after translation. For example, the equivalent to `sys.ffi.call(StaticRef, DynamicArgs)` could be encoded as sending a message to a channel named `sys.ffi.call:StaticRef`, subject to flexible translation. And translations could generalize to producing a subprogram that involve multiple channels. This would greatly improve flexibility of the process network and simplify the effects APIs.
-
-It is feasible to tweak channels to always perform an *exchange* of information, i.e. write plus read, with basic writes and reads exchanging unit values. This should make it more convenient to use channels as procedures for effects.
-
-It might be best to avoid backtracking with process networks because we would need to propagate the behavior dynamically across the process network. This is feasible in theory, but difficult to implement and reason about.
-
-### Procedural
-
-The procedural foundation is simpler than a process network: a simple sequence of operations on an abstract environment, generally including arguments and a working space and a limited procedural interface (methods or algebraic effects) to the rest. We could support an unbounded data stack and ad hoc recursive computations, or restrict procedural programs to a bounded data stack, limited to non-recursive computations or tail recursion.
-
-Compared to process networks, procedural programs do not have any built-in notion of interaction. However, it is feasible to model concurrent processes using an event loop. With suitable syntax, we can compile procedures into state machines that proceed and yield over multiple steps. Algebraic effects can abstract some interactions with the environment. Ideally, all effects are modeled as algebraic effects, i.e. the `sys.*` runtime API might be modeled as algebraic effects in the runtime environment instead of namespace extensions to the program definition. This provides opportunity for intervention and reflection.
-
-In context of transactions, procedural code avoids one of its greater weaknesses: no time between observation and action, no risk of concurrent interference. However, some procedural patterns must be divided across multiple transactions. We cannot have synchronous request-response with non-transactional systems (such as filesystem or network) because the request must be committed before the response becomes available.
-
-The biggest loss for procedural code is bi-directional computing. This could be mitigated with some explicit staging and support for 'static' context, such that a later call in the call graph can influence prior behavior. 
-
-Procedural code could support backtracking conditionals, but I'm not certain it's worthwhile for all conditionals. Perhaps instead explicitly support transactions and conditions separately, such that they can be paired if desired.
-
-### Grammar Logic
-
-In grammar logic programming, a program expresses a set of structured values (sentences), and composition can partially overlap sentences to both filter and relate them. Usefully, the program is both generative (producing values) and analytical (recognizing values). But this requires a lot of complicated optimizations upon composition to make efficient.
-
-Support for grammar logic as the underlying program model could enhance flexibility of what we can do with a glas program. However, we must awkwardly represent interactions as part of the generated sentence, and we probably want determinism up to input by default. For this, we could restrict the grammar to generate interactive sentences of a specific form, perhaps aligned with the procedural semantics or process networks by default. This interaction may result in very 'large' sentences that must be garbage collected as they are constructed in general. 
-
-In theory, refinement on the set of sentences can model bidirectional computation. We could also add heuristics for search via annotations. But this doesn't apply to a deterministic computation, where search is finding only one or zero sentences. Those refinements and search heuristics would apply only when running programs backwards. Unless we can squeeze out some optimizations, the extra potential has costs but no immediate benefits.
-
-Although there are many theoretical benefits to grammar-logic as a foundation, I think it might be too difficult to implement efficiently in practice. At least as a starting point. 
-
-## Thoughts
-
-### Fractal Namespaces
-
-Algebraic effects can be modeled as a dictionary of opaque definitions. However, an intriguing alternative is to model algebraic effects as a namespace that we 'patch' in scope, i.e. translate (move, link) then add some definitions for effects visible to a subprogram. This would allow 'override' of some algebraic effects names.
-
-I'm not convinced this is a useful idea. Insofar as I want higher-order effects, it might be better modeled as providing some AST arguments to fexpr-like algebraic effects. Those AST arguments could include *localizations* and access to other effects as needed. We could exclude 'move' from this translation. 
-
-But the idea of prefix-oriented translations of the 'effects' namespace at least for linking purposes.
-
-
-
- allows for the effects namespace to designate some names for overridde by the client, providing a medium for interactive definitions of effects. We can also restrict which effects are visible to a subprogram, and optionally model *localizations* at the effects layer, not just the namespace layer.
-
-
-
-This also simplifies restriction of effects to a subprogram based on translation of prefixes. 
-
-
-
-
-
-With the opaque definitions, we can still support interactive definitions
-
- pass higher-order functions to an effect, e.g. to filter a result. The algebraic effect would need access to both the scope of effects within which it was defined and 
-
- its own scope of effects, but also some methods defined by the caller.
-
-We would need to pass in some implicit arguments from the caller of the algebraic effect, and the
-
-We could resolve this by awkwardly introducing some mechanism to reference methods provided by the caller, 
-
-, e.g. if we want to get some extra feedback about what an effect is doing under-the-hood we would need to somehow pass in a function from the caller. 
-
-If we assume hierarchical algebraic effects are patching a runtime-provided namespace, it is be feasible for a subprogram to tweak or override
-
- fine-grained behaviors within provided effects, essentially support higher-order programming of the effects API. In general, programs could also introduce intermediate namespaces for 
-
-
-We might view algebraic effects as a dictionary of methods being passed from a program to a subprogram. However, this view is somewhat inflexible. An intriguing alternative is to view algebraic effects as a namespace constructed within a call graph, with coordination and contributions from multiple sources.
-
-
-
-
-
-## Thoughts
-
-
-
-A program operates on an abstract environment. In part, this environment is abstracted to support effects (limited knowledge about the world), and in part to simplify modularity (control dependencies between components).
-
-I want an opportunity for bi-directional computation, such that 'later' code or context can influence 'earlier' decisions. Most functional and procedural languages don't offer this feature. Constraint models or grammar-logic would allow limited influence through further refinement of constraints. Channels and concurrency could more explicitly move data in multiple directions. Ideally, bi-directional computing can contribute to partial evaluation or staging at compile-time computations, e.g. so we can compute units on numbers before the number is available.
-
-I want the ability for a program to non-invasively observe and influence a subprogram's computations. This is useful for rendering, explaining, and debugging computations in context. This feature requires careful attention to the effects APIs, private state, and concurrency models. For example, binding abstracting algebraic effects to names from the program namespace will hinder intervention, but it may be feasible to bind to a separate runtime environment namespace.
-
-It is feasible to model concurrent subprocesses within a transaction, similar to Kahn process networks. Perhaps algebraic effects can be modeled in terms of operations on channels, assuming we can statically optimize routing and multiplexing. This would improve flexibility of the system.
-
-I would like support for staged higher-order programming without first-class functions or dynamic 'eval'. Algebraic effects or channels can effectively pass functions to a subprogram, but the reverse - 'returning' a function - may require semantics closer to fexprs, macros, or explicit staging so we instead abstract construction of the effects handlers binding to a client's environment.
-
-I don't want partial data in the formal semantics, not even for this intermediate AST. This limits use of explicit futures and promises or unification. 
-
-I like the idea of program search and the opportunity to explore multiple possible outcomes. However, I'm uncertain how much this will conflict with performance goals. This might benefit from semantics around constraint systems or grammar logic programming, with non-deterministic solutions to some programs. In addition to refining or intervening on those solutions, developers could potentially express heuristic fitness or cost as annotations to guide search.
-
-The need for precise garbage collection is mitigated in context of the transaction loop and incremental computing. We could potentially avoid GC within transactions, or focus on static GC opportunities within the transaction. 
-
-Non-determinism might be better modeled as a built-in than an effect, but it should still be feasible to control access, e.g. by restricting access to unordered choice AST constructors for deterministic programs, or by restricting unordered choice to something that only happens when we run programs backwards.
-
-## Miscellaneous Design Thoughts
-
-* factored conditionals - avoid a repeating 'Cond AND' prefix across multiple sequential, ordered choice conditions. 
-
-* I want support for units or shadow types, some extra context and metadata that can be threaded and calculated statically through a call graph. This may require special support from the environment model.
-
-* Support for annotations in general, but also specifically for type abstraction, logging, profiling, and type checks. 
-
-* A flexible system for expressing proof tactics and assumptions about code that are tied to intermediate code and can be roughly checked by a late stage compiler after all overrides are applied.
-
-* I want to unify the configuration and application layers, such that users live within one big namespace and can use the namespace and call contexts to support sandboxing and portability of applications to different user environments. Modularity is supported at the namespace layer via 'ld' in addition to staging. In addition to Localizations, I must handle Locations carefully (and abstractly).
-
-* I want termination by default, if feasible. In context of transactional steps, there is no need for non-terminating loops within the program itself. I have an idea to pursue this with a default proof of termination based on mutually recursive grammar rules without left recursions, while users could replace this with another proof in certain contexts via annotations. We could simply assume termination for remote procedure calls. Not sure of feasibility in practice.
-
-* I like the idea of functions based on grammars, similar to OMeta. This is a good fit for glas systems because we need a lot of support for metaprogramming. Also, grammars can be run backwards to generate sentences. This is both convenient for debugging and understanding code, and for deterministic concurrency based on recognizing and generating the same sentence in different parts of code. 
-
-* I'm interested in code that adapts to context, not just to the obvious parameters but also intentions, assumptions, expected types or outcomes, etc.. The main requirement here is a more flexible, bi-directional dataflow between upstream and downstream calls. This dataflow should be staged, evaluating prior to function arguments. We might try grammar-logic unification or constraint variables in this role. I'm uncertain what is needed, so will keep an open mind for ideas and opportunities here.
-
-
-# Originally From Namespaces: Algebraic Effects and Abstraction of Call Graphs
-
-For first-order procedural programming, we hard-code names in the call-graph between functions. Our abstract assembly would contain structures like `(%call Name ArgExpr)`. Despite being 'hard coded', the namespace translations make this elastic, rewriting names within the assembly. We can support hierarchical components, overrides, and shadowing, and even limited abstraction by intentionally leaving names for override.
-
-However, encoding many small variations on a large call graph at the namespace level is very expensive in terms of memory overhead and rework by an optimizer. To solve this, we should support abstraction of calls at the program layer. For example, we could support algebraic effects where a program introduces an effects handler that may be invoked from a subprogram. With careful design, this effects handler may still be 'static' for inline optimizations and partial evaluation, similar to namespace overrides.
-
-By leveraging *Localizations*, we can also interpret data to names in the host namespace without loss of namespace layer locality or security properties. It is feasible to leverage layers of localizations to model overlays on the call graph, where most names can be overridden in a given call context.

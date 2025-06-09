@@ -18,7 +18,7 @@ This can generally encode a pair `(a, b)`, a choice `(a + b)`, or a leaf `()`. A
             | Stem of (bool * Tree)  # bool is left/right label
             | Leaf
 
-However, glas systems will often encode data into stems. Dictionaries such as `(height:180, weight:100)` can be encoded as [radix trees](https://en.wikipedia.org/wiki/Radix_tree). We can encode a zero bit as a left branch, a one bit as a right branch, and encode key text using UTF-8, separating it from data with a NULL byte. An open variant type can be represented as a singleton dictionary. To support these encodings, we must compact stem bits. We might favor something closer to:
+However, glas systems will often encode data into stems. Dictionaries such as `(height:180, weight:100)` can be encoded as [radix trees](https://en.wikipedia.org/wiki/Radix_tree), encoding the symbol into stem bits with a NULL separator from the data. An open variant type can be represented as a singleton dictionary. To support these encodings, we must compact stem bits. In practice, a runtime may represent arbitrary trees using something closer to:
 
         type Tree = (Stem * Node)       # as struct
         type Stem = uint64              # encodes 0..63 bits
@@ -35,7 +35,7 @@ However, glas systems will often encode data into stems. Dictionaries such as `(
             abcde..1    63 bits
             00000..0     unused
 
-This allows for reasonable representation of labeled data. We may similarly encode integers into stems. However, we will further extend the Node to efficiently encode embedded binaries and other useful types.
+This allows for reasonable representation of labeled data. We may similarly encode integers into stems. However, we can further extend the Node to efficiently encode text or binary data, struct-like data, and other useful types.
 
 ### Integers
 
@@ -65,7 +65,7 @@ Sequential structure in glas is usually encoded as a list. A list is either a `(
          2 /\
           3  ()
 
-Direct representation of lists is inefficient for many use-cases, such as random access, double-ended queues, or binaries. To enable lists to serve many sequential data roles, lists are often represented under-the-hood using [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_%28data_structure%29). This involves extending the 'Node' type described earlier with logical concatenation and array or binary fragments.
+Direct representation of lists is inefficient for many use-cases, such as random access, double-ended queues, or binaries. To enable lists to serve many roles, lists are often represented under-the-hood using [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_%28data_structure%29). This involves extending the 'Node' type described earlier with logical concatenation and array or binary fragments.
 
 Binaries receive special handling because they're a very popular type at system boundaries (reading files, network communication, etc.). Logically, a binary is a list of small integers (0..255). For byte 14, we'd use `0b1110` not `0b00001110`. But under the hood, binaries will be encoded as compact byte arrays.
 
@@ -135,84 +135,107 @@ The runtime can be configured to listen on a TCP port for debugger interactions.
 
 ## Annotations
 
-Programs in glas systems will generally embed annotations to support *instrumentation, validation, optimization*, and other non-functional features. As a general rule, annotations should not influence observable behavior except through reflection APIs and performance.
+Programs in glas systems will integrate annotations to support *instrumentation, validation, optimization*, and other non-functional features. As a general rule, annotations should not influence observable behavior except through reflection APIs and performance.
 
 Proposed representation in abstract assembly: 
 
         (%an (%an.dbg.log Chan Message) Operation)
 
-In this case '(%an.dbg.log ...)' can be replaced by any annotation AST constructor. If '%an.dbg.log' is not recognized by the runtime, we can warn on the first encounter then ignore further such annotations. Users could suppress warnings if the runtime recognizes '(%an.nowarn AnnoAST)' or through configuration. 
+We always annotate an Operation. But, within a sequence, we'll often annotate a no-op. If an annotation like '%an.dbg.log' is not recognized, we can report a warning then simply evaluate Operation. To suppress warnings, we could recognize something like `(%an.nowarn (...))`, or suppress control warnings through the configuration.
 
 Annotations can also be expressed at other layers:
 
-* In the data layer, a runtime might record some annotations to support acceleration or dynamic enforcement of abstract and linear types, but a user can only access this through reflection APIs.
-* In the namespace layer, we might use 'foo.\#doc' for documentation or 'foo.\#test.\*' for a test suite. The runtime will usually ignore namespace-layer annotations, but they can be useful for external tools. 
-* In the source layer, annotations are expressed as associated hidden subfolders. For example, a ".pki/" subfolder could contain signed manifests and signed certifificates for signators. 
+* A runtime may encode metadata within data. This metadata should be serializable, e.g. via [glas object](GlasObject.md), thus may be integrated in cache or persistent state. 
+* A namespace may encode metadata based on naming conventions, e.g. 'foo.\#doc', and 'foo.\#type'. These annotations would be visible to tools that browse or analyze a namespace.
+* The module system may recognize hidden subfolders like ".pki/" or ".glas/". This can contain metadata such as signed manifests and public key certificates, stable GUIDs for location-independence of folders, and cached hints for a theorem prover.
 
 ## Instrumentation
 
-We might annotate our programs to record some extra information to support debugging. This includes logging, profiling, or recording a computation.
+Instrumentation is expressed using annotations. This includes logging, profiling, or tracing a computation.
 
         log (Chan, Message) { Operation }
-        prof (Chan, DynamicIndex) { Operation }
-        record (Chan, Cond) { Operation }
+        profile (Chan, DynamicIndex) { Operation }
+        trace (Chan, Cond) { Operation }
 
         (%an (%an.dbg.log Chan Message) Operation)
         (%an (%an.dbg.prof Chan DynamicIndex) Operation)
-        (%an (%an.dbg.rec Chan Cond) Operation)
+        (%an (%an.dbg.trace Chan Cond) Operation)
 
 The log Message should either be a read-only computation or computable within a hierarchical transaction. Conditional logging is supported by returning an 'empty' message. Logging over an operation is interesting; depending on configuration for Chan, this can support random samples or adding Message to a stack trace. In context of transaction loop applications - with forks and incremental computing - we might render logs to a user as a time-varying tree instead of a message stream.
 
 Profiling should record things useful for understanding performance. Entry and exit counts, time spent, memory allocated, etc.. In context of transaction loop applications, we might keep stats related to stability and incremental computing, aborting on read-write conflict, and so on.
 
-A runtime can also be asked to record information to replay an Operation, and perhaps more based on configuration. Recording can be a convenient alternative to breakpoints in cases where users don't intend to interfere with the computation. We might keep the recording based on whether Cond was true at any point in Operation.
+If asked to 'trace' an Operation, the runtime may conditionally record enough information to replay that operation in slow motion. This serves as a convenient alternative to breakpoints in many use cases.
 
-In each case 'Chan' is a statically evaluated expression to support configuration, i.e. such that we can disable certain log messages, or configure logging to sample randomly during Operation. We can easily extend this with a scope to 'translate' channels within Operation. Perhaps:
+In each case 'Chan' is a statically evaluated such that we can selectively disable log messages or assertions, or configure how they are handled over a complex Operation. For even more flexible and precise configuration of debugging, we can also rewrite Chan:
 
         debug-scope (ChanRewrite) { Operation }
         (%an (%an.dbg.scope ChanRewrite) Operation)
 
-In this case ChanRewrite represents a static `Chan -> Chan` function that is logically applied to '%an.dbg.\*' channels within Operation. This allows more precise configuration of logging, but it does complicate efficient implementation.
+In this case, ChanRewrite should be a `Chan -> Chan` function that we apply at compile time.
 
-*Note:* Non-deterministic choice in a log message or recording condition might be interpreted as a composition, i.e. set of messages, all conditions are true. For profiling dynamic index, we might heuristically split costs.
+*Note:* Non-deterministic choice in a log message or recording condition will be heuristically interpreted as a composition: all conditions, a set of messages, etc.. Depending on configuration of Chan, we could try to evaluate every case or just one choice randomly.
 
 ## Performance
 
-Annotations will guide performance features - acceleration, caching, laziness, parallelism, use of content-addressed storage. They might also guide JIT compilation and optimizers directly, such as guiding partial evaluation or inlining.
+Annotations guide performance features - acceleration, caching, laziness, parallelism, JIT compilation, tail-call optimization, use of content-addressed storage, etc..
 
 ### Acceleration
 
-Acceleration is a pattern that lets a runtime introduce 'performance' primitives separately from 'semantic' primitives. For example, instead of directly introducing a new primitive for '%matrix.mul', we might write `(%an %accel.matrix.mul ReferenceImpl)`. A subset of runtimes might recognize this annotation, optionally validate ReferenceImpl, then substitute the ReferenceImpl with a built-in implementation. 
+There are many functions that are difficult to implement efficiently within the glas program model due to lack of static types or suitable 'primitive' operations. In these cases, we can provide a slower reference implementation, then use an annotation to ask a runtime to replace the reference implementation with a high-performance built-in. Example:
 
-There is plenty of benefit in accelerating matrices, graphs, sets, relational databases (i.e. a dict of lists of dicts), and other types, so long as they are widely useful. However, among the best use cases is accelerated eval of an abstract CPU or GPU. The accelerator can validate memory safety and 'compile' code for actual hardware. If we want cryptography, physics simulations, or LLMs available as 'pure functions' in glas systems, this would be a good approach.
+        (%an (%an.accel.matrix.mul "double") ReferenceImpl)
 
-There are caveats. Acceleration of floating point arithmetic is a hassle due to inconsistencies between processors, so we might stick with integers. If necessary, we can still access hardware through an effects API, perhaps indirectly via FFI.
+In practice, the reference implementation will alias a separate definition. This allows for users to define automatic tests that compare the reference implementation with the accelerated version and verify consistency. A runtime may also integrate built-in verification, but it will often be limited due to concerns of performance or bloat.
+
+As needed, the runtime shall leverage specialized under-the-hood representations to support accelerated functions. For example, a matrix of floating point numbers might be represented as one large binary together with some metadata for dimensions. An accelerated list might be represented using finger-tree ropes. We could also accelerate structs, arrays of structs, and virtual machine states.
+
+Acceleration adds a fair bit of implementation and verification overhead. It is best to accelerate widely useful types - matrices, graphs, sets, relational databases, etc.. We can accelerate a few specialized functions (e.g. "sha512") to support bootstrap. But ideally we eventually replace any specialized functions with widely useful accelerated 'eval' of memory-safe operations on an abstract CPU or GPGPU.
+
+A relevant concern with acceleration is that not all hardware-supported operations are portable. This is especially the case for floating point computations, e.g. some processors use 80-bit internal representations. In this case, either our ReferenceImpl must account for the target processor (perhaps configured via '%env.arch.\*') or the accelerated implementation must trade some performance for portability.
+
+*Aside:* We may need logical [graph canonization](https://en.wikipedia.org/wiki/Graph_canonization) to accelerate unlabeled graph structures. The under-the-hood representation would not be canonical.
 
 ### Laziness and Parallelism
 
-A subset of computations, especially pure functions, can be safely deferred. The deferred computation can later be forced, or sent to a background worker to handle in parallel.
+A subset of expressions are purely functional or read their environment without modifying it. In these cases, we can capture a snapshot of the relevant environment, then defer the computation until it is needed, or evaluate in parallel between transactions. Of course, the snapshot and indirection does introduce some overhead, so this is most suitable for relatively expensive computations.
 
-        (%an (%an.lazy.thunk) Expr)        # defer eval of type of Expr, immediately return thunk
-        (%an (%an.lazy.force) Thunk)       # force evaluation of a thunk, returning the data
-        (%an (%an.lazy.spark) Thunk)       # add thunk to a pool, eventually will be forced
+        (%an (%an.lazy.thunk) Expr)     # defer eval of type of Expr, returns abstract thunk
+        (%an (%an.lazy.force) Thunk)    # force evaluation of a thunk, returning the data
+        (%an (%an.lazy.spark) Thunk)    # adds thunk to a thread pool, force in background
 
-I assume *explicit* laziness for glas systems. Under this assumption, it would be a type error to 'force' or 'spark' data that is not a thunk, and we can construct have lazy lazy values that must be forced twice. This discourages unnecessary use of laziness, and also reduces the burden for a superbly efficient implementation of laziness. 
+This API makes thunks explicit. Alternatively, we could support thunks that are implicitly forced when we attempt to observe a value. However, for my vision of glas systems, it's more convenient if laziness is explicit and well-integrated with the type system. Thunks can be runtime-scoped, and it's an error to thunk an Expr that has observable effects.
 
-Laziness is very troublesome in open systems. To keep it simple, lazy data will be runtime scoped. 
+### Content-Addressed Storage
 
-### Content Addressed Storage
+To support larger-than-memory data, glas systems may leverage content-addressed storage to offload subtrees to higher-latency storage (e.g. disk or network). 
 
-To support larger-than-memory data, glas systems may leverage content-addressed storage to offload subtrees to higher-latency storage (e.g. disk or network). Programmers may use `(%an (%an.cas Hint) BigDataExpr)` annotations to guide this behavior, with Hint potentially suggesting minimum and maximum chunk sizes and other heuristic guidance. The actual conversion may be deferred, performed only when the garbage collector is looking for opportunities to recover memory, or when the hash might be useful for memoization.
+        (%an (%an.cas.stow OptionalHints) BigDataExpr)
+        (%an (%an.cas.load) StowedData)
 
-In context of serialization - distributed runtimes, database storage, or remote procedure calls - we can lazily fetch fragments of data as needed, supporting incremental upload and download. If we find ourselves repeatedly communicating content-addressed data between runtimes (e.g. via remote procedure calls) we could use integrate content delivery networks to spread the network pressure.
+Use of 'stow' doesn't immediately write the value to disk. It may wrap or associate the data with a little runtime metadata and cache, deferring actual storage guided by hints and heuristics. For example, we could wait for actual memory pressure, letting the garbage collector decide when to store the data and remove it from memory. Data below a size threshold may be kept in local memory regardless.
 
-### Memoization
+Use of 'load' is provides access previously stowed data. It is feasible to support transparent stowage with implicit 'load', but it's inefficient to check for content-addressed representations on every arithmetic operation. That said, we could support specialized variants for implicit load of finger-tree ropes and such, integrating with accelerated representations.
 
-When applying a pure function to immutable data, we can use a secure hash as a lookup key. A persistent memoization table allows sharing work between applications. In glas systems, we'll rely on persistent memoization as a basis for incremental compilation. To work with large data, we should use content-addressed data to reduce the effective size of the argument.
+Content-addressed data interacts very nicely with memoization, orthogonal persistence, and distributed programs where large but infrequently-updated data structures are passed around (e.g. audio or video media, context dictionaries). This also integrates very easily with content delivery networks. 
 
-### Pre-Warming
+### Caching
 
-We can evaluate application-layer 'start' and 'step' operations at compile time. The compiler would simulate state, non-deterministic choice, and other runtime features, pausing computation for anything it cannot handle. The compiler can decide based on heuristic space-time tradeoffs whether to include initialized state and partially evaluated transactions in a compiled image. With guidance from application settings, a compiler could also perform a series of 'http' requests and cache the results.
+When applying a pure function to immutable data, we can use a secure hash as a lookup key. A persistent memoization table allows sharing work between applications. This isn't optimal - we could be including features of the data that aren't observed by the function - but it's a very simple basis for work sharing, and users can apply some extra processing to isolate relevant input prior to memoization.
+
+In glas systems, we'll rely on persistent memoization as a primary basis for incremental compilation. To work with large data, we should use content-addressed data to reduce the effective size of the argument.
+
+### Program Rewrites? Defer.
+
+Mapping two *pure* functions over a list, e.g. `map f . map g`, is equivalent to mapping the composite function, `map (f . g)`. For map-reduce over a list, we can parallelize and distribute computation if the sum operation is associative. There are many similar observations on programs. However, it's difficult to *prove* such optimizations are safe. 
+
+What can be done? One viable option is metaprogramming, letting users build a DSL that performs the optimizations when compiled further. Another is proof-carrying code, extending the program with proof hints. We could also use annotations as a sort of "trust me, bro" to the compiler, insisting a function is associative or commutative or monotonic or whatever without a proof. In the latter case, trust may be contingent on PKI, similar to application access to FFI.
+
+At the moment, I won't pursue these optimizations too far at the runtime layer, leaving it to DSLs and metaprogramming. But it's certainly an area where we could obtain some significant returns on investment as the glas system matures.
+
+### Warmed Applications
+
+We can evaluate application-layer 'start' and 'step' operations at compile time, insofar as they don't immediately await response from FFI or other external sources. The compiler would simulate state, non-deterministic choice, and other runtime features, pausing computation for anything it cannot handle. The compiler can decide based on heuristic space-time tradeoffs whether to include initialized state and partially evaluated transactions in a compiled image. With guidance from application settings, a compiler could also perform a series of 'http' requests and cache the results.
 
 ## Validation
 
@@ -223,7 +246,7 @@ Annotations can express assertions, type annotations, even proofs. I'll explore 
 Assertions are by far the simplest form of validation.
 
         assert(Chan, Cond, Message) { Operation }
-        (%an (%an.assert Chan Cond Message) Operation)
+        (%an (%an.dbg.assert Chan Cond Message) Operation)
 
 We might interpret an assertion over an operation as expressing an invariant. Based on configuration for Chan, Cond can be randomly sampled, automatically tested upon stack trace, or tested continuously for every relevant change in state. To avoid influencing observable behavior, Cond can be a read-only function or evaluated within a hierarchical transaction. When an assertion fails, we log the message and halt the transaction.
 
@@ -268,9 +291,11 @@ Linear types are extremely awkward in open systems: they cannot be enforced, and
 
 I want to express physical units on numbers - kilograms, newtons, meters, joules, etc. - and enforce safe use of units. However, I'm not certain of the best approach. Some options:
 
-* *staged computing* - model units as a 'static' parameter and result. Likely to be awkward syntactically, but perhaps front-end language support can mitigate this. A big advantage compared to annotations is that this makes units accessible for 'print' statements and such.
-* *enum in accelerated number rep* - we're likely to accelerate our number types, e.g. rationals of form `(N/2^K)`, allowing for negative K, are very useful as floating-points. It isn't expensive to add an enum to this representation for units, covering most units encountered in practice, and handle it across the basic arithmetic operations.
+* *staged computing* - model units as a static parameter and result. Likely to be awkward syntactically, but perhaps front-end language support can mitigate this. A big advantage compared to annotations is that this makes units accessible for 'print' statements and such.
+* *enum in accelerated number rep* - we're likely to accelerate our number types. It isn't too expensive to add an enum to this representation for units, covering most units encountered in practice, and verify across the basic arithmetic operations. This is probably the simplest short-term solution, though units would only be visible through a reflection API.
 * *static analysis* - add units to our type annotations, analyze at compile time. I'm reluctant on this option, mostly because I want to put off static analysis, but I want support for units relatively early.
+
+I'll need to think on this further. 
 
 ### Proof-Carrying Code?
 

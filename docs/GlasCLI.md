@@ -39,11 +39,9 @@ An application is expressed within a namespace, using 'app.\*' methods to simpli
 
 Every application must at least define 'app.settings' to guide integration. The runtime does not observe settings directly. Instead, an 'app.settings' handler is passed when querying the configuration for application-specific options.
 
-Among the application-specific configuration options, a glas executable may support multiple run modes. For example, a transaction-loop application uses 'app.start' and 'app.step', a threaded application defines 'app.main', a staged application could specifies another namespace procedure 'app.build'. Thus, exactly what happens when we run an application depends on 'app.settings', and is independent of application source. 
+Among the application-specific configuration options, a glas executable may support multiple run modes. For example, a transaction-loop application uses 'app.start' and 'app.step', a threaded application defines 'app.main', a staged application could specifies another namespace procedure 'app.build'. Thus, exactly what happens when we run an application depends on 'app.settings', and is independent of application source. See [glas applications](GlasApps.md).
 
-See [glas applications](GlasApps.md).
-
-*Note:* Alternatively, we might model an application namespace as a set of handlers generated within a call graph. This would simplify modeling application state as a set of local vars on the stack. In any case, an application may have more than one associated method.
+*Note:* As part of a staged run mode, we might express an application namespace as handlers within a call graph. This would simplify modeling application state as local vars maintained between steps.
 
 ## Installing Applications
 
@@ -75,7 +73,9 @@ Trust can be tracked for individual definitions based on contributing sources. T
 
 Trust can be scoped. For example, when signing a manifest, a developer can indicate they trust code with GUI but not full FFI or network access. Unfortunately, we cannot count upon developers precisely scoping trust, nor will regular end-users be security savvy. Instead, communities scope trust of developers or public signatures by serving as certificate authorities. A developer might be trusted with GUI and 'public domain' network access, and this extends to code signed by that developer.
 
-Trust can be attenuated via annotations. For example, a trusted shared library might implement a GUI using FFI. FFI requires a very high level of trust, but GUI does not. Based on annotations, the library could indicate that a subset of public methods only require the client is trusted with GUI access. A developer can voluntarily sandbox an application by interacting with the system only through such libraries.
+Trust can be attenuated via annotations. For example, a trusted shared library might implement a GUI using FFI. FFI requires a very high level of trust, but GUI does not. Based on annotations, the library could indicate that a subset of public methods only require the client is trusted with GUI access. A developer can voluntarily sandbox an application by interacting with the system only through such libraries, or by expecting 'open' files as parameters in some cases.
+
+In many cases, we can take advantage of unforgeable abstract data types as tokens of authority. For example, if we have abstract data representing an open file handle, we can freely operate on that open file, but actually opening the file to obtain the handler may be restricted and attenuated under a security policy.
 
 Before running an application, the glas executable can analyze the call graph for trust violations. If there are any concerns, we might warn users and let them abort the application, extend trust, or run in a degraded mode where a subset of transactions is blocked for security reasons. Of course, exactly how this is handled should be configurable.
 
