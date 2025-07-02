@@ -29,19 +29,17 @@ To mitigate risk of naming conflict, the runtime will recognize configuration op
 
 ## Running Applications
 
-An application is expressed within a namespace, using 'app.\*' methods to simplify recognition, access control, extraction, and conflict avoidance. Users can reference and run applications in a few ways:
+An application is generally expressed within a namespace using 'app.\*' methods. The 'app' prefix exists to simplify recognition, browsing, access control, and other meta-level features. Users may reference applications in the configuration namespace or the filesystem:
 
-* **--run**: To run 'foo', we look for 'env.foo.app.\*' in the user configuration. This application is lazily downloaded and compiled on demand, usually caching to avoid redundant effort.
-  * *note:*  Users may run hidden apps outside of 'env.\*' via '.' prefix, e.g. '.foo => foo.app.\*'. 
-* **--script**: Compile indicated file, package folder, or URL. The generated namespace must define 'app.\*' at the toplevel.
-  * **--script.FileExt**: Same as '--script' except we use the given file extension in place of the actual file extension for purpose of user-defined syntax. Mostly for use with shebang scripts in Linux, where file extensions may be elided.
-* **--cmd.FileExt**: Treated as '--script.FileExt' for an anonymous, read-only file found in the caller's working directory. The main use case is shell scripts avoiding intermediate files.
+* **--run AppName**: Searches for 'env.AppName.app.\*' in the configuration namespace. 
+  * **-run .AppName**: Elides the 'env' prefix, running 'AppName.app.\*'. As a special case, '--run .' will run the toplevel 'app.\*' in the configuration.
+* **--script Location**: Compile an indicated file, package folder, or URL into a namespace that must contain a toplevel 'app.\*'. This receives read-only access to a configured environment (e.g. shared libraries and composable apps) via '%env.\*'. The front-end compiler is selected based on file extension, i.e. '%env.lang.FileExt'.
+  * **--script.FileExt FileLocation**: same as '--script' except we substitute the file extension. Intended for use in Linux shebang lines.
+* **--cmd.FileExt SourceText**: same as '--script.FileExt' except we provide the source text as a command-line argument, perhaps presenting it as a virtual file.
 
-Every application must at least define 'app.settings' to guide integration. The runtime does not observe settings directly. Instead, an 'app.settings' handler is passed when querying the configuration for application-specific options.
+Every application must define at least 'app.settings' to guide integration. Typically, we'll also define 'app.main' for conventional threaded apps, or 'app.step' for transaction loop apps, and perhaps a few event handling methods, such as 'app.http' to receive HTTP requests. See [glas applications](GlasApps.md). 
 
-Among the application-specific configuration options, a glas executable may support multiple run modes. For example, a transaction-loop application uses 'app.start' and 'app.step', a threaded application defines 'app.main', a staged application could specifies another namespace procedure 'app.build'. Thus, exactly what happens when we run an application depends on 'app.settings', and is independent of application source. See [glas applications](GlasApps.md).
-
-*Note:* As part of a staged run mode, we might express an application namespace as handlers within a call graph. This would simplify modeling application state as local vars maintained between steps.
+*Note:* There are no runtime options on the command line. In general, all options should be through the configuration file or application settings. However, a staged application may interpret command-line arguments to influence settings. 
 
 ## Installing Applications
 

@@ -1,8 +1,37 @@
 # Glas Applications
 
-Assume applications are represented as a set of 'app.\*' methods in a [namespace](GlasNamespaces.md). The [glas executable](GlasCLI.md) lets users select and run an application from a configuration namespace or by compiling a file as a script. By convention, every application defines at least 'app.settings' to guide integration. 
+The [glas executable](GlasCLI.md) lets users select and run an application from the configuration namespace or by compiling a file as a script. By convention, a glas application is represented as a set of 'app.\*' methods in a [namespace](GlasNamespaces.md). 
 
-The glas executable may support mulitple run modes, selecting one based on settings. This document will focus primarily on a *transaction loop* run mode, which is an especially good fit for my vision of glas systems. However, we could also support the conventional 'main' thread or staged applications. 
+## Application Settings and Adapters  
+
+Every application defines at least 'app.settings' to guide integration. This method does not receive full access to application state or most effects, allowing for compile-time configuration of runtime features. 
+
+In general, the runtime does not directly observe application settings. Instead, the configuration defines an adapter between runtime and application based on access to settings and runtime version information. This adapter code can support portability of applications across multiple runtime versions and community conventions, and extension of the glas system with alternative application models.
+
+## Application Models and Run Modes
+
+A runtime may recognize more than one "run mode" for applications, selecting one based on application settings. A few useful run modes:
+
+* *threaded applications* - The runtime runs a non-atomic 'app.main' procedure or process over multiple steps, implicitly maintaining control-flow state between steps. Steps may be coarse-grained, atomic between explicitly waiting on external conditions, allowing for 'atomic' sections internally. Any parallelism between threads is opportunistic.
+
+* *transaction loop applications* - The runtime repeatedly and runs 'app.step' atomically in an implicit loop, relying on incremental computing optimizations and non-deterministic choice as the basis for concurrency. There is no implicit state; any control flow between steps must be modeled explicitly. 
+
+* *staged applications* - If *late-bound sources* at the namespace layer prove inconvenient, we could model staging more explicitly as a run mode, e.g. defining an 'app.build' namespace procedure and a localization for linking across stages. Relies on JIT compilation.
+
+This document focuses on transaction loop applications, which are an excellent fit for my long-term vision of glas systems. However, threaded applications are more familiar to most programmers. The main concern with threaded applications is that implicit control-flow state is difficult to maintain in context of live coding, which has opportunity costs. Though, we can mitigate this via expressing any long-running loops in terms of tail-recursion.
+
+Aside from the primary behavior, a runtime may support ad hoc event-processing methods:
+
+* 'app.start' - Set initial global state, perform initial checks. Retried until it commits once.
+* 'app.switch' - First transaction in new code after live update. Old code runs until successful switch.
+* 'app.http' - Handle HTTP requests between steps. An initial basis for GUI and events.
+* 'app.rpc' - Transactional inter-process communications. Multiple calls in one transaction. Callback via algebraic effects.
+* 'app.gui' - Like an immediate-mode GUI. Reflective - renders without commit. See [Glas GUI](GlasGUI.md).
+* 'app.signal' - Called to receive OS events, e.g. to support graceful shutdown.
+
+Working with 'app.http' and 'app.rpc' and so on is relatively convenient for composition of applications and debugger integration compared to explicitly opening a TCP port. In case of staged applications, these event-processing methods should have a mechanism to delegate to the next stage.
+
+This document focuses on transaction loop applications, as the best fit for my vision of glas systems. However, ultimately the application model supported in glas is very flexible and extensible.
 
 ## The Transaction Loop
 
@@ -23,110 +52,17 @@ Further, there are several lesser optimizations we might simplify a program:
 
 Transaction loops present two significant challenges. First, the most important optimizations are difficult to implement. Without them, we're effectively limited to an event dispatch loop and heuristic selection of non-deterministic forks based on epoll. Fortunately, the simple event dispatch loop is still a nice application model and sufficient for many applications. Second, request-response interactions must generally commit the request and yield before a response becomes available, which can be awkward to express. This can be mitigated by front-end syntax, perhaps something like 'async' and 'await' keywords.
 
-*Note:* Regarding [ACID (Atomicity, Consistency, Isolation, Durability)](https://en.wikipedia.org/wiki/ACID) properties, only atomicity and isolation are required for a transaction loop. However, consistency is indirectly supported via type systems and assertions, and durability can be implicitly integrated based on binding some application state to shared persistent storage.
-
-## Transaction-Loop Applications
-
-A transaction-loop application might define several transactional methods:
-
-* 'app.start' - Set initial state, perform initial checks. Retried until it commits once.
-* 'app.step' - After start, repeatedly run 'step' until voluntary 'sys.halt' or killed.
-* 'app.http' - Handle HTTP requests between steps. Our initial basis for GUI and events.
-* 'app.rpc' - Transactional inter-process communications. Multiple calls in one transaction. Callback via algebraic effects.
-* 'app.gui' - Like an immediate-mode GUI. Reflective - renders without commit. See [Glas GUI](GlasGUI.md).
-* 'app.switch' - First transaction in new code after live update. Old code runs until successful switch.
-* 'app.signal' - Called when the application process receives an operating system event.
-
-There are limits on what can be achieved in a single transaction, thus most operations occur over multiple steps. FFI is expressed in terms of buffering commands to an FFI 'thread', then reading results in a future transaction.
+*Note:* Regarding [ACID (Atomicity, Consistency, Isolation, Durability)](https://en.wikipedia.org/wiki/ACID) properties, only atomicity and isolation are required for a transaction loop. However, consistency is indirectly supported via type systems and assertions. Durability may be orthogonal, binding some application state to configured persistent storage.
 
 ## Application State
 
-Transaction-loop applications must access external state across transactional steps. However, how state is integrated has a significant impact on opportunities for parallelism, fine-grained concurrency, and incremental computing. State will be closely related to the [program model](GlasProg.md).
+Transaction loop applications must access state across transactional steps. I propose to represent this state as an implicit structure of in-out parameters, avoiding the conventional heap of pointers or abstract references. This allows for convenient browsing of a stable structure, predictable schema updates, and simpler analysis of opportunities for parallelism. Relatedly, even abstract state such as "open files" should be presented as second-class locations within the structure instead of first-class handles or references.
 
-Viable designs:
-
-* *external heap or db* - e.g. `sys.heap.new` and `sys.heap.var` to create anonymous heap refs or bind to an address space, returning an abstract reference or 'pointer' that can be read and modified through other `sys.heap.*` operations. This design is easy to implement and flexible, but hinders static analysis and encourages complex dynamic entanglement of data.
-* *static in-out parameters* - the runtime threads state through steps as a static set of in-out parameters, perhaps via implicit parameters. This makes static analysis easy, but it complicates expression of dynamic structure (e.g. requiring built-in support for tables, borrowing and slicing, etc.).
-
-At present, I lean towards static in-out parameters to simplify analysis and optimizations. However, I describe a viable heap API below, and we should align most stateful APIs (such as FFI threads and RPC) with however we integrate state.
-
-Regardless of integration, I'll want to support several features:
-
-* *shared persistent state* - A subset of application state should be persistent, shared with future instances of the same application and with concurrent tools. Atomic updates greatly simplify safe use of shared state. The user configuration can determine where persistent state is managed. 
-  * *content-addressed storage* - When serializing large, [persistent data structures](https://en.wikipedia.org/wiki/Persistent_data_structure), we can avoid full updates by use of content-addressed data to reference common subtrees. This includes implementing or modeling large binaries via finger-tree ropes.
-  * *security* - see *Securing Applications* later for details. The user configuration could restrict trust requirements to access certain subsets of shared persistent variables. Trusted libraries or application adapters can then control shared state interactions between apps.
-* *distributed state* - specialize use of fine-grained state to improve latency and partitioning tolerance in a distributed runtime. For example, queues may be read by one node and written by another. 
-
-### Heap API (Tentative)
-
-As an "easy to implement" solution, we can provide a dynamic heap-allocation API. In this case, the heap references are an abstract data type to simplify garbage collection. We can also use explicit 'scope' types as a static parameter to control escape of references between persistent and runtime layers.
-
-A viable API:
-
-* `sys.heap.*` - 
-  * `scope.*` - Data from a longer-lived scope may be stored into a shorter-lived scope, but not vice versa. Dynamically enforced via tagged pointers.
-    * `db : Scope` - persistent, shared state through a configured database, with flexible heap refs.
-    * `rt : Scope` - runtime or process resources like open files, network connections, FFI threads.
-    * `tn : Scope` - implicitly cleared before commit, can enforce protocols via linear types.
-    * `cmp.eq(Scope, Scope) : Boolean` - returns whether two scopes are the same.
-    * `cmp.ge(Scope, Scope) : Boolean` - true iff lifespan of left scope greater or equal to right scope
-  * `var(Static Scope, Name) : Ref` - global variable of given scope and name, serves as a garbage collection root. Name should be a short, meaningful text. The default value for a unassigned variable is zero, but this may be influenced by declared schema or usage hints. Potentially replaced by program registers.
-    * *Note:* We could support the entire heap API minus 'var', and use static in-out parameters as our GC roots instead.
-  * `ref.*` - new refs, weak refs, reference equality
-    * `new(Static Scope, Data) : Ref` - new anonymous reference at given scope, garbage collected upon becoming unreachable. A new shared-scope Ref may be represented entirely within the runtime until it must be serialized to the shared database. Diverges with type error if scope is incompatible with data.
-    * `scope(Ref) : Scope` - return scope of a given reference
-    * `weak(Ref) : WeakRef` - returns a [weak reference](https://en.wikipedia.org/wiki/Weak_reference). A garbage collector may collect Refs only reachable through WeakRefs. To access the Ref, use 'fetch' or 'tryfetch'.
-    * `weak.fetch(WeakRef) : Ref` - obtain the strong reference associated with a weak reference. If the associated Ref has already been garbage collected, this operation will diverge. See also: 'tryfetch' from the reflection API.
-    * `weak.cache(Ref, CacheHint) : WeakRef` - a variant WeakRef to support manual caching. The garbage collector keeps Ref in memory until there is sufficient memory pressure, with heuristic guidance from CacheHint and history of use.
-    * `cmp.eq(Ref, Ref) : Boolean` - reference equality, asks whether two Refs are the same.
-  * `cell.*` - whole-value heap ops
-    * `get(Ref) : Data` - read the heap value, returns a copy.
-    * `set(Ref, Data)` - modify the value for future access, drops prior value.
-    * `swap(Ref, Data) : Data` - get and set as one operation (for linear types).
-  * `slot.*` - option values (singleton or empty list) can be treated like a mutex.
-    * `take(Ref) : Data` - if Ref has data, swap with empty and return data. Otherwise diverge.
-    * `put(Ref, Data)` - if Ref has no data, swap with singleton containing data. Otherwise diverge.
-  * `queue.*` - a cell containing a list can be treated as a queue. A runtime can potentially optimize queue operations, supporting a single reader and multiple writers in parallel. This involves buffering writes locally then ordering write buffers based on final serialization of transactions.
-    * `read(Ref, N) : List of Data` - remove and return exactly N items from head of list, or diverge
-    * `unread(Ref, List of Data)` - reader adds items to head of list for a future read
-    * `peek(Ref, N) : List of Data` - same as read then unread a copy.
-    * `write(Ref, List of Data)` - add data to end of queue for a future reader.
-  * `bag.*` - an unordered queue. Reads and writes operate on non-deterministic locations in the list. Allows multiple readers and writers in parallel, each operating on a partition. However, also at risk from combinatorial explosions of 
-    * `write(Ref, Data)` - add item to bag, non-deterministic position in list.
-    * `read(Ref) : Data` - read and remove data from a non-deterministic position in the list. Diverge if bag is empty. 
-    * `peek(Ref) : Data` - read data non-deterministically without removing it.
-  * `index.*` - (tentative) logically view a cell containing a dict as a dict of cells, and similar for arrays. This allows fine-grained read-write conflict analysis per index and whole-value operations. Indexed refs may be (perhaps temporarily) invalid, e.g. binding index 42 of a 40-element array. Data operations on invalid refs diverge. *Caveats:* Need to try this out, see if it's difficult to implement efficiently.
-    * `dict(Ref, Name) : Ref` - Return Ref to access a field in referenced dict. Name is binary excluding NULL.  
-    * `array(Ref, N) : Ref` - Return Ref to access an offset into referenced list or array.
-    * `array.slice(Ref, Offset, Len) : Ref` - Ref to a slice of an array. Operations that would shrink or grow the array will instead diverge.
-  * *CRDTs* - (tentative) runtime support for cells modeling [conflict-free replicated data types (CRDTs)](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) are useful for network partitioning tolerance in a distributed system. See *Distributed State*. However, a lot of research is needed to choose suitable CRDTs.
-* `sys.refl.heap.*` - methods for reflection on the database.
-  * `ref.weak.tryfetch(WeakRef) : opt Ref` - returns a singleton list containing Ref if available, otherwise empty list. This operation indirectly observes the garbage collector.
-  * `ref.hash(Ref) : N` - returns a stable natural number per Ref suitable for use with hashmaps or hashtables. 
-  * `ref.usage(Ref, Hint)` - runtime-specific hints regarding usage of a ref. This may include representation schema, initial values for vars, or migration suggestions for a distributed runtime.
-  * `var.iter(Scope, Text) : Name | empty` - seeks Name of next defined var in lexicographic order from given Text. Returns empty name if there is no successor. A var may be garbage collected if the Ref contains zero and is unreachable except via 'var'. 
-  * `queue.avail(Ref) : N` - returns number of items are locally available to a reader, i.e. without divergence or a distributed transaction.
-
-Although the heap API is very flexible, and can even be reasonably efficient, I'm not convinced it's a good fit for my vision of glas systems. It hinders static analysis of dataflow between variables and fine-grained concurrency, i.e. because we cannot statically identify when multiple subprograms access the same heap ref. If feasible, I'd like to pursue alternative designs with support from the program model.
+Global state may be associated with the runtime instance, or persistent and shared with concurrent or future applications. Many follies of sharing are mitigated by atomic steps and fine-grained configuration of security. We can also bind each application to an app-data location based on settings to resist accidental sharing.
 
 ### Distributed State
 
-A distributed runtime can be configured to use a distributed database as a shared heap. Both shared and runtime heaps may distribute 'partial' cells, e.g. splitting a queue into a read buffer and write buffer. This allows reader and writer to continue processing during a temporary network disruption, and lets us separate the writer transaction from a distributed operation to move data between buffers.
-
-What optimizations are viable?
-
-* cell - owned by a writer, may be cached read-only on reader nodes
-* slot - single owner for read and write, migrate as needed, no caching
-* queue - reader and writer buffers may implicitly be owned by separate nodes, writer buffers data while the network is partitioned. Reader may eventually react to the disruption via timeouts.
-* bag - partition list across multiple nodes. Each node can read and write to local partition while network. The runtime opportunistically shuffles data between partitions when the network is up. Useful for load balancing.
-* index - distribute ownership per index based on how the ref is used.
-* CRDTs - replicate to every node, interact with locally, and synchronize replicas when nodes interact.
-
-In general we should consider *permanent* network disruptions, e.g. destruction of a node. In this context, ownership by a single node can be a problem. For critical Refs, such as shared or runtime vars, we might favor use consensus algorithms instead of ownership by a single Ref. But requiring consensus for every update is expensive. We might favor indirection, such that a non-critical intermediate Ref can be updated efficiently by a node, or detached and replaced (with consensus) after a timeout.
-
-## Regarding References
-
-The heap API describes one use of first-class references, and we can follow that example elsewhere - e.g. abstract data types for FFI threads, discovered RPC objects, or open files. However, if we find a good alternative to the heap, we should apply a similar structure to eliminate other first-class references. For example, if we bind persistent similar to local vars, we can feasibly do the same for binding an open file.
+In context of a distributed runtime, application state may also be distributed. Ideally, we have low-level support for useful abstractions on distributed state such as queues, bags, and CRDTs. In the general case, we must also consider partitioning of the network or destruction of nodes. In these cases, bags and CRDTs offer a significant advantage, allowing continued operation when nodes are separated. Thus, for robust distributed apps, we might need to construct state from such abstractions.
 
 ## HTTP Interface
 
@@ -140,42 +76,21 @@ If there is sufficient demand, we can extend this API to accept WebSockets, perh
 
 *Note:* The application-specific configuration might also describe integration with SSO to support multiple users and roles for the built-in HTTP interface.
 
-## Remote Procedure Calls
+## Remote Procedure Calls (RPC)
 
-To receive RPC calls, an application should declare an RPC API in application settings, and define a dispatch method:
+To receive RPC calls, an application must provide an RPC interface. This interface can be expressed through 'app.settings'. In some cases, we might want a dynamic interface that varies based on application state. Settings can feasibly indicate a dynamic interface routed through a single method, similar to HTTP requests. An application can feasibly publish multiple RPC interfaces for multiple roles, registries, and trust levels.
 
-        app.rpc : (MethodRef, List of Arg) -> [cb, sys] Result
+In context of glas systems, RPC methods will typically be called within distributed transactions. Thus, there is an opportunity to abort the transaction, or to check for consistency of application state after a series of RPC calls but before commit. Further, we can feasibly apply various transaction loop application optimizations - incremental computing, waiting reactively in case of 'unproductive' transactions, concurrency based on stable non-deterministic choice. However, robust support for distributed transactions and those optimizations will require new RPC protocols.
 
-The MethodRef is application specific and should be suitable for efficient dynamic dispatch. Initial MethodRefs are declared in application settings, but settings may specify a protocol to discover more methods at runtime. For security reasons, MethodRef is not directly published to the client. Instead, the client receives a cryptographic token that the runtime maps to MethodRef. This supports non-homogenous publishing and revocation of published interfaces.
+Also, RPC calls may support limited algebraic effects for callbacks, and local concurrency via 'await Cond'. This allows for relatively flexible interactions, but further modifies the RPC protocol.
 
-An application's RPC API is organized as a set of objects, each with methods and metadata. Based on metadata, the runtime publishes each object to a subset of configured registries. For example, an object that requires high trust might be published only to a private registry. Concurrently, the prospective client subscribes for RPC objects meeting some arbitrary criteria, with methods, metadata, and provenance.
+To perform RPC calls, an application must discover and reference RPC resources in the environment. However, in my vision for glas systems, I'm aiming to avoid first-class references. We can feasibly model a subscription to RPC interfaces as a dynamic table of discovered interfaces with some abstract state, selecting one when performing each call.
 
-A viable API:
-
-* `sys.rpc.sub(Criteria) : RpcSub` - subscription for RPC objects. RpcSub is runtime scoped. Criteria is runtime specific. May start in a ready status due to caching. Is not explicitly closed, but may be garbage collected.
-* `sys.rpc.sub.ready(RpcSub) : Boolean` - returns whether an RpcObj is available for 'recv'.
-* `sys.rpc.sub.recv(RpcSub) : RpcObj` -  return the next available RpcObj, or diverge if not ready. RpcObj is runtime scoped.
-* `sys.rpc.sub.reset(RpcSub)` - resets every RpcObj previously received from this RpcSub.
-* `sys.rpc.obj.valid(RpcObj) : Boolean` - an RpcObj may be marked invalid due to remote applications closing, network disruption, or manually via 'reset'. If marked invalid, calls diverge, but the object may be received anew from the origin RpcSub.
-* `sys.rpc.obj.reset(RpcObj)` - marks RpcObj invalid. Idempotent.
-* `sys.rpc.obj.call(RpcObj, MethodName, List of Arg) : [cb] Result` - initiate a remote call to a valid RpcObj. In addition to data arguments, a callback handler is integrated as an algebraic effect to support interaction with the caller. Args and Result are limited to global-scoped data (i.e. no Refs, FFI thread handles, RpcObj or RpcSub, etc.)
-  * `cb : (MethodName, List of Arg) -> [cb] Result` - Callbacks recursively receive callback handlers. Depth of recursion is limited by protocols or quotas.
-* `sys.rpc.obj.prop(RpcObj, Name) : opt Data` - return metadata associated with RpcObj; basically, any property we could filter in Criteria. Properties are immutable, but a runtime may stabilize RpcObj over changes to unobserved properties. 
-* `sys.rpc.obj.prop.list(RpcObj) : List of Name` - list all available properties.
-
-To enhance performance, I hope to support systematic code distribution, such that some calls or callbacks can be handled locally. Guided by annotations, an 'rpc' method may be partially evaluated based on MethodRef and have code extracted for evaluation at the caller. We can do the same with 'cb', partially evaluating based on MethodName. To support pipelining of multiple calls and remote processing of results, we could even send part of the continuation. However, this is all very theoretical at the moment.
-
-The notion that network disruption invalidates an RpcObj is debatable in context of distributed runtimes. Even if one node loses access, another might retain access. In context of distributed runtimes, we might indicate how multi-homing is handled in the search criteria.
-
-*Note:* If the program model supports coroutines, we might want to extend this to remote coroutines with the remote calls 'yielding' after setting some state or whatever. We might need to generalize vars to pass-by-refs in this case.
-
-*Note:* Use of RpcObj and RpcSub as abstract data types could be replaced by binding RPC effects to a abstract environment of implicit variables. This should align with application state.
-
-*Note:* A runtime may publish RPC methods to support integrated development environments and debuggers. This might be presented within an application as 'sys.refl.dbg.rpc'. We'll additionally want reflection on RPC registries and resources, perhaps 'sys.refl.rpc.\*'. 
+The details need a lot of work. But I believe transactional RPC will be a very effective and convenient basis for inter-process communication.
 
 ## Graphical User Interface? Defer.
 
-My vision for [GUI](GlasGUI.md) involves users participating in transactions indirectly via reflection on a user agent. There are many interesting opportunities with this perspective. However, implementing a new GUI framework is a non-trivial task that should be done well or not at all. Thus, I'll defer support until I'm able to dedicate sufficient effort. Use HTTP or FFI in the meanwhile.
+My vision for [GUI](GlasGUI.md) involves users participating in transactions indirectly via reflection on a user agent. This is essentially an RPC feature, but we might present 'app.gui' or similar to simplify composition of GUI independent of other RPC. In the short term, we will rely on 'app.http' or FFI APIs as a simple basis for GUI.
 
 ## Non-Deterministic Choice
 
@@ -192,13 +107,13 @@ Fair choice means that, given sufficient opportunities, we'll eventually try all
 
 Instead of a stateful random number generator, the runtime will provide a stable, cryptographically random field. 
 
-* `sys.random(Seed, N) : Binary` - return a list of N cryptographically random bytes, uniformly distributed. The result varies on Seed, N, and runtime instance. The Seed may be structured but is limited to plain old data.
+* `sys.random(Seed, N) : Binary` - return a list of N cryptographically random bytes, uniformly distributed. The result varies on Seed, N, and runtime instance. The Seed could feasibly be abstract state or plain old data.
 
 An implementation might involve a secure hash of `[Seed, N, Secret]`, where Secret is obtained from `"/dev/random"` or a configurable source when the application starts. In a distributed runtime, all nodes share the secret. 
 
 ## Background Transactions
 
-In some use cases, we want an escape hatch from transactional isolation. This occurs frequently when wrapping FFI with 'safe' APIs. We might support HTTP GET within a single transaction, trigger lazy computations, or manually maintain a cache. To support these scenarios, I propose a reflection API to run a transaction prior to the calling transaction:
+In some use cases, we want an escape hatch from transactional isolation. This occurs frequently when wrapping FFI with 'safe' APIs. We might (pretend to) support HTTP GET within a single transaction, trigger lazy computations, or manually maintain a cache. To support these scenarios, I propose a reflection API to run a transaction prior to the calling transaction:
 
 * `sys.refl.bgcall(StaticMethodName, Args) : Result` - asks the runtime to call the indicated method in a separate transaction, wait for commit, then continue the current transaction with the result. If the caller aborts, e.g. due to read-write conflict with a concurrent transaction, an incomplete bgcall may be aborted. If bgcall aborts, it is implicitly retried. In general, args and result must be non-linear and global scoped. 
   * *StaticMethodName* - for example 'n:"MethodName"' in the abstract assembly, subject to namespace translations. The indicated method will receive the same 'sys.\*' environment passed to application 'step', independent of the caller's environment.
@@ -262,7 +177,7 @@ A viable API:
             f   - float
             d   - double
 
-* `sys.ffi.*`
+* `sys.ffi.*` -
   * `new(Hint) : FFI` - Return a runtime-scoped reference to a new FFI thread. Hint guides integration, such as creating or attaching to a process, or at which node in a distributed runtime. The FFI thread will start with with a fresh environment.
   * `fork(FFI) : FFI` - Clone the FFI thread. This involves a copy of of the data stack, stash, registers, and runtime-local vars. The next command will run in a new thread. The heap is shared between forks.
   * `status(FFI) : FFIStatus` - recent status of FFI thread:
@@ -305,29 +220,31 @@ A viable API:
 
 This API is designed assuming use of [libffi](https://en.wikipedia.org/wiki/Libffi) and the [Tiny C Compiler (TCC)](https://bellard.org/tcc/). For the latter, a [recent version](https://github.com/frida/tinycc/tree/main) lets us redirect `#include` and resolve missing symbols via callbacks.
 
-*Note:* Use of FFI as an abstract reference to a thread could be replaced by binding FFI threads to an abstract environment of implicit variables. This should align with application state.
+*Note:* The first-class 'FFI' reference in this API will likely be replaced by biunding abstract state to simplify parallel use of FFI.
 
 *Note:* We'll need to consider how to handle the standard input, output, and error channels for the FFI process. We could let the runtime capture these by default, perhaps modeling a virtual terminal through reflection APIs or the runtime's HTTP interface, or a dedicated 'sys.refl.tty.\*' API.
 
-## Filesystem, Network, Native GUI, Etc.
+### Filesystem, Network, Native GUI, Etc.
 
 Many APIs are essentially specialized wrappers for FFI. Instead of implementing them in the runtime, I intend to leave them to libaries or adapters. Instead of providing these APIs directly, we can adjust them for pipelining and cover utility code.
 
 ## Content-Addressed Storage and Glas Object (Low Priority!)
 
-The runtime uses content-addressed data when modeling very large values in context of remote procedure calls, persistent data, and virtual memory. Based on configuration, we might integrate with content delivery networks. Users can potentially extend these use cases with sufficient access, but we must be careful regarding garbage-collection.
+The runtime may use content-addressed data when modeling very large values. This is especially convenient in context of remote procedure calls, persistent data, and virtual memory, allowing reuse of stable fragments of the data without downloading or saving them every time. Based on configuration, we could integrate with content delivery networks.
 
-Rough API sketch: 
+However, in some cases the user might want more control or observability on this content-addressed structure. This is essentially a reflection API. We'll broadly need to break this API into a few parts:
 
-* `sys.refl.glob.*` - an API for serialization or parsing of glas data into a binary representation. Operations will take a CAS as a context argument to keep hashes in scope. Lazy loading of a binary into a value might extend the set of hashes that CAS is waiting on. Serializing a value can store hases into the CAS. Values cannot be serialized if they're still waiting on lazy hashes, but we can potentially determine which hashes we're lazily waiting upon.
+* serialization of structured data that includes the hashes, e.g. using the [glas object](GlasObject.md) format
+* access to content-addressed storage by hash, e.g. to publish or lookup data and support garbage collection
 
-* `sys.refl.cas.*` - (tentative) an API that helps users maintain a content-addressed storage (CAS) context. This might prove unnecessary, perhaps we could maintain a serialization context as plain old data without any access to hashes held by the runtime. In any case, we can store and fetch binaries. Each stored binary might be paired with a list of hashes referenced by the binary. We can potentially report which hashes we're waiting on. The details need work, but should closely align to whatever a runtime is doing under the hood.
+The main challenge here involves the interaction between published data and garbage collection. For every stored value, perhaps we also store an associated list of secure hashes that it references for GC purposes. And we might need to maintain a collection of GC roots in addition to whatever the runtime is maintaining.
 
 ## Node Locals
 
 A distributed transaction doesn't have a location, but it must start somewhere. With runtime reflection, we can take a peek.
 
-* `sys.refl.tn.node() : NodeRef` - return a reference to the node where the current transaction started. NodeRef is a runtime-scoped type.
+* `sys.refl.tn.node() : NodeRef` - return a reference to the node where the current transaction started. NodeRef may be a runtime-scoped abstract type. 
+* `sys.refl.node.list : List of NodeRef` - represents set of nodes involved in the distributed runtime. Will be a singleton list if not a distributed runtime.
 * `sys.refl.node.name(NodeRef) : Name` - stable name for a node, name is a short text.
 
 Observing node allows for an application to vary its behavior based on where a transaction runs, e.g. to select different vars for storage.
@@ -348,16 +265,15 @@ A lot of composition can be automated into namespace macros or user-defined synt
 
 ## Alternative Run Modes
 
+### Threaded Applications
+
+The programmer defines an 'app.main' procedure that is evaluated as a concurrent thread with the host environment. A thread may 'await' arbitrary conditions on state, and may split into concurrent subthreads to handle subtasks. However, as a significant departure from convention, subthreads are fork-join structured, and steps are implicitly atomic between explicit waits. Programs may further contain explicit 'atomic' sections to control concurrency.
+
+Conveniently, this mode can be hybridized with the transaction loop. For example, we can still support 'app.http' or 'app.rpc' events between atomic steps. This provides a motive for similar use of global state as seen in transaction loop applications.
+
+Threaded applications have an opportunity cost: live coding becomes very awkward. There is no robust way to smoothly transition from a partially evaluated main procedure to an updated version. A best effort is to switch at function call boundaries, and express any long-running loops in terms of tail-call optimized recursion, pushing most burden of live coding to the program architects.
+
 ### Staged Applications
 
 In some cases, we might want to write an application that generates or selects another application based on command-line arguments, perhaps integrating some local files. Staged applications might define 'app.build' as a [namespace procedure](GlasNamespaces.md), generating another application based on command-line arguments. The procedure can be parameterized by a list of command-line arguments. It receives access to the same '%env.\*' environment of shared libraries, languages, and configured applications as scripts.
 
-### Threaded Applications (Pattern, or Tentative Built-In)
-
-In some use cases, developers may prefer to express a program as a conventional 'main' thread. One benefit is that we can more conveniently express synchronous request-response interactions, waiting on a response. There are a few viable approaches.
-
-One approach is user-defined syntax built around state machines, procedures that yield intermediate results and can be fed more data in future steps. Externally, such a procedure might have a type homologous to `∃State . start:Args | step:State -> [Eff] step:State | stop:Result`, with State representing a defunctionalized continuation. The syntax should make it easy to compose such state machines, both sequentially and concurrently. Concurrent machines may involve a non-deterministic choice of which machine to advance. With this design, the main challenge is to minimize rework, ideally integrating with incremental computing optimizations.
-
-Alternatively, we could introduce some built-in support for running a procedure over multiple transactions, and use of multi-threading. This might involve some primitives or 'sys.thread.\*' APIs. A procedure could contain 'atomic' and 'yield' annotations to guide heuristic partitioning into atomic steps. A significant benefit of this design is that the continuation is easily specialized by the runtime to avoid unnecessary overhead and rework. A cost is that it's awkward to update continuations in context of live coding.
-
-Of these options, I favor a user-defined syntactic approach because it offers much clearer semantics. For performance, we can try to use fine-grained state (e.g. heap refs) to simplify incremental computing, and we can feasibly integrate threading with accelerated interpreters (a virtual CPU or GPU) and parallel sparks (offload some eval between steps). The proposed FFI API also supports threading to some degree.

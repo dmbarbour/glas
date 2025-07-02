@@ -8,102 +8,125 @@ This document designs and defines an initial set of primitive names.
 
 ### Extensible Intermediate Language
 
-A user-defined front-end language is supported based on the namespace model. Definitions are represented in the intermediate language. Ideally, this intermediate language is similarly subject to extension and evolution as the front-end.
+The user-defined front-end syntax is supported based via the namespace model. However, I also want the opportunity to evolve the intermediate language - as described in this document - in flexible ways (adding features, removing features, support for DSLs, isolation of subprograms, etc.).
 
-To support this, every definition in the namespace should have a toplevel AST wrapper of form `(%Lang AST)`, where Lang indicates how to interpret AST. Relevantly, the AST may be invalid in some languages or interpreted differently in others. Calls or references between definitions may be restricted based on language or program compatibility.
+Technically, this isn't difficult to support. We can introduce AST nodes such as `(%Lang AST)` to indicate how a subprogram should be interpreted. This language node can restrict or extend the set of AST primitives, and contextually adjust how any shared primitives are interpreted. This context can apply across call boundaries, insofar as the language permits calls within the namespace.
 
-This immediately introduces an opportunity for specialized sublanguages to define types, tests, tables, or constraint systems separately from procedural programs. How such things are integrated could be ad hoc and flexible. But the primary motive is to provide an opportunity to retract and deprecate old features and introduce new ones, to simplify static analysis for compatibility issues separately from a type system. 
+As a useful convention, we could encourage front-end compilers to use language nodes for most definitions. We may require a language specifier for top-level 'app.\*' definitions.
+
+Ideally, we can also support user-extensible 'primitives', the ability for users to define the '%lang' or AST nodes. This may require a specialized sublanguage, perhaps something like templating, but it should be technically feasible.
 
 ### Application State
 
-I propose to model state as an ad hoc collection of implicit parameters in a structured environment. Essentially, these parameters are allocated on demand and pass-by-reference, but are passed implicitly to avoid messy calling conventions. Instead, a program can translate names, control the names visible to a subprogram, and introduce local spaces (masking any names that weren't translated). 
+I propose to model programs as operating on a stable environment of stateful, named resources. Some of these resources may kept abstract to the program, including as open files or network sockets. Others may be simple cells or queues. 
 
-To support dynamic state, the environment will support limited dynamic structures akin to tables, maps, or arrays. I haven't decided the nature of these tables yet. There will be mechanisms to browse these tables and to alias records or entries. However, there are no first-class references. Thus, each step must access state, mitigated by incremental computing.
+The program should declare its expectations or assumptions about the external environment. The compiler will generate a schema based on integrating declarations. A program may also introduce temporary state resources for use within a subprogram. In context of recursive calls, these temporaries can serve the role of a data stack; we won't explicitly have a data stack. For flexibility, the program can also apply logical transforms to the environment for use in a subprogram. The simplest case is translation of names, but we can generalize to stable editable projections with lenses, getters and setters, etc..
 
-Avoiding references simplifies schema update, static analysis of opportunities for parallelism and concurrency, and avoids implicit garbage collection. It is also consistent with glas programs avoiding first-class functions, objects, and function pointers.
+To support dynamic state, the environment shall support tables. To keep it simple, I propose to start with arrays or key-value dicts. In theory, we can eventually extend this to stable, editable views of relational tables with support for a relational algebra.
 
-### Scoped State
+In any case, the proposed state model excludes the conventions of a heap, pointers, first-class references. Users may indirectly model these features, but the intention is that the environment should be stable, extensible, and browseable.
 
-I propose to divide application state into a few scopes: persistent, ephemeral, transaction-local, and method-local. 
+#### Relational State
 
-* Persistent state is ultimately stored in a shared database and may serve as shared memory between applications, or a basis for maintaining data between past and future instances of a single application. 
-* Ephemeral state is local to the process or runtime, implicitly cleared when the application is halted or reset. Open files or network sockets would generally be modeled as abstract ephemeral state, but developers may introduce their own.
-* Transaction-local state is ephemeral state that is implicitly cleared when a transaction commits. This is useful in context of multi-step transactions, such as remote procedure calls.
-* Method-local state is essentially local vars, introduced structurally within a program then reset when that structure exits.
+It is feasible to introduce access-controled relational states in terms of indexing one environmental resource through another. In case of tables, associations involving two entities implicitly serve as relations, maintaining some extra state about a relationship. Otherwise, associations effectively add hidden columns to a table.
 
-Only method-local state is introduced within a program. The other scopes might instead be distinguished based on naming conventions, i.e. by introducing special characters into names.
+Usefully, we could support transitively deletion of relations based on deletion of table entries. This would simplify cleanup similar to foreign key requirements in a relational database, avoiding reference-based garbage collection.
 
-### Accept States
+#### Scoped State
 
-We can introduce annotations or naming conventions to indicate that specific variables must be in a specific state before a transaction terminates, otherwise the transaction is not accepted. Naming conventions could involve a simple suffix on the variable name. 
+We can partition external state into a few more scopes: persistent, ephemeral, and transaction-local. 
 
-Use of accept states is convenient for ensuring consistency, especially in context of multi-step transactions like remote procedure calls or use of coroutines. It can also serve a similar role as linear types.
+* Persistent state is stored in a shared database. It is accessible to concurrent or future applications, including multiple instances of the current application. A good place for configurations or persistent data.
+* Ephemeral state is local to the process or runtime instance, but shared across transactions. Runtime features such as open files or network sockets may bind to ephemeral state. For semi-transparent persistence, a program can translate a subprogram to use ephemeral state instead of persistent state (but not vice versa).
+* Transaction-local state is ephemeral state that is cleared implicitly when a transaction commits. This is mostly useful in context of remote procedure calls or other cases where we might invoke multiple methods within a single transaction.
 
-### Data Stack
+These scopes might be distinguished based on specialized declarations over the environment, or perhaps based on annotations. Either way, it should be feasible to determine inconsistencies in scope assumptions at compile time.
 
-It is feasible to model a data stack in terms of method-local variables. However, it may be more convenient to assume a local data stack of sorts for primitive operations, i.e. for concision and simplicity of expression (instead of parameterizing every operation with var names). In that case, we'll likely want program operators or annotations that control access to the stack. 
+#### Accept States
 
-It should be feasible to verify static arity of the data stack, and also support dynamic data stack for recursive methods. However, we might introduce some annotations restricting subprograms to a static data stack. That restriction might even apply to glas systems by default.
+Data types can feasibly support volatile states that cannot be committed and non-final states that cannot be reset. Method-local and transaction-local vars would be implicitly reset as they leave scope, and we might also block a transaction based on transitive reset for relational state. With integration, perhaps via annotations or declarations, the runtime can kill transactions that would violate assumptions about application state, allowing users to enforce protocols and ensure consistency.
 
-### Abstraction of State
+#### Abstract State
+
+Instead of abstract data types, I hope to manage most abstraction at the state layer. This can feasibly be expressed in terms of associative state without any additional features, relying on access control to the indexing resource.
 
 Abstraction of vars is convenient for working with open files, network sockets, and user-defined abstract objects that are held in client-provided state. We could use annotations to logically 'seal' a volume of vars, such that the same seal must be used to access that state. Abstraction of state serves a similar role as abstract data types but is much easier to eliminate at compile-time and avoids potential schema update concerns.
 
-### Typed State
+#### Typed State
 
-We can use annotations to express assumptions on the type of state. These assumptions can be checked for consistency within a program, and also tracked for persistent state shared between apps. We might indicate some types such as 32-bit integers even though glas supports unbounded integers, influencing representation. A transaction that attempts to assign data outside the accepted type may be aborted.
+We might want something like dependently-typed regions of state, where the fields available may depend on other fields instead of only supporting value types. And we'll probably want to support refined types for state. e.g. limiting an integer field to a bounded range. These types could be checked with some ad hoc mix of static and dynamic analysis, rejecting transactions that would violate assumptions or observe a violated assumption.
 
-### Shadow Guard
+#### Linear Move? 
 
-It should be feasible to annotate an assumption that certain var names or handler names aren't in use, such that we can extend without accidental shadowing. We could use a similar mechanism as the toplevel namespace, reporting a warning or error names are shadowed by non-equivalent definitions.
+For something like open files or network sockets, it might be useful to have 'move' operators within the environment. This could also respect relational state.
+
+However, I don't have a good approach to a general solution that works nicely with aliasing and scoping. We could explicitly model which parts of the environment are movable, i.e. a sort of 'detachable' state boundary, but that instead becomes troublesome for schema change. One of the better options is to verify that moves are linear, avoiding any loss or duplication. This can probably be checked at compile-time in most cases.
+
+Regardless, we will want APIs that let us move abstract open files, network sockets, FFI threads, etc., ideally while respecting associated resources.
 
 ### Parallelism and Concurrency
 
-The simple call-return structure in most procedural or functional programming is not always the most convenient. In some cases, we might want to express a program as a set of subprograms cooperating to achieve an answer. 
+My vision for glas systems is that we start with a simple procedural programming model. Unfortunately, simple call-return structure is awkward for many use cases. A common alternative is to express a program as multiple 'threads' that interact through shared state. However, this introduces its own issues - race conditions and pervasive non-determinism make it difficult to reason about system behavior or ensure a deterministic outcome.
 
-I propose to express this in terms of coroutine-inspired structures. A program may 'yield' and await some condition or signal from other coroutines. This signal or condition may be tied to vars or state, could feasibly be coupled to a notion of "channels" or similar. Logically, there is a single thread of control and scheduling is deterministic. However, with careful design - partitioning of state and signals, waiting on and writing to different channels, etc. - it should be feasible to evaluate multiple coroutines in parallel. 
+A viable solution is to introduce 'await Cond' and a fair deterministic scheduler. To express concurrent operations, we could support something like 'thread P1 P2 P3' as a procedural operation that returns only when all three subprocesses return, and 'awaits' when all non-returned subprocesses await. Ideally, 'thread' is associative; this might be achieved by having the scheduler always prioritize the leftmost process that can continue. It might also be convenient to also support an 'await.case' that supports multiple (Cond, Op) pairs, and 'yield' as essentially 'await True'. 
 
-I'm still very unclear on the details here, but it should be feasible to express many procedures as Kahn Process Networks. Conveniently, this approach - together with avoidance of first-class references for state or channels - allows me to start with conventional call-return structure and extend later.
+To control concurrency, we can introduce an 'atomic Op' operator. Evaluation from await to the next await is implicitly atomic, but this would further influence the scheduler to handle all 'awaits' within Op before returning. It becomes an error if 'atomic' halts on 'await' instead of returning.
 
-*Note:* compatible with other forms of parallelism: lazy eval and sparks, evaluating multiple 'step' transactions in parallel, dataflow parallelism, potential SIMD, and possible use of accelerated models.
+This design simplifies expression of concurrency but leaves parallelism as a challenge for the optimizer. It seems feasible to extract many opportunities for parallelism via static analysis, especially if programs are designed for it (avoiding shared memory between threads, using different ends of queues). But there are also dynamic approaches, e.g. running steps optimistically in parallel hierarchical transactions then ordering operations according to the fair deterministic schedule. Of course, there are many other opportunities for parallelism based on dataflow analysis, accelerators, or sparks.
 
-## Partial and Static Eval
+*Note:* The runtime will implicitly wrap transactional application interfaces such as 'app.step' with 'atomic'. A threaded application defining 'app.main' would not be implicitly atomic.
 
-I propose to support partial eval primarily via annotations, e.g. we could indicate our assumption that a certain var is computed statically, and raise a fuss at compile time if this assumption is invalid. In context of non-deterministic choice, static eval could also have multiple static outcomes.
+### Partial and Static Eval
 
-I've contemplated more structural approaches to static eval, e.g. staged arguments, but most such approaches seem awkward and complicated, especially in context of conurrency. I hope to to avoid code being written several times for different "temporal alignment". So, separate our assumptions.
+Explicit support for static evaluation seems difficult to get right, especially in context of composition, conditionals, and concurrency. It is much less difficult to annotate an assumption that a compiler will perform certain computations at compile-time, then simply raise a fuss if that is not achieved. We can also leverage namespace macros for more explicit control of static eval in many cases.
 
-Static eval can interact flexibly with static analysis, e.g. in case of `if (Cond) then Expr1 else Expr2` we could permit Expr1 and Expr2 to have different data stack arity and return types in context of a static condition. Of course, this generalizes to dependent types.
+This might be expressed in a program as 'static Expr' or 'static.warn Expr', with an annotation in the intermediate representation of the program. Some primitive AST nodes or effects may also require partial static evaluation.
 
-## Non-Deterministic Choice
+### Metaprogramming and Handlers
 
-Non-deterministic choice should be explicit within a program. It could be modeled as an algebraic effect or a primitive, but I currently lean towards algebraic effects because they allow for more flexible processing of non-deterministic code.
+In addition to namespace layer metaprogramming, the program layer should include at least one primitive for integrating a computed AST based on a localization. However, it's awkward to integrate just an AST fragment. We often want helper subroutines even in metaprogramming. This suggests introducing a namespace for metaprogramming, ideally with controlled access to the local context. This could align well with effects handlers.
 
-## Metaprogramming
+One viable solution is to introduce algebraic effects handlers through a namespace procedure. This should be evaluated at compile time in most cases.
 
-The namespace layer has metaprogramming. In addition to namespace macros, it should be possible to capture definitions introduced by a namespace procedure. However, this isn't trivial in context of non-deterministic choice, and it cannot capture primitive definitions or those introduced by shared libraries, and it isn't specific to a call site or static parameters.
+### Non-Deterministic Choice
 
-I'll want additional metaprogramming at the program model to interpret static data into local subprograms. We'll need a recursive or fractal namespace within the program, perhaps integrated with algebraic effects and local variables. Further, for the general case, we'll need an effects API to query the runtime or compiler for global definitions. This might require a mechanism to 'quote' a name or AST into data for lookup, and some mechanism to 'eval' with global names independent of localization. These might be modeled as reflection APIs, secured similarly to FFI.
+It is feasible to provide non-deterministic as a primitive or controlled through algebraic effects. An advantage of primitive non-determinism is that we can more directly represent stable choices and more locally optimize non-deterministic code without full access to effects. As a primitive, we could also introduce an operator to restrict use of non-determinism within a scope, insisting that a subprogram reduces to a single choice.
 
-These features can simplify metaprogramming in cases not explicitly designed for it, but users may also explicitly model intermediate languages, staging, accelerated interpreters, etc. to support metaprogramming.
-
-### Effects Handlers
-
-Algebraic effects handlers can share a namespace with application state and local vars. 
-
-It seems feasible to integrate the full namespace model, including iterative definitions and lazy loading via non-deterministic choice. This might be convenient for metaprogramming. But it's also fractal in nature, which might prove awkward. Anyhow, even if we lack the full namespace model, we should at least have 
-
-An effects handler will need access to two scopes: the caller's scope (parameters and local algebraic effects of caller) and the host scope (where the effect is defined). This might be supported via implicit translation. 
+We might also bind non-deterministic choice to abstract state, allowing for multiple 'streams' of choices.
 
 ### Unit Types
 
-I would like good support for unit types early on when developing glas systems. But I don't have a good approach for this yet. Annotations seem the simplest option to start, perhaps bound to the vars.
+I would like good support for unit types early on when developing glas systems. But I don't have a good approach for this yet. Annotations seem the simplest option to start, perhaps bound to the vars. 
 
 ### Stowage
 
 ### Memoization
 
 such that code can be organized as a composition of generators and consumers, without any first-class structures. Most interaction models won't play nicely with hierarchical transactions. However, this *might* be achieved via capturing some local variables into 'objects' for algebraic effects. Perhaps there is something simple we can use, based on explicit yield and continue.
+
+### Tail Call Optimization?
+
+I would like to support tail-call optimization as a basis for loops without expanding a data stack. Short term, we don't need to worry about this. And I have some suspicion that TCO will prove infeasible or useless in context of transactions and incremental computing. But it should be feasible, in controlled circumstances.
+
+One viable approach is to have the compiler 'recycle' local var slots as they leave scope, at compile time. For tail recursion, we might need to allocate a few steps at compile-time before we find an allocation that was used previously in the cycle. We can then compile each allocation separately, or treat a list of indices as an added static parameter.
+
+### Implicit Data Stack? No.
+
+It might be convenient to introduce an implicit, local data stack for pushing and popping data. Threads would require 0--0 arity, and we could insist on static arity in general. It's useful for anonymous parameters. However, it's awkward for stuff like open files and such, and it doesn't extend well with keyword arguments and similar.
+
+### Keyword Arguments and Results
+
+As a calling convention, we could provide a static parameter for most method calls that represents the set of arguments provided and also names the results. It might also be useful to make this a primitive feature, a special static parameter to 'call' of sorts, allowing for more flexible integration. 
+
+We could feasibly support explicit arguments to a call in addition to the implicit environment. But I'm not convinced it's a good idea to complicate calls with multiple forms of argument, and it doesn't extend nicely to many use cases.
+
+## Rough Sketch
+
+A tacit concatenative programming model operating on named vars and handlers. It is possible to express threads or waits for concurrency, albeit scoped by atomic. 
+
+Support for locals and resource or handler names is primitive.
+
+
 
 ## Basic Operations
 

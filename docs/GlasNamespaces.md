@@ -130,9 +130,16 @@ User-defined namespace procedures can implement this restriction by overriding '
 
 Reading a file more than once is not an error at the namespace layer in context of lazy loading and distinct compilation environments. Even cyclic file dependencies are possible. However, it's *probably* an error at other layers, suggesting use of a shared library, namespace macro, or copy for independent editing in a notebook application. I propose that, by default, a runtime reports a warning if a file is read more than once for any reason. The runtime can also support annotations or configuration options to suppress this warning for specific files, folders, or DVCS repos.
 
+## Late-Bound Sources
+
+It is feasible to integrate command-line arguments or OS environment variables as late-bound sources that are determined very shortly before an application is run. For example, 'ns.read(os:env:Var)' could return the specified environment variable, but would also hinder separate compilation of an application namespace. The latter issue can be mitigated through annotations, thus late-bound sources may prove one of the more convenient and robust approaches to expressing staged applications.
+
+Similarly, a program could access command-line arguments or OS environment variables as 'static' algebraic effects, allowing for staging in other layers. We can even support both options at the same time. There is a lot of flexibility in how we express staged programming of applications.
+
 ## Embedded Data
 
 The 'd:Data' node within an AST allows for embedding data without further processing at the namespace layer. However, it is not recommended to use 'd:Data' directly as a parameter within most operations. Instead, a thin data wrapper such as `(%i d:42)` for integers should apply in most cases. This provides a convenient opportunity for the program to integrate type safety analysis, accelerated representations, and similar features. 
+
 
 ## Design Patterns
 
