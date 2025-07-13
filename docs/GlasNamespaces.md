@@ -6,7 +6,7 @@ A user's view of a glas system is expressed as an enormous namespace importing f
 
 ## Procedurally Generated Namespaces
 
-I propose to represent a glas namespace *procedurally*, i.e. a program iteratively writes definitions. The API is carefully restricted to simplify laziness, caching, and flexible evaluation order. To support metaprogramming of the namespace, the namespace procedure receives access to 'eval' within scope of the generated namespace. To support modularity, this namespace procedure may read stable data from an external environment.
+I propose to represent a glas namespace *procedurally*, i.e. a program iteratively writes definitions. The API is carefully restricted to simplify laziness, caching, and flexible evaluation order. The namespace supports metaprogramming and modularity via 'ns.eval' and 'ns.read' respectively.
 
 Useful types:
 
@@ -15,10 +15,10 @@ Useful types:
         type TL = Map of Prefix to (Prefix | NULL | WARN), as radix tree dict
         type WARN = NULL 'w'                # 0x00 0x77, as bitstring
         type AST = (Name, List of AST)      # constructor
-                 | d:Data                   # embedded data
                  | n:Name                   # namespace ref
-                 | s:(AST, List of TL)      # scoped AST
+                 | d:Data                   # embedded data
                  | z:List of TL             # localization
+                 | s:(AST, List of TL)      # scoped AST
 
 A viable algebraic effects API:
 
@@ -35,6 +35,23 @@ A viable algebraic effects API:
 
 Aliasing is expressed by defining one name to another, e.g. 'ns.write(Name1, n:Name2)'. These two names should be equivalent under evaluation within the program model (modulo reflection APIs). I assume 'eval' will often just use 'n:Name' for the AST.
 
+## Abstract Assembly AST
+
+Regardless of front-end syntax, definitions are ultimately written into a common, Lisp-like intermediate representation, the AST type. This type supports:
+
+* precise recognition and rewrite of names for linking (n)
+* efficient embedding of data not containing names (d)
+* capture of link context for staged metaprogramming (z)
+* lazy computation of linking for efficiency (s)
+
+In canonical form, all scope nodes are eliminated from the AST by rewriting of names and localizations, and every localization is simplified to a singleton list. The mechanics are described later. However, it is not always worthwhile for a compiler or interpreter to reduce an AST to canonical form.
+
+The [program model](GlasProg.md) will specify a set of primitive constructor names. By convention, primitives are prefixed with '%' such as '%seq' or '%i.add'. This convention supports efficient propagation of primitives across linker TL rules, e.g. `{ "" => "foo.", "%" => "%" }`. We also piggyback on this with '%env.\*' as a conventional space for user or configuration defined shared library definitions.
+
+The proposed AST has a couple known weaknesses and mitigations. First, use of positional arguments can hinder some extension. This can be mitigated by a list of keywords and other caller metadata as a static first argument for many constructors. Second, there is no built-in support for anonymous user-defined constructors, i.e. every constructor node starts with a name. This may hinder metaprogramming. This can be mitigated by program model primitives, e.g. `(%ap ConstructorDef ... ArgASTs)` could be equivalent to applying a single use definition with ConstructorDef.
+
+*Note:* In context of user-defined constructors, arguments to the constructor might be presented as algebraic effects or some other means preserving something akin to macro hygiene. To conveniently support conventional functions and procedures, a program model may separately introduce primitives to "evaluate" arguments eagerly or lazily, as needed.
+
 ## Evaluation Strategy
 
 The 'ns.fork' effect supports non-deterministic choice as a basis for iteration and laziness. Logically, we repeatedly evaluate a namespace procedure as many times as necessary, each in a separate transaction. However, the output is monotonic, idempotent, and deterministic. There is no need to recompute a branch after it commits or aborts for any reason other than missing definitions. In practice, we might evaluate multiple branches in parallel and pause computation when awaiting a missing definition.
@@ -44,14 +61,6 @@ However, to ensure a deterministic outcome in case of ambiguity, we prioritize d
 In case of long-running computations, we might heuristically garbage collect intermediate definitions. This can be understood as an aggressive form of dead-code elimination: we can eliminate definitions if they are not reachable from a 'rooted' definition (e.g. a public def in user config, or 'app.\*' def in a script) or a pending computation. The 'ns.link' translation determines what is reachable from a pending namespace computation. We can also garbage collect 'dead' namespace threads if we determine they'll be waiting forever. See *Namespace Processes and Channels* for a design pattern that relies on garbage collection.
 
 We can begin processing definitions before a namespace is fully evaluated. We can apply typecheckers, optimizers, staged computing, check static assertions, and further compile abstract assembly to executable binary code. In context of 'ns.eval', concurrent processing is expected, but we can also reduce latency for starting an application, or garbage collect 'app.start' or a prefix to 'app.main' after we've started.
-
-## Abstract Assembly
-
-I call the Lisp-like AST encoding 'abstract assembly' because every constructor node is abstracted in the namespace. In contrast to concrete encodings like bytecodes, it is very convenient to extend, restrict, or redirect these names via 'link' translations.
-
-We assume the system defines a set of 'primitive' constructor names, such as '%i.add' for arithmetic and '%seq' for procedural composition. The '%' prefix will simplify recognition and translation. Usually, we'll forward primitives through the namespace unmodified, so `import ... as foo` might use a TL similar to `{ "" => "foo.", "%" => "%" }`. 
-
-We can evaluate AST to a canonical form by applying scope translations then simplifying localizations. Evaluation of a scope node involves rewriting or invalidating names and appending the list of translations to an internal scope node or localization.
 
 ## Translations
 
@@ -114,7 +123,7 @@ Aligning with file extensions simplifies integration with external tools. Graphi
 
 The glas executable provides at a built-in front-end compiler for [".glas" files](GlasLang.md) and perhaps others. Initially, 'env.lang.glas' will use the built-in until we can bootstrap a user-provided definition. Multiple built-ins compilers may be mutually bootstrapped, with the executable verifying a fixpoint after a few iterations.
 
-*Note:* to translate FileExt to a glas name we lower case 'A-Z', replace ASCII punctuation by '-', add the '.!' suffix for prefix uniqueness. For example, file "foo.TAR.GZ" is processed by '%env.lang.tar-gz.!'. 
+*Note:* to translate FileExt to a glas name we lower case 'A-Z', replace ASCII punctuation by '-', add the '.!' suffix for prefix uniqueness. For example, file "foo.TAR.GZ" is processed by '%env.lang.tar-gz.!'. Names containing control characters are simply rejected.
 
 ### Folders as Packages
 
