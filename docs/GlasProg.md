@@ -56,59 +56,97 @@ Abstraction of vars is convenient for working with open files, network sockets, 
 
 We might want something like dependently-typed regions of state, where the fields available may depend on other fields instead of only supporting value types. And we'll probably want to support refined types for state. e.g. limiting an integer field to a bounded range. These types could be checked with some ad hoc mix of static and dynamic analysis, rejecting transactions that would violate assumptions or observe a violated assumption.
 
-#### Linear Move? 
+#### Linear Move? Defer
 
-For something like open files or network sockets, it might be useful to have 'move' operators within the environment. This could also respect relational state.
+It is feasible to introduce a generic operator for moving or swapping a volume of state within an environment. This could translate to moving a struct or struct pointer under the hood. This could respect relational structure, too. A cost is that the environment becomes much less stable, and thus more difficult to render or reason about. But this does offer some benefits for flexibility, modeling queues and such.
 
-However, I don't have a good approach to a general solution that works nicely with aliasing and scoping. We could explicitly model which parts of the environment are movable, i.e. a sort of 'detachable' state boundary, but that instead becomes troublesome for schema change. One of the better options is to verify that moves are linear, avoiding any loss or duplication. This can probably be checked at compile-time in most cases.
+I currently intend to elide this feature, see how far we can go with stable structure and whether there is a strong need for linear move or swap. 
 
-Regardless, we will want APIs that let us move abstract open files, network sockets, FFI threads, etc., ideally while respecting associated resources.
+### Algebraic Effects and Handlers
 
-### Parallelism and Concurrency
+Instead of directly defining effectful behaviors in the namespace, I propose to present access to state and effects as implicit parameters to a program. This essentially introduces another 'level' of namespace for the set of handlers in scope. I propose to support prefix-oriented translation and aliasing of handlers and state similar to translation of the host namespace, i.e. `{ Prefix => Prefix | NULL }` associative maps that apply to specific AST nodes such as `(%var "x")`, albeit across definition boundaries.
 
-My vision for glas systems is that we start with a simple procedural programming model. Unfortunately, simple call-return structure is awkward for many use cases. A common alternative is to express a program as multiple 'threads' that interact through shared state. However, this introduces its own issues - race conditions and pervasive non-determinism make it difficult to reason about system behavior or ensure a deterministic outcome.
+A handler receives access to *two* environments, host and client, and must robustly distinguish them. To avoid risk of conflict, the default calling convention may present handlers with with two distinct prefixes, e.g. prefix "." binding to host and "$" to client. We can later extend the set of calling conventions as needed.
 
-A viable solution is to introduce 'await Cond' and a fair deterministic scheduler. To express concurrent operations, we could support something like 'thread P1 P2 P3' as a procedural operation that returns only when all three subprocesses return, and 'awaits' when all non-returned subprocesses await. Ideally, 'thread' is associative; this might be achieved by having the scheduler always prioritize the leftmost process that can continue. It might also be convenient to also support an 'await.case' that supports multiple (Cond, Op) pairs, and 'yield' as essentially 'await True'. 
+Initially, we might restrict handlers to letrec-style cliques within scope of a subprogram. This will likely be sufficient for most use-cases. However, if there is a strong use case, we can eventually support full namespace procedures to define sets of handlers.
 
-To control concurrency, we can introduce an 'atomic Op' operator. Evaluation from await to the next await is implicitly atomic, but this would further influence the scheduler to handle all 'awaits' within Op before returning. It becomes an error if 'atomic' halts on 'await' instead of returning.
+*Note:* I don't propose to capture continuations in handlers. But coroutines and concurrency could be introduced via separate primitives.
 
-This design simplifies expression of concurrency but leaves parallelism as a challenge for the optimizer. It seems feasible to extract many opportunities for parallelism via static analysis, especially if programs are designed for it (avoiding shared memory between threads, using different ends of queues). But there are also dynamic approaches, e.g. running steps optimistically in parallel hierarchical transactions then ordering operations according to the fair deterministic schedule. Of course, there are many other opportunities for parallelism based on dataflow analysis, accelerators, or sparks.
+### Concurrency and Parallelism
 
-*Note:* The runtime will implicitly wrap transactional application interfaces such as 'app.step' with 'atomic'. A threaded application defining 'app.main' would not be implicitly atomic.
+Coroutines are a convenient way to introduce concurrency to a procedural model. Coroutines are non-preemptive: they yield voluntarily then continue on some condition. Logically, coroutines evaluate sequentially, but an opportunity exists for parallel evaluation consistent with a sequential schedule. However, this opportunity isn't easy to grasp, requiring analysis of a stable schedule and interference.
+
+I propose to initially introduce coroutines that wait on a simple, stateful condition, such as for a variable to be non-zero. This enables open composition of anonymous coroutines and provides an opportunity to initiate parallel evaluation insofar as we determine the condition is stable and intervening or parallel operations will not conflict. We can feasibly extend this condition to support conjunctions, disjunctions, negations, and simple comparisons. It would be convenient to share a notion of simple conditions with branch and loop primitives.
+
+Coroutines in glas will be fork-join structured. For example, 'seq (co P1 P2) P3' would not run P3 until both P1 and P2 are completed. If P1 or P2 is waiting, then the sequence may wait. Ideally, coroutines are associative, such that 'co A (co B C)' is equivalent to 'co (co A B) C'. This requires careful attention to the scheduler, e.g. always prioritize leftmost, or simple round robin. A fair non-deterministic scheduler is associative and commutative, but a deterministic scheduler is a better fit for my vision of glas systems. 
+
+We can introduce primitives to control a scheduler. Among these, I propose to introduce an 'atomic P' structure that fully evaluates P without waiting on external coroutines. Internal waits are handled by introducing a local scheduler, thus P may be expressed using concurrency internally. In context of transaction loop applications, 'atomic' may be implicit for most toplevel application methods, excepting remote procedure calls.
+
+*Note:* A useful validation of this concurrency model is whether we can effectively compile Kahn process networks (KPNs) to run subprocesses in parallel.
+
+### User-Defined AST Constructors
+
+Users should be able to define AST constructors that serve a role similar to macros or templates, albeit independent of front-end syntax. For example, it should be feasible to define an embedded DSL compiler for regular expressions or data formatting.
+
+User-defined constructors receive *positional* AST arguments. However, presenting these arguments as first-class values makes it difficult to maintain context, resulting in [macro hygiene](https://en.wikipedia.org/wiki/Hygienic_macro) challenges.
+
+It seems too difficult to maintain contextual information with first-class AST values, binding those values back to algebraic effects or an environment. Instead, I propose to present the AST arguments as executable expressions and handlers of sorts. They, in turn, may receive some arguments in addition to operating within their host environment similar to fexprs.
+
+This suggests a basic program model similar to call-by-push-value or vau calculus, something where positional arguments are easily captured with some prefix for naming handlers. This design does hinder reflection on the program, but we can feasibly introduce reflection on programs across namespace and handler boundaries as a separate feature.
 
 ### Partial and Static Eval
 
-Explicit support for static evaluation seems difficult to get right, especially in context of composition, conditionals, and concurrency. It is much less difficult to annotate an assumption that a compiler will perform certain computations at compile-time, then simply raise a fuss if that is not achieved. We can also leverage namespace macros for more explicit control of static eval in many cases.
+Instead of a structured approach to partial evaluation, I propose annotations to indicate specific variables are statically determined at specific steps. This is flexible enough to cover ad hoc dataflows, yet easily verified at compile time. Users can still develop front-end syntax and libraries to robustly compose code with structured partial evaluation, reducing risk of errors. But users may also accept risks and freely mix code that isn't designed or maintained with partial evaluation in mind.
 
-This might be expressed in a program as 'static Expr' or 'static.warn Expr', with an annotation in the intermediate representation of the program. Some primitive AST nodes or effects may also require partial static evaluation.
+Note that we only mark variables as static, not expressions. There is no strong notion of expressions at the level of the glas program model.
 
-### Metaprogramming and Handlers
+### Staged Metaprogramming
 
-In addition to namespace layer metaprogramming, the program layer should include at least one primitive for integrating a computed AST based on a localization. However, it's awkward to integrate just an AST fragment. We often want helper subroutines even in metaprogramming. This suggests introducing a namespace for metaprogramming, ideally with controlled access to the local context. This could align well with effects handlers.
+The namespace model supports metaprogramming of the namespace, but it isn't suitable for fine-grained code per call site. To support metaprogramming at the call site, we can introduce a primitive for 'eval' of an AST, taking at least two parameters: a namespace localization, and a variable containing the AST value. In most cases, we'll want to insist this is a static variable, i.e. that the AST is fully determined at compile-time.
 
-One viable solution is to introduce algebraic effects handlers through a namespace procedure. This should be evaluated at compile time in most cases.
+In practice, I think we'll want at least one more parameter for eval: an additional translation to redirect or restrict the  AST's access to algebraic effects and application state. Although a separate scoped environment translation primitive can solve most issues, it awkwardly leaves the AST variable itself in scope, and it's very convenient to combine the two.
+
+### Tail Call Optimization
+
+The program model may have some built-in loops, but it's convenient to also support efficient tail recursion, especially in context of live coding. There is an implicit stack of local application state. In order to find the opportunity for tail call optimization, we might need to unroll a loop a little to determine which variable allocations may be recycled.
+
+We can still support recursion with a conventional data stack for 'locals', but it might be a better fit for glas systems to insist on tail recursion as the default, emitting a warning if a recursive loop does not optimize.
 
 ### Non-Deterministic Choice
 
-It is feasible to provide non-deterministic as a primitive or controlled through algebraic effects. An advantage of primitive non-determinism is that we can more directly represent stable choices and more locally optimize non-deterministic code without full access to effects. As a primitive, we could also introduce an operator to restrict use of non-determinism within a scope, insisting that a subprogram reduces to a single choice.
+It is feasible to provide non-deterministic as a primitive effect (through the namespace) or controlled through algebraic effects. An advantage of primitive non-determinism is that we can more directly represent stable choices and more locally optimize non-deterministic code without full access to effects. As a primitive, we could also introduce an operator to restrict use of non-determinism within a scope, insisting that a subprogram reduces to a single choice.
 
 We might also bind non-deterministic choice to abstract state, allowing for multiple 'streams' of choices.
 
-### Unit Types
+### Parameters and Results
 
-I would like good support for unit types early on when developing glas systems. But I don't have a good approach for this yet. Annotations seem the simplest option to start, perhaps bound to the vars. 
+It seems feasible to present most 'parameters' as algebraic effects. This includes both application state and implicit parameters, but also AST parameters in context of user-defined AST constructors. Presenting those as handlers, instead of first-class AST representations, simplifies precise management of context. We can also separate evaluation of 'expressions'.
 
-### Stowage
+If users define a new loop constructor, they could use handlers to access the condition and body of that loop, similar to macros or fexprs but with handlers providing implicit context management and macro hygiene. We could introduce primitive constructors to conveniently 'evaluate' AST arguments as expressions for function calls.
+
+Results would also be modeled as algebraic effects or writing to some 'result' state. Expressions could be understood as programs that write a common 'result' state (or environment structure) before they are fully computed. This would allow for some simple composition based on dataflow conventions without conflating a notion that AST fragments themselves are expressions that evaluate.
+
+#### Keyword Parameters
+
+In the abstract AST, we have positional parameters such as `(Name Expr1 Expr2 Expr3)`. However, keyword parameters are often preferable for extensibility reasons. To support this, we could develop a convention where Expr1 is often a list of keywords. This might not apply to every constructor, but at least to most user-defined constructors.
+
+### Automatic Cleanup? Not at this layer.
+
+We can easily support a 'defer Op' feature, e.g. performing Op before we exit the current scope. This can be implemented by a front-end compiler. It does not seem feasible to tie cleanup back to shared or runtime state in any consistent way. I don't believe primitive support is appropriate.
+
+### JIT Compilation
+
+The runtime should support a JIT compiler. However, one of my design goals for glas is to push most logic into the configuration. An intriguing possibility is to define the JIT compiler, or at least extend it (stages, optimizations, etc.) within the user configuration. This could be subject to runtime version info, making the compiler function configurable and portable. Application settings could also influence JIT, though it might be best to keep this indirect and focus on annotations.
+
+We can first JIT the JIT compiler, then use it to compile parts of the application as needed.
+
+### Unit Types?
+
+I'm still uncertain how to approach unit types for numbers. One idea is to explicitly thread some static metadata through a computation, but it seems difficult to route this in context of conditions and loops. Perhaps we can support something like a unification logic as one of the computation modes?
 
 ### Memoization
 
 such that code can be organized as a composition of generators and consumers, without any first-class structures. Most interaction models won't play nicely with hierarchical transactions. However, this *might* be achieved via capturing some local variables into 'objects' for algebraic effects. Perhaps there is something simple we can use, based on explicit yield and continue.
-
-### Tail Call Optimization?
-
-I would like to support tail-call optimization as a basis for loops without expanding a data stack. Short term, we don't need to worry about this. And I have some suspicion that TCO will prove infeasible or useless in context of transactions and incremental computing. But it should be feasible, in controlled circumstances.
-
-One viable approach is to have the compiler 'recycle' local var slots as they leave scope, at compile time. For tail recursion, we might need to allocate a few steps at compile-time before we find an allocation that was used previously in the cycle. We can then compile each allocation separately, or treat a list of indices as an added static parameter.
 
 ### Implicit Data Stack? No.
 
@@ -122,11 +160,9 @@ We could feasibly support explicit arguments to a call in addition to the implic
 
 ## Rough Sketch
 
-A tacit concatenative programming model operating on named vars and handlers. It is possible to express threads or waits for concurrency, albeit scoped by atomic. 
+A tacit concatenative programming model operating on named vars and handlers. Except we do have 'arguments' to AST constructors. We'll present those as handlers, too. It is possible to express concurrent computations via 'thread' sections with 'await' conditions. It is possible to isolate a subset of threads with 'atomic' sections.
 
 Support for locals and resource or handler names is primitive.
-
-
 
 ## Basic Operations
 

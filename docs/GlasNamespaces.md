@@ -8,17 +8,17 @@ A user's view of a glas system is expressed as an enormous namespace importing f
 
 I propose to represent a glas namespace *procedurally*, i.e. a program iteratively writes definitions. The API is carefully restricted to simplify laziness, caching, and flexible evaluation order. The namespace supports metaprogramming and modularity via 'ns.eval' and 'ns.read' respectively.
 
-Useful types:
+Viable types:
 
         type Name = prefix-unique Binary, excluding NULL, as bitstring
         type Prefix = any byte-aligned prefix of Name, empty to full
         type TL = Map of Prefix to (Prefix | NULL | WARN), as radix tree dict
         type WARN = NULL 'w'                # 0x00 0x77, as bitstring
-        type AST = (Name, List of AST)      # constructor
-                 | n:Name                   # namespace ref
+        type AST = List of AST              # constructor
                  | d:Data                   # embedded data
+                 | n:Name                   # namespace ref
                  | z:List of TL             # localization
-                 | s:(AST, List of TL)      # scoped AST
+                 | s:(AST, List of TL)      # scoped AST, lazy translate
 
 A viable algebraic effects API:
 
@@ -29,28 +29,30 @@ A viable algebraic effects API:
   * `read(Query) : Result` - access external environment with a cacheable Query, e.g. load a file.
   * `fork(N)` - returns non-deterministic choice of natural number 0..(N-1), basis for iteration. 
     * *Alternative:* non-deterministic choice via AST primitive, e.g. `(%select ...)`.
-  * `eval(AST, List of Arg) : [cb] Result` - interprets AST as the body of an anonymous procedure, providing a list of arguments and permitting interaction with the caller via generic callback handler 'cb' 
+  * `eval(AST, List of Arg) : [cb] Result` - tentative; interprets AST as the body of a procedure, providing a list of arguments and permitting interaction with the caller via generic callback handler 'cb' 
     * `cb : List of Arg -> [cb] Result` - generic, recursive callback handler, like remote procedure calls.
-    * *Alternative:* `scope() : Localization` - capture abstract Localization based on link translation, for use with a primitive 'eval'. Complicates namespace GC, but more flexible!
+  * `map(AST)` - tentative; apply AST (usually a name) as an extra constructor to future written definitions.
 
-Aliasing is expressed by defining one name to another, e.g. 'ns.write(Name1, n:Name2)'. These two names should be equivalent under evaluation within the program model (modulo reflection APIs). I assume 'eval' will often just use 'n:Name' for the AST.
+Aliasing can be expressed by defining one name to another. Those two names should then be equivalent under evaluation. 
+
+*Note:* The above provides a rough idea, but is subject to change to better integrate with the program model. For example, we might want something more flexible for binding 'eval' results and callbacks based on a static argument.
 
 ## Abstract Assembly AST
 
-Regardless of front-end syntax, definitions are ultimately written into a common, Lisp-like intermediate representation, the AST type. This type supports:
+The AST representation is an intermediate structure used within the namespace. Essential requirements:
 
-* precise recognition and rewrite of names for linking (n)
-* efficient embedding of data not containing names (d)
-* capture of link context for staged metaprogramming (z)
-* lazy computation of linking for efficiency (s)
+* Precise identification of names for robust rewrite and translate names. (n)
+* Efficient embedding of data that does not contain names, i.e. constants. (d)
+* Precise capture of context, e.g. to support staged metaprogramming. (z)
+* Primitive constructor applications as names for restriction and extension.
 
-In canonical form, all scope nodes are eliminated from the AST by rewriting of names and localizations, and every localization is simplified to a singleton list. The mechanics are described later. However, it is not always worthwhile for a compiler or interpreter to reduce an AST to canonical form.
+The scope rule 's' is not essential, but is convenient for performance and to avoid repeating translation logic within front-end compilers. 
 
-The [program model](GlasProg.md) will specify a set of primitive constructor names. By convention, primitives are prefixed with '%' such as '%seq' or '%i.add'. This convention supports efficient propagation of primitives across linker TL rules, e.g. `{ "" => "foo.", "%" => "%" }`. We also piggyback on this with '%env.\*' as a conventional space for user or configuration defined shared library definitions.
+## Primitive AST Constructors
 
-The proposed AST has a couple known weaknesses and mitigations. First, use of positional arguments can hinder some extension. This can be mitigated by a list of keywords and other caller metadata as a static first argument for many constructors. Second, there is no built-in support for anonymous user-defined constructors, i.e. every constructor node starts with a name. This may hinder metaprogramming. This can be mitigated by program model primitives, e.g. `(%ap ConstructorDef ... ArgASTs)` could be equivalent to applying a single use definition with ConstructorDef.
+In practice, most AST constructors should start with a name. The [program model](GlasProg.md) shall specify a set of primitive constructor names, by convention prefixed with '%' such as '%seq' or '%i.add'. This convention supports efficient propagation of primitives via TL rules such as `{ "" => "foo.", "%" => "%" }`. Piggybacking on this convention, we'll often integrate shared libraries and script-like access to installed applications via '%env.\*'. See the *Shared Libraries* pattern, below.
 
-*Note:* In context of user-defined constructors, arguments to the constructor might be presented as algebraic effects or some other means preserving something akin to macro hygiene. To conveniently support conventional functions and procedures, a program model may separately introduce primitives to "evaluate" arguments eagerly or lazily, as needed.
+The program model may support user-defined constructors. If the first AST in the constructor is not a name, we'll attempt to interpret it as the definition body of an anonymous user-defined constructor. An empty constructor, meanwhile, is treated as undefined. See note on *Regarding User-Defined Constructors* later.
 
 ## Evaluation Strategy
 
@@ -80,9 +82,9 @@ We finally recognize and remove redundant rules introduced by this rewrite. For 
 
 ## Localizations
 
-Localizations allow programs to capture a 'link' scope for deferred use. In glas systems, this should be deferred to a later compile-time stage, perhaps contingent on static parameters through the call graph. Use of localizations at runtime is technically feasible but would contradict many optimizations that I want for glas. 
+Localizations enable programs to capture the 'link' scope in context. Given a string and a localization, we can securely generate a name referenced by that string, excepting NULL or WARN. This can be useful for multi-stage metaprogramming with late binding to the namespace.
 
-*Note:* This namespace-layer localization only captures linking to the namespace layer. In practice, we'll want to also capture local stack variables and algebraic effects handlers for operations such as 'eval'. This might be reified by a `(%scope z:(List of TL) StackScope)` wrapper.
+Conversely, given a localization and a full name, we can generate a (possibly empty) set of precursor strings by reversing the translation. This is useful mostly for reflection APIs. A reverse translation is inefficient by default, but it is feasible to cache a reverse-lookup index.
 
 ## Prefix Uniqueness and Name Mangling
 
@@ -149,7 +151,6 @@ Similarly, a program could access command-line arguments or OS environment varia
 
 The 'd:Data' node within an AST allows for embedding data without further processing at the namespace layer. However, it is not recommended to use 'd:Data' directly as a parameter within most operations. Instead, a thin data wrapper such as `(%i d:42)` for integers should apply in most cases. This provides a convenient opportunity for the program to integrate type safety analysis, accelerated representations, and similar features. 
 
-
 ## Design Patterns
 
 ### Private Definitions
@@ -210,8 +211,36 @@ Ambiguous definitions are possible if the same name is assigned multiple distinc
 
 The heuristic policy for which namespace-layer errors or warnings should block applications from running should be configurable and application specific. That is, the runtime evaluates a configured function with access to the list of namespace errors and 'app.settings' to decide whether we abandon the effort. If we do run the application, this list of issues may also be visible through a 'sys.refl.ns.\*' API.
 
-## AST as ADT? Tentative Rejection
+## Regarding User-Defined Constructors
 
-It is technically feasible to tweak the procedural 'ns.\*' API to instead take an ADT for definitions, and to pass one or more localizations as ADTs. This allows for more flexible scope control, metaprogramming, bindings between definitions, since not everything needs to be managed via one implicit 'ns.link' localization. This does slightly complicate GC - we'll need special handling of first-class localizations - but it isn't a big problem. However, it also becomes difficult to reason about or track sources for a definition.
+User-defined constructors can feasibly support macros, templates, and embedded DSLs independent of front-end syntax. However, there are concerns similar to [macro hygiene](https://en.wikipedia.org/wiki/Hygienic_macro). In context of this document on namespaces, the emphasis is abstracting names and localizations.
 
-I'd prefer to avoid this and favor algebraic effects (and abstraction thereof) for passing behavior between definitions. Less flexible, but easy to reason about and better aligns definitions to user-meaningful scopes.
+Names may be constructed only based on a (Localization, Binary) pair. We could feasibly permit converting names back to data, or at least comparison of names. Localizations cannot be constructed, composed, or computed, only captured based on 'ns.link' context. Lazy scope translations could be made implicit, never directly observed by the macro. 
+
+These features aren't especially difficult to implement. We could support these features via abstract data types, or macros could operate on a tacit data stack of ASTs and avoid direct capture of AST values. But this is an important constraint on design of user-defined constructors in the program model.
+
+## A Note on Namespace Reflection
+
+A reflection API may provide a program access to its own definitions. This can be useful for metaprogramming or debugging. Arguably, the simplest approach to reflection is to present a global namespace and present fully-translated AST values as definitions. With a localization, users can manually translate AST fragments to or from local names. However, this hinders local reasoning regarding scope, access control, dead code elimination, and position-independent code.
+
+A viable alternative is to present full names and localizations as abstract data types, at least when accessed through the reflection API. A subset of global names will be unlinkable (link to NULL or WARN) or unreachable (no preceding string), but a localization can provide a robust, local, partial view of a namespace.
+
+It is feasible to support both global and local reflection APIs at different trust levels.
+
+## Regarding Hierarchical Namespaces
+
+The glas program model will introduce local variables and algebraic effects handlers in context of a subprogram. These are namespace-like things. Ideally, we should avoid reinventing namespaces in multiple layers. However, at the program model layer, the design challenges are very different - far fewer definitions, far tighter integration with state in scope. The program model may permit use of a namespace procedure, as described in this document, to define a set of handlers. But, in practice, a much simpler solution will likely prove sufficient.
+
+## Compact AST? Rejected.
+
+It is tempting to compact the AST a little, e.g. we could instead use:
+
+        type AST = List of AST              # constructor
+                 | 0b0.Data                 # embedded data
+                 | 0b10.Name                # namespace ref
+                 | 0b110.List of TL         # localization
+                 | 0b1110.(AST, List of TL) # scoped AST, lazy translate
+
+In practice, this won't help much with Names due to prefix uniqueness and name mangling. But it will save a few bytes for embedded data, especially in case of small integers and labeled variants. But a cost is that we cannot casually render AST values without heuristically recognizing them as AST values.
+
+In the end, I don't believe saving a few bytes is worth much, or at least that this isn't the best place to pursue it. In context of memo-caching compilation, we might use [glas object](GlasObject.md) together with a separate compression pass, or attempt to extend glas object with systematic compression of repetitive structure.

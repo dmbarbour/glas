@@ -267,11 +267,9 @@ A lot of composition can be automated into namespace macros or user-defined synt
 
 ### Threaded Applications
 
-The programmer defines an 'app.main' procedure that is evaluated as a concurrent thread with the host environment. A thread may 'await' arbitrary conditions on state, and may split into concurrent subthreads to handle subtasks. However, as a significant departure from convention, subthreads are fork-join structured, and steps are implicitly atomic between explicit waits. Programs may further contain explicit 'atomic' sections to control concurrency.
+The programmer defines a non-atomic 'app.main' procedure that occasionally yields to given the environment a turn. The program steps between yields will still be atomic. It is feasible to evaluate several coroutines in parallel if an optimizer determines they do not conflict. The application may fork-join coroutines as needed, and may explicitly contain 'atomic' subprograms. Conveniently, this can be mixed with features like 'app.http' to receive HTTP requests, sharing the debug port.
 
-Conveniently, this mode can be hybridized with the transaction loop. For example, we can still support 'app.http' or 'app.rpc' events between atomic steps. This provides a motive for similar use of global state as seen in transaction loop applications.
-
-Threaded applications have an opportunity cost: live coding becomes very awkward. There is no robust way to smoothly transition from a partially evaluated main procedure to an updated version. A best effort is to switch at function call boundaries, and express any long-running loops in terms of tail-call optimized recursion, pushing most burden of live coding to the program architects.
+The main opportunity cost of threaded applications is that we cannot robustly transition to new code upon update. As a best effort, we could gradually switch to new functions as they are called from active continuations. We could only mitigate this via application design, e.g. expressing a main loop as tail-recursive or as repeatedly calling the function that we intend to edit.
 
 ### Staged Applications
 
