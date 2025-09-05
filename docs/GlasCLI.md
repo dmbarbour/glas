@@ -35,7 +35,7 @@ An application is generally expressed within a namespace using 'app.\*' methods.
   * **-run .AppName**: Elides the 'env' prefix, running 'AppName.app.\*'. As a special case, '--run .' will run the toplevel 'app.\*' in the configuration.
 * **--script Location**: Compile an indicated file, package folder, or URL into a namespace that must contain a toplevel 'app.\*'. This receives read-only access to a configured environment (e.g. shared libraries and composable apps) via '%env.\*'. The front-end compiler is selected based on file extension, i.e. '%env.lang.FileExt'.
   * **--script.FileExt FileLocation**: same as '--script' except we substitute the file extension. Intended for use in Linux shebang lines.
-* **--cmd.FileExt SourceText**: same as '--script.FileExt' except we provide the source text as a command-line argument, perhaps presenting it as a virtual file.
+* **--cmd.FileExt SourceText**: same as '--script.FileExt' except we provide the source text as a command-line argument, perhaps presenting it as a virtual read-only file in the current working directory.
 
 Every application must define at least 'app.settings' to guide integration. Typically, we'll also define 'app.main' for conventional threaded apps, or 'app.step' for transaction loop apps, and perhaps a few event handling methods, such as 'app.http' to receive HTTP requests. See [glas applications](GlasApps.md). 
 

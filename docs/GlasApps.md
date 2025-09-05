@@ -56,13 +56,30 @@ Transaction loops present two significant challenges. First, the most important 
 
 ## Application State
 
-Transaction loop applications must access state across transactional steps. I propose to represent this state as an implicit structure of in-out parameters, avoiding the conventional heap of pointers or abstract references. This allows for convenient browsing of a stable structure, predictable schema updates, and simpler analysis of opportunities for parallelism. Relatedly, even abstract state such as "open files" should be presented as second-class locations within the structure instead of first-class handles or references.
+Application methods ('app.\*') receive access to a stateful application environment through registers and handlers. Intriguingly, a subset of this state may be persistent, bound to a configured database, supporting asynchronous shared-memory interactions, persistent configurations, and other features. But there are also use cases for state scoped to the runtime instance, and transaction-local state.
 
-Global state may be associated with the runtime instance, or persistent and shared with concurrent or future applications. Many follies of sharing are mitigated by atomic steps and fine-grained configuration of security. We can also bind each application to an app-data location based on settings to resist accidental sharing.
+I propose to infer external registers from the application program. We may insist the set of external registers is finite, i.e. that any recursive translation reaches a fixpoint. Otherwise, we can use simple naming conventions, binding registers to a key-value store:
+
+* "app.\*" - persistent but private, analogous to "%AppData%" folder in Windows or "~/.config/AppName/" in Linux, useful for persistent configuration. Exact storage location is decided by the runtime or configuration with reference to 'app.settings'. 
+* "shm.\*" - shared memory, for ad hoc asynchronous interactions between glas applications. Access to registers may be subject to configured security policy (see *Security* in [glas CLI](GlasCLI.md)). Other toplevel registers might logically be aliased under shm, e.g. translation 'app.\* => shm.app.AppName.\*'.
+* "rt.\*" - ephemeral memory, scoped to a runtime instance yet shared between 'app.\*' methods and such. This is suitable for abstract linear data representing open sockets, file handles, FFI streams and so on.  
+* "tn.\*" - ephemeral memory, scoped to the current transaction. The primary use case is to allow intermediate inconsistency when multiple RPC calls (or similar) are evaluated within one transaction. The transaction can be aborted if the registers aren't in a valid state, e.g. based on 'accept type' annotations or abstract linear data.
+
+Alternatively, we could attempt to express programs as stack objects, with methods as handlers. In this view, we might favor the naming conventions for handler integration.
+
+An application program may also contain annotations describing the expected environment type, or fragments thereof, potentially supporting consistency checks and optimized representations. Intriguingly, we can check consistency and optimize even for persistent representations by recording suitable metadata into persistent storage.
+
+*Note:* Registers may simply default to zero if never previously assigned.
 
 ### Distributed State
 
-In context of a distributed runtime, application state may also be distributed. Ideally, we have low-level support for useful abstractions on distributed state such as queues, bags, and CRDTs. In the general case, we must also consider partitioning of the network or destruction of nodes. In these cases, bags and CRDTs offer a significant advantage, allowing continued operation when nodes are separated. Thus, for robust distributed apps, we might need to construct state from such abstractions.
+In context of a distributed runtime, application state may also be distributed. 
+
+In the simplest case, we might distribute registers by distributing ownership, requiring a distributed transaction when a transaction involves registers owned by two different nodes. In case of read-mostly registers, we might mitigate this with mirroring, with each node maintaining a consistent view of some external registers.
+
+In more sophisticated cases, we might recognize primitive or accelerated operations such as reading or writing a list register as a queue, allowing for split ownership between reader and writer nodes. Or we could feasibly support CRDTs, where multiple nodes independently update and observe a register according to carefully constrained rules, merging updates to ensure consistency whenever a distributed transaction is required.
+
+A relevant challenge for distributed state is dealing with permanent loss of nodes or network partitions. This could be mitigated by having distributed ownership of essential state, requiring backups of writes before the transaction fully commits. But we can also forcibly allow progress in a partition by resetting registers - a write-only transaction never has a read-write conflict.
 
 ## HTTP Interface
 

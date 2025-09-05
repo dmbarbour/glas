@@ -1,168 +1,181 @@
 # Program Model for Glas
 
-A program is defined in context of a [namespace](GlasNamespaces.md). An [application](GlasApps.md) program is represented within a namespace by defining a few toplevel names with simple naming conventions. Other names are useful for modularization of programs, abstraction and reuse of program fragments across applications. A subset of names are primitives, defined by interpreters or compilers and standardized for consistency. The convention in glas is to favor the '%' prefix for primitive names, simplifying recognition and propagation of primitives through the namespace.
-
-This document designs and defines an initial set of primitive names.
+The [namespace](GlasNamespaces.md) supports modules and user-defined syntax. The front-end compiler will translate user facing syntax to a shared AST structure with primitive definitions ('%\*' by convention) forming an intermediate language. This document describes a suitable intermediate language for glas systems.
 
 ## Design Thoughts
 
-### Extensible Intermediate Language
+### Operation Environment
 
-The user-defined front-end syntax is supported based via the namespace model. However, I also want the opportunity to evolve the intermediate language - as described in this document - in flexible ways (adding features, removing features, support for DSLs, isolation of subprograms, etc.).
+I propose to express programs as operating on a stable, labeled environment. This environment includes stateful registers and callable 'handlers' for abstraction of state or effects. A program may introduce local registers and handlers in scope of a subprogram, and may translate or restrict a subprogram's access to the program's environment.
 
-Technically, this isn't difficult to support. We can introduce AST nodes such as `(%Lang AST)` to indicate how a subprogram should be interpreted. This language node can restrict or extend the set of AST primitives, and contextually adjust how any shared primitives are interpreted. This context can apply across call boundaries, insofar as the language permits calls within the namespace.
+To keep it simple and consistent, I propose that registers and handlers are named with simple strings similar to names in the namespace (ASCII or UTF-8, generally excluding NULL and C0). This allows us to apply the namespace TL type to translate and restrict the environment exposed to a subprogram. It also ensures names are easy to render in a projectional editor or debug view.
 
-As a useful convention, we could encourage front-end compilers to use language nodes for most definitions. We may require a language specifier for top-level 'app.\*' definitions.
+Toplevel application methods ('app.\*') receive access to a finite set of handlers and registers from the runtime. See [glas apps](GlasApps.md) for details. The program may include annotations describing the assumed or expected environment, allowing for validation and optimization.
 
-Ideally, we can also support user-extensible 'primitives', the ability for users to define the '%lang' or AST nodes. This may require a specialized sublanguage, perhaps something like templating, but it should be technically feasible.
+### In-Place Update
 
-### Application State
+Each register contains glas data - an immutable binary tree, albeit subject to accelerated representations, abstract data types, scoping, linearity, and content-addressed storage. However, we can express operations on registers in terms of mutations, such as incrementing a number register or appending a list register. 
 
-I propose to model programs as operating on a stable environment of stateful, named resources. Some of these resources may kept abstract to the program, including as open files or network sockets. Others may be simple cells or queues. 
+Updates on a specific index (or slice of indices), e.g. of a dict or array, are amenable to an optimization where, instead of allocating a new copy with the change applied, we copy the existing representation if it isn't unique then update in place. This is essentially an optimization of the allocator and garbage-collector, but it can offer a significant performance boon in many cases.
 
-The program should declare its expectations or assumptions about the external environment. The compiler will generate a schema based on integrating declarations. A program may also introduce temporary state resources for use within a subprogram. In context of recursive calls, these temporaries can serve the role of a data stack; we won't explicitly have a data stack. For flexibility, the program can also apply logical transforms to the environment for use in a subprogram. The simplest case is translation of names, but we can generalize to stable editable projections with lenses, getters and setters, etc..
+I hope to design the program model to readly leverage in-place updates, tracking opportunities to do so both statically and dynamically. For example, we could keep a tag bit (perhaps in the pointer) to track whether a pointer is 'unique' or 'shared' as an efficient alternative to a full reference count. Or we could efficiently maintain a small reference count, and use full GC only for widely shared representations.
 
-To support dynamic state, the environment shall support tables. To keep it simple, I propose to start with arrays or key-value dicts. In theory, we can eventually extend this to stable, editable views of relational tables with support for a relational algebra.
+### Structured Behavior
 
-In any case, the proposed state model excludes the conventions of a heap, pointers, first-class references. Users may indirectly model these features, but the intention is that the environment should be stable, extensible, and browseable.
-
-#### Relational State
-
-It is feasible to introduce access-controled relational states in terms of indexing one environmental resource through another. In case of tables, associations involving two entities implicitly serve as relations, maintaining some extra state about a relationship. Otherwise, associations effectively add hidden columns to a table.
-
-Usefully, we could support transitively deletion of relations based on deletion of table entries. This would simplify cleanup similar to foreign key requirements in a relational database, avoiding reference-based garbage collection.
-
-#### Scoped State
-
-We can partition external state into a few more scopes: persistent, ephemeral, and transaction-local. 
-
-* Persistent state is stored in a shared database. It is accessible to concurrent or future applications, including multiple instances of the current application. A good place for configurations or persistent data.
-* Ephemeral state is local to the process or runtime instance, but shared across transactions. Runtime features such as open files or network sockets may bind to ephemeral state. For semi-transparent persistence, a program can translate a subprogram to use ephemeral state instead of persistent state (but not vice versa).
-* Transaction-local state is ephemeral state that is cleared implicitly when a transaction commits. This is mostly useful in context of remote procedure calls or other cases where we might invoke multiple methods within a single transaction.
-
-These scopes might be distinguished based on specialized declarations over the environment, or perhaps based on annotations. Either way, it should be feasible to determine inconsistencies in scope assumptions at compile time.
-
-#### Accept States
-
-Data types can feasibly support volatile states that cannot be committed and non-final states that cannot be reset. Method-local and transaction-local vars would be implicitly reset as they leave scope, and we might also block a transaction based on transitive reset for relational state. With integration, perhaps via annotations or declarations, the runtime can kill transactions that would violate assumptions about application state, allowing users to enforce protocols and ensure consistency.
-
-#### Abstract State
-
-Instead of abstract data types, I hope to manage most abstraction at the state layer. This can feasibly be expressed in terms of associative state without any additional features, relying on access control to the indexing resource.
-
-Abstraction of vars is convenient for working with open files, network sockets, and user-defined abstract objects that are held in client-provided state. We could use annotations to logically 'seal' a volume of vars, such that the same seal must be used to access that state. Abstraction of state serves a similar role as abstract data types but is much easier to eliminate at compile-time and avoids potential schema update concerns.
-
-#### Typed State
-
-We might want something like dependently-typed regions of state, where the fields available may depend on other fields instead of only supporting value types. And we'll probably want to support refined types for state. e.g. limiting an integer field to a bounded range. These types could be checked with some ad hoc mix of static and dynamic analysis, rejecting transactions that would violate assumptions or observe a violated assumption.
-
-#### Linear Move? Defer
-
-It is feasible to introduce a generic operator for moving or swapping a volume of state within an environment. This could translate to moving a struct or struct pointer under the hood. This could respect relational structure, too. A cost is that the environment becomes much less stable, and thus more difficult to render or reason about. But this does offer some benefits for flexibility, modeling queues and such.
-
-I currently intend to elide this feature, see how far we can go with stable structure and whether there is a strong need for linear move or swap. 
-
-### Algebraic Effects and Handlers
-
-Instead of directly defining effectful behaviors in the namespace, I propose to present access to state and effects as implicit parameters to a program. This essentially introduces another 'level' of namespace for the set of handlers in scope. I propose to support prefix-oriented translation and aliasing of handlers and state similar to translation of the host namespace, i.e. `{ Prefix => Prefix | NULL }` associative maps that apply to specific AST nodes such as `(%var "x")`, albeit across definition boundaries.
-
-A handler receives access to *two* environments, host and client, and must robustly distinguish them. To avoid risk of conflict, the default calling convention may present handlers with with two distinct prefixes, e.g. prefix "." binding to host and "$" to client. We can later extend the set of calling conventions as needed.
-
-Initially, we might restrict handlers to letrec-style cliques within scope of a subprogram. This will likely be sufficient for most use-cases. However, if there is a strong use case, we can eventually support full namespace procedures to define sets of handlers.
-
-*Note:* I don't propose to capture continuations in handlers. But coroutines and concurrency could be introduced via separate primitives.
-
-### Concurrency and Parallelism
-
-Coroutines are a convenient way to introduce concurrency to a procedural model. Coroutines are non-preemptive: they yield voluntarily then continue on some condition. Logically, coroutines evaluate sequentially, but an opportunity exists for parallel evaluation consistent with a sequential schedule. However, this opportunity isn't easy to grasp, requiring analysis of a stable schedule and interference.
-
-I propose to initially introduce coroutines that wait on a simple, stateful condition, such as for a variable to be non-zero. This enables open composition of anonymous coroutines and provides an opportunity to initiate parallel evaluation insofar as we determine the condition is stable and intervening or parallel operations will not conflict. We can feasibly extend this condition to support conjunctions, disjunctions, negations, and simple comparisons. It would be convenient to share a notion of simple conditions with branch and loop primitives.
-
-Coroutines in glas will be fork-join structured. For example, 'seq (co P1 P2) P3' would not run P3 until both P1 and P2 are completed. If P1 or P2 is waiting, then the sequence may wait. Ideally, coroutines are associative, such that 'co A (co B C)' is equivalent to 'co (co A B) C'. This requires careful attention to the scheduler, e.g. always prioritize leftmost, or simple round robin. A fair non-deterministic scheduler is associative and commutative, but a deterministic scheduler is a better fit for my vision of glas systems. 
-
-We can introduce primitives to control a scheduler. Among these, I propose to introduce an 'atomic P' structure that fully evaluates P without waiting on external coroutines. Internal waits are handled by introducing a local scheduler, thus P may be expressed using concurrency internally. In context of transaction loop applications, 'atomic' may be implicit for most toplevel application methods, excepting remote procedure calls.
-
-*Note:* A useful validation of this concurrency model is whether we can effectively compile Kahn process networks (KPNs) to run subprocesses in parallel.
-
-### User-Defined AST Constructors
-
-Users should be able to define AST constructors that serve a role similar to macros or templates, albeit independent of front-end syntax. For example, it should be feasible to define an embedded DSL compiler for regular expressions or data formatting.
-
-User-defined constructors receive *positional* AST arguments. However, presenting these arguments as first-class values makes it difficult to maintain context, resulting in [macro hygiene](https://en.wikipedia.org/wiki/Hygienic_macro) challenges.
-
-It seems too difficult to maintain contextual information with first-class AST values, binding those values back to algebraic effects or an environment. Instead, I propose to present the AST arguments as executable expressions and handlers of sorts. They, in turn, may receive some arguments in addition to operating within their host environment similar to fexprs.
-
-This suggests a basic program model similar to call-by-push-value or vau calculus, something where positional arguments are easily captured with some prefix for naming handlers. This design does hinder reflection on the program, but we can feasibly introduce reflection on programs across namespace and handler boundaries as a separate feature.
-
-### Partial and Static Eval
-
-Instead of a structured approach to partial evaluation, I propose annotations to indicate specific variables are statically determined at specific steps. This is flexible enough to cover ad hoc dataflows, yet easily verified at compile time. Users can still develop front-end syntax and libraries to robustly compose code with structured partial evaluation, reducing risk of errors. But users may also accept risks and freely mix code that isn't designed or maintained with partial evaluation in mind.
-
-Note that we only mark variables as static, not expressions. There is no strong notion of expressions at the level of the glas program model.
-
-### Staged Metaprogramming
-
-The namespace model supports metaprogramming of the namespace, but it isn't suitable for fine-grained code per call site. To support metaprogramming at the call site, we can introduce a primitive for 'eval' of an AST, taking at least two parameters: a namespace localization, and a variable containing the AST value. In most cases, we'll want to insist this is a static variable, i.e. that the AST is fully determined at compile-time.
-
-In practice, I think we'll want at least one more parameter for eval: an additional translation to redirect or restrict the  AST's access to algebraic effects and application state. Although a separate scoped environment translation primitive can solve most issues, it awkwardly leaves the AST variable itself in scope, and it's very convenient to combine the two.
+The intermediate language will be higher level than assembly and still impose some structure on control flow. Relevantly, I don't want the notion of 'jumps' or 'labels' in the intermediate language, excepting perhaps as a basis for coroutines.
 
 ### Tail Call Optimization
 
-The program model may have some built-in loops, but it's convenient to also support efficient tail recursion, especially in context of live coding. There is an implicit stack of local application state. In order to find the opportunity for tail call optimization, we might need to unroll a loop a little to determine which variable allocations may be recycled.
+Tail calls can support recursive definitions without increasing the call stack. This can be viewed as a form of static garbage collection, recycling memory allocations on the call stack. It is feasible to unroll a recursive loop to simplify this recycling. 
 
-We can still support recursion with a conventional data stack for 'locals', but it might be a better fit for glas systems to insist on tail recursion as the default, emitting a warning if a recursive loop does not optimize.
+In glas systems, I want tail calls to be a robust, checked optimization. Annotations can indicate that calls are expected to be tail calls. Further, I hope to encourage tail calls as the default form of recursion, as it greatly simplifies compilation.
+
+Even if all recursion is tail calls, we can model dynamic stacks in terms of registers containing list values. Performance in this case might be mitigated by preallocation of a list buffer for in-place update and use as a stack. This could be supported through annotations or accelerators.
+
+### Lenses, Cursors, Zippers, and Indices
+
+It seems convenient to support something like 'logical' registers that index other registers, e.g. a register representing an element or slice of an array. Logically, this is essentially a translation. 
+
+This might benefit from a primitive notion of indexing of glas data. Or, perhaps, we can simply ensure a translation model is extensible to eventually support indexing.
+
+### Algebraic Effects and Handlers and Stack Objects
+
+I propose that most effects APIs are expressed in terms of invoking 'handlers' in the environment. This allows for overrides by the calling program independent of the namespace structure. There may be a few special exceptions, e.g. non-deterministic choice may be expressed as a primitive and restricted through annotations instead of by manipulating the environment.
+
+Unlike first-class functions or closures, handlers introduced by a subprogram cannot be "returned" to a caller. They can only be passed to further subprograms in context. However, it may be convenient to introduce a notion of 'objects' on the stack, modular collections of local state and methods, rather than focus on individual handlers.
+
+When a handler is invoked, it must receive access to two environments - host and caller. With the 'stack object' concept, it is useful to conflate a third environment: local state. Local registers may then be modeled as a stack object with no methods. To resist naming conflicts, access to these environments from within a handler may be distinguished by prefixes, e.g. "^" for host, "$" for caller, and "." for local state. (We may need to see how '.' interacts with hierarchical objects.)
+
+Stack objects should be able to hierarchically compose more stack objects. It seems feasible to express stack objects as namespace constructors, but it may prove simpler to introduce dedicated primitives to declare objects.
+
+*Aside:* It might be interesting to express an application as a handler 'stack object' instead of a collection of definitions. This could be supported by a runtime via application settings.
+
+### Coroutines and Concurrency
+
+Coroutines are procedures that yield and resume. This supports concurrent composition and modularization of tasks, a convenient alternative to call-return structure in some cases.
+
+A desred optimization is parallel evaluation. Ideally, we can effectively utilize multiple processors for multiple coroutines. Even better with latency and disruption tolerance, for distributed evaluation. Parallel evaluation requires determining a 'schedule' of coroutines at least slightly ahead of time, and either analysis for conflicts or dynamic detection and reversal of conflicts.
+
+For glas systems, I favor the dynamic approach because it aligns nicely with transaction loop applications and robust error handling. We can view a procedure as a sequence of transactional steps. We can abort a step due to conflict or error, and we implicitly retry the aborted step. Risk of rework is a valid concern but can be mitigated by analysis, heuristics, annotations, or caching and incremental computing.
+
+For my vision of glas systems, I also favor anonymous, second-class, fork-join coroutines. For example, `(%c P1 P2 P3)` represents concurrent composition. All three anonymous coroutines must return before `%c` returns. We can also support `(%atomic P)` sections as hierarchical transactions, allowing for coroutines and resumption to be scoped. A transaction loop application 'step' may run within an implicit atomic section, perhaps together with a few implicit runtime coroutines. (*Note:* We can also have annotations that a subprogram 'does not yield' and such, which essentially asserts that any 'yield' is already wrapped in 'atomic'.)
+
+Because coroutines are anonymous, the scheduler is implicit. Ideally, coroutines are at least associative, that is `∀P1, P2, P3. (%c (%c P1 P2) P3) = (%c P1 (%c P2 P3)) = (%c P1 P2 P3)`. This constrains the scheduler, but isn't a big problem. Compatible schedules include: always prioritize leftmost, round robin, non-deterministic choice. We can feasibly support numeric priorities, too. To support flexible scheduling, we may introduce primitives for scoping scheduler guidance.
+
+To fully support parallelism and distribution, we'll want primitives and accelerators that control observation of registers. For example, we can model a queue as a register containing a list. A queue can support multiple writers (of the queue tail) and a single reader (on the queue head) in parallel without a read-write conflict, so long as the reader doesn't attempt to read everything available. In the extreme case, we can feasibly accelerate registers representing CRDTs (commutative replicated datatypes) as a foundation for robust distributed computing.
+
+### Expressions
+
+It is tempting to support arbitrary expressions in the program model, e.g. for branch and loop conditions. However, initially I think we'll restrict glas programs to simple registers, testing for a non-zero value. Perhaps we can model 'constant' registers as a special case.
+
+We can defer support for more flexible expressions. An intriguing future direction is to interpret expressions as virtual registers, editable views, lenses or prisms with scatter-gather features instead of 'value' expressions. But we could instead introduce primitives for pure calculations.
+
+### Robust Partial Evaluation
+
+Instead of a structured approach, I propose annotations specify that registers or expressions should be statically determined in context. We can easily raise an error at compile time if the annotated expectations are not met. Partial evaluation thus becomes a verified optimization, ensuring it remains robust across code changes, without truly becoming part of the semantics.
+
+Separately, we can develop front-end syntax or libraries to more robustly support partial evaluation as we compose code, reducing the risk of errors. 
+
+### Intermediate Language Macros
+
+The glas program model should support user-defined AST constructors, i.e. `(UserDef AST1 AST2 ...)`, serving a role similar to macros of the intermediate language. One viable solution is direct adaptation of macro substitution to AST nodes instead of text.
+
+Potential model:
+
+* `(%macro Template)` - describes a macro. In this case, Template is an AST that contains `(%macro.arg K)` and other elements for rewriting. When we apply a macro as a user-defined constructor, we'll substitute AST arguments into the template, then replace the constructor by the resulting AST, aka macro expansion.
+* `(%macro.arg K)` - is substituted by the Kth AST argument, with static K starting at 1. Error if K is out of range. We designate argument 0 to refer recursively to UserDef for convenient anonymous recursion. We'll report a compile-time error if K is out of range.
+* `(%macro.args.count)` - is substituted by the count of AST arguments to the macro, intended to support a variable number of arguments
+* `(%macro.args.range X Y)` - is substituted by a *series* of AST arguments `(%macro.arg X) (%macro.arg X+1) .. (%macro.arg Y)`. This expansion is valid only in context of another AST constructor. The series is empty if X is greater than Y. 
+* `(%link Localization AST)` - deferred integration of a concrete AST representation with the namespace, such as `n:Name` binding to a defined symbol.
+  * We can feasibly extend linking to hierarchical namespaces when describing stack objects.
+
+To simplify implementation and user comprehension, the compiler shall detect and reject use of macro primitives outside a local `(%macro Template)`, where 'local' means the same definition. Thus, we reject free macro variables and aliasing of macro primitives. Similar analysis should apply to a linked AST, treating it as an inline definition with respect to macro interactions.
+
+This model permits [non-hygienic macros](https://en.wikipedia.org/wiki/Hygienic_macro). Although non-hygienic macros can be useful, they are also a source of subtle bugs. It is left to front-end macro syntax to enforce hygiene or resist accidents.
+
+*Note:* Between user-defined syntax, intermediate language macros, and robust partial evaluation, glas offers ample opportunity for metaprogramming. For example, we can also support text macros in a front-end syntax, and it is feasible to translate text parameters into a local subprogram.
+
+### Extensible Intermediate Language
+
+We can always extend the intermediate language by adding new primitives. But we could also support something like a scoped 'interpretation' of the existing primitives. It might be useful to support something like `(%lang Ver AST)` declarations, at least for the toplevel application methods. This would provide more robust integration with the runtime in case of language drift, and would allow languages to drift very flexibly.
+
+As a convention, front-end compilers could include language declarations for most definitions, and the runtime may require it for 'app.\*', raising an warning and assuming a version otherwise.
 
 ### Non-Deterministic Choice
 
-It is feasible to provide non-deterministic as a primitive effect (through the namespace) or controlled through algebraic effects. An advantage of primitive non-determinism is that we can more directly represent stable choices and more locally optimize non-deterministic code without full access to effects. As a primitive, we could also introduce an operator to restrict use of non-determinism within a scope, insisting that a subprogram reduces to a single choice.
+I propose to represent access to non-deterministic choice as a primitive (instead of handler). 
 
-We might also bind non-deterministic choice to abstract state, allowing for multiple 'streams' of choices.
+There are a few reasons for this. First, it does us very little good to intercept non-deterministic choice within a program. Only at the level of a runtime or interpreter might we heuristically guide non-deterministic choice to a useful outcome. Second, we may still control non-deterministic choice via annotations, i.e. to indicate a subprogram is observably deterministic, or at least does not introduce non-determinism (though it may invoke non-deterministic handlers). Third, use of non-deterministic choice in assertions, fuzz testing, etc. make it awkward to present as a handler.
 
 ### Parameters and Results
 
-It seems feasible to present most 'parameters' as algebraic effects. This includes both application state and implicit parameters, but also AST parameters in context of user-defined AST constructors. Presenting those as handlers, instead of first-class AST representations, simplifies precise management of context. We can also separate evaluation of 'expressions'.
+Programs operate on registers and handlers. To model parameters and results, thus, is left to conventions such as writing a result of a calculation to 'result.\*' registers or 'result.!' for the main result. The client will translate this into context. Similarly, arguments could bind 'arg.\*' registers, and we could have some conventions for providing a static list of keywords or similar. 
 
-If users define a new loop constructor, they could use handlers to access the condition and body of that loop, similar to macros or fexprs but with handlers providing implicit context management and macro hygiene. We could introduce primitive constructors to conveniently 'evaluate' AST arguments as expressions for function calls.
-
-Results would also be modeled as algebraic effects or writing to some 'result' state. Expressions could be understood as programs that write a common 'result' state (or environment structure) before they are fully computed. This would allow for some simple composition based on dataflow conventions without conflating a notion that AST fragments themselves are expressions that evaluate.
-
-#### Keyword Parameters
-
-In the abstract AST, we have positional parameters such as `(Name Expr1 Expr2 Expr3)`. However, keyword parameters are often preferable for extensibility reasons. To support this, we could develop a convention where Expr1 is often a list of keywords. This might not apply to every constructor, but at least to most user-defined constructors.
-
-### Automatic Cleanup? Not at this layer.
-
-We can easily support a 'defer Op' feature, e.g. performing Op before we exit the current scope. This can be implemented by a front-end compiler. It does not seem feasible to tie cleanup back to shared or runtime state in any consistent way. I don't believe primitive support is appropriate.
+In many cases, we might wish some means to express and enforce that a subset of registers is read-only within scope of a call. This should be feasible with annotations.
 
 ### JIT Compilation
 
-The runtime should support a JIT compiler. However, one of my design goals for glas is to push most logic into the configuration. An intriguing possibility is to define the JIT compiler, or at least extend it (stages, optimizations, etc.) within the user configuration. This could be subject to runtime version info, making the compiler function configurable and portable. Application settings could also influence JIT, though it might be best to keep this indirect and focus on annotations.
+Although the glas program model should support an interpreter, it will be designed with AOT and JIT compilation in mind as the primary mode for evaluation. Every serious glas runtime will compile most code before or during execution, and may cache compiled code for convenient reuse across repeated executions of an application. 
 
-We can first JIT the JIT compiler, then use it to compile parts of the application as needed.
+Compilation, and especially optimizations, be heavily guided and aided by annotations. For example, we may annotate type information on variables, allowing for static or dynamic validation of assumptions, dynamic testing of "final" states, specialized representations for unboxed numbers, and so on.
 
-### Unit Types?
+An intriguing possibility is to separate much compilation and optimization logic from the runtime executable, moving it into the user configuration, i.e. such that optimizations become user-defined but separate from applications. An application could suggest additional checks or optimizations to apply via application settings. The runtime may need to initially interpret the configured JIT compiler to compile itself, but this should be cacheable.
 
-I'm still uncertain how to approach unit types for numbers. One idea is to explicitly thread some static metadata through a computation, but it seems difficult to route this in context of conditions and loops. Perhaps we can support something like a unification logic as one of the computation modes?
+### Unit Types
+
+We'll allow annotations to express types within a program. Static analysis to verify consistency of type assumptions is left to external tooling. However, annotations aren't suitable for unit types on numbers, where we might want to print type information as part of printing a number.
+
+Instead of directly encoding unit types within number values, it may prove convenient to bind unit types to *associated* registers. With some discipline - or sufficient support from the front-end syntax - we can arrange for these associated registers to be computed statically ahead of the runtime arguments or results. We can also test that the unit type variable is static.
+
+The unit type variable may be associated with a 'constant value' type when annotating type information for the implicit environment or an operation, and subject to static or dynamic verification. When rendering numbers, we may peek at the unit type variable for information, which is something we cannot do with annotation of types alone.
 
 ### Memoization
 
-such that code can be organized as a composition of generators and consumers, without any first-class structures. Most interaction models won't play nicely with hierarchical transactions. However, this *might* be achieved via capturing some local variables into 'objects' for algebraic effects. Perhaps there is something simple we can use, based on explicit yield and continue.
+In context of procedural programming, memoization involves recording a trace. This trace describes the computation performed (perhaps via hash), the data observed, and outputs written. To execute a memoized computation, we search for a matching trace then write the outputs directly. If no matching trace is found, we run the computation while recording the trace, then add it to the cache.
 
-### Implicit Data Stack? No.
+We can improve memoization by making the traces more widely applicable, abstracting irrelevant details. For example, we might observe that a register contains 42, but a trace might match so long as a register value is greater than zero.
 
-It might be convenient to introduce an implicit, local data stack for pushing and popping data. Threads would require 0--0 arity, and we could insist on static arity in general. It's useful for anonymous parameters. However, it's awkward for stuff like open files and such, and it doesn't extend well with keyword arguments and similar.
+However, even the simplest of traces can be useful if users are careful about where they apply memoization. We can memoize a subset of procedures that represent "pure" expressions or functions to support incremental compilation, monoidal indexing of structure, and similar use cases.
 
-### Keyword Arguments and Results
+### Content-Addressed Storage
 
-As a calling convention, we could provide a static parameter for most method calls that represents the set of arguments provided and also names the results. It might also be useful to make this a primitive feature, a special static parameter to 'call' of sorts, allowing for more flexible integration. 
-
-We could feasibly support explicit arguments to a call in addition to the implicit environment. But I'm not convinced it's a good idea to complicate calls with multiple forms of argument, and it doesn't extend nicely to many use cases.
+Annotations can transparently guide use of content-addressed storage for large data. The actual transition to content-addressed storage may be transparently handled by a garbage collector. Access to representation details may be available through reflection APIs but should not be primitive or pervasive.
 
 ## Rough Sketch
 
-A tacit concatenative programming model operating on named vars and handlers. Except we do have 'arguments' to AST constructors. We'll present those as handlers, too. It is possible to express concurrent computations via 'thread' sections with 'await' conditions. It is possible to isolate a subset of threads with 'atomic' sections.
+The environment of handlers and registers provided to a procedure is implicit, but we'll need primitives to extend this environment.
 
-Support for locals and resource or handler names is primitive.
+We can support expressions and macros, and we could feasibly support a little compile-time lambda calculus with macros that generate expressions.
+
+It seems convenient to model extension of this environment in terms of introducing 'stack objects' under a given name, conflating declaration of local registers, handlers, and hierarchical objects. We should be able to override methods or hierarchical components when declaring stack objects.
+
+We won't worry about unifying the glas namespace and the tacit environment of handlers and registers. The two have very different design constraints due to relative sizes. But we can consider an eventual extension for embedding hierarchical namespaces as a way to express a set of methods for stack objects.
+
+The glas program operates on a tacit environment via names. The environment consists of named effects handlers and a collection of named registers. A program may translate a subprogram's view of this environment, and may introduce local registers and effects handlers in scope of a subprogram.
+
+The initial environment model will be kept simple - a static, hierarchical structure of names. The environment is static, but we may introduce logical registers for efficient, indexed operations similar to operation on a slice of an array.
+
+Our runtime may support use of linear or abstract data types, but we can design our APIs to mostly hide this, e.g. operating instead on volumes of abstract, linear types. For example, instead of passing a linear file handle around as a first-class value, we pass a variable space to the file API, and the file API may include a specific 'file.move' operation that operates on a pair of abstract register name prefixes. Alternatively, extracting or binding an abstract, linear file object could be a specialized file API, with most file operations operating on a bound file.
+
+Every call to a function or effects handler may require a 'translation' argument to scope the callee's access to the caller's environment independent of other AST arguments for the call. The translation argument should be a proper AST, though it might start as a simple wrapper over a map from prefix to prefix. It should be feasible to represent a call target as an inline definition, though in most cases we reference another definition.
+
+There is no built-in concept of expressions or return values. However, there may be conventions for assigning a 'result' (or 'result.\*') with the output of a program. This result would be translated into the caller's environment.
+
+Registers must have an initial state. It may be convenient to allow registers to have an 'empty' or 'undefined' state as a convention, distinct from a zero state. Or we could simply assume a default zero state unless the register is explicitly assigned before first being read. It isn't clear to me which of these is a better design, though a notion of 'empty' might be a better fit for linear operations such as 'moving' data. 
+
+Idea: We could extend registers to always be a list of values, with empty vs. singleton option type being common, but a queue/stack/vector also being a common view. In the latter case, perhaps operations modifying a register tend to apply to all elements in the register. This would support something closer to array processing languages. I'm uncertain this is a good direction to pursue.
+
+We can restrict some effects via scoping of handlers, but we'll more generally rely on annotations to control effects used by subprograms. Annotations can restrict types held in registers, use of non-tail recursion, restrict some registers to read-only, etc.. This also ties into the notion of restricting direct use of APIs to trusted volumes of code.
+
+Coroutines will be fork-join to keep them simple. A highly concurrent program must be written by composing coroutines the same way we'd normally compose operations sequentially. We'll support 'atomic' sections that isolate and control a subset of coroutines.
+
+I expect we'll want simple AST models akin to DSLs for composable conditions ('and', 'or', 'eq', 'gt', etc.) and similar for composable indexing on state.
+
+## Proposed Primitives
+
+
+### Control Flow
+
 
 ## Basic Operations
 
@@ -176,3 +189,63 @@ Everything is an expression and has a value. For procedural operations, that val
 * Ideally, every program has a clear small-step rewrite semantics. This greatly simplifies debugging.
 
 Embedded data is the only type that doesn't contain names, and is thus not rewritten based on scope. However, we should wrap most embedded data with a suitable node that can validate its type and represent intentions, e.g. favoring `(%i.const 42)` where an integer expression is expected. Some languages might restrict which data can be embedded.
+
+# Runtime Thoughts
+
+## Desiderata
+
+* generational, real-time GC with minimal overhead
+* acceleration of:
+  * lists as finger-tree ropes, with binary and array fragments
+  * exact rational numbers and binary (or decimal) bignums
+  * at least one low-level machine, e.g. GPGPU
+* effective opportunity for JIT compilation
+* effective opportunity for parallel evaluation
+
+## Runtime Data Representation
+
+Although glas data is logically mutable, the program constructs and manipulates data in terms of mutating *variables* in-place. This can be supported concretely by allocating every variable a local scratch space of sorts, or by heap-allocating data but tracking uniqueness, or perhaps by combining the two.
+
+In context of garbage collection, it is convenient that data has a relatively uniform structure so we can easily follow pointers and know to not inspect integers and other data. Consider adjacent allocation of `(Header, Binary, Pointers)` triples, where the Header encodes size of binary and count of pointers and hints at how to interpret the binary. To keep it simple, Binary size includes the header and is also pointer-aligned. There may be specialized headers to further support weakrefs, caching, and other GC features, but the idea is that GC doesn't need to know much about the data.
+
+The header may also include metadata bits for incremental or generational GC, adding a GC signal handler for automatic cleanup of FFI resources, a few metadata bits for linear, affine, and relevant types, runtime versus global scope, etc.. and perhaps a few bits for how to interpret the structure as a binary tree.
+
+This encoding is inefficient for fine-grained allocations. We can mitigate this by favoring large allocations. However, large allocations tend to be overly specialized. To resolve this, I propose a generic approach to larger allocations: the binary is interpreted as [glas object](GlasObject.md), and associated pointers are accessed as external references. For efficient indexing of pointers, the header may indicate a runtime-specialized variant of glas object, e.g. binding 0xC0..0xFF to the first sixty-four pointers. (A few other headers could efficiently support arrays and binaries.)
+
+The use of glas object internally within the runtime allows for both compact representations and a clean path towards content-addressed storage as the basis for virtual memory. However, I don't believe this approach has really been pursued before, so I'm somewhat uneasy about performance. Performance will depend on relative overhead of allocation versus added overhead to construct or observe the binary encoding.
+
+*Note:* It is feasible to push some header bits into tagged pointers. This might support more efficient tracking of uniqueness, linearity, or scope. However, it doesn't seem essential.
+
+### Header Bits
+
+Some concrete ideas on encoding of the header bits. 
+
+Regarding size information. A simple encoding could specify 6 bits for binary size (sizeof(ptr) * 1..64) and 6 bits for pointer count (0..63), for a total of 12 bits. These could overlap to encode a maximum allocation of roughly 512 bytes, or they could add, reaching 1024 bytes but only in rare cases.
+
+Alternatively, we could use an exponential encoding, limiting allocations to `2^K` for small values of K, then specifying how many of those values are pointers. This can essentially use the same encoding as stems, relating allocation size to bitstring length.
+
+        Stem Encoding
+        abc1000...0     encodes three bits into N bits
+        abcdefg...1     encodes (N-1) bits into N bits
+        0000000...0     either unused or an extension
+
+        Allocation Size for 4-bit encodings:
+        abc1            encodes 0..7 pointers, sizeof 8 pointers 
+        ab10            encodes 0..3 pointers, sizeof 4 pointers
+        a100            encodes 0..1 pointers, sizeof 2 pointers
+        1000 and 0000   unused (or special interpretation)
+
+The latter would fully support 512 byte allocations with just 7 header bits, instead of 12. With 12 header bits, our max allocation is now 16kB. We lose the ability to allocate nodes that aren't a power of two in size, but limiting allocations to powers of two does simplify fragmentation as we recycle memory.
+
+If we're willing for GC to read the binary, we could skip the bits to indicate number of pointers.
+
+Aside from size information, I estimate:
+
+* metadata bits for incremental or generational GC - perhaps 4 bits
+* metadata bits for uniqueness (in-place update) - 1 bit
+* metadata bits for data scope - 2 bits
+* metadata bits for substructural types - 1 bit (linear flag) or 2 bits (affine and relevant flags)
+* extensible GC header? 1 bit, uses binary data.
+* an interpretation hint, e.g. glob vs binary vs array? 3 bits?
+
+A simple 32-bit header seems adequate for all of this, a simple size encoding, and extension with future ideas.

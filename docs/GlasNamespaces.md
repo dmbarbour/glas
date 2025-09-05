@@ -10,10 +10,10 @@ I propose to represent a glas namespace *procedurally*, i.e. a program iterative
 
 Viable types:
 
-        type Name = prefix-unique Binary, excluding NULL, as bitstring
-        type Prefix = any byte-aligned prefix of Name, empty to full
+        type Name = strings, binaries excluding NULL or C0
+        type Prefix = any prefix of Name, empty to full name
         type TL = Map of Prefix to (Prefix | NULL | WARN), as radix tree dict
-        type WARN = NULL 'w'                # 0x00 0x77, as bitstring
+        type WARN = NULL 'w'                # 0x00 0x77
         type AST = List of AST              # constructor
                  | d:Data                   # embedded data
                  | n:Name                   # namespace ref

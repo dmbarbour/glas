@@ -279,13 +279,15 @@ Fortunately, we don't need many scopes to cover most use-cases in glas systems. 
 * runtime scope - open files, network sockets
 * transaction scope - RPC objects, namespace refs
 
-Whether we need all these scopes depends on the application API. For example, database scope is necessary only if we want abstract database references as first-class values within the database. Note that *transaction scope* is compatible with incremental computing and partial evaluation. It may be computed before a transaction, but it cannot leave a transaction.
+Whether we need all these scopes depends on the effects API and program model. For example, database scope is necessary only if we want abstract database references as first-class values within the database, or we could restrict namespace refs to compile-time. 
 
 ### Linear Types
 
 Linear data is abstract data that cannot be arbitrarily copied or dropped. This is useful when modeling resources, protocols, or promises. Linear types are potentially useful to ensure a transaction is 'complete' upon commit, i.e. to check there are no unfulfilled promises. Like scope, linear types can be expressed as a flag on abstract data then enforced efficiently using tagged pointers. 
 
 Linear types are extremely awkward in open systems: they cannot be enforced, and they shouldn't be enforced - it's unclear how to clean up after an application dies mid-protocol. At runtime scope, linear types interact awkwardly with transaction-loop optimizations, such as incremental computing: we're forced to repeatedly read the linear data from state, observe or manipulate it, write it back to state. The best opportunity for linear types is at transaction scope, to enforce that transaction-local protocols are completed before the transaction commits.
+
+*Note:* It is feasible to separate linearity into affine (no copy) and relevant (no drop) types. The use case for this isn't especially strong, but 
 
 ### Units on Numbers?
 

@@ -158,7 +158,7 @@ In normal form, varnats use the smallest number of bytes to encode a value. It i
         0x80-0x9F   Index Path and Internal Ref (0x88)
 
         CURRENTLY UNUSED:
-        0x05-0x09
+        0x03-0x09
         0x0F-0x1F
         0xA0-0xFF
 
@@ -208,4 +208,14 @@ To mitigate validation overheads, a runtime might implicitly trust hashes it lea
 ### Deduplication and Convergence Secret
 
 It is possible for a glas system to 'compress' data by generating the same glob binaries, with the same secure hash. This is mostly a good thing, but there are subtle attacks and side-channels. These attacks can be greatly mitigated via controlled introduction of entropy, e.g. [Tahoe's convergence secret](https://tahoe-lafs.readthedocs.io/en/latest/convergence-secret.html).
+
+## Proposed Extensions
+
+### Small Arrays and Binaries
+
+We could encode length for small arrays or binaries directly in the header, e.g. `0xA(len)` for arrays and `0xB(len)` for binaries of lengths 1 to 16. However, it isn't clear that this is worthwhile, especially for arrays. Perhaps it would be worthwhile for small binaries alone.
+
+### Templated Structs
+
+Encode structures as an array-like structure where the header describes labels separately from the data. This allows reuse of labels for a common use case.
 
