@@ -20,6 +20,8 @@ Updates on a specific index (or slice of indices), e.g. of a dict or array, are 
 
 I hope to design the program model to readly leverage in-place updates, tracking opportunities to do so both statically and dynamically. For example, we could keep a tag bit (perhaps in the pointer) to track whether a pointer is 'unique' or 'shared' as an efficient alternative to a full reference count. Or we could efficiently maintain a small reference count, and use full GC only for widely shared representations.
 
+*Note:* An inherent limitation is that uniqueness doesn't play nicely with transactions. The easiest implementation is often to maintain a copy of prior values for easy reversion. This could be mitigated by recording an update log into transaction registers.
+
 ### Structured Behavior
 
 The intermediate language will be higher level than assembly and still impose some structure on control flow. The closest thing to 'jump to label' may instead involve tail calls between handlers or definitions.
@@ -44,39 +46,41 @@ Stack objects should be able to hierarchically compose more stack objects. It se
 
 *Aside:* It might be interesting to express an application as a handler 'stack object' instead of a collection of definitions. This could be supported by a runtime via application settings.
 
+### Conditional Behavior and Failure
+
+A typical expression of conditional behavior is `"if Cond then P1 else P2"` or similar. We'll also need conditions for loops, and perhaps for coroutines. 
+
+A direct solution is to make conditions a primitive feature of the program model. However, doing so seems structurally inconsistent with the procedural model. I expect that I would find myself wanting ever more sophisticated expressions, e.g. to compare computed numbers.
+
+An interesting alternative is backtracking failure. We can introduce an unconditional `%fail` primitive into the program together with primitive operations such as `(%eq Reg1 Reg2)` that 'fail' conditionally. We'll generally assume that failure occurs in context of a transaction that can be canceled or backtracked, simplifying cleanup and retry.
+
+A conditional behavior might be expressed as `"try Cond then P1 else P"`, and equivalent to `(%seq (%atomic Cond) P1)` if Cond does not fail, P2 otherwise. In other contexts, failure may cause an operation to wait for relevant state changes or retry with different, uncommitted non-deterministic choices.
+
+This seems a good fit for glas systems, aligning nicely with transaction loop applications and fine-grained transactions for coroutine steps. However, it is somewhat expensive. This can be mitigated by heavily optimizing read-only conditions, and migrating tests closer to the start of a transaction where feasible.
+
 ### Coroutines and Concurrency
 
 Coroutines are procedures that yield and resume. This supports concurrent composition and modularization of tasks, a convenient alternative to call-return structure in some cases.
 
-A desred optimization is parallel evaluation. Ideally, we can effectively utilize multiple processors for multiple coroutines. Even better with latency and disruption tolerance, for distributed evaluation. Parallel evaluation requires determining a 'schedule' of coroutines at least slightly ahead of time, and either analysis for conflicts or dynamic detection and reversal of conflicts.
+A highly desirable optimization is parallel evaluation, utilizing multiple processors to evaluate multiple coroutines. With tolerance for latency and disruption, this may extend to distributed evaluation with remote processors and partitioned application state. This optimization requires determining a valid 'schedule' of coroutines ahead of time, and either analysis to prevent conflicts or some ability to undo conflicts. 
 
-For glas systems, I favor the dynamic approach because it aligns nicely with transaction loop applications and robust error handling. We can view a procedure as a sequence of transactional steps. We can abort a step due to conflict or error, and we implicitly retry the aborted step. Risk of rework is a valid concern but can be mitigated by analysis, heuristics, annotations, or caching and incremental computing.
+To support the latter, we could wrap each step with an implicit transaction. A coroutine becomes a sequence of transactional steps. Upon 'yield', the coroutine commits what it has done thus far. If a read-write conflict is detected, or if a step 'fails', we can abort and retry as needed. Rework can be mitigated via analysis, heuristics, annotations, and incremental computing. This aligns very nicely with transaction loop applications.
 
-For my vision of glas systems, I also favor anonymous, second-class, fork-join coroutines. For example, `(%c P1 P2 P3)` represents concurrent composition of P1, P2, and P3. All three anonymous coroutines must return before `%c` returns. We can also support `(%atomic P)` sections as hierarchical transactions, allowing for coroutines and resumption to be scoped. A transaction loop application 'step' may run within an implicit atomic section, perhaps together with a few implicit runtime coroutines. *Note:* 'atomic' cannot be an annotation because it observably influences scheduling.
+For my vision of glas systems, I also favor anonymous, second-class, fork-join coroutines. For example, `(%c P1 P2 P3)` represents concurrent composition three coroutines, but `%c` not 'return' before all three coroutines complete. Ideally, composition of coroutines is at least associative, that is `(%c (%c P1 P2) P3) = (%c P1 (%c P2 P3)) = (%c P1 P2 P3)`. This constrains a scheduler, but is still flexible, e.g. we can support basic schedules like 'prioritize leftmost' and 'round robin' and 'non-deterministic choice'. It is feasible to also support numeric priorities, using structure as a fallback.
 
-Because coroutines are anonymous, the scheduler is implicit. Ideally, coroutines are at least associative, that is `∀P1, P2, P3. (%c (%c P1 P2) P3) = (%c P1 (%c P2 P3)) = (%c P1 P2 P3)`. This constrains the scheduler, but isn't a big problem. Compatible schedules include: always prioritize leftmost, round robin, non-deterministic choice. We can feasibly support numeric priorities, too. To support flexible scheduling, we may introduce primitives for scoping scheduler guidance.
+We can support `(%atomic P)` sections as hierarchical transactions with a hierarchical scheduler. If P yields, the runtime will attempt to resume P. If P contains coroutines, we can resume other coroutines within P. If no coroutine within P can continue, we'll halt with a type error.
 
-To fully support parallelism and distribution, we'll want primitives and accelerators that control observation of registers. For example, we can model a queue as a register containing a list. A queue can support multiple writers (of the queue tail) and a single reader (on the queue head) in parallel without a read-write conflict, so long as the reader doesn't attempt to read everything available. In the extreme case, we can feasibly accelerate registers representing CRDTs (commutative replicated datatypes) as a foundation for robust distributed computing.
+To fully support parallelism and distribution, we'll want the runtime recognition of certain update patterns for precise conflict analysis. For example, a 'queue' could be modeled as a register containing a list, but a runtime that recognizes enqueue and dequeue operations could feasibly evaluate a single read transaction in parallel with multiple write transactions, and might even partition the register between reader and writer nodes. This recognition can be achieved via primitives or accelerators. Beyond queues, we could usefully support bags and CRDTs.
 
-### Conditional Behavior
-
-A typical expression of conditional behavior is `"if Cond then P1 else P2"` or similar. But, without the notion of expressions, what is Cond? 
-
-One reasonable option is to model Cond as a register, testing whether it contains a 'truthy' value such as a non-zero number or a non-empty list. 
-
-Another interesting option is something cloder to `"try Cond then P1 else P2"`, where Cond is an atomic computation that we evaluate within a hierarchical transaction, equivalent to `(%seq (%atomic Cond) P1)` if Cond commits, P2 otherwise.
-
-If we assume a lightweight primitive to test a register for equality, aborting the current transaction, then a relatively simple optimization (even for an interpreter) could still support if/then/else performance without the full overhead of a hierarchical transaction for Cond when the condition is a simple register test. Moreover, we could support something like conjunctions and disjunctions of conditions. 
-
-This try/then/else seems a relatively promising direction, and I've used it before with earlier versions of glas (albeit as a stack-based language instead of register-based).
+*Note:* A transactional coroutine step may 'fail' to implicitly await relevant changes. Without this, we might replace 'yield' with 'await Cond' to delay resumption until some arbitrary condition is met.
 
 ### Virtual Registers? Defer.
 
-Idea: Primitive support for 'virtual registers' that logically index or aggregate other registers and constants. Inspiration from lenses and prisms in FP. Complicates compilation.
+Idea: Primitive support for 'virtual registers' that logically index or aggregate other registers. Inspiration from lenses and prisms in FP. However, this concept complicates implementations.
 
-Alternative: We can currently support virtual 'getters' and 'setters' as handlers. These wouldn't be transparently usable in place of registers, and they don't provide nearly as many opportunities for optimizations. However, they don't require any extensions, merely a few conventions.
+Alternative: We can currently support virtual 'getters' and 'setters' as handlers. In contrast, these aren't be transparently usable in place of registers, and they don't provide as many opportunities for optimizations. 
 
-For the moment, I've decided to eschew support for virtual registers. However, it seems to be an extension compatible with other primitive features, so we can return to the idea in the future.
+For the moment, I've decided to eschew support for virtual registers. However, it seems to be an extension compatible with other primitive features, so we can return to the idea in the future. Perhaps registers can logically be a getter/setter pair?
 
 ### Robust Partial Evaluation
 
@@ -151,35 +155,15 @@ However, even the simplest of traces can be useful if users are careful about wh
 
 Annotations can transparently guide use of content-addressed storage for large data. The actual transition to content-addressed storage may be transparently handled by a garbage collector. Access to representation details may be available through reflection APIs but should not be primitive or pervasive.
 
-## Rough Sketch
+## Misc Thoughts
 
-The environment of handlers and registers provided to a procedure is implicit, but we'll need primitives to extend this environment.
-
-We can support expressions and macros, and we could feasibly support a little compile-time lambda calculus with macros that generate expressions.
+The initial environment model will be kept simple - a static, hierarchical structure of names. 
 
 It seems convenient to model extension of this environment in terms of introducing 'stack objects' under a given name, conflating declaration of local registers, handlers, and hierarchical objects. We should be able to override methods or hierarchical components when declaring stack objects.
 
-We won't worry about unifying the glas namespace and the tacit environment of handlers and registers. The two have very different design constraints due to relative sizes. But we can consider an eventual extension for embedding hierarchical namespaces as a way to express a set of methods for stack objects.
+Our runtime may support use of linear or abstract data types, but we can design our APIs to mostly hide this, instead favoring 'abstract' volumes of registers held by the client and explicit 'move' operations.
 
-The glas program operates on a tacit environment via names. The environment consists of named effects handlers and a collection of named registers. A program may translate a subprogram's view of this environment, and may introduce local registers and effects handlers in scope of a subprogram.
-
-The initial environment model will be kept simple - a static, hierarchical structure of names. The environment is static, but we may introduce logical registers for efficient, indexed operations similar to operation on a slice of an array.
-
-Our runtime may support use of linear or abstract data types, but we can design our APIs to mostly hide this, e.g. operating instead on volumes of abstract, linear types. For example, instead of passing a linear file handle around as a first-class value, we pass a variable space to the file API, and the file API may include a specific 'file.move' operation that operates on a pair of abstract register name prefixes. Alternatively, extracting or binding an abstract, linear file object could be a specialized file API, with most file operations operating on a bound file.
-
-Every call to a function or effects handler may require a 'translation' argument to scope the callee's access to the caller's environment independent of other AST arguments for the call. The translation argument should be a proper AST, though it might start as a simple wrapper over a map from prefix to prefix. It should be feasible to represent a call target as an inline definition, though in most cases we reference another definition.
-
-There is no built-in concept of expressions or return values. However, there may be conventions for assigning a 'result' (or 'result.\*') with the output of a program. This result would be translated into the caller's environment.
-
-Registers must have an initial state. It may be convenient to allow registers to have an 'empty' or 'undefined' state as a convention, distinct from a zero state. Or we could simply assume a default zero state unless the register is explicitly assigned before first being read. It isn't clear to me which of these is a better design, though a notion of 'empty' might be a better fit for linear operations such as 'moving' data. 
-
-Idea: We could extend registers to always be a list of values, with empty vs. singleton option type being common, but a queue/stack/vector also being a common view. In the latter case, perhaps operations modifying a register tend to apply to all elements in the register. This would support something closer to array processing languages. I'm uncertain this is a good direction to pursue.
-
-We can restrict some effects via scoping of handlers, but we'll more generally rely on annotations to control effects used by subprograms. Annotations can restrict types held in registers, use of non-tail recursion, restrict some registers to read-only, etc.. This also ties into the notion of restricting direct use of APIs to trusted volumes of code.
-
-Coroutines will be fork-join to keep them simple. A highly concurrent program must be written by composing coroutines the same way we'd normally compose operations sequentially. We'll support 'atomic' sections that isolate and control a subset of coroutines.
-
-I expect we'll want simple AST models akin to DSLs for composable conditions ('and', 'or', 'eq', 'gt', etc.) and similar for composable indexing on state.
+Registers must have an initial state. Perhaps an explicit 'undefined' state, distinct from containing a zero value.
 
 ## Proposed Primitives
 
