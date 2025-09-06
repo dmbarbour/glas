@@ -22,7 +22,7 @@ I hope to design the program model to readly leverage in-place updates, tracking
 
 ### Structured Behavior
 
-The intermediate language will be higher level than assembly and still impose some structure on control flow. Relevantly, I don't want the notion of 'jumps' or 'labels' in the intermediate language, excepting perhaps as a basis for coroutines.
+The intermediate language will be higher level than assembly and still impose some structure on control flow. The closest thing to 'jump to label' may instead involve tail calls between handlers or definitions.
 
 ### Tail Call Optimization
 
@@ -31,12 +31,6 @@ Tail calls can support recursive definitions without increasing the call stack. 
 In glas systems, I want tail calls to be a robust, checked optimization. Annotations can indicate that calls are expected to be tail calls. Further, I hope to encourage tail calls as the default form of recursion, as it greatly simplifies compilation.
 
 Even if all recursion is tail calls, we can model dynamic stacks in terms of registers containing list values. Performance in this case might be mitigated by preallocation of a list buffer for in-place update and use as a stack. This could be supported through annotations or accelerators.
-
-### Lenses, Cursors, Zippers, and Indices
-
-It seems convenient to support something like 'logical' registers that index other registers, e.g. a register representing an element or slice of an array. Logically, this is essentially a translation. 
-
-This might benefit from a primitive notion of indexing of glas data. Or, perhaps, we can simply ensure a translation model is extensible to eventually support indexing.
 
 ### Algebraic Effects and Handlers and Stack Objects
 
@@ -58,17 +52,31 @@ A desred optimization is parallel evaluation. Ideally, we can effectively utiliz
 
 For glas systems, I favor the dynamic approach because it aligns nicely with transaction loop applications and robust error handling. We can view a procedure as a sequence of transactional steps. We can abort a step due to conflict or error, and we implicitly retry the aborted step. Risk of rework is a valid concern but can be mitigated by analysis, heuristics, annotations, or caching and incremental computing.
 
-For my vision of glas systems, I also favor anonymous, second-class, fork-join coroutines. For example, `(%c P1 P2 P3)` represents concurrent composition. All three anonymous coroutines must return before `%c` returns. We can also support `(%atomic P)` sections as hierarchical transactions, allowing for coroutines and resumption to be scoped. A transaction loop application 'step' may run within an implicit atomic section, perhaps together with a few implicit runtime coroutines. (*Note:* We can also have annotations that a subprogram 'does not yield' and such, which essentially asserts that any 'yield' is already wrapped in 'atomic'.)
+For my vision of glas systems, I also favor anonymous, second-class, fork-join coroutines. For example, `(%c P1 P2 P3)` represents concurrent composition of P1, P2, and P3. All three anonymous coroutines must return before `%c` returns. We can also support `(%atomic P)` sections as hierarchical transactions, allowing for coroutines and resumption to be scoped. A transaction loop application 'step' may run within an implicit atomic section, perhaps together with a few implicit runtime coroutines. *Note:* 'atomic' cannot be an annotation because it observably influences scheduling.
 
 Because coroutines are anonymous, the scheduler is implicit. Ideally, coroutines are at least associative, that is `∀P1, P2, P3. (%c (%c P1 P2) P3) = (%c P1 (%c P2 P3)) = (%c P1 P2 P3)`. This constrains the scheduler, but isn't a big problem. Compatible schedules include: always prioritize leftmost, round robin, non-deterministic choice. We can feasibly support numeric priorities, too. To support flexible scheduling, we may introduce primitives for scoping scheduler guidance.
 
 To fully support parallelism and distribution, we'll want primitives and accelerators that control observation of registers. For example, we can model a queue as a register containing a list. A queue can support multiple writers (of the queue tail) and a single reader (on the queue head) in parallel without a read-write conflict, so long as the reader doesn't attempt to read everything available. In the extreme case, we can feasibly accelerate registers representing CRDTs (commutative replicated datatypes) as a foundation for robust distributed computing.
 
-### Expressions
+### Conditional Behavior
 
-It is tempting to support arbitrary expressions in the program model, e.g. for branch and loop conditions. However, initially I think we'll restrict glas programs to simple registers, testing for a non-zero value. Perhaps we can model 'constant' registers as a special case.
+A typical expression of conditional behavior is `"if Cond then P1 else P2"` or similar. But, without the notion of expressions, what is Cond? 
 
-We can defer support for more flexible expressions. An intriguing future direction is to interpret expressions as virtual registers, editable views, lenses or prisms with scatter-gather features instead of 'value' expressions. But we could instead introduce primitives for pure calculations.
+One reasonable option is to model Cond as a register, testing whether it contains a 'truthy' value such as a non-zero number or a non-empty list. 
+
+Another interesting option is something cloder to `"try Cond then P1 else P2"`, where Cond is an atomic computation that we evaluate within a hierarchical transaction, equivalent to `(%seq (%atomic Cond) P1)` if Cond commits, P2 otherwise.
+
+If we assume a lightweight primitive to test a register for equality, aborting the current transaction, then a relatively simple optimization (even for an interpreter) could still support if/then/else performance without the full overhead of a hierarchical transaction for Cond when the condition is a simple register test. Moreover, we could support something like conjunctions and disjunctions of conditions. 
+
+This try/then/else seems a relatively promising direction, and I've used it before with earlier versions of glas (albeit as a stack-based language instead of register-based).
+
+### Virtual Registers? Defer.
+
+Idea: Primitive support for 'virtual registers' that logically index or aggregate other registers and constants. Inspiration from lenses and prisms in FP. Complicates compilation.
+
+Alternative: We can currently support virtual 'getters' and 'setters' as handlers. These wouldn't be transparently usable in place of registers, and they don't provide nearly as many opportunities for optimizations. However, they don't require any extensions, merely a few conventions.
+
+For the moment, I've decided to eschew support for virtual registers. However, it seems to be an extension compatible with other primitive features, so we can return to the idea in the future.
 
 ### Robust Partial Evaluation
 
@@ -83,15 +91,17 @@ The glas program model should support user-defined AST constructors, i.e. `(User
 Potential model:
 
 * `(%macro Template)` - describes a macro. In this case, Template is an AST that contains `(%macro.arg K)` and other elements for rewriting. When we apply a macro as a user-defined constructor, we'll substitute AST arguments into the template, then replace the constructor by the resulting AST, aka macro expansion.
-* `(%macro.arg K)` - is substituted by the Kth AST argument, with static K starting at 1. Error if K is out of range. We designate argument 0 to refer recursively to UserDef for convenient anonymous recursion. We'll report a compile-time error if K is out of range.
+* `(%macro.arg K)` - is substituted by the Kth AST argument, with static K starting at 1. Error if K is out of range. We can designate argument 0 to refer recursively to UserDef for convenient anonymous recursion. We'll report a compile-time error if K is out of range.
 * `(%macro.args.count)` - is substituted by the count of AST arguments to the macro, intended to support a variable number of arguments
 * `(%macro.args.range X Y)` - is substituted by a *series* of AST arguments `(%macro.arg X) (%macro.arg X+1) .. (%macro.arg Y)`. This expansion is valid only in context of another AST constructor. The series is empty if X is greater than Y. 
 * `(%link Localization AST)` - deferred integration of a concrete AST representation with the namespace, such as `n:Name` binding to a defined symbol.
   * We can feasibly extend linking to hierarchical namespaces when describing stack objects.
 
-To simplify implementation and user comprehension, the compiler shall detect and reject use of macro primitives outside a local `(%macro Template)`, where 'local' means the same definition. Thus, we reject free macro variables and aliasing of macro primitives. Similar analysis should apply to a linked AST, treating it as an inline definition with respect to macro interactions.
+To simplify both implementation and user comprehension, the compiler shall detect and reject use of macro primitives outside a local `(%macro Template)` in the same definition. This rule rejects free macro variables and aliasing of macro primitives. Similar analysis may apply to a linked AST, treating it as an anonymous inline definition.
 
-This model permits [non-hygienic macros](https://en.wikipedia.org/wiki/Hygienic_macro). Although non-hygienic macros can be useful, they are also a source of subtle bugs. It is left to front-end macro syntax to enforce hygiene or resist accidents.
+Recursive macro expansion may require partial evaluation and dead-code elimination ultimately produce a finite AST. Otherwise, the compiler might expand macros until some quota is reached, warn the developer, then replace some infinite macro expansions with code to generate runtime errors. Annotations can guide a compiler in partial evaluation or recognition of dead code.
+
+This model permits [non-hygienic macros](https://en.wikipedia.org/wiki/Hygienic_macro). Although non-hygienic macros can be convenient, they are a source of subtle bugs such as accidental name shadowing. It is left to front-end macro syntax to enforce hygiene or at least resist accidents, translating register and handler names over AST parameters as needed.
 
 *Note:* Between user-defined syntax, intermediate language macros, and robust partial evaluation, glas offers ample opportunity for metaprogramming. For example, we can also support text macros in a front-end syntax, and it is feasible to translate text parameters into a local subprogram.
 
