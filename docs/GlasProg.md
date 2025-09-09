@@ -24,7 +24,7 @@ I hope to design the program model to readly leverage in-place updates, tracking
 
 ### Structured Behavior
 
-The intermediate language will be higher level than assembly and still impose some structure on control flow. The closest thing to 'jump to label' may instead involve tail calls between handlers or definitions.
+The intermediate language will be higher level than assembly and still impose structure on control flow and the environment. The closest thing to 'jump to label' might involve tail calls between handlers or definitions. 
 
 ### Tail Call Optimization
 
@@ -46,33 +46,62 @@ Stack objects should be able to hierarchically compose more stack objects. It se
 
 *Aside:* It might be interesting to express an application as a handler 'stack object' instead of a collection of definitions. This could be supported by a runtime via application settings.
 
-### Conditional Behavior and Failure
-
-A typical expression of conditional behavior is `"if Cond then P1 else P2"` or similar. We'll also need conditions for loops, and perhaps for coroutines. 
-
-A direct solution is to make conditions a primitive feature of the program model. However, doing so seems structurally inconsistent with the procedural model. I expect that I would find myself wanting ever more sophisticated expressions, e.g. to compare computed numbers.
-
-An interesting alternative is backtracking failure. We can introduce an unconditional `%fail` primitive into the program together with primitive operations such as `(%eq Reg1 Reg2)` that 'fail' conditionally. We'll generally assume that failure occurs in context of a transaction that can be canceled or backtracked, simplifying cleanup and retry.
-
-A conditional behavior might be expressed as `"try Cond then P1 else P"`, and equivalent to `(%seq (%atomic Cond) P1)` if Cond does not fail, P2 otherwise. In other contexts, failure may cause an operation to wait for relevant state changes or retry with different, uncommitted non-deterministic choices.
-
-This seems a good fit for glas systems, aligning nicely with transaction loop applications and fine-grained transactions for coroutine steps. However, it is somewhat expensive. This can be mitigated by heavily optimizing read-only conditions, and migrating tests closer to the start of a transaction where feasible.
-
 ### Coroutines and Concurrency
 
-Coroutines are procedures that yield and resume. This supports concurrent composition and modularization of tasks, a convenient alternative to call-return structure in some cases.
+A procedure can potentially express a sequence, a 'thread', of fine-grained transactions. This is very convenient for expressing synchronous interactions, closer to conventional procedures or scripts. Every step is atomic, but other threads may observably interact with shared state between steps. In addition to retry due to conflict, a partially computed step may 'fail', retrying after a relevant state change or in context of an alternative, uncommitted non-deterministic choice.
 
-A highly desirable optimization is parallel evaluation, utilizing multiple processors to evaluate multiple coroutines. With tolerance for latency and disruption, this may extend to distributed evaluation with remote processors and partitioned application state. This optimization requires determining a valid 'schedule' of coroutines ahead of time, and either analysis to prevent conflicts or some ability to undo conflicts. 
+This is similar to coroutines. Coroutines voluntarily 'yield', allowing other coroutines to interact with shared state until resumed. Due to lack of preemptive scheduling, operations between yield and resumption are atomic transactions from the perspective of a coroutine. Each coroutine effectively represents a thread, conflating yield and commit. 
 
-To support the latter, we could wrap each step with an implicit transaction. A coroutine becomes a sequence of transactional steps. Upon 'yield', the coroutine commits what it has done thus far. If a read-write conflict is detected, or if a step 'fails', we can abort and retry as needed. Rework can be mitigated via analysis, heuristics, annotations, and incremental computing. This aligns very nicely with transaction loop applications.
+For glas systems, I favor anonymous, second-class, fork-join coroutines. For example, `(%c P1 P2 P3)` represents fork-join composition of three anonymous threads, returning only after all three operations return. (We could give tasks a name for debugging purposes via annotation, but it isn't semantic.) Ideally, composition of coroutines is associative, such that `(%c (%c P1 P2) P3) = (%c P1 (%c P2 P3)) = (%c P1 P2 P3)`. This constrains a scheduler, but is still flexible, e.g. valid schedules include 'prioritize leftmost' and 'round robin' and 'non-deterministic choice' and we can feasibly extend to numeric priorities. We could introduce some primitives to guide scheduling.
 
-For my vision of glas systems, I also favor anonymous, second-class, fork-join coroutines. For example, `(%c P1 P2 P3)` represents concurrent composition three coroutines, but `%c` not 'return' before all three coroutines complete. Ideally, composition of coroutines is at least associative, that is `(%c (%c P1 P2) P3) = (%c P1 (%c P2 P3)) = (%c P1 P2 P3)`. This constrains a scheduler, but is still flexible, e.g. we can support basic schedules like 'prioritize leftmost' and 'round robin' and 'non-deterministic choice'. It is feasible to also support numeric priorities, using structure as a fallback.
+It is convenient if a coroutine can wait for some arbitrary conditions before continuing. A very simple solution is to express 'yield' in terms of 'await Reg', waiting for a register to be non-zero. This supports semaphores, queues, or mutexes. We can feasibly extend this to waiting on composite conditions. Alternatively, in context of backtracking failure, we backtrack to the most recent 'yield' after a step 'fails', allowing assumptions to be mixed freely with operations in each step.
 
-We can support `(%atomic P)` sections as hierarchical transactions with a hierarchical scheduler. If P yields, the runtime will attempt to resume P. If P contains coroutines, we can resume other coroutines within P. If no coroutine within P can continue, we'll halt with a type error.
+Ideally, we can utilize multiple processors to evaluate coroutines. This is feasible with static analysis to avoid read-write conflicts, or with dynamic analysis and backtracking after a conflict occurs (aka [optimistic concurrency control](https://en.wikipedia.org/wiki/Optimistic_concurrency_control)). The latter seems an excellent fit for glas systems, aligning with transaction-loop applications and hierarchical transactions, but it isn't cheap. Conflicts and rework can feasibly be mitigated through annotations, analysis, and heuristics.
 
-To fully support parallelism and distribution, we'll want the runtime recognition of certain update patterns for precise conflict analysis. For example, a 'queue' could be modeled as a register containing a list, but a runtime that recognizes enqueue and dequeue operations could feasibly evaluate a single read transaction in parallel with multiple write transactions, and might even partition the register between reader and writer nodes. This recognition can be achieved via primitives or accelerators. Beyond queues, we could usefully support bags and CRDTs.
+We can evaluate a subprogram that uses coroutines and 'yield' internally with a localized scheduler. This might be expressed as `(%atomic P)`. When evaluating an atomic section, we resume locally and it's an error if no progress is possible. We can assume transaction-loop methods such as 'app.step' are implicitly evaluated in an atomic section.
 
-*Note:* A transactional coroutine step may 'fail' to implicitly await relevant changes. Without this, we might replace 'yield' with 'await Cond' to delay resumption until some arbitrary condition is met.
+### Long-Running and Multi-Party Transactions? Defer.
+
+A long-running or multi-party transaction involves multiple steps (long-running), and perhaps multiple threads (multi-party). I don't have a clear idea on how to express these in terms of fork-join coroutines and atomic sections. OTOH, it also doesn't seem to be a high priority. I don't have strong use-cases for such transactions.
+
+If users need long-running or multi-party transactions, they can model them manually with support from a front-end syntax, effects API wrappers, and auxilliary registers (e.g. "x.scratch" could track proposed, uncommitted operations on "x").
+
+### Conditional Behavior and Hierarchical Transactions
+
+I have two main options for conditional behavior:
+
+* Branch on whether an atomic operation 'fails' or not.
+* Branch on whether a register or expression is non-zero.
+
+In the former case, the latter is a trivial optimization with operators to 'test' registers. In the latter case, I imagine I'll ultimately want some other primitive to leverage hierarchical transactions and backtracking failure with optimistic concurrency. So, I currently favor towards the former, avoiding need for 'expressions'.
+
+As a simplistic structure, we could support something like `"try Cond then P1 else P2"`, equivalent to `"atomic Cond; P1"` if Cond passes, P2 otherwise. Then we introduce primitives such as `(%eq Reg1 Reg2)` that cause the current transaction to 'fail' if conditions aren't met. In the simplest case, Cond consists only of such read-only operations, thus can be evaluated without the overhead of hierarchical transactions.
+
+However, the atomic nature of Cond can hinder some composition (and decomposition) of programs. Relevantly, we'll often have some shared prefix:
+
+        try X; Y then A else
+        try X; Z then B else
+        C
+
+A direct implementation of this will evaluate X twice. An implementation can feasibly recognize and optimise, caching the redundant 'X' prefix, but it's a little awkward in context of non-deterministic choice. Ideally, we can reduce this to a single evaluation structurally. In a front-end syntax, we could feasibly support something like the following, with 'and' as another keyword:
+
+        try
+            X and
+                Y -> A
+                Z -> B
+            _ -> C
+
+We can support a similar structure in the abstract syntax. For example, `(%try Tree X Y A Z B C)` encodes a decision tree structure and a tree traversal, but is difficult to extend or metaprogram. Or perhaps `(%cond (%br X (%br Y (%do A) (%br Z (%do B) (%fail))) (%do C)))` encodes structure as a DSL in the AST, though I'm not confident in this use of '%fail'. 
+
+*Notes:* The encoding needs more attention. And I'm still waffling on this entire direction, due to its relative overhead.
+
+### Loops
+
+The simple while-do loop can feasibly be extended with a pattern-matching structure, multiple 'do' options depending on the context. For example, `"while Cond do Body"` becomes `(%loop (%br Cond (%do Body) (%fail)))`, and now we can extend this to support multiple '%do' bodies and branching conditions similar to pattern matching. Unlike '%cond', we expect a loop to eventually '%fail' out.
+
+Where we need more flexibility, a viable alternative is recursion with tail-call optimization, which is somewhat analogous to a 'jump' with parameters. It is feasible to ignore the loop primitive and rely entirely on recursive definitions, but a loop primitive is convenient until the optimizations are robust.
+
+I'm interested in termination proofs for programs, but I've decided that providing a bunch of terminating 'loop primitives' is not the right solution. Instead, we could leverage annotations to support proof of useful properties.
 
 ### Virtual Registers? Defer.
 
@@ -123,7 +152,7 @@ There are a few reasons for this. First, it does us very little good to intercep
 
 ### Parameters and Results
 
-Programs operate on registers and handlers. To model parameters and results, thus, is left to conventions such as writing a result of a calculation to 'result.\*' registers or 'result.!' for the main result. The client will translate this into context. Similarly, arguments could bind 'arg.\*' registers, and we could have some conventions for providing a static list of keywords or similar. 
+Programs operate on registers and handlers. To model parameters and results, thus, is left to conventions such as writing a result of a calculation to 'result.\*' registers and 'result.!' for the main return value. The client will translate this into context. Similarly, arguments could bind 'arg.\*' registers, and we could have some conventions for providing a static list of keywords or similar. 
 
 In many cases, we might wish some means to express and enforce that a subset of registers is read-only within scope of a call. This should be feasible with annotations.
 
@@ -167,15 +196,10 @@ Registers must have an initial state. Perhaps an explicit 'undefined' state, dis
 
 ## Proposed Primitives
 
+* `(%seq P1 P2 P3 ...)` - execute P1 then P2 then P3 etc. in sequence.
+* `(%c P1 P2 P3 ...)` - 
 
-### Control Flow
 
-
-## Basic Operations
-
-Everything is an expression and has a value. For procedural operations, that value is often unit.
-
-* `(%seq Op1 Op2 ...)` - 
 
 ## Design Thoughts
 
