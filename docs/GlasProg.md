@@ -22,9 +22,21 @@ I hope to design the program model to readly leverage in-place updates, tracking
 
 *Note:* An inherent limitation is that uniqueness doesn't play nicely with transactions. The easiest implementation is often to maintain a copy of prior values for easy reversion. This could be mitigated by recording an update log into transaction registers.
 
-### Structured Behavior
+### Static, Structured Behavior
 
-The intermediate language will be higher level than assembly and still impose structure on control flow and the environment. The closest thing to 'jump to label' might involve tail calls between handlers or definitions. 
+The intermediate language will express behavior in a tree-structured manner to simplify reasoning and optimizations. Coroutines, conditionals, loops, locals, etc.. Notably, glas will avoid mobile code, such as 'jumping' to a dynamic address or function pointer, or calling a first-class function.
+
+That said, we can effectively represent jumps to static labels as tail-calls, and support higher-order programming in terms of algebraic effects handlers or intermediate language macros. We might view a program as operating on a static collection of 'stack objects' in scope. We'll aim for an expressive intermediate language within a few constraints.
+
+Another relevant constraint is that program behavior must not rely on static analysis, such as type-driven overloading and dispatch. The best we can do is use annotations to insist certain registers are computed at compile-time, and dispatch on those.
+
+### Expressions and Statements
+
+At the moment, I lean towards a statement-based intermediate language. We can express 'return values' in terms of a program that writes a 'return' register. Parameters in terms of translating a subprogram's access to an operation environment of registers and handlers.
+
+It is possible to support a mixed language of expressions and statements. However, doing so complicates things a little, e.g. requiring several primitives to regulate interactions between the two, requiring an operational 'evaluation order' semantics for expressions. It seems simpler to model expressions as a calling convention.
+
+An intriguing alternative is to support FP-inspired lenses and prisms and editable views as 'virtual registers' that scatter-gather data with limited calculations. This might offer a viable basis for integrating expressions into a statement-oriented language. However, it's not a priority.
 
 ### Tail Call Optimization
 
@@ -46,6 +58,8 @@ Stack objects should be able to hierarchically compose more stack objects. It se
 
 *Aside:* It might be interesting to express an application as a handler 'stack object' instead of a collection of definitions. This could be supported by a runtime via application settings.
 
+*Note:* It might be convenient to express a set of algebraic effects in terms of a localization of the current namespace.
+
 ### Coroutines and Concurrency
 
 A procedure can potentially express a sequence, a 'thread', of fine-grained transactions. This is very convenient for expressing synchronous interactions, closer to conventional procedures or scripts. Every step is atomic, but other threads may observably interact with shared state between steps. In addition to retry due to conflict, a partially computed step may 'fail', retrying after a relevant state change or in context of an alternative, uncommitted non-deterministic choice.
@@ -56,24 +70,26 @@ For glas systems, I favor anonymous, second-class, fork-join coroutines. For exa
 
 It is convenient if a coroutine can wait for some arbitrary conditions before continuing. A very simple solution is to express 'yield' in terms of 'await Reg', waiting for a register to be non-zero. This supports semaphores, queues, or mutexes. We can feasibly extend this to waiting on composite conditions. Alternatively, in context of backtracking failure, we backtrack to the most recent 'yield' after a step 'fails', allowing assumptions to be mixed freely with operations in each step.
 
-Ideally, we can utilize multiple processors to evaluate coroutines. This is feasible with static analysis to avoid read-write conflicts, or with dynamic analysis and backtracking after a conflict occurs (aka [optimistic concurrency control](https://en.wikipedia.org/wiki/Optimistic_concurrency_control)). The latter seems an excellent fit for glas systems, aligning with transaction-loop applications and hierarchical transactions, but it isn't cheap. Conflicts and rework can feasibly be mitigated through annotations, analysis, and heuristics.
+Ideally, we can utilize multiple processors to evaluate coroutines. This is feasible with static analysis to avoid read-write conflicts, or with dynamic analysis and backtracking after a conflict occurs (aka [optimistic concurrency control](https://en.wikipedia.org/wiki/Optimistic_concurrency_control)). The latter seems an excellent fit for glas systems, aligning with transaction-loop applications and hierarchical transactions. Conflicts and rework can feasibly be mitigated through analysis, annotations, and heuristics, scheduling steps sequentially where conflicts are likely.
 
 We can evaluate a subprogram that uses coroutines and 'yield' internally with a localized scheduler. This might be expressed as `(%atomic P)`. When evaluating an atomic section, we resume locally and it's an error if no progress is possible. We can assume transaction-loop methods such as 'app.step' are implicitly evaluated in an atomic section.
 
 ### Long-Running and Multi-Party Transactions? Defer.
 
-A long-running or multi-party transaction involves multiple steps (long-running), and perhaps multiple threads (multi-party). I don't have a clear idea on how to express these in terms of fork-join coroutines and atomic sections. OTOH, it also doesn't seem to be a high priority. I don't have strong use-cases for such transactions.
+A long-running transaction is executed across multiple coroutine steps. A multi-party transaction is executed across multiple coroutine threads.
 
-If users need long-running or multi-party transactions, they can model them manually with support from a front-end syntax, effects API wrappers, and auxilliary registers (e.g. "x.scratch" could track proposed, uncommitted operations on "x").
+It is feasible for a runtime to support abstract, linear, first-class 'transaction' that can be maintained and manipulated across multiple steps. We could support operations like `(%tn.new Reg)`, `(%tn.in Reg Op)`, and `(%tn.commit Reg)` to execute a transaction across multiple steps, perhaps adding `(%tn.split Reg Reg)` for multi-party transactions (with multiple commits). Alternatively, we could favor an effectful reflection API over primitives.
+
+However, I'm not convinced of the cost-benefit tradeoffs. Complexity and performance overhead is non-trivial. I expect atomic sections and queues will prove adequate in practice. Later, if we discover application programmers reinventing transactions for convincing reasons, we can reconsider providing runtime support.
 
 ### Conditional Behavior and Hierarchical Transactions
 
 I have two main options for conditional behavior:
 
 * Branch on whether an atomic operation 'fails' or not.
-* Branch on whether a register or expression is non-zero.
+* Branch on whether a register or expression is truthy.
 
-In the former case, the latter is a trivial optimization with operators to 'test' registers. In the latter case, I imagine I'll ultimately want some other primitive to leverage hierarchical transactions and backtracking failure with optimistic concurrency. So, I currently favor towards the former, avoiding need for 'expressions'.
+In the former case, the latter is a trivial optimization. In the latter case, I imagine I'll still want primitives to support hierarchical transactions and backtracking, in which case we can support the former after introducing a little intermediate state, e.g. set a register within a hierarchical transaction to decide which branch to take. I'd prefer to avoid intermediate state as a requirement for conditionals, so I slightly favor the first option.
 
 As a simplistic structure, we could support something like `"try Cond then P1 else P2"`, equivalent to `"atomic Cond; P1"` if Cond passes, P2 otherwise. Then we introduce primitives such as `(%eq Reg1 Reg2)` that cause the current transaction to 'fail' if conditions aren't met. In the simplest case, Cond consists only of such read-only operations, thus can be evaluated without the overhead of hierarchical transactions.
 
@@ -91,25 +107,17 @@ A direct implementation of this will evaluate X twice. An implementation can fea
                 Z -> B
             _ -> C
 
-We can support a similar structure in the abstract syntax. For example, `(%try Tree X Y A Z B C)` encodes a decision tree structure and a tree traversal, but is difficult to extend or metaprogram. Or perhaps `(%cond (%br X (%br Y (%do A) (%br Z (%do B) (%fail))) (%do C)))` encodes structure as a DSL in the AST, though I'm not confident in this use of '%fail'. 
+We can support a similar structure in the abstract syntax. As a simplistic example, `(%try Tree X Y A Z B C)` can encode a decision tree structure and a tree traversal. But this encoding is awkward to extend or metaprogram. I imagine a solution closer to `(%cond (%br X (%br Y (%do A) (%br Z (%do B) (%bt))) (%do C)))`, essentially introducing a DSL for pattern matching into the AST. Here '%br' means branch, '%bt' means backtrack, and '%do' corresponds to the '->' arrow of committed action. But we can also support user-defined macros within the condition structure, and we can locally optimize `(%br Any (%bt) R) => R`, `(%br (%fail) Any R) => R`, and `(%cond (%do B)) => B`.
 
-*Notes:* The encoding needs more attention. And I'm still waffling on this entire direction, due to its relative overhead.
+*Note:* I'm still concerned over the overhead of pervasive transactions and backtracking, but this seems to be a good design direction for glas.
 
 ### Loops
 
-The simple while-do loop can feasibly be extended with a pattern-matching structure, multiple 'do' options depending on the context. For example, `"while Cond do Body"` becomes `(%loop (%br Cond (%do Body) (%fail)))`, and now we can extend this to support multiple '%do' bodies and branching conditions similar to pattern matching. Unlike '%cond', we expect a loop to eventually '%fail' out.
+We don't absolutely need loop primitives, but it would be awkward and inefficient to encode all loops as recursive definitions. 
 
-Where we need more flexibility, a viable alternative is recursion with tail-call optimization, which is somewhat analogous to a 'jump' with parameters. It is feasible to ignore the loop primitive and rely entirely on recursive definitions, but a loop primitive is convenient until the optimizations are robust.
+I propose a simple `%loop` primitive corresponding roughly to while-do loops, but in context of our unusual approach to conditional behavior. The  `"while Cond do Body"` might compile to `(%loop (%br Cond (%do Body) (%bt)))`. We aren't limited to just one '%do' body, and a righmost '%bt' is essential if we intend to eventually exit the loop.
 
-I'm interested in termination proofs for programs, but I've decided that providing a bunch of terminating 'loop primitives' is not the right solution. Instead, we could leverage annotations to support proof of useful properties.
-
-### Virtual Registers? Defer.
-
-Idea: Primitive support for 'virtual registers' that logically index or aggregate other registers. Inspiration from lenses and prisms in FP. However, this concept complicates implementations.
-
-Alternative: We can currently support virtual 'getters' and 'setters' as handlers. In contrast, these aren't be transparently usable in place of registers, and they don't provide as many opportunities for optimizations. 
-
-For the moment, I've decided to eschew support for virtual registers. However, it seems to be an extension compatible with other primitive features, so we can return to the idea in the future. Perhaps registers can logically be a getter/setter pair?
+*Aside:* I hope to eventually support termination proofs on glas programs. Unfortunately, neither recursion nor while-do loops do anything to simplify reasoning about termination. We'll be relying very heavily on annotations to guide such proofs.
 
 ### Robust Partial Evaluation
 
@@ -140,7 +148,7 @@ This model permits [non-hygienic macros](https://en.wikipedia.org/wiki/Hygienic_
 
 ### Extensible Intermediate Language
 
-We can always extend the intermediate language by adding new primitives. But we could also support something like a scoped 'interpretation' of the existing primitives. It might be useful to support something like `(%lang Ver AST)` declarations, at least for the toplevel application methods. This would provide more robust integration with the runtime in case of language drift, and would allow languages to drift very flexibly.
+We can always extend the intermediate language by adding new primitives. But we could also support something like a scoped 'interpretation' of the existing primitives. It might be useful to support something like `(%lang Ver AST)` or `(%lang.ver AST)` declarations, at least for the toplevel application methods. This would provide more robust integration with the runtime in case of language drift, and would allow languages adjust more flexibly.
 
 As a convention, front-end compilers could include language declarations for most definitions, and the runtime may require it for 'app.\*', raising an warning and assuming a version otherwise.
 
@@ -149,12 +157,6 @@ As a convention, front-end compilers could include language declarations for mos
 I propose to represent access to non-deterministic choice as a primitive (instead of handler). 
 
 There are a few reasons for this. First, it does us very little good to intercept non-deterministic choice within a program. Only at the level of a runtime or interpreter might we heuristically guide non-deterministic choice to a useful outcome. Second, we may still control non-deterministic choice via annotations, i.e. to indicate a subprogram is observably deterministic, or at least does not introduce non-determinism (though it may invoke non-deterministic handlers). Third, use of non-deterministic choice in assertions, fuzz testing, etc. make it awkward to present as a handler.
-
-### Parameters and Results
-
-Programs operate on registers and handlers. To model parameters and results, thus, is left to conventions such as writing a result of a calculation to 'result.\*' registers and 'result.!' for the main return value. The client will translate this into context. Similarly, arguments could bind 'arg.\*' registers, and we could have some conventions for providing a static list of keywords or similar. 
-
-In many cases, we might wish some means to express and enforce that a subset of registers is read-only within scope of a call. This should be feasible with annotations.
 
 ### JIT Compilation
 
@@ -184,6 +186,12 @@ However, even the simplest of traces can be useful if users are careful about wh
 
 Annotations can transparently guide use of content-addressed storage for large data. The actual transition to content-addressed storage may be transparently handled by a garbage collector. Access to representation details may be available through reflection APIs but should not be primitive or pervasive.
 
+### Arithmetic
+
+Although it's feasible to support arithmetic through accelerators, I propose to support simple arithmetic operations as primitives, albeit with arbitrary-sized integers, precise rationals, complex numbers, vectors, and matrices. 
+
+I'm currently omitting built-in support for IEEE floating-point due to its awkward, non-deterministic nature across processors and compilers. This may hinder performance in some computations, but can be resolved through other accelerators.
+
 ## Misc Thoughts
 
 The initial environment model will be kept simple - a static, hierarchical structure of names. 
@@ -192,21 +200,16 @@ It seems convenient to model extension of this environment in terms of introduci
 
 Our runtime may support use of linear or abstract data types, but we can design our APIs to mostly hide this, instead favoring 'abstract' volumes of registers held by the client and explicit 'move' operations.
 
-Registers must have an initial state. Perhaps an explicit 'undefined' state, distinct from containing a zero value.
+Registers must have an initial state. We could initialize registers to 0 by default (the empty binary tree). But it may be convenient to support an explicit 'undefined' state for registers, distinct from containing a value.
+
+It may be useful to wrap constant data with some indicator of type to support analysis, acceleration, and sandboxing. However, it doesn't seem essential to do so.
 
 ## Proposed Primitives
 
-* `(%seq P1 P2 P3 ...)` - execute P1 then P2 then P3 etc. in sequence.
-* `(%c P1 P2 P3 ...)` - 
+* `(%seq P1 P2 P3 ...)` - execute P1 then P2 then P3 etc. in sequence. 
+* `(%c P1 P2 P3 ...)` - execute P1 and P2 and P3 concurrently, implicitly switching as the different operations yield or fail.
 
 
-
-## Design Thoughts
-
-* For number types, I want unbounded integers, rationals, complex numbers, and vectors or matrices to be the default. But ideally the program model should make it easy to identify and isolate subprograms where we can use bounded number representations to optimize things. 
-* Ideally, every program has a clear small-step rewrite semantics. This greatly simplifies debugging.
-
-Embedded data is the only type that doesn't contain names, and is thus not rewritten based on scope. However, we should wrap most embedded data with a suitable node that can validate its type and represent intentions, e.g. favoring `(%i.const 42)` where an integer expression is expected. Some languages might restrict which data can be embedded.
 
 # Runtime Thoughts
 
