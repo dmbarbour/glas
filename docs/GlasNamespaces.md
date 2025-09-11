@@ -27,13 +27,11 @@ A viable algebraic effects API:
   * `move(TL)` - apply translation to future defined Names (for 'write').
   * `link(TL)` - apply translation to future ASTs (for 'write' or 'eval').
   * `read(Query) : Result` - access external environment with a cacheable Query, e.g. load a file.
-  * `fork(N)` - returns non-deterministic choice of natural number 0..(N-1), basis for iteration. 
-    * *Alternative:* non-deterministic choice via AST primitive, e.g. `(%select ...)`.
-  * `eval(AST, List of Arg) : [cb] Result` - tentative; interprets AST as the body of a procedure, providing a list of arguments and permitting interaction with the caller via generic callback handler 'cb' 
-    * `cb : List of Arg -> [cb] Result` - generic, recursive callback handler, like remote procedure calls.
-  * `map(AST)` - tentative; apply AST (usually a name) as an extra constructor to future written definitions.
+  * `eval(AST) : [cb] Result` - tentative; interprets AST as the body of a procedure in the current 'link' context. Limited interaction with the caller through a callback handler.
+    * Alternatively, we can feasibly support macro handlers with more flexible bindings. Depends on the program model.
+  * `fork(N)` - tentative; non-deterministic choice if not supported via primitive. But this will probably be a primitive.
 
-Aliasing can be expressed by defining one name to another. Those two names should then be equivalent under evaluation. 
+Aliasing can be expressed by defining one name to another. Those two names should then be equivalent under normal evaluation or execution contexts.
 
 *Note:* The above provides a rough idea, but is subject to change to better integrate with the program model. For example, we might want something more flexible for binding 'eval' results and callbacks based on a static argument.
 
@@ -54,15 +52,21 @@ In practice, most AST constructors should start with a name. The [program model]
 
 The program model may support user-defined constructors. If the first AST in the constructor is not a name, we'll attempt to interpret it as the definition body of an anonymous user-defined constructor. An empty constructor, meanwhile, is treated as undefined. See note on *Regarding User-Defined Constructors* later.
 
-## Evaluation Strategy
+## Notes on Evaluation
 
-The 'ns.fork' effect supports non-deterministic choice as a basis for iteration and laziness. Logically, we repeatedly evaluate a namespace procedure as many times as necessary, each in a separate transaction. However, the output is monotonic, idempotent, and deterministic. There is no need to recompute a branch after it commits or aborts for any reason other than missing definitions. In practice, we might evaluate multiple branches in parallel and pause computation when awaiting a missing definition.
+Non-deterministic choice serves as a basis for concurrency. Logically, we run the namespace procedure an infinite number of times, covering all possible sequences of non-deterministic choices. In practice, we clone a procedure's continuation at each choice and evaluate branches in parallel.
 
-However, to ensure a deterministic outcome in case of ambiguity, we prioritize definitions from lower-numbered forks. Thus, we must not accept definitions from higher-numbered forks before all lower-numbered forks are finished or paused. Further, 'ns.move' translations restrict which definitions a branch can produce: we can lazily defer computation of branches if we determine that they do not produce definitions we need.
+Use of 'ns.move' serves as the basis for laziness. Relevantly, 'ns.move' constrains future outputs from a given thread. Thus, if we do not need at least one of those outputs, we can capture the thread's continuation and defer execution until an output is needed. After we generate all definitions transitively needed by a given application, we can simply drop any remaining continuations.
 
-In case of long-running computations, we might heuristically garbage collect intermediate definitions. This can be understood as an aggressive form of dead-code elimination: we can eliminate definitions if they are not reachable from a 'rooted' definition (e.g. a public def in user config, or 'app.\*' def in a script) or a pending computation. The 'ns.link' translation determines what is reachable from a pending namespace computation. We can also garbage collect 'dead' namespace threads if we determine they'll be waiting forever. See *Namespace Processes and Channels* for a design pattern that relies on garbage collection.
+Output is iterative. Logically, we '%yield' just before returning from 'ns.write'. Thus, even if a thread later diverges with an error or infinite loop, we can utilize definitions generated prior to that error.
 
-We can begin processing definitions before a namespace is fully evaluated. We can apply typecheckers, optimizers, staged computing, check static assertions, and further compile abstract assembly to executable binary code. In context of 'ns.eval', concurrent processing is expected, but we can also reduce latency for starting an application, or garbage collect 'app.start' or a prefix to 'app.main' after we've started.
+The partial namespace may be observed through 'ns.eval'. When definitions are missing, further evaluation will implicitly wait for those definitions. It is possible to encode interactions between concurrent forks through the namespace, such that each thread waits on definitions and writes definitions in turn. See *Namespace Processes and Channels* for such a design pattern. However, best practice is to avoid unnecessary entanglements.
+
+There are two troublesome failure modes: nontermination and ambiguity. For non-termination, resolution involves configured quotas and debuggers. Ambiguity requires more attention.
+
+Writing the same definition more than once is idempotent. If a word receives multiple definitions, we'll report an ambiguity warning. A warning, not an error, because we don't want to break laziness just to search for ambiguous definitions. Instead, we'll aim to resolve ambiguity deterministically, favoring 'leftmost' choices and 'earliest' definitions from a thread. If we are forced to observe a definition (via 'ns.eval') before generating a higher-priority definition, we'll insist the observed and final definitions are identical.
+
+*Note:* As definitions are generated, many more processes may apply such as typechecking and optimization. This can proceed concurrently with evaluation of the namespace.
 
 ## Translations
 
@@ -187,15 +191,13 @@ A relevant concern with compiler dataflow is that it easily interferes with lazy
 
 ### Namespace Processes and Channels
 
-*Note:* I don't have a practical use case in mind. At the moment, this pattern serves only as a demonstration of theoretical expressiveness.
+It is possible to model interactions through the namespace such that two or more threads define and await definitions in turn, but garbage collection is necessary to support long-running processes within the namespace. In general, we can garbage-collect private definitions (by convention, words containing "~") if they aren't reachable from a public definition or 'ns.link'.
 
-A namespace process can be modeled in terms of a namespace procedure that 'yields' incremental output by forking to commit one branch and continue the other. A process may also fork to 'spawn' a subprocess. Processes interact by writing or awaiting definitions in turn, with 'eval' implicitly waiting. Although the outcome is deterministic, composition is more flexible than call-return, able to model protocols and negotiations.
+However, removing definitions from scope of 'ns.link' involves adding link rules. It's fruitless if this overhead is linear, so we must arrange for the rules to simplify. This is easiest in case of sequential interactions, such as channels. 
 
-Interaction of processes introduces many intermediate definitions. It is possible to garbage-collect these definitions, but a long-running process must *add* link rules to *remove* items from scope. Unless these rules simplify, this incurs linear overhead, thus is useful only for coarse-grained collection.
+Consider a numbering schema such as A000 to A999, B001000 to B999999, C001000000 to C999999999, and so on. Under simplification, rule `"A11" => NULL` replaces individual rules for `"A110" => NULL` up to `"A119" => NULL`. When processing item A123, six rules can remove A000 to A122 from scope: A0, A10, A11, A120, A121, A122. In general, the number of rules is the sum of digits plus the number of prior size headers (A, B, C, etc.). (Use of base2 or base4 would allow some tradeoffs.)
 
-Link rules most easily simplify for *sequential* interactions, such as channels. Consider a variable-width numbering schema such as A000 to A999, B001000 to B999999, C001000000 to C999999999, and so on. Under simplification, rule `"A11" => NULL` replaces rules for A110 to A119. When processing item A123, six rules can remove A000 to A122 from scope: A0, A10, A11, A120, A121, A122. In general, the number of rules is the sum of digits plus the number of prior size headers (A, B, C, etc.). A binary encoding results in fewer rules.
-
-Dynamic channels are readily supported. Message 'mA123' could inform the reader that the next subchannel, 'cA003.\*', is now in play for reading or writing. A few caveats: Simplifying requires tracking extra metadata because cA003 may remain in use long after cA009 is released. Depth is a concern: as we establish subchannels over subchannels over channels, names grow linearly like 'cA003.cA042.cA001.mA042'. Channels are second-class: the closest thing to passing a channel around is spawning a subprocess to lazily alias inputs to outputs, a 'wiring' pattern.
+In practice, there is no use case for these channels. It's just an exercise in expressiveness. Best practice is to avoid unnecessary entanglements between namespace threads.
 
 ## Quotas
 

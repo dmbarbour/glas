@@ -141,7 +141,7 @@ Proposed representation in abstract assembly:
 
         (%an (%an.dbg.log Chan Message) Operation)
 
-We always annotate an Operation. But, within a sequence, we'll often annotate a no-op. If an annotation like '%an.dbg.log' is not recognized, we can report a warning then simply evaluate Operation. To suppress warnings, we could recognize something like `(%an.nowarn (...))`, or suppress control warnings through the configuration.
+We always annotate an Operation. But, within a sequence, we'll often annotate a no-op. If an annotation like '%an.dbg.log' is not recognized, we can report an error or warning (user-configurable and subject to guidance by other annotations) then evaluate Operation directly. 
 
 Annotations can also be expressed at other layers:
 
@@ -154,11 +154,11 @@ Annotations can also be expressed at other layers:
 Instrumentation is expressed using annotations. This includes logging, profiling, or tracing a computation.
 
         log (Chan, Message) { Operation }
-        profile (Chan, DynamicIndex) { Operation }
+        profile (Chan, Index) { Operation }
         trace (Chan, Cond) { Operation }
 
         (%an (%an.dbg.log Chan Message) Operation)
-        (%an (%an.dbg.prof Chan DynamicIndex) Operation)
+        (%an (%an.dbg.profile Chan Index) Operation)
         (%an (%an.dbg.trace Chan Cond) Operation)
 
 The log Message should either be a read-only computation or computable within a hierarchical transaction. Conditional logging is supported by returning an 'empty' message. Logging over an operation is interesting; depending on configuration for Chan, this can support random samples or adding Message to a stack trace. In context of transaction loop applications - with forks and incremental computing - we might render logs to a user as a time-varying tree instead of a message stream.
@@ -184,7 +184,7 @@ Annotations guide performance features - acceleration, caching, laziness, parall
 
 There are many functions that are difficult to implement efficiently within the glas program model due to lack of static types or suitable 'primitive' operations. In these cases, we can provide a slower reference implementation, then use an annotation to ask a runtime to replace the reference implementation with a high-performance built-in. Example:
 
-        (%an (%an.accel.matrix.mul "double") ReferenceImpl)
+        (%an (%accel.matrix.mul "double") ReferenceImpl)
 
 In practice, the reference implementation will alias a separate definition. This allows for users to define automatic tests that compare the reference implementation with the accelerated version and verify consistency. A runtime may also integrate built-in verification, but it will often be limited due to concerns of performance or bloat.
 
@@ -205,6 +205,8 @@ A subset of expressions are purely functional or read their environment without 
         (%an (%an.lazy.spark) Thunk)    # adds thunk to a thread pool, force in background
 
 This API makes thunks explicit. Alternatively, we could support thunks that are implicitly forced when we attempt to observe a value. However, for my vision of glas systems, it's more convenient if laziness is explicit and well-integrated with the type system. Thunks can be runtime-scoped, and it's an error to thunk an Expr that has observable effects.
+
+*Note:* This may require extensive adaptation to a procedural model.
 
 ### Content-Addressed Storage
 

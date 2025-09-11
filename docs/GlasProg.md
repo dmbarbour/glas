@@ -1,8 +1,92 @@
 # Program Model for Glas
 
-The [namespace](GlasNamespaces.md) supports modules and user-defined syntax. The front-end compiler will translate user facing syntax to a shared AST structure with primitive definitions ('%\*' by convention) forming an intermediate language. This document describes a suitable intermediate language for glas systems.
+The [namespace](GlasNamespaces.md) supports modules and user-defined front-end syntax. Programs are compiled to an AST structure built upon '%\*' primitives. This document describes a viable set of primitives for my vision of glas systems and some motivations for them.
 
-## Design Thoughts
+## Proposed Program Primitives
+
+Program Control:
+
+* `(%do P1 P2 P3 ...)` - execute P1 then P2 then P3 etc. in sequence. We also use `(%do)` as our primary no-op, and '%do' as the constructor for committed action in a decision tree structure.
+* `%fail` - voluntary failure, interpretation is contextual but will gend to abort the current transaction and allow some observable handling of this, e.g. backtracking conditions, or aborting a coroutine step until observed conditions change. For contrast, involuntary failures such as type errors are instead modeled as divergence like an infinite loop.
+* `(%cond Sel)` - supports if/then/else, pattern matching, etc.. The Sel type consists primarily of '%br' nodes, but may terminate with '%do' or '%fail'. It's a divergence error if no operation is matched.
+  * `(%br C SelL SelR)` - run C within a hierarchical transaction. If C terminates normally, run SelL. If C fails voluntarily, abort then run SelR. Note that committing C is left to SelL. 
+  * `(%do P1 ...)` - in context of Sel, represents committed action. Commit the entire chain of prior branch conditions, then run '%do' in the same transactional context as '%cond' or '%loop'.
+  * `%fail` - in context of Sel, represents the lack of a case on the current branch. Causes computation to backtrack, aborting the most recent successful branch condition then trying the SelR path. In normal form, appears only in SelR position because we can optimize `(%br C %fail SelR) => SelR`.
+  * Beyond these, Sel may also support language declarations, annotations, and macros.
+* `(%loop Sel)` - supports anonymous loops, uses same Sel type as '%cond'. In the simplest case, `"while Cond do Body"` becomes `(%loop (%br Cond (%do Body) %fail))`. But we can integrate loop conditions with an action selector. Programs may also express loops via recursive definitions!
+* `(%c P1 P2 P3 ...)` - execute P1, P2, P3, etc. concurrently with voluntary context switching through `%yield` or `%fail`. Fork-join behavior: the '%c' operation terminates only after each component terminates. Resumption and evaluation order is non-local, determined by an implicit scheduler, but associativity of '%c' is guaranteed.
+* `%yield` - pauses a computation and provides concurrent computations an opportunity to operate. In glas systems, each yield-to-yield step will logically run as an atomic transaction, and `%fail` will backtrack to a prior '%yield' and wait for relevant changes.
+* `(%atomic P)` - an atomic operation may yield, but will only resume internally. Fails only if all internal resumptions are failing.
+* `(%c.sched Schedule P)` - (low priority!) It is feasible to mix schedulers within a program, e.g. have a subset of coroutines be round-robin, some be non-deterministic, others prioritize leftmost. We can express such behavior within the program. Scheduling influences observable behavior, thus is not presented as an annotation.
+* `Name` - when a name is applied as a program, we'll attempt to run the named program's definition. This is very similar to inlining the program definition, though recursive definitions require some special attention.
+
+Environment Control:
+
+Data Manipulation:
+
+
+
+Tooling and Evolution:
+
+* `(%lang Version AST)` - Language declaration. Idempotent, thus usually equivalent to AST, but in special cases we might apply adapters or switch interpreters to integrate languages.
+* `(%an Annotation AST)` - Equivalent to AST, but Annotations provide ad hoc guidance to compilers, interpeters, optimizers, debuggers, typecheckers, theorem provers, and similar tools. By convention, Annotations have form `(%an.OpName Args)`, and are invalid outside of '%an'.
+
+Metaprogramming:
+
+* `(%macro Template)` - describes a macro. In this case, Template is an AST that contains `(%macro.arg K)` and other elements for rewriting. When we apply a macro as a user-defined constructor, we'll substitute AST arguments into the template, then replace the constructor by the resulting AST, aka macro expansion.
+* `(%macro.arg K)` - is substituted by the Kth AST argument, with static K starting at 1. Error if K is out of range. We can designate argument 0 to refer recursively to UserDef for convenient anonymous recursion. We'll report a compile-time error if K is out of range.
+* `(%macro.args.count)` - is substituted by the count of AST arguments to the macro, intended to support a variable number of arguments
+* `(%macro.args.range X Y)` - is substituted by a *series* of AST arguments `(%macro.arg X) (%macro.arg X+1) .. (%macro.arg Y)`. This expansion is valid only in context of another AST constructor. The series is empty if X is greater than Y. 
+* `(%link Localization StaticASTRep)` - deferred integration of a static AST representation (e.g. a static register) with the namespace, such as `n:Name` binding to a defined symbol. *Note:* We can feasibly extend linking to hierarchical namespaces when describing stack objects.
+
+*Note:* All primitive names like '%do' are subject to name mangling for prefix uniqueness, i.e. the representation in the AST might be `n:"%do.!"`.
+
+### Annotations
+
+        (%an Annotation Operation)
+
+Annotations guide tools such as compilers, interpreters, optimizers, typecheckers, and debuggers. They shouldn't influence observable behavior, modulo use of runtime reflection to peek under the hood. Despite this, annotations are absolutely essential for performance and many of my goals for glas systems.
+
+Critical annotations, will need in initial bootstrap runtime:
+
+* `(%an.accel Accelerator)` - non-semantic performance primitives. Indicates that a compiler or interpreter should substitute Op for a built-in Accelerator. By convention, an Accelerator has form `(%accel.OpName Args)` and is invalid outside of '%an.accel'. See *Accelerators* later.
+* `(%an.memo MemoHints)` - we don't immediately need full-featured memoization, but at least enough for incremental compilation, e.g. persistent memoization of pure computations. 
+* *Instrumentation* - I'll want basic debugging and profiling support from day one, though we can probably omit tracing until later.
+  * `(%an.dbg.assert Chan Cond Message)`
+  * `(%an.dbg.log Chan Message)`
+  * `(%an.dbg.profile Chan Reg?)`
+  * `(%an.dbg.scope TL)` - prefix to prefix translation of Chan names in a subprogram, can also block channels by linking to NULL.
+  * `
+* 
+
+* Initial Instrumentation:
+  * `(%an.dbg.assert Chan Cond Message)` - the simplest form of runtime assumptions testing. A failed assertion is treated as divergent.
+
+* 
+
+Nice to haves:
+* type safety 
+* tracing
+* lazy computation
+* stowage
+* projectional editor support - e.g. editable views of local registers
+
+### Accelerators
+
+Typical usage:
+
+        (%an (%an.accel (%accel.OpName Args)) Op)
+
+Accelerators ask a compiler or interpreter to replace Op with a built-in implementation. The built-in should be more efficient because it has access to data representations, SIMD, GPGPU, or other implementation-layer features. Providing Args to the accelerator can support specialization, integration, or partial evaluation. An unrecognized accelerator may result in warnings or errors based on user configuration and other annotations in scope. 
+
+The compiler or interpreter may try to verify equivalence based on static analysis, unit tests, perhaps a little fuzz testing. However, especially early in development of glas systems, a `()` placeholder may be accepted with a TODO warning.
+
+Because I'm currently pursuing a minimalist route for semantics, accelerators will be heavily used for data manipulation: lists, dicts, arithmetics, etc..
+
+
+## Design Motivations
+
+Some discussions that led to the aforementioned selection of primitives.
 
 ### Operation Environment
 
@@ -91,7 +175,7 @@ I have two main options for conditional behavior:
 
 In the former case, the latter is a trivial optimization. In the latter case, I imagine I'll still want primitives to support hierarchical transactions and backtracking, in which case we can support the former after introducing a little intermediate state, e.g. set a register within a hierarchical transaction to decide which branch to take. I'd prefer to avoid intermediate state as a requirement for conditionals, so I slightly favor the first option.
 
-As a simplistic structure, we could support something like `"try Cond then P1 else P2"`, equivalent to `"atomic Cond; P1"` if Cond passes, P2 otherwise. Then we introduce primitives such as `(%eq Reg1 Reg2)` that cause the current transaction to 'fail' if conditions aren't met. In the simplest case, Cond consists only of such read-only operations, thus can be evaluated without the overhead of hierarchical transactions.
+As a simplistic structure, we could support something like `"try Cond then P1 else P2"`, equivalent to `"atomic Cond; P1"` if Cond passes, P2 otherwise. Then we introduce primitives such as `(%eq Reg1 Reg2)` that cause the transaction to 'fail' if conditions aren't met.
 
 However, the atomic nature of Cond can hinder some composition (and decomposition) of programs. Relevantly, we'll often have some shared prefix:
 
@@ -107,15 +191,15 @@ A direct implementation of this will evaluate X twice. An implementation can fea
                 Z -> B
             _ -> C
 
-We can support a similar structure in the abstract syntax. As a simplistic example, `(%try Tree X Y A Z B C)` can encode a decision tree structure and a tree traversal. But this encoding is awkward to extend or metaprogram. I imagine a solution closer to `(%cond (%br X (%br Y (%do A) (%br Z (%do B) (%bt))) (%do C)))`, essentially introducing a DSL for pattern matching into the AST. Here '%br' means branch, '%bt' means backtrack, and '%do' corresponds to the '->' arrow of committed action. But we can also support user-defined macros within the condition structure, and we can locally optimize `(%br Any (%bt) R) => R`, `(%br (%fail) Any R) => R`, and `(%cond (%do B)) => B`.
+We can support a similar structure in the abstract syntax. Proposed encoding: `(%cond (%br X (%br Y (%do A) (%br Z (%do B) (%fail))) (%do C)))`. We can treat this as a little problem-specific language, i.e. use of '%br' is only valid in special contexts such as '%cond' or '%loop' and must terminate with '%do' or '%fail', albeit subject to annotations and macro expansions. In normal form, `(%fail)` appears only in the right branch, but in context of macro expansion we can optimize `(%br _ (%fail) R) => R` and `(%br (%fail) _ R) => R`.
 
-*Note:* I'm still concerned over the overhead of pervasive transactions and backtracking, but this seems to be a good design direction for glas.
+To mitigate the overhead of hierarchical transactions, a compiler can precisely analyze which registers must be backed up for the transaction. In case of 'pure' computations, we can potentially eliminate need for a hierarchical transaction entirely.
 
 ### Loops
 
 We don't absolutely need loop primitives, but it would be awkward and inefficient to encode all loops as recursive definitions. 
 
-I propose a simple `%loop` primitive corresponding roughly to while-do loops, but in context of our unusual approach to conditional behavior. The  `"while Cond do Body"` might compile to `(%loop (%br Cond (%do Body) (%bt)))`. We aren't limited to just one '%do' body, and a righmost '%bt' is essential if we intend to eventually exit the loop.
+I propose a simple `%loop` primitive corresponding roughly to while-do loops, but in context of our unusual approach to conditional behavior. The  `"while Cond do Body"` might compile to `(%loop (%br Cond (%do Body) (%bt)))`. We aren't limited to just one condition and '%do' body, and a righmost '%bt' is essential if we intend to eventually exit the loop.
 
 *Aside:* I hope to eventually support termination proofs on glas programs. Unfortunately, neither recursion nor while-do loops do anything to simplify reasoning about termination. We'll be relying very heavily on annotations to guide such proofs.
 
@@ -182,15 +266,42 @@ We can improve memoization by making the traces more widely applicable, abstract
 
 However, even the simplest of traces can be useful if users are careful about where they apply memoization. We can memoize a subset of procedures that represent "pure" expressions or functions to support incremental compilation, monoidal indexing of structure, and similar use cases.
 
+### Lazy Computation? Defer.
+
+A proposed adaptation of explicit laziness to procedural programs:
+
+        (%an (%an.lazy.thunk RegList) Op)
+        (%an (%an.lazy.force RegList) (%do))
+        (%an (%an.lazy.spark RegList) (%do))
+
+In case of '%an.lazy.thunk' we first verify that Op writes only a subset of RegList and has other convenient properties (e.g. no yield or fail!). Then we capture the input registers for Op, and immediately update every register in RegList to contain a thunk indexing the final output of Op. Some output registers may reach a 'final' state before we complete execution of Op.
+
+The '%an.lazy.force' and '%an.lazy.spark' operations then manipulate registers containing thunks, but they are no-ops semantically, messing with hidden representations.
+
+This adaption seems feasible, but it's also gated by a bunch of analysis. We might need to get those analysis features to a robust state before we revisit lazy computation.
+
 ### Content-Addressed Storage
 
 Annotations can transparently guide use of content-addressed storage for large data. The actual transition to content-addressed storage may be transparently handled by a garbage collector. Access to representation details may be available through reflection APIs but should not be primitive or pervasive.
 
-### Arithmetic
+### Data Manipulation
+
+I'm uncertain how much data manipulation should be 'primitive' and how much should be 'accelerated'.
+
+It may prove more convenient to express most arithmetic as accelerators, aka performance primitives, instead of semantic primitives. This would greatly reduce the number of dependencies, at least.
+
+Perhaps we can minimize the number of semantic primitives for data manipulations in general.
 
 Although it's feasible to support arithmetic through accelerators, I propose to support simple arithmetic operations as primitives, albeit with arbitrary-sized integers, precise rationals, complex numbers, vectors, and matrices. 
 
 I'm currently omitting built-in support for IEEE floating-point due to its awkward, non-deterministic nature across processors and compilers. This may hinder performance in some computations, but can be resolved through other accelerators.
+
+### Type Descriptions
+
+        (%an (%an.type TypeDesc) Op)
+
+Types are an incomplete, abstract description of an operation. In context of glas systems, I want gradual typing as the norm, so we must allow type descriptions to have holes or "don't care" fields in them that might be filled later through inference and bidirectional type checking.
+
 
 ## Misc Thoughts
 
@@ -204,10 +315,6 @@ Registers must have an initial state. We could initialize registers to 0 by defa
 
 It may be useful to wrap constant data with some indicator of type to support analysis, acceleration, and sandboxing. However, it doesn't seem essential to do so.
 
-## Proposed Primitives
-
-* `(%seq P1 P2 P3 ...)` - execute P1 then P2 then P3 etc. in sequence. 
-* `(%c P1 P2 P3 ...)` - execute P1 and P2 and P3 concurrently, implicitly switching as the different operations yield or fail.
 
 
 
