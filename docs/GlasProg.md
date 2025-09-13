@@ -6,6 +6,7 @@ The [namespace](GlasNamespaces.md) supports modules and user-defined front-end s
 
 Program Control:
 
+* `Name` - when 'run' as a program, a user-defined name is behaviorally equivalent to its definition, which must be a program AST. The referenced subprogram runs in the caller's environment of registers and handlers. Recursive definitions may receive special attention from a compiler.
 * `(%do P1 P2 P3 ...)` - execute P1 then P2 then P3 etc. in sequence. We also use `(%do)` as our primary no-op, and '%do' as the constructor for committed action in a decision tree structure.
 * `%fail` - voluntary failure, interpretation is contextual but will gend to abort the current transaction and allow some observable handling of this, e.g. backtracking conditions, or aborting a coroutine step until observed conditions change. For contrast, involuntary failures such as type errors are instead modeled as divergence like an infinite loop.
 * `(%cond Sel)` - supports if/then/else, pattern matching, etc.. The Sel type consists primarily of '%br' nodes, but may terminate with '%do' or '%fail'. It's a divergence error if no operation is matched.
@@ -17,10 +18,13 @@ Program Control:
 * `(%c P1 P2 P3 ...)` - execute P1, P2, P3, etc. concurrently with voluntary context switching through `%yield` or `%fail`. Fork-join behavior: the '%c' operation terminates only after each component terminates. Resumption and evaluation order is non-local, determined by an implicit scheduler, but associativity of '%c' is guaranteed.
 * `%yield` - pauses a computation and provides concurrent computations an opportunity to operate. In glas systems, each yield-to-yield step will logically run as an atomic transaction, and `%fail` will backtrack to a prior '%yield' and wait for relevant changes.
 * `(%atomic P)` - an atomic operation may yield, but will only resume internally. Fails only if all internal resumptions are failing.
-* `(%c.sched Schedule P)` - (low priority!) It is feasible to mix schedulers within a program, e.g. have a subset of coroutines be round-robin, some be non-deterministic, others prioritize leftmost. We can express such behavior within the program. Scheduling influences observable behavior, thus is not presented as an annotation.
-* `Name` - when a name is applied as a program, we'll attempt to run the named program's definition. This is very similar to inlining the program definition, though recursive definitions require some special attention.
+
+* `(%sched Schedule P)` - (tentative; low priority) Instead of one schedule to rule all the continuations, we support local guidance of a scheduler, e.g. round-robin in some cases, prioritize leftmost in others. I'm uncertain what I'd want here, but I'm also in no hurry to pursue this. 
 
 Environment Control:
+
+
+
 
 Data Manipulation:
 
@@ -39,50 +43,33 @@ Metaprogramming:
 * `(%macro.args.range X Y)` - is substituted by a *series* of AST arguments `(%macro.arg X) (%macro.arg X+1) .. (%macro.arg Y)`. This expansion is valid only in context of another AST constructor. The series is empty if X is greater than Y. 
 * `(%link Localization StaticASTRep)` - deferred integration of a static AST representation (e.g. a static register) with the namespace, such as `n:Name` binding to a defined symbol. *Note:* We can feasibly extend linking to hierarchical namespaces when describing stack objects.
 
-*Note:* All primitive names like '%do' are subject to name mangling for prefix uniqueness, i.e. the representation in the AST might be `n:"%do.!"`.
-
 ### Annotations
 
         (%an Annotation Operation)
 
-Annotations guide tools such as compilers, interpreters, optimizers, typecheckers, and debuggers. They shouldn't influence observable behavior, modulo use of runtime reflection to peek under the hood. Despite this, annotations are absolutely essential for performance and many of my goals for glas systems.
-
-Critical annotations, will need in initial bootstrap runtime:
+Critical annotations, necessary in early versions of runtime:
 
 * `(%an.accel Accelerator)` - non-semantic performance primitives. Indicates that a compiler or interpreter should substitute Op for a built-in Accelerator. By convention, an Accelerator has form `(%accel.OpName Args)` and is invalid outside of '%an.accel'. See *Accelerators* later.
 * `(%an.memo MemoHints)` - we don't immediately need full-featured memoization, but at least enough for incremental compilation, e.g. persistent memoization of pure computations. 
-* *Instrumentation* - I'll want basic debugging and profiling support from day one, though we can probably omit tracing until later.
-  * `(%an.dbg.assert Chan Cond Message)`
-  * `(%an.dbg.log Chan Message)`
-  * `(%an.dbg.profile Chan Reg?)`
-  * `(%an.dbg.scope TL)` - prefix to prefix translation of Chan names in a subprogram, can also block channels by linking to NULL.
-  * `
-* 
-
-* Initial Instrumentation:
-  * `(%an.dbg.assert Chan Cond Message)` - the simplest form of runtime assumptions testing. A failed assertion is treated as divergent.
-
-* 
+* `(%an.log Chan MsgSel)` - printf debugging! See *Logging*.
+* `(%an.reject Chan MsgSel)` - negative assertions, structurally similar to logging. Halt if an error message is selected.
+* `(%an.profile Chan Options)` - record performance metadata such as entries and exits, time spent, yields, fails, and rework. This may benefit from dynamic virtual channels to further partition the stats.
+* `(%an.chan.scope TL)` - a logical, channel-to-channel prefix rewrite in scope of Operation; same TL type as namespaces. Eventually, we might also support something like dynamic virtual channels via reference to a register, but I propose to start with simple strings.
+* `(%an.static Reg ...)` - usually annotates a no-op. Indicates that specified registers should be statically determined at a given step.
 
 Nice to haves:
-* type safety 
-* tracing
-* lazy computation
-* stowage
-* projectional editor support - e.g. editable views of local registers
+* stowage. Work with larger-than-memory values via content-addressed storage.
+* type safety. I'd like to get bidirectional type checking working in many cases relatively early on.
+* tail-call declarations. This could feasibly be presented as part of a function type.
+* lazy computation. Thunk, force, spark. Requires some analysis of registers written.
+* debug trace. Probably should wait until we have a clear idea of what a trace should look like. 
+* debug views. Specialized projectional editors through debuggers.
 
 ### Accelerators
 
-Typical usage:
-
         (%an (%an.accel (%accel.OpName Args)) Op)
 
-Accelerators ask a compiler or interpreter to replace Op with a built-in implementation. The built-in should be more efficient because it has access to data representations, SIMD, GPGPU, or other implementation-layer features. Providing Args to the accelerator can support specialization, integration, or partial evaluation. An unrecognized accelerator may result in warnings or errors based on user configuration and other annotations in scope. 
-
-The compiler or interpreter may try to verify equivalence based on static analysis, unit tests, perhaps a little fuzz testing. However, especially early in development of glas systems, a `()` placeholder may be accepted with a TODO warning.
-
-Because I'm currently pursuing a minimalist route for semantics, accelerators will be heavily used for data manipulation: lists, dicts, arithmetics, etc..
-
+TODO: proposed initial list of accelerators. 
 
 ## Design Motivations
 
@@ -201,7 +188,7 @@ We don't absolutely need loop primitives, but it would be awkward and inefficien
 
 I propose a simple `%loop` primitive corresponding roughly to while-do loops, but in context of our unusual approach to conditional behavior. The  `"while Cond do Body"` might compile to `(%loop (%br Cond (%do Body) (%bt)))`. We aren't limited to just one condition and '%do' body, and a righmost '%bt' is essential if we intend to eventually exit the loop.
 
-*Aside:* I hope to eventually support termination proofs on glas programs. Unfortunately, neither recursion nor while-do loops do anything to simplify reasoning about termination. We'll be relying very heavily on annotations to guide such proofs.
+*Aside:* I hope to eventually support termination proofs on glas programs. But this will likely occur through a proof system without structural support from the intermediate language.
 
 ### Robust Partial Evaluation
 
@@ -280,13 +267,65 @@ The '%an.lazy.force' and '%an.lazy.spark' operations then manipulate registers c
 
 This adaption seems feasible, but it's also gated by a bunch of analysis. We might need to get those analysis features to a robust state before we revisit lazy computation.
 
+*Note:* I'm not too fond of naming multiple registers. Might tweak this to be more tacit if we pursue a stack-registers concept.
+
+### Accelerators
+
+        (%an (%an.accel (%accel.OpName Args)) Op)
+
+Accelerators ask a compiler or interpreter to replace Op with a built-in implementation. The built-in should be more efficient by leveraging data representation, SIMD, GPGPU, or other implementation-layer features. In the general case, accelerators receive arguments for specialization or integration.
+
+The compiler or interpreter may verify equivalence to Op through analysis or testing. However, doing so is optional. During early development, we might accept Op `()` as a placeholder, merely raising a TODO warning.
+
+*Note:* Being designed with accelerators in mind, glas will not perform adequately without them. Accelerators are essentially a set of 'performance primitives'.
+
+### Logging
+
+        (%an (%an.log Chan MsgSel) Operation)
+
+We express logging 'over' an Operation. This allows for continuous logging, animations when rendering the log, as Operation is evaluated. For example, we might evaluate log messages upon entry and exit to Operation, and also upon '%yield' and resume, and perhaps upon '%fail' when it aborts a coroutine step. Instead of a stream of messages, we might render logging as a 'tree' of animated messages. Of course, we can always use a no-op Operation for conventional logging.
+
+Log messages are expressed as a conditional message selector, i.e. the `(%br ...)` AST nodes seen in '%cond' or '%loop'. Thus, logging may '%fail' to generate a message. The log message is computed atomically within a hierarchical transaction. The transaction is canceled after capturing the message. This allows for evaluating messages under hypothetical "what if" conditions, and evaluation of multiple messages in context of non-deterministic choice.
+
+We evaluate MsgSel in a 'handler' environment, e.g. implicitly adding a "^" prefix to access host registers and handlers. This enables unambiguous use of a "$" prefix for parameters from the caller. In context, the 'caller' is the runtime, and parameters may include per-channel configuration of verbosity, output format(s), and other integration features. 
+
+### Assertions
+
+        (%an (%an.reject Chan MsgSel) Operation)
+
+Conventionally assertions are 'positive' in nature, i.e. `"assert Condition ErrorMsg"` means something similar to `"if (not Condition) { print ErrorMsg; exit(); }"`; the Condition must hold. However, this structure forces us to either use a sequence of assertions for fine-grained error messages, or to recompute conditions as part of evaluating an ErrorMsg. To fully leverage the MsgSel structure, I propose a negative 'reject' condition, allowing for each disjunction to have its own ErrorMsg, e.g. `"reject { Cond1 -> ErrorMsg1 | Cond2 -> ErrorMsg2" }`. 
+
+Assertions are structurally similar to logging. It is feasible to implement assertions in terms of arranging a program to halt after logging messages above a specific severity. However, use of '%an.log' sacrifices clarity of intention, the connotation that some conditions should hold as preconditions, postconditions, or invariants. Thus, I propose a dedicated '%an.reject' constructor for assertions.
+
+As with logging, users may configure ad hoc, per-channel parameters for MsgSel. This would offer more flexible control over assertions than enabling or disabling the full channel, e.g. we could feasibly select between 'precise' and 'fast' assertions, subject to partial evaluation.
+
+### Profiling
+
+        (%an (%an.profile Chan) Operation)
+
+For performance analysis, we can ask the runtime to maintain some extra metadata, e.g. for number of entries and exits and yields, time spent and relative amount of rework (due to '%fail' after '%yield'), and so on.
+
+### Tracing? Defer.
+
+My idea with tracing is that we can record enough of a computation to replay it in slow-motion. This isn't especially difficult, e.g. take a snapshot of relevant inputs upon entry and resumption from '%yield' (optionally including failed coroutine steps), similar to a memoization trace. However, it's also very low priority until we have an IDE that can easily render a replay.
+
+### Projection? Defer.
+
+My idea with projection is that we can extend '%an.log' to instead describe interactive debug views in terms of projectional editors over local registers and such. The main distinction from logging is interactivity. With logging the assumption is that messages are written into a log for future review, while for projections we're letting users directly peek and poke into a running system.
+
 ### Content-Addressed Storage
 
 Annotations can transparently guide use of content-addressed storage for large data. The actual transition to content-addressed storage may be transparently handled by a garbage collector. Access to representation details may be available through reflection APIs but should not be primitive or pervasive.
 
 ### Data Manipulation
 
-I'm uncertain how much data manipulation should be 'primitive' and how much should be 'accelerated'.
+I'm very concerned about how we *express* data manipulation. I would prefer to avoid having a huge list of registers for every operation in the intermediate language. I also hope to support static analysis and avoid unnecessary dynamic heap allocations.
+
+An intriguing possibility is to support something like tacit stack programming. A 'register' with a specific name may serve as the local data stack, containing a list value. We can analyze arity of operations across registers as a lightweight typecheck. Enforcing static arity, a compiler can feasibly allocate a 'stack' as a set of anonymous static allocations per named register.
+
+Similar to stack PLs, the `d:Data` AST node can become a meaningful operator that updates the standard data stack. It's just that we could move data afterwards to other stacks.
+
+...
 
 It may prove more convenient to express most arithmetic as accelerators, aka performance primitives, instead of semantic primitives. This would greatly reduce the number of dependencies, at least.
 

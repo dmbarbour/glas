@@ -99,19 +99,11 @@ Shared libraries are a design pattern within the namespace. An application can a
 
 The main advantage of shared libraries is performance, avoiding redundant work across applications. The main disadvantage is customization: the application cannot override library definitions or change its links to other libraries. The disadvantage can be mitigated by translating links to alternative versions of specific libraries within some scope. 
 
-### Applications
+### Applications and Adapters
 
-A [transaction-loop application](GlasApps.md) can be implemented by defining procedures for 'start', 'step', 'http', etc.. The main loop involves repeatedly running 'step' in separate transactions. The direct implementation is a single-threaded event loop. However, support for incremental computing and a few other optimizations lets this model express concurrent, distributed, reactive systems. The transaction loop is also very convenient for live coding.
+This is detailed in [glas apps](GlasApps.md). But the general idea is that every application defines a purely functional, deterministic 'app.settings' function to guide integration. Depending on settings, the application may include 'app.\*' words such as 'app.main' for a conventional app, 'app.http' to receive HTTP requests (sharing debugger and RPC port), and 'app.step' for live-coding friendly transaction-loop applications.
 
-Although the transaction loop is intended to be the default for glas systems, a runtime may support alternative modes. For example, staged applications would compile the next-stage application based on command-line arguments and OS environment variables. Applications should define 'settings' to guide integration, including run mode.
-
-### Adapters
-
-Instead of directly observing an application, a runtime should first ask the configuration for an adapter. The configuration can query application settings and runtime version info, then return wrappers for the runtime's algebraic effects, the application interface, perhaps annotations. Use cases include porting applications across runtimes, exploring alternative application models, sandboxing untrusted applications, and overriding application settings based on configuration policies.
-
-Adapters at other layers are still useful. Runtimes can recognize multiple conventions. Applications and libraries can support conditional compilation based on '%env.\*' context or static parameters. But the configuration is the final opportunity to influence integration, and the most convenient opportunity for end users.
-
-*Aside:* We could define some applications with 'settings' alone, treating the adapter as a compiler.
+The runtime should not observe 'app.settings' directly. Instead, the runtime provides 'app.\*' words and runtime version information to the user configuration. The user configuration then generates a final adapter between runtime and application. This adapter is useful for portability, extensibility, and security.
 
 ## Distributed Systems Programming
 
@@ -123,60 +115,44 @@ Although transaction loops don't eliminate the need for design, they are flexibl
 
 ## Live Coding
 
-To support live coding, a runtime can be configured to scan for source updates periodically or upon trigger. Sources include local files and remote DVCS resources. After compiling everything, we switch to the new code. For a transaction loop application, 'switch' is the first transaction evaluated in the new code. If switch fails, it can be retried; we continue running the old code until it succeeds. The switch operation is responsible for schema updates if necessary.
+To support live coding, a runtime might be configured or triggered to scan for source updates and switch to new code. There may be some behavior on switch, e.g. calling 'app.switch' in the updated code. If this fails, switching may be delayed until it succeeds to support a relatively smooth transition.
 
-In a distributed runtime, one node is be responsible for updates. This role can be configured or determined by consensus algorithms. For isolation of transactions, old code must not observe messages or states produced by new code. However, we can propagate software updates together with the messages and states. In case of network disruption, some nodes might be slower to receive the update.
+The transaction-loop application model is designed to work nicely with live coding: we update 'app.step' between transactions. In contrast, a running 'app.main' application is a set of half-executed coroutines that cannot robustly be updated. At best, the runtime can swap namespaces atomically between '%yield' steps and typecheck the updated continuations. This may be sufficient if developers design their applications with live coding in mind.
 
-*Note:* Between incremental computing and acceleration, programmers can also model live coding *within* applications. This may be more convenient in some cases to control the scope and cost of the updates.
+In a distributed runtime, we can usefully view 'code' as a set of read-mostly registers, allowing for read-only cache on many nodes without violating isolation. When sending data, the updated code that influenced that data must also be propagated to avoid a read-write conflict, but we can maintain transactional isolation even if code updates aren't instantaneous.
 
 ## Debugging
 
-The runtime can be configured to listen on a TCP port for debugger interactions. The same port may be shared for 'http' and 'rpc' calls. By convention, we might reserve `"/sys/*"` for runtime use. The runtime could even integrate a browser-based debugger. Access to status, recent logs, profiling information, application state, etc. can be provided through this interface. Administrative tools - pause, continue, update, restart, etc. - are also feasible. Authorization for debugger access should be configurable, too.
+Based on configuration, a glas runtime may open a TCP/UDP port for RPC, HTTP, and debugger access. While 'app.http' might handle most HTTP requests, a runtime can be configured to intercept a path to support debugging via browser or REST API. A runtime can provide generic debugging features. Application-specific debugger integration may be guided through 'app.settings' and annotations.
 
 ## Annotations
 
-Programs in glas systems will integrate annotations to support *instrumentation, validation, optimization*, and other non-functional features. As a general rule, annotations should not influence observable behavior except through reflection APIs and performance.
+        (%an Annotation Operation)  - annotated subprograms
+        (%an.ctor Args)             - Annotation AST nodes
 
-Proposed representation in abstract assembly: 
+As a general rule, annotations must not influence the formal behavior or 'meaning' of a program, but they may guide tooling and influence non-functional properties. Annotations are very useful for instrumentation, optimization, and validation of programs.
 
-        (%an (%an.dbg.log Chan Message) Operation)
-
-We always annotate an Operation. But, within a sequence, we'll often annotate a no-op. If an annotation like '%an.dbg.log' is not recognized, we can report an error or warning (user-configurable and subject to guidance by other annotations) then evaluate Operation directly. 
-
-Annotations can also be expressed at other layers:
-
-* A runtime may encode metadata within data. This metadata should be serializable, e.g. via [glas object](GlasObject.md), thus may be integrated in cache or persistent state. 
-* A namespace may encode metadata based on naming conventions, e.g. 'foo.\#doc', and 'foo.\#type'. These annotations would be visible to tools that browse or analyze a namespace.
-* The module system may recognize hidden subfolders like ".pki/" or ".glas/". This can contain metadata such as signed manifests and public key certificates, stable GUIDs for location-independence of folders, and cached hints for a theorem prover.
+Annotations may also be supported at other layers through simple conventions, e.g. 'foo.\#doc' in the namespace, a ".glas/" folder in a source package, or annotation nodes in [glas object](GlasObject.md). I don't have a strong use case for namespace annotations, though it may prove convenient when browsing a namespace. The ".glas/" folder could contain signed manifests to scope trusted code.
 
 ## Instrumentation
 
-Instrumentation is expressed using annotations. This includes logging, profiling, or tracing a computation.
+Annotations should support users in logging, profiling, and tracing (for replay) of computations. A viable encoding:
 
         log (Chan, Message) { Operation }
         profile (Chan, Index) { Operation }
         trace (Chan, Cond) { Operation }
 
-        (%an (%an.dbg.log Chan Message) Operation)
-        (%an (%an.dbg.profile Chan Index) Operation)
-        (%an (%an.dbg.trace Chan Cond) Operation)
+        (%an (%an.log Chan Message) Operation)
+        (%an (%an.profile Chan) Operation)
+        (%an (%an.trace Chan Cond) Operation)
 
-The log Message should either be a read-only computation or computable within a hierarchical transaction. Conditional logging is supported by returning an 'empty' message. Logging over an operation is interesting; depending on configuration for Chan, this can support random samples or adding Message to a stack trace. In context of transaction loop applications - with forks and incremental computing - we might render logs to a user as a time-varying tree instead of a message stream.
+This structure expresses logging 'over' an operation, in contrast to a one-off message event. This allows a runtime to maintain a log message periodically as state changes, or capture the most recent version of a message into a stack trace. The continuous nature allows us to contemplate opportunities such as 'animation' of a log.
 
-Profiling should record things useful for understanding performance. Entry and exit counts, time spent, memory allocated, etc.. In context of transaction loop applications, we might keep stats related to stability and incremental computing, aborting on read-write conflict, and so on.
+The Chan argument may be a simple string to support configuration. We could add `(%an.scope TL)` to translate channel names in scope of Operation, and perhaps extend this further with dynamic scopes for precise profiling.
 
-If asked to 'trace' an Operation, the runtime may conditionally record enough information to replay that operation in slow motion. This serves as a convenient alternative to breakpoints in many use cases.
+Beyond these, it might be interesting to integrate projectional editor utilities directly into code, e.g. editable views for local registers when debugging a coroutine.
 
-In each case 'Chan' is a statically evaluated such that we can selectively disable log messages or assertions, or configure how they are handled over a complex Operation. For even more flexible and precise configuration of debugging, we can also rewrite Chan:
-
-        debug-scope (ChanRewrite) { Operation }
-        (%an (%an.dbg.scope ChanRewrite) Operation)
-
-In this case, ChanRewrite should be a `Chan -> Chan` function that we apply at compile time.
-
-*Note:* Non-deterministic choice in a log message or recording condition will be heuristically interpreted as a composition: all conditions, a set of messages, etc.. Depending on configuration of Chan, we could try to evaluate every case or just one choice randomly.
-
-## Performance
+## Optimization
 
 Annotations guide performance features - acceleration, caching, laziness, parallelism, JIT compilation, tail-call optimization, use of content-addressed storage, etc..
 

@@ -10,8 +10,8 @@ I propose to represent a glas namespace *procedurally*, i.e. a program iterative
 
 Viable types:
 
-        type Name = strings, binaries excluding NULL or C0
-        type Prefix = any prefix of Name, empty to full name
+        type Name = binaries excluding NULL or ".!"
+        type Prefix = any prefix of (Name + ".!")
         type TL = Map of Prefix to (Prefix | NULL | WARN), as radix tree dict
         type WARN = NULL 'w'                # 0x00 0x77
         type AST = List of AST              # constructor
@@ -84,17 +84,19 @@ Translations compose sequentially. Within a scoped AST a list of TL `[A, B, C]` 
 
 We finally recognize and remove redundant rules introduced by this rewrite. For example, we don't need rule `"xy" => "zy"` if `"x" => "z"` exists, and we don't need rule `"xy" => NULL` if `"x" => NULL` exists.
 
+### Implicit Translation Suffix
+
+An inherent problem with prefix-to-prefix translations is that they cannot translate "bar" without accidentally affecting "bard" and "barrel".
+
+To mitigate this, I propose to implicitly extend names with a ".!"  suffix for translation purposes. That is, given the name "bar", we actually apply the translation rule to "bar.!". If the translated name does not also terminate in ".!", we simply raise a link error. To further resist potential problems, we might raise warnings when ".!" appears within user-defined names.
+
+The specific choice of ".!" is based on my vision for glas naming conventions. Relevantly, it allows us to translate "bar." to include "bar" together with "bar.method" and "bar.\#docs" and so on, while "bar.!" translates "bar" specifically. In other contexts, alternatives suffixes may prove more suitable, though a front-end syntax can also mangle names as needed.
+
 ## Localizations
 
 Localizations enable programs to capture the 'link' scope in context. Given a string and a localization, we can securely generate a name referenced by that string, excepting NULL or WARN. This can be useful for multi-stage metaprogramming with late binding to the namespace.
 
 Conversely, given a localization and a full name, we can generate a (possibly empty) set of precursor strings by reversing the translation. This is useful mostly for reflection APIs. A reverse translation is inefficient by default, but it is feasible to cache a reverse-lookup index.
-
-## Prefix Uniqueness and Name Mangling
-
-Names *should* be prefix-unique, i.e. no name is a prefix of another name. This constraint exists to esnure prefix-to-prefix translations (the TL type) can always uniquely translate a name. A violation won't cause any issues for the namespace per se, but is worth a warning. In practice, prefix uniqueness will be enforced by the front-end compiler rewriting names, e.g. escaping reserved characters and appending a ".!" suffix.
-
-The proposed ".!" suffix serves prefix uniqueness, and further ensures every definition "bar.!" is implicitly part of a composite "bar.\*", which is very convenient for namespace extension and associative definitions. For example, we might annotate definitions with "bar.\#type" and "bar.\#doc" and so on.
 
 ## Namespace Macros and Eval
 
@@ -129,7 +131,7 @@ Aligning with file extensions simplifies integration with external tools. Graphi
 
 The glas executable provides at a built-in front-end compiler for [".glas" files](GlasLang.md) and perhaps others. Initially, 'env.lang.glas' will use the built-in until we can bootstrap a user-provided definition. Multiple built-ins compilers may be mutually bootstrapped, with the executable verifying a fixpoint after a few iterations.
 
-*Note:* to translate FileExt to a glas name we lower case 'A-Z', replace ASCII punctuation by '-', add the '.!' suffix for prefix uniqueness. For example, file "foo.TAR.GZ" is processed by '%env.lang.tar-gz.!'. Names containing control characters are simply rejected.
+*Note:* to translate FileExt to a glas name, we might lower case 'A-Z' and replace punctuation by '-'. For example, "foo.TAR.GZ" might be processed by '%env.lang.tar-gz'.
 
 ### Folders as Packages
 
@@ -232,17 +234,3 @@ It is feasible to support both global and local reflection APIs at different tru
 ## Regarding Hierarchical Namespaces
 
 The glas program model will introduce local variables and algebraic effects handlers in context of a subprogram. These are namespace-like things. Ideally, we should avoid reinventing namespaces in multiple layers. However, at the program model layer, the design challenges are very different - far fewer definitions, far tighter integration with state in scope. The program model may permit use of a namespace procedure, as described in this document, to define a set of handlers. But, in practice, a much simpler solution will likely prove sufficient.
-
-## Compact AST? Rejected.
-
-It is tempting to compact the AST a little, e.g. we could instead use:
-
-        type AST = List of AST              # constructor
-                 | 0b0.Data                 # embedded data
-                 | 0b10.Name                # namespace ref
-                 | 0b110.List of TL         # localization
-                 | 0b1110.(AST, List of TL) # scoped AST, lazy translate
-
-In practice, this won't help much with Names due to prefix uniqueness and name mangling. But it will save a few bytes for embedded data, especially in case of small integers and labeled variants. But a cost is that we cannot casually render AST values without heuristically recognizing them as AST values.
-
-In the end, I don't believe saving a few bytes is worth much, or at least that this isn't the best place to pursue it. In context of memo-caching compilation, we might use [glas object](GlasObject.md) together with a separate compression pass, or attempt to extend glas object with systematic compression of repetitive structure.
