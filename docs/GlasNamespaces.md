@@ -6,7 +6,7 @@ A user's view of a glas system is expressed as an enormous namespace importing f
 
 ## Procedurally Generated Namespaces
 
-I propose to represent a glas namespace *procedurally*, i.e. a program iteratively writes definitions. The API is carefully restricted to simplify laziness, caching, and flexible evaluation order. The namespace supports metaprogramming and modularity via 'ns.eval' and 'ns.read' respectively.
+I propose to represent a glas namespace *procedurally*, i.e. a program iteratively writes definitions. The API is carefully restricted to simplify laziness, caching, and flexible evaluation order.
 
 Viable types:
 
@@ -20,20 +20,17 @@ Viable types:
                  | z:List of TL             # localization
                  | s:(AST, List of TL)      # scoped AST, lazy translate
 
-A viable algebraic effects API:
+Viable algebraic effects API:
 
 * `ns.*` - common prefix for namespace ops
   * `write(Name, AST)` - write a definition. This is modified by prior move and link translations. 
-  * `move(TL)` - apply translation to future defined Names (for 'write').
-  * `link(TL)` - apply translation to future ASTs (for 'write' or 'eval').
-  * `read(Query) : Result` - access external environment with a cacheable Query, e.g. load a file.
-  * `eval(AST) : [cb] Result` - tentative; interprets AST as the body of a procedure in the current 'link' context. Limited interaction with the caller through a callback handler.
-    * Alternatively, we can feasibly support macro handlers with more flexible bindings. Depends on the program model.
-  * `fork(N)` - tentative; non-deterministic choice if not supported via primitive. But this will probably be a primitive.
+  * `move(TL)` - apply translation to future defined Names (for write).
+  * `link(TL)` - apply translation to future ASTs (for write or eval).
+  * `read(Query) : Result` - cacheable queries, runtime-specific. May fail.
+  * `eval(AST, Arg) : [cb] Result` - evaluate AST with 1--1 arity and callbacks. 
+    * `cb(Arg) : [cb] Result` - a generic 1--1 arity callback handler.
 
-Aliasing can be expressed by defining one name to another. Those two names should then be equivalent under normal evaluation or execution contexts.
-
-*Note:* The above provides a rough idea, but is subject to change to better integrate with the program model. For example, we might want something more flexible for binding 'eval' results and callbacks based on a static argument.
+There is no built-in support for aliasing, but I assume the program model will support aliasing indirectly via `ns.write("foo", n:"bar")`, i.e. that a name is equivalent to its definition in most contexts.
 
 ## Abstract Assembly AST
 
@@ -90,7 +87,7 @@ An inherent problem with prefix-to-prefix translations is that they cannot trans
 
 To mitigate this, I propose to implicitly extend names with a ".!"  suffix for translation purposes. That is, given the name "bar", we actually apply the translation rule to "bar.!". If the translated name does not also terminate in ".!", we simply raise a link error. To further resist potential problems, we might raise warnings when ".!" appears within user-defined names.
 
-The specific choice of ".!" is based on my vision for glas naming conventions. Relevantly, it allows us to translate "bar." to include "bar" together with "bar.method" and "bar.\#docs" and so on, while "bar.!" translates "bar" specifically. In other contexts, alternatives suffixes may prove more suitable, though a front-end syntax can also mangle names as needed.
+The specific choice of ".!" is based on my vision for glas naming conventions. Relevantly, it allows us to translate "bar." to include "bar" together with "bar.method" and "bar.\#docs" and so on, while "bar.!" translates "bar" specifically. In other contexts, alternatives suffixes may prove more suitable or a little name mangling can serve the same end.
 
 ## Localizations
 
@@ -125,47 +122,35 @@ The user configuration can feasibly define an adapter for 'ns.read', especially 
 
 ### User-Defined Syntax
 
-To load a file into a namespace, we can 'ns.eval' a user-defined front-end compiler based on file extension. I propose '%env.lang.FileExt'. The generated namespace and abstract assembly serve as an [intermediate representation](https://en.wikipedia.org/wiki/Intermediate_representation). This supports user-defined syntax aligned with file extensions.
+A namespace procedure can serve as a front-end compiler, generating a namespace as an intermediate representation. I propose to support user-defined syntax in coordination with the runtime.
 
-Aligning with file extensions simplifies integration with external tools. Graphical and textual programming can be freely mixed. A file-based database can generously be viewed as syntax. Arbitrary ".txt" or ".json" files can be treated as sources, perhaps defining 'data' yet subject to staging, partial evaluation, compile-time assertions. DSLs can be developed. Experimental language extensions can be scoped to a community or project through the namespace.
+When importing a file, the front-end compiler should use 'ns.eval' with '%env.lang.FileExt' to process that file. To support a configurable environment, the runtime aliases '%env.\*' to 'env.\*' in the user configuration. The glas executable includes a built-in front-end compiler for at least one syntax, e.g. [".glas" files](GlasLang.md), but will attempt to bootstrap and switch to 'env.lang.glas' if defined. (It is feasible to mutually bootstrap several front-end languages.)
 
-The glas executable provides at a built-in front-end compiler for [".glas" files](GlasLang.md) and perhaps others. Initially, 'env.lang.glas' will use the built-in until we can bootstrap a user-provided definition. Multiple built-ins compilers may be mutually bootstrapped, with the executable verifying a fixpoint after a few iterations.
+User-defined syntax can support DSLs or data integration, e.g. even a ".json" file can be treated as a source for staged metaprogramming. Also, syntax doesn't need to be textual, e.g. we could process a database file rendered as boxes and wires as a 'syntax'. Alignment with file extensions simplifies integration with external tooling.
 
-*Note:* to translate FileExt to a glas name, we might lower case 'A-Z' and replace punctuation by '-'. For example, "foo.TAR.GZ" might be processed by '%env.lang.tar-gz'.
+*Note:* As a convention when translating FileExt to a glas name, we might lower case 'A-Z' and replace punctuation by '-'. For example, "foo.TAR.GZ" is processed by '%env.lang.tar-gz'.
 
 ### Folders as Packages
 
-I propose to forbid parent-relative ("..") and absolute file paths in context of processing files. Files should reference other local files in the same folder or subfolders, or remote files via DVCS. Thus, each folder is effectively location independent. The same would apply within DVCS repositories.
+I intend to discourage parent-relative ("..") and absolute file paths to simplify refactoring and sharing of code. The only absolute paths should be reference to DVCS URLs. Constraints on locality can be enforced through override of 'ns.read'. As a backup, a runtime could warn if a namespace thread ever backtracks a sequence of 'ns.read' requests.
 
-Further, a folder containing a "package" file (of any extension) will be recognized as a package folder. Instead of directly loading individual files, users load the package folder and we'll implicitly search for the package file and load that. If clients attempt to bypass the package file, we'll report a warning because doing so can hinder refactoring and maintenance.
+In many cases it might be convenient to treat 'folders' as files. We can support this by convention of scanning the folder for a 'package.\*' file that is then loaded. The runtime may also warn if the 'package' file isn't the first file loaded from a folder.
 
-User-defined namespace procedures can implement this restriction by overriding 'ns.read' and checking for package files. Usefully, this is easily integrated with the front-end compiler support for *User-Defined Syntax*. The glas executable will apply these restrictions in context of the user configuration, scripts, and any built-in front-end compilers. 
+*Note:* The toplevel user-configuration may support absolute paths. This is convenient for integration of user-local projects that are in some user-specified filesystem location. The restriction on locality might kick in only after the first relative or DVCS file reference in a given thread.
 
-*Note:* Filesystem-layer links can work around restrictions on relative or absolute paths. I don't recommend this in general because it complicates sharing and distribution of code. But it's convenient for adding local projects to a user configuration.
+### Read Files Once 
 
-### Linear Files
-
-Reading a file more than once is not an error at the namespace layer in context of lazy loading and distinct compilation environments. Even cyclic file dependencies are possible. However, it's *probably* an error at other layers, suggesting use of a shared library, namespace macro, or copy for independent editing in a notebook application. I propose that, by default, a runtime reports a warning if a file is read more than once for any reason. The runtime can also support annotations or configuration options to suppress this warning for specific files, folders, or DVCS repos.
-
-## Late-Bound Sources
-
-It is feasible to integrate command-line arguments or OS environment variables as late-bound sources that are determined very shortly before an application is run. For example, 'ns.read(os:env:Var)' could return the specified environment variable, but would also hinder separate compilation of an application namespace. The latter issue can be mitigated through annotations, thus late-bound sources may prove one of the more convenient and robust approaches to expressing staged applications.
-
-Similarly, a program could access command-line arguments or OS environment variables as 'static' algebraic effects, allowing for staging in other layers. We can even support both options at the same time. There is a lot of flexibility in how we express staged programming of applications.
-
-## Embedded Data
-
-The 'd:Data' node within an AST allows for embedding data without further processing at the namespace layer. However, it is not recommended to use 'd:Data' directly as a parameter within most operations. Instead, a thin data wrapper such as `(%i d:42)` for integers should apply in most cases. This provides a convenient opportunity for the program to integrate type safety analysis, accelerated representations, and similar features. 
+Reading a file more than once for compiling an application is not an error per se, but it is concerning in context of rework or live coding. In most cases, if we read a file twice, we should either be moving it into a shared library or similar, or copying the file so the loads may be edited or independently, aligning structure of loads with structure of filesystem. It seems feasible to detect when a file is read twice then raise a warning.
 
 ## Design Patterns
 
 ### Private Definitions
 
-As a simple convention, we might assume the "~" prefix is reserved for private definitions used within the current file or other compilation unit. When importing files, a compiler might implicitly 'allocate' regions within its own private space, and translate private names from imports via renames such as `{ "~" => "~(Allocated)." }`. 
+As a simple convention, we might assume the "~" character (anywhere in a name) is reserved for private definitions. When importing files, a compiler might implicitly 'allocate' regions within its own private space, and translate private names from imports via renames such as `{ "~" => "~(Allocated)." }`. 
 
 Translation based on a privacy prefix doesn't prevent a client from accessing private definitions of a module, but it does allow the client to more precisely control which definitions are shared between different subprograms. 
 
-We might further add a weak enforcement mechanism: raise an error when a name containing "~" is directly used in a definition, or when a translation is not privacy-preserving. A translation is privacy-preserving if "~" in LHS prefix implies "~" or NULL in RHS. A compiler can arrange to introduce privacy only via translations.
+We might further add a weak enforcement mechanism: warn or raise an error when a name containing "~" is directly used in a definition, or when a translation is not privacy-preserving. A translation is privacy-preserving if "~" in LHS prefix implies "~" in RHS (also permitting NULL or WARN in RHS). We introduce privacy when we see "~" in RHS without it in the LHS. A compiler can insist that privacy is introduced only through namespace translations.
 
 ### Implicit Environment
 
@@ -185,9 +170,7 @@ Shared libraries do introduce versioning and maintenance challenges, i.e. an upd
 
 Multimethods let users describe specialized implementations of generic operations across multiple modules, heuristically integrating them. A soft constraint-logic program might declare assumptions and preferences across multiple modules, then solve constraints holistically. Notebook applications should build a table of contents across multiple modules and robustly route proposed updates to their sources. Implementing these patterns manually is awkward and error-prone. Instead, I propose to push this to front-end compilers and libraries shared between them. 
 
-As a simple convention, we reserve '@\*' names for compiler-supported dataflow between modules and their clients. Compilers can implement ad hoc, fine-grained dataflows through the namespace. In contrast, '%env.\*' is controlled by the user and supports only one dataflow pattern. The glas executable does not need to be aware of specific compiler dataflow patterns except insofar as they are embedded into built-in front-end compilers.
-
-In some cases, dataflow computations require closure via specialized processing at the root source. Ideally, this is separate from the source code, such that we can compile any module as a root or further compose it. This can be supported by letting 'ns.read(env:"@")' return a set of flags (as a dict) describing compiler dataflows closed by the client.
+As a simple convention, we could reserve '$\*' names for compiler-supported dataflow between modules and their clients. Compilers can implement ad hoc, fine-grained dataflows through the namespace. In contrast, '%env.\*' is controlled by the user and supports only one dataflow pattern. The glas executable does not need to be aware of specific compiler dataflow patterns except insofar as they are embedded into built-in front-end compilers.
 
 A relevant concern with compiler dataflow is that it easily interferes with lazy loading. This is unavoidable, given we are integrating content orthogonally to loading modules. This can be mitigated by syntactic support for scoping and translating dataflows, and avoiding automation of dataflow where it confuses most users.
 
@@ -203,34 +186,6 @@ In practice, there is no use case for these channels. It's just an exercise in e
 
 ## Quotas
 
-Divergence is a relevant concern. However, even if we could somehow guarantee termination in presence of 'eval', we can easily express computations that take far more time than we're willing to spend. Thus, we'll want quotas for evaluation of a namespace. Quotas could be expressed via user configuration and annotations.
+Divergence and performance are relevant concerns. We'll want quotas for evaluation of the namespace. Quotas can be expressed via user configuration and annotations.
 
-To ensure a reproducible outcome, quotas must be based on a heuristic cost function. We might accumulate costs in a register, then check for overruns periodically (e.g. upon GC) and just before commit. But it should be deterministic whether or not any given fork of the namespace procedure commits.
-
-## Failure Modes
-
-Errors that abort a namespace procedure - assertion failures, quota constraints, etc. - are reduced to a warning, with evaluation proceeding on other 'ns.fork' branches. In case of invalid definitions - malformed AST, links to NULL or WARN - we can report appropriate compile-time warnings and arrange to diverge at runtime. After namespace computation halts (due to return and commit, abort on error, 'ns.eval' waiting on definitions, or lazily paused after 'ns.move') we implicitly invalidate missing definitions.
-
-Ambiguous definitions are possible if the same name is assigned multiple distinct definitions. (Assigning the same definition many times is idempotent.) In context of lazy evaluation, it is awkward to treat ambiguity as an error. Instead, we raise a warning then deterministically prioritize the first definition from the lowest-numbered fork. If a lower-priority definition must be observed (via 'ns.eval') to compute the higher-priority version, we can report an additional warning (or error) for the priority inversion, then deterministically favor the observed definition for consistency. Either way, the outcome should be deterministic, and programmers should manually resolve ambiguity.
-
-The heuristic policy for which namespace-layer errors or warnings should block applications from running should be configurable and application specific. That is, the runtime evaluates a configured function with access to the list of namespace errors and 'app.settings' to decide whether we abandon the effort. If we do run the application, this list of issues may also be visible through a 'sys.refl.ns.\*' API.
-
-## Regarding User-Defined Constructors
-
-User-defined constructors can feasibly support macros, templates, and embedded DSLs independent of front-end syntax. However, there are concerns similar to [macro hygiene](https://en.wikipedia.org/wiki/Hygienic_macro). In context of this document on namespaces, the emphasis is abstracting names and localizations.
-
-Names may be constructed only based on a (Localization, Binary) pair. We could feasibly permit converting names back to data, or at least comparison of names. Localizations cannot be constructed, composed, or computed, only captured based on 'ns.link' context. Lazy scope translations could be made implicit, never directly observed by the macro. 
-
-These features aren't especially difficult to implement. We could support these features via abstract data types, or macros could operate on a tacit data stack of ASTs and avoid direct capture of AST values. But this is an important constraint on design of user-defined constructors in the program model.
-
-## A Note on Namespace Reflection
-
-A reflection API may provide a program access to its own definitions. This can be useful for metaprogramming or debugging. Arguably, the simplest approach to reflection is to present a global namespace and present fully-translated AST values as definitions. With a localization, users can manually translate AST fragments to or from local names. However, this hinders local reasoning regarding scope, access control, dead code elimination, and position-independent code.
-
-A viable alternative is to present full names and localizations as abstract data types, at least when accessed through the reflection API. A subset of global names will be unlinkable (link to NULL or WARN) or unreachable (no preceding string), but a localization can provide a robust, local, partial view of a namespace.
-
-It is feasible to support both global and local reflection APIs at different trust levels.
-
-## Regarding Hierarchical Namespaces
-
-The glas program model will introduce local variables and algebraic effects handlers in context of a subprogram. These are namespace-like things. Ideally, we should avoid reinventing namespaces in multiple layers. However, at the program model layer, the design challenges are very different - far fewer definitions, far tighter integration with state in scope. The program model may permit use of a namespace procedure, as described in this document, to define a set of handlers. But, in practice, a much simpler solution will likely prove sufficient.
+Ideally, quotas should pass or fail deterministically, independent of CPU time or optional optimizations. This requires developing a heuristic cost function and, in general, checking for overruns before accepting generated output.
