@@ -29,39 +29,37 @@ To mitigate risk of naming conflict, the runtime will recognize configuration op
 
 ## Running Applications
 
-An application is generally expressed within a namespace using 'app.\*' methods. The 'app' prefix exists to simplify recognition, browsing, access control, and other meta-level features. Users may reference applications in the configuration namespace or the filesystem:
+An application may be defined within the configuration namespace, usually 'env.AppName.app', or a separate script file that, when compiled, defines 'app'. To run an application, use an application selector:
 
-* **--run AppName**: Searches for 'env.AppName.app.\*' in the configuration namespace. 
-  * **-run .AppName**: Elides the 'env' prefix, running 'AppName.app.\*'. As a special case, '--run .' will run the toplevel 'app.\*' in the configuration.
-* **--script Location**: Compile an indicated file, package folder, or URL into a namespace that must contain a toplevel 'app.\*'. This receives read-only access to a configured environment (e.g. shared libraries and composable apps) via '%env.\*'. The front-end compiler is selected based on file extension, i.e. '%env.lang.FileExt'.
-  * **--script.FileExt FileLocation**: same as '--script' except we substitute the file extension. Intended for use in Linux shebang lines.
-* **--cmd.FileExt SourceText**: same as '--script.FileExt' except we provide the source text as a command-line argument, perhaps presenting it as a virtual read-only file in the current working directory.
+* **--run AppName**: Using 'env.AppName.app' in the configuration namespace. 
+  * **--run .AppName**: Elides the 'env.' prefix, running 'AppName.app' instead. As a special case, '--run .' runs the toplevel 'app'.
+* **--script Location**: Compile an indicated file or package folder. The generated namespace should define 'app'. Receives restricted access to configuration namespace, linking '%env.\*' to the 'env.\*' (may be configurable).
+  * **--script.FileExt FilePath**: as '--script' except we select a front-end compiler based on a given file extension, ignoring the actual extension. Useful in context of Linux shebang lines.
+* **--cmd.FileExt SourceText**: as '--script.FileExt' except we also provide the script text as a command-line argument. We might present this as a read-only virtual file.
 
-Every application must define at least 'app.settings' to guide integration. Typically, we'll also define 'app.main' for conventional threaded apps, or 'app.step' for transaction loop apps, and perhaps a few event handling methods, such as 'app.http' to receive HTTP requests. See [glas applications](GlasApps.md). 
+An application is expressed as a namespace of handlers that will be called from a runtime process. Typically, these handlers will include 'settings' to support application-specific runtime configuration and integration. Beyond this, 'http' may receive events through a configurable port (multiplexing with remote procedure calls and debugging), and 'step' could support a transaction-loop application, or 'main' a conventional app. See [glas applications](GlasApps.md).
 
-*Note:* There are no runtime options on the command line. In general, all options should be through the configuration file or application settings. However, a staged application may interpret command-line arguments to influence settings. 
+*Note:* There are no command-line arguments to configure the runtime. However, 'settings' may read command-line arguments and environment variables when guiding integration. Support for staged applications, where an application explicitly builds the next stage app, is also feasible.
 
 ## Installing Applications
 
-Installing applications - ensuring they're available for low-latency or offline use - can be understood as a form of manual cache management. A user configuration might recommend that a set of definitions is maintained locally. To simplify tooling, we might add a little indirection, perhaps referencing a local file or shared-heap variable. This is easily extended to installing scripts.
+Installing applications is convenient for offline use or startup latency, and can be viewed as pinning a cache. This might be supported through configuration referencing an 'installs.txt' file or similar, and a few commands to update this file or update the cache.
 
-Ideally, 'installing' an application reduces to downloading an executable binary or whatever low-level JIT-compiled representation is cached by the glas executable. Or if not the that, then at least avoiding rework for the more expensive computations. This is feasible using an approach similar to Nix package manager, i.e. downloading from a shared cache based on transitive secure hashes of contributing sources. The user configuration could specify one or more trusted, shared caches.
+It is feasible to configure a proxy cache to support work sharing within a community, or even a proxy compiler to offload compilation work, such that we're only downloading the final executable binary.
 
 ## Initial Namespace
 
-The glas executable provides an initial namespace containing only a few [program primitives](GlasProg.md) under '%\*'. The space of primitives is marked read-only. Scripts or staged applications are written into the same namespace as the user configuration, albeit in separate volumes for access control. Viable translations:
+The '%' prefix is reserved for system use. This includes [program primitives](GlasProg.md) and linking '%env.\* to the configuration 'env.\*'. Scripts and staged applications can share a larger namespace with the configuration if we're careful about managing prefixes:
 
         # user configuration
         move: { "%" => WARN, "" => "u." }
         link: { "%" => "%", "%env." => "u.env.", "" => "u." }
 
-        # script or staged app (at addr)
+        # script or staged app at addr
         move: { "%" => WARN, "" => "addr." }
         link: { "%" => "%", "%env." => "u.env.", "" => "addr." }
 
-The front-end compiler will further introduce '@\*' compiler dataflow definitions to support automatic integration across module boundaries. This is also the case for a built-in front-end compiler. However, from the runtime's perspective, these are normal definitions and receive no special attention.
-
-From a regular programmer's perspective, '%\*' and '@\*' are implementation details, and the initial namespace is effectively empty. However, regular users will also inherit from a community configuration
+At this layer, the initial namespace is empty except for primitives. However, a front-end syntax might implicitly import definitions.
 
 ## Security
 
@@ -93,7 +91,7 @@ Heuristics to guide tooling: First, where feasible, every function available via
 
 ## Glas Shell
 
-A user configuration may define 'app.\*' at the toplevel namespace. In context of [notebook applications](GlasNotebooks.md) this should represent a live-coding projectional editor for the configuration file and its transitive dependencies. Users can run this as a normal application via `"glas --run . Args To App"`. 
+A user configuration may define 'app' at the toplevel namespace. In context of [notebook applications](GlasNotebooks.md) this should represent a live-coding projectional editor for the configuration file and its transitive dependencies. Users can run this as a normal application via `"glas --run . Args To App"`. 
 
 A community can feasibly extend this notebook application to serve as a [shell](https://en.wikipedia.org/wiki/Shell_(computing)) for a glas system. Instead of running individual glas applications within the OS, and occasionally managing OS configuration files, users can treat the glas system as one big live-coded environment composed of applications and configurations. This 'shell' application may support multiple user interfaces via CLI, HTTP, and GUI.
 

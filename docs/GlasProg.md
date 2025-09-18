@@ -4,58 +4,61 @@ The [namespace](GlasNamespaces.md) supports modules and user-defined front-end s
 
 ## Proposed Program Primitives
 
-Program Control:
+Control Flow:
 
-* `n:Name` - we'll generally try to interpret a name in terms of inlining its definition, though recursion requires special attention for performance reasons.
+* `n:Name` - we can interpret a name in terms of substituting its definition. Performance may involve call stacks and tail-call optimization.
 * `(%do P1 P2 P3 ...)` - execute P1 then P2 then P3 etc. in sequence. We also use `(%do)` as our primary no-op, and '%do' as the constructor for committed action in a decision tree structure.
 * `%fail` - voluntary failure, interpretation is contextual but will gend to abort the current transaction and allow some observable handling of this, e.g. backtracking conditions, or aborting a coroutine step until observed conditions change. For contrast, involuntary failures such as type errors are instead modeled as divergence like an infinite loop.
-* `(%cond Sel)` - supports if/then/else, pattern matching, etc.. The Sel type consists primarily of '%br' nodes, but may terminate with '%do' or '%fail'. It's a divergence error if no operation is matched.
+* `(%cond Sel)` - supports if/then/else, pattern matching, etc.. The Sel type has a distinct AST structure from full programs.
   * `(%br C BrL SelR)` - run C within a hierarchical transaction. If C terminates normally, run SelL. If C fails voluntarily, abort then run SelR. Note that committing C is left to SelL. 
   * `(%do P1 ...)` - in context of Sel, represents committed action. Commit the entire chain of prior branch conditions, then run '%do' in the same transactional context as '%cond' or '%loop'.
   * `%fail` - in context of Sel, represents the lack of a case on the current branch. Causes computation to backtrack, aborting the most recent successful branch condition then trying the SelR path. In normal form, appears only in SelR position because we can optimize `(%br C %fail SelR) => SelR`.
   * Beyond these, Sel may also support language declarations, annotations, and macros.
-* `(%loop Sel)` - supports anonymous loops, uses same Sel type as '%cond'. In the simplest case, `"while Cond do Body"` becomes `(%loop (%br Cond (%do Body) %fail))`. But we can integrate loop conditions with an action selector. Programs may also express loops via recursive definitions!
-* `(%c P1 P2 P3 ...)` - execute P1, P2, P3, etc. concurrently as coroutines with independent stacks and voluntary yield of shared registers and handlers. This operation exits only when all coroutines exit, i.e. fork-join behavior. The scheduler shall guarantee associativity.
-* `%yield` - pauses a computation, providing an opportunity for concurrent computations to operate. Resumption is implicit. Each yield-to-yield step should be logically atomic, thus '%fail' implicitly rewinds to a prior '%yield' then awaits changes to observed state.
+* `(%loop Sel)` - supports anonymous while-do loops, albeit mixing selection of action. Uses same Sel type as '%cond'. Implicitly exits loop if no '%do' step is selected.
+* `(%co P1 P2 P3 ...)` - execute P1, P2, P3, etc. concurrently as coroutines with independent stacks and voluntary yield. This step only exits when all coroutines complete.
+* `%yield` - pauses a coroutine, providing an opportunity for concurrent computations to operate. Resumption is implicit. Each yield-to-yield step should be logically atomic, thus '%fail' implicitly rewinds to a prior '%yield' then awaits changes to observed state.
 * `(%atomic P)` - an atomic operation may yield, but will only resume internally. Fails only if all internal resumptions are failing.
 * `(%choice P1 P2 P3 ...)` - represents non-deterministic runtime choice of P1 or P2 or P3. 
 
-* `(%sched Schedule P)` - (tentative; low priority) local guidance of a continuation scheduler, would only apply to continuations expressed within P. 
-
-Data Stack Manipulation:
-* `d:Data` - push copy of data to top of data stack
-* `(%dip P)` - run P while hiding top of data stack
-* `%swap` - flip top two stack elements. i.e. "ab-ba"
-* `%copy` - copy top stack element, i.e. "a-aa".
-* `%drop` - drop top stack element, i.e. "a-".  
+* `(%sched Schedule P)` - (tentative; low priority) local guidance of a continuation scheduler, would only apply to continuations expressed within P. Not quite sure what a Schedule is.
 
 Data Manipulation:
+* `d:Data` - push copy of data to top of data stack
+* `(%dip P)` - run P while hiding top of data stack
+* `%swap` - exchange top two stack elements. i.e. "ab-ba"
+* `%copy` - copy top stack element, i.e. "a-aa".
+* `%drop` - drop top stack element, i.e. "a-".  
 * `%take` - "rl-vr" given a radix trie and bitstring label, extract the value and the radix tree minus the label. This is equivalent to '%fail' if no such label exists.
 * `%put` - "vrl-r" given a value, radix trie, and label, add the value to the radix tree at the label. This will diverge if it overwrites existing tree structure.
 
-Environment Interaction:
-* `(%call HandlerName TL)` - invoke a handler defined in the environment, with a translation applied to the handler's view of the caller's context (may be identity). 
-* `(%rw RegisterName)` - exchange data between a register and top stack element.
-
-Environment Control:
-* `(%scope TL P)` - applies TL to RegisterNames and HandlerNames when running P. 
-introducing locals and handlers
-* TODO - *introducing local registers and handlers*
+Environment Manipulation:
+* `(%scope EnvTL P)` - apply EnvTL to RegisterNames and HandlerNames in P. This applies across definition boundaries. To support extension, composition, and metaprogramming, EnvTL has a dedicated AST structure.
+  * `(%tl TL)` - the common case, same prefix-to-prefix radix tree TL as namespaces.  
+    * Translation to NULL or WARN will block use of a register or handler, with WARN reducing compile-time errors to compile-time warnings and runtime errors (by default).
+  * `(%tl.arc NewPrefix OldPrefix RegisterName)` - (tentative) support for associative naming structure; see *Environment Abstraction*.
+  * `(%tl.seq EnvTL1 EnvTL2 ...)` - apply EnvTL1 then EnvTL2 etc. in sequence.
+* `(%local Prefix P)` - (tentative) allocate a fresh namespace with registers initialized to zero. Translate Prefix to this namespace in context of P. Clear the registers upon exit from P. Clear may diverge if registers contain linear data.
+  * we could feasibly integrate with handlers, e.g. `(%local Prefix Handlers P)`
+* `(%rw RegisterName)` - swap data between named register and top data stack element. 
+* `(%call HandlerName EnvTL)` - invoke a handler, applying a translation to control the handler's view of the caller's environment.
+* *tbd* - introduce handlers in context of a subprogram.
 
 Tooling and Evolution:
 
-* `(%lang Version AST)` - Language declaration. Version is a dict for ad hoc extensibility. Idempotent, thus usually equivalent to AST, but in special cases we might apply adapters or switch interpreters to integrate languages.
-* `(%an Annotation AST)` - Equivalent to AST, but Annotations provide ad hoc guidance to compilers, interpeters, optimizers, debuggers, typecheckers, theorem provers, and similar tools. By convention, Annotations have form `(%an.ctor Args)`, and are not directly interpreted as programs. 
+* `(%an Annotation P)` - Equivalent to P, modulo performance, analysis, instrumentation, and reflection. Annotations provide ad hoc guidance to compilers, interpeters, optimizers, debuggers, typecheckers, theorem provers, and similar tools. 
+* `(%lang Version P)` - Language declaration for P. Declarations should be idempotent, so this does nothing if the language version doesn't change. However, in the general case it may result in support for different primitives and distinct interpretations of existing primitives in P. Version may be encoded as a dict.
 
 Metaprogramming:
-* `(%macro Template)` - Template is an AST that locally contains special '%macro.\*' elements for rewriting. 'Locally' means no rewriting across definition boundaries. Applied as a user-defined constructor.
+* `(%macro Template)` - Template is an AST that locally contains special '%macro.\*' elements for rewriting. In this context, 'locally' restricts rewriting across definition boundaries, i.e. no 'free' macro variables. Macros are applied as a user-defined constructor in programs, selectors, annotations, and other AST types.
 * `(%macro.arg K)` - is substituted by the Kth AST argument to the constructor. This includes K=0 referring to the constructor, the macro definition, thus supporting anonymous recursion.
 * `%macro.argc` - is substituted by the count of AST arguments after arg 0.
-* `(%macro.eval Localization ASTBuilder)` - after macro substitions, ASTBuilder should represent a pure, 0--1 arity program that returns an AST value (see namespace types). This AST is localized, replaces the eval constructor, then receives another round of macro substitutions.
+* `(%macro.eval Localization ASTBuilder)` - after macro substitions, ASTBuilder should represent a 0--1 arity program that returns an AST value (see namespace types). This AST is linked based on Localization, replaces the eval constructor, then receives another round of macro substitutions.
 
 ### Annotations
 
         (%an Annotation Operation)
+
+Annotations are not executable as programs, but they will support macros.
 
 Critical annotations, necessary in early versions of runtime:
 
@@ -63,15 +66,22 @@ Critical annotations, necessary in early versions of runtime:
 * `(%an.memo MemoHints)` - we don't immediately need full-featured memoization, but at least enough for incremental compilation, e.g. persistent memoization of pure computations. 
 * `(%an.log Chan MsgSel)` - printf debugging! Rather sophisticated. See *Logging*.
 * `(%an.reject Chan MsgSel)` - negative assertions structured as logging an error message. If there is no error message, the assertion passes, otherwise we diverge.
-* `(%an.profile Chan Options)` - record performance metadata such as entries and exits, time spent, yields, fails, and rework. 
-  * TODO: this will benefit from dynamic virtual channels for fine-grained profiling
+* `(%an.profile Chan)` - record performance metadata such as entries and exits, time spent, yields, fails, and rework. This may benefit from dynamic virtual channels (tbd).
 * `(%an.chan.scope TL)` - a simple prefix rewrite on Chan names for Operation. 
-* `(%an.static)` - indicates that the top stack element should be statically computed.
+* `(%an.arity In Out)` - express the data stack arity for a subprogram. Represents reading 'In' elements and writing 'Out' elements. Operation may read and write fewer so long as balance is maintained.
+* `(%an.data.wrap RegisterName)` - support for abstract data types. The RegisterName determines access control and valid scope for escape analysis. Wraps top item on data stack. Operation must be a no-op. 
+  * `(%an.data.unwrap RegisterName)` - unwrap previously wrapped data
+  * `(%an.data.wrap.linear RegisterName)` - as wrap, but also marks the abstract data as linear, forbidding copy or drop until the data is unwrapped.
+  * `(%an.data.unwrap.linear RegisterName)` - corresponding unwrap for linear data.
 
 Nice to haves:
+* hiding parts of data or environment as lightweight types
+* type declarations. I'd like to get bidirectional type checking working in many cases relatively early on.
+* 'static' types in type declarations.
+* linear types or valid 'final' states in type declarations.
+* robust data abstraction, optionally including linear data.
+* tail-call declarations. Perhaps not per call but rather an indicator that a subroutine can be optimized for static stack usage, optionally up to handler calls. 
 * stowage. Work with larger-than-memory values via content-addressed storage.
-* type safety. I'd like to get bidirectional type checking working in many cases relatively early on.
-* tail-call declarations. This could feasibly be presented as part of a function type.
 * lazy computation. Thunk, force, spark. Requires some analysis of registers written.
 * debug trace. Probably should wait until we have a clear idea of what a trace should look like. 
 * debug views. Specialized projectional editors through debuggers.
@@ -218,7 +228,7 @@ Viable model:
 * `(%macro Template)` - Template is an AST that locally contains `(%macro.arg K)` and other special elements for rewriting. The locality constraint forbids substitution across definition boundaries.
 * `(%macro.arg K)` - is substituted by the Kth AST argument to the constructor. This includes K=0 referring to the constructor, the macro definition, supporting anonymous recursion. 
 * `%macro.argc` - is substituted by the count of AST arguments.
-* `(%macro.eval Localization ASTBuilder)` - after macro substitions, ASTBuilder should represent a pure, 0--1 arity program that returns a concrete AST representation (from namespace types) on the data stack. This AST is localized, replaces the eval constructor, and is then subjected to another round of macro substitutions.
+* `(%macro.eval Localization ASTBuilder)` - after macro substitions, ASTBuilder should represent a pure, 0--1 arity program that returns a concrete AST representation (from namespace types) on the data stack. This AST is linked based on the Localization, replaces the eval constructor, and is then subjected to another round of macro substitutions.
 
 This model permits [non-hygienic macros](https://en.wikipedia.org/wiki/Hygienic_macro), leaving problems of hygiene to front-end syntax. Aside from these intermediate-language macros, we could also support text-based macros in a front-end syntax.
 
@@ -234,15 +244,7 @@ I propose to represent access to non-deterministic choice as a primitive (instea
 
 There are a few reasons for this. First, it does us very little good to intercept non-deterministic choice within a program. Only at the level of a runtime or interpreter might we heuristically guide non-deterministic choice to a useful outcome. Second, we may still control non-deterministic choice via annotations, i.e. to indicate a subprogram is observably deterministic, or at least does not introduce non-determinism (though it may invoke non-deterministic handlers). Third, use of non-deterministic choice in assertions, fuzz testing, etc. make it awkward to present as a handler.
 
-Not quite sure what I want to call this. Could use '%sel' or '%ndc' or something else.
-
-### JIT Compilation
-
-Although the glas program model should support an interpreter, it will be designed with AOT and JIT compilation in mind as the primary mode for evaluation. Every serious glas runtime will compile most code before or during execution, and may cache compiled code for convenient reuse across repeated executions of an application. 
-
-Compilation, and especially optimizations, be heavily guided and aided by annotations. For example, we may annotate type information on variables, allowing for static or dynamic validation of assumptions, dynamic testing of "final" states, specialized representations for unboxed numbers, and so on.
-
-An intriguing possibility is to separate much compilation and optimization logic from the runtime executable, moving it into the user configuration, i.e. such that optimizations become user-defined but separate from applications. An application could suggest additional checks or optimizations to apply via application settings. The runtime may need to initially interpret the configured JIT compiler to compile itself, but this should be cacheable.
+Not quite sure what I want to call this. Perhaps '%choice'.
 
 ### Unit Types
 
@@ -262,13 +264,15 @@ However, even the simplest of traces can be useful if users are careful about wh
 
 ### Lazy Computation? Defer.
 
-A proposed adaptation of explicit laziness to procedural programs:
-
         (%an (%an.lazy.thunk Options) Op)
-        (%an (%an.lazy.force) (%do))
-        (%an (%an.lazy.spark) (%do))
+        (%an %an.lazy.force (%do))
+        (%an %an.lazy.spark (%do))
 
-In case of '%an.lazy.thunk' our Options may need to include assumptions on output arity and which registers are written. We could infer these things, but that would be suitable only for implicit thunks, which may be a valid option. The '%an.lazy.force' and '%an.lazy.spark' operations could simply operate as 1--1 data stack operations on thunks.
+In the general case, we could 'thunkify' an operation by capturing each input and immediately replacing each output (whether stack or register) with a thunk. However, this requires implicit thunks. If we want explicit thunks, where 'force' is required to extract a value, we may need to explicitly list outputs and restrict the type of Op.
+
+There are also many restrictions on Op: Op must not '%fail' or '%yield' (outside of '%atomic'). It may diverge, in which case 'force' will also diverge. Checking these conditions implies some static analysis.
+
+I think it might be best to defer laziness until static analysis is more mature. But if there is demand, e.g. for parallel evaluation of sparks, we could get started with laziness of pure 1--1 computations. 
 
 ### Accelerators
 
@@ -326,11 +330,62 @@ We can include a basic set of stack manipulators: dip, swap, copy, drop. We can 
 
 Beyond that, perhaps the only primitive data manipulations we need are dict take and put. These may be linear, too, e.g. treating it as a type error if put would overwrite existing content. Anything else can be implemented via accelerators.
 
-Registers may simply initialize with zero values. In case of external registers, we might prefer to model this in terms of optional values.
+*Aside:* Register and handler names may overlap in theory, but doing so is confusing and hinders independent translation. In practice, such overlap is unlikely to happen by accident, and a compiler can raise an error when it does occur.
 
-### Locals and Handlers or Stack Objects
+### Data Abstraction
 
+It is feasible to support abstract data types (ADTs) through annotations. ADTs are useful when expressing many APIs, controlling the provenance of data.
 
+        (%an (%an.data.wrap RegisterName) (%do))
+        (%an (%an.data.unwrap RegisterName) (%do))
+
+These wrap or unwrap the top stack element, respectively. Tying this to a RegisterName supports access control and escape analysis. Access control is via '%scope', i.e. we can hide RegisterNames from a subprogram. Static escape analysis can verify that abstract data is never written into a register with a longer lifespan than RegisterName. Dynamic escape analysis might be limited to shared database vs. runtime scopes.
+
+Ideally, a compiler can use static analysis to eliminate most wrap/unwrap pairs within a program. But we can support specialized representations for abstract data types and dynamic checking where static analysis proves inadequate.
+
+By default, we can '%copy' and '%drop' abstract data. This can hinder enforcement of protocols. For example, if we want to guarantee an abstract file handle is closed exactly once, we'll need to ensure the file handle isn't copied or dropped. Fortunately, it is possible to forbid these operations, thus supporting 'linear' data, with a small extension:
+
+        (%an (%an.data.wrap.linear RegisterName) (%do))
+        (%an (%an.data.unwrap.linear RegisterName) (%do))
+
+As with abstract data, it's preferrable that safe use of linear data is determined through static analysis, avoiding runtime checks. However, dynamic enforcement is feasible if we maintain metadata (perhaps via tagged pointer bits) about whether data transitively contains linear elements.
+
+### Environment Abstraction
+
+An intriguing alternative to ADTs involves 'second class' bindings. Instead of calling a file API and receiving an abstract, linear file handle, we could call a file API to provide a volume of local registers to allocate the open file. The API could explicitly include methods to migrate the open file between volumes. 
+
+The trick is then to block the caller from peeking and poking at the file representation. This is awkward to express with annotations, at least without a full type system. However, a relatively simple alternative is to extend the structure of the environment namespace to support association. 
+
+How might we represent this? Let's consider a more concrete example. 
+
+A caller to a file API provides a volume of registers such as "$file.\*" to the file API. The file API wants to block the caller from directly accessing these registers, so it effectively wants to use something like "$file.(FileAPIKey).\*", but where FileAPIKey is also a register name and thus unforgeable. We can bind this to another prefix such as "f." within the subprogram, such that the file API is managing "f.fd" and "f.status" and other useful data.
+
+A viable encoding is something like:
+
+        (%scope (%tl.arc "f." "$file." FileAPIKey) P)
+          # roughly translating "f." => "$file.(FileAPIKey)." in P 
+          # generalizes to
+        (%scope (%tl.arc NewPrefix OldPrefix RegisterName) P)
+
+This may require some careful attention to how translations compose. But we could translate a prefix without adding the translation suffix, and treat FileAPIKey as untranslateable in composition. An actual implementation might involve a simple name mangling scheme.
+
+Environment abstraction doesn't have a direct analog to linear data types for protocol control. However, we could keep a linear unit value in "$file.(FileAPIKey).stay-open" to force an error if registers are cleared prematurely. Or we could feasibly annotate register types with 'final' states, such that we raise an error if a register is not in an acceptable final state upon leaving scope.
+
+### Handler Namespaces
+
+Some observations:
+
+* Handlers receive access to at least two 'environments': host and caller. To avoid naming conflicts, we could introduce standard or specified prefixes for these. Standard prefixes seems more convenient for most use cases.
+* It is feasible to translate access to the 'caller' environment for a whole set of handlers instead of for individual handlers.
+* When defining a set of (possibly) mutually recursive handlers, it may be convenient to introduce another prefix to refer to this set.
+* Ideally, we can conveniently compose, extend, inherit, metaprogram, and override sets of handlers. This suggests something akin to an OOP-inspired structure, perhaps via the 'link' and 'move' translations of namespaces.
+* Ideally, an application can be expressed as a set of handlers that we call from a runtime process. This provides a high level of consistency. Applications should support orthogonal persistence and live coding. Thus, it may be best to clearly separate state *allocation* from the description of a set of handlers. 
+* That said, we can usefully conflate introduction of local registers and handlers, e.g. `(%local Prefix Handlers Prog)`. This gives us a clear prefix for the new handlers, ensures handlers have access to some private state aside from the host, and prevents any naming conflicts with existing handlers (because Prefix is a fresh namespace). 
+* Use of `(%call HandlerName TL)` should should have roughly the same performance as use of `n:Name`, and similar optimizations - inlining, partial evaluation, tail-call optimization, etc.. 
+* Macro handlers are possible if we permit a call in constructor position, e.g. `((%call HandlerName TL) AST1 AST2 ...)`. This does require that the caller is aware that the handler defines a macro, but that's consistent with names. These higher-order macros should be useful.
+* Eventually, we might want to integrate full procedurally generated namespace for local handler definitions. But this can be deferred for now. 
+
+None of this seems too difficult to integrate. Perhaps we introduce `%ns.move` and `%ns.link` and `%ns.def` and so on for building up the handler namespace. `%ns.union` for composition. Unlike full procedurally generated namespaces, we don't need 'eval' or 'read', though we get something similar from macro calls. We can still support lazy evaluation of a namespace in context of macros. Then '%local' implicitly provides the initial translation and integration.
 
 ### Type Descriptions
 

@@ -1,35 +1,39 @@
 # Glas Applications
 
-The [glas executable](GlasCLI.md) lets users select and run an application from the configuration namespace or by compiling a file as a script. By convention, a glas application is represented as a set of 'app.\*' methods in a [namespace](GlasNamespaces.md). 
+The [glas executable](GlasCLI.md) lets users select and run an application from the configuration namespace or by compiling a file as a script. By convention, a glas application is defined in 'env.AppName.app' in the configuration [namespace](GlasNamespaces.md), or 'app' in a script. 
+
+Instead of a single 'main' program, an application is defined by a collection of related methods such as 'start' and 'step' for transaction-loop applications, 'http' to receive events, perhaps 'gui' to render a view. Most critically, 'settings' supports application-specific configuration of the runtime.
+
+This set of methods is expressed as a namespace of handlers (see [program model](GlasProg.md)). This allows the application to be reduced to a single definition, and simplifies composition, extension, inheritance, and overrides similar to OOP.
 
 ## Application Settings and Adapters  
 
-Every application defines at least 'app.settings' to guide integration. This method does not receive full access to application state or most effects, allowing for compile-time configuration of runtime features. 
+Every application defines at least 'settings' to guide runtime integration. In general, the runtime does not directly observe application settings. Instead, the runtime passes access to 'settings' to the configuration, and the configuration queries the application as needed. This indirection ensures the configuration has robust control and provides greater portability between application conventions and runtime versions.
 
-In general, the runtime does not directly observe application settings. Instead, the configuration defines an adapter between runtime and application based on access to settings and runtime version information. This adapter code can support portability of applications across multiple runtime versions and community conventions, and extension of the glas system with alternative application models.
+Although 'settings' may observe command-line arguments or environment variables, it is preferable that most queries can be processed at compile-time, allowing for greater specialization of the runtime.
 
 ## Application Models and Run Modes
 
-A runtime may recognize more than one "run mode" for applications, selecting one based on application settings. A few useful run modes:
+A runtime may support more than one "run mode" for applications. A run mode would be configured based on application settings. A few useful run modes:
 
-* *threaded applications* - The runtime runs a non-atomic 'app.main' procedure or process over multiple steps, implicitly maintaining control-flow state between steps. Steps may be coarse-grained, atomic between explicitly waiting on external conditions, allowing for 'atomic' sections internally. Any parallelism between threads is opportunistic.
+* *threaded applications* - Very conventional. The runtime runs a non-atomic 'main' program. Whenever main yields, the runtime may process outputs and update input buffers, then eventually resume. Parallelism is opportunistic. Not friendly for live coding because we cannot robustly update behavior except at name or '%call' boundaries.
 
-* *transaction loop applications* - The runtime repeatedly and runs 'app.step' atomically in an implicit loop, relying on incremental computing optimizations and non-deterministic choice as the basis for concurrency. There is no implicit state; any control flow between steps must be modeled explicitly. 
+* *transaction-loop applications* - The primary operation is to repeatedly run 'step' in isolated, atomic transactions. A naive implementation will likely perform a lot of rework, but we can optimize via incremental computing, duplicate the step upon non-deterministic choice, and abort a step when read-write conflicts are detected. Very friendly to live coding.
 
-* *staged applications* - If *late-bound sources* at the namespace layer prove inconvenient, we could model staging more explicitly as a run mode, e.g. defining an 'app.build' namespace procedure and a localization for linking across stages. Relies on JIT compilation.
+* *staged applications* - An application could define 'build' to construct the next-stage application. (However, explicit staging may be unnecessary if we have good implicit staging via late-bound dependencies.)
 
-This document focuses on transaction loop applications, which are an excellent fit for my long-term vision of glas systems. However, threaded applications are more familiar to most programmers. The main concern with threaded applications is that implicit control-flow state is difficult to maintain in context of live coding, which has opportunity costs. Though, we can mitigate this via expressing any long-running loops in terms of tail-recursion.
+This document focuses on transaction-loop applications. Though, I imagine that threaded applications will prove more popular in early development due to difficulty of initially implementing transaction-loop optimizations.
 
 Aside from the primary behavior, a runtime may support ad hoc event-processing methods:
 
-* 'app.start' - Set initial global state, perform initial checks. Retried until it commits once.
-* 'app.switch' - First transaction in new code after live update. Old code runs until successful switch.
-* 'app.http' - Handle HTTP requests between steps. An initial basis for GUI and events.
-* 'app.rpc' - Transactional inter-process communications. Multiple calls in one transaction. Callback via algebraic effects.
-* 'app.gui' - Like an immediate-mode GUI. Reflective - renders without commit. See [Glas GUI](GlasGUI.md).
-* 'app.signal' - Called to receive OS events, e.g. to support graceful shutdown.
+* 'start' - First transaction. Initial checks and setup. Retried until it commits.
+* 'switch' - First transaction after live update. Old code runs until switch commits.
+* 'http' - Receive HTTP requests from configured port, multiplexed with RPC, debugger, etc.. 
+* 'rpc' - Receive remote procedure calls. A single transaction might receive multiple calls.
+* 'gui' - See [Glas GUI](GlasGUI.md).
+* 'signal' - handle OS-level signals or interrupts.
 
-Working with 'app.http' and 'app.rpc' and so on is relatively convenient for composition of applications and debugger integration compared to explicitly opening a TCP port. In case of staged applications, these event-processing methods should have a mechanism to delegate to the next stage.
+An important feature of 'http' and such is that we can far more conveniently compose 'http' handlers than we can compose applications that independently open TCP ports to receive HTTP requests. I assume that handling HTTP requests will be the primary mode of external interaction with applications in early development, until the glas system matures.
 
 This document focuses on transaction loop applications, as the best fit for my vision of glas systems. However, ultimately the application model supported in glas is very flexible and extensible.
 
@@ -54,32 +58,23 @@ Transaction loops present two significant challenges. First, the most important 
 
 *Note:* Regarding [ACID (Atomicity, Consistency, Isolation, Durability)](https://en.wikipedia.org/wiki/ACID) properties, only atomicity and isolation are required for a transaction loop. However, consistency is indirectly supported via type systems and assertions. Durability may be orthogonal, binding some application state to configured persistent storage.
 
-## Application State
+## Basic Integration
 
-Application methods ('app.\*') receive access to a stateful application environment through registers and handlers. Intriguingly, a subset of this state may be persistent, bound to a configured database, supporting asynchronous shared-memory interactions, persistent configurations, and other features. But there are also use cases for state scoped to the runtime instance, and transaction-local state.
+Applications are expressed as a set of handlers. However, we'll present the runtime primarily as the 'caller' to the application handlers, instead of the host. This allows for more flexibility per-call in what the runtime presents to the application.
 
-I propose to infer external registers from the application program. We may insist the set of external registers is finite, i.e. that any recursive translation reaches a fixpoint. Otherwise, we can use simple naming conventions, binding registers to a key-value store:
+* host prefix - an empty namespace, link everything to WARN
+* locals prefix - binds to application-local state and app handlers.
+* caller prefix - access runtime effects APIs, shared persistent 'db.\*' registers, and (for some methods) transaction-local ephemeral 'tn.\*' registers. The latter is mostly useful in context of remote procedure calls.
 
-* "app.\*" - persistent but private, analogous to "%AppData%" folder in Windows or "~/.config/AppName/" in Linux, useful for persistent configuration. Exact storage location is decided by the runtime or configuration with reference to 'app.settings'. 
-* "shm.\*" - shared memory, for ad hoc asynchronous interactions between glas applications. Access to registers may be subject to configured security policy (see *Security* in [glas CLI](GlasCLI.md)). Other toplevel registers might logically be aliased under shm, e.g. translation 'app.\* => shm.app.AppName.\*'.
-* "rt.\*" - ephemeral memory, scoped to a runtime instance yet shared between 'app.\*' methods and such. This is suitable for abstract linear data representing open sockets, file handles, FFI streams and so on.  
-* "tn.\*" - ephemeral memory, scoped to the current transaction. The primary use case is to allow intermediate inconsistency when multiple RPC calls (or similar) are evaluated within one transaction. The transaction can be aborted if the registers aren't in a valid state, e.g. based on 'accept type' annotations or abstract linear data.
+In this document, I'll generally translate the caller prefix as 'sys.\*' and the locals prefix as 'app.\*'. Thus, 'sys.db.x' would be a shared persistent register while 'app.x' is an application instance register. This may require an explicit translation in practice.
 
-Alternatively, we could attempt to express programs as stack objects, with methods as handlers. In this view, we might favor the naming conventions for handler integration.
+In context of shared persistent data, we might record some inferred metadata about register types into the database. This could support a more specialized representation and best-effort type safety for shared memory.
 
-An application program may also contain annotations describing the expected environment type, or fragments thereof, potentially supporting consistency checks and optimized representations. Intriguingly, we can check consistency and optimize even for persistent representations by recording suitable metadata into persistent storage.
+*Note:* Database registers default to zero.
 
-*Note:* Registers may simply default to zero if never previously assigned.
+## Distributed State
 
-### Distributed State
-
-In context of a distributed runtime, application state may also be distributed. 
-
-In the simplest case, we might distribute registers by distributing ownership, requiring a distributed transaction when a transaction involves registers owned by two different nodes. In case of read-mostly registers, we might mitigate this with mirroring, with each node maintaining a consistent view of some external registers.
-
-In more sophisticated cases, we might recognize primitive or accelerated operations such as reading or writing a list register as a queue, allowing for split ownership between reader and writer nodes. Or we could feasibly support CRDTs, where multiple nodes independently update and observe a register according to carefully constrained rules, merging updates to ensure consistency whenever a distributed transaction is required.
-
-A relevant challenge for distributed state is dealing with permanent loss of nodes or network partitions. This could be mitigated by having distributed ownership of essential state, requiring backups of writes before the transaction fully commits. But we can also forcibly allow progress in a partition by resetting registers - a write-only transaction never has a read-write conflict.
+In context of a distributed runtime, application state and transactions may also be distributed. For performance, we can mirror read-mostly registers, and we can specialize accelerated operations such as treating a register as a FIFO. In the extreme case, we could accelerate CRDT registers that each mirror can update locally, merging updates when network connectivity resumes.
 
 ## HTTP Interface
 
@@ -113,8 +108,7 @@ My vision for [GUI](GlasGUI.md) involves users participating in transactions ind
 
 In context of a transaction loop, fair non-deterministic choice serves as a foundation for task-based concurrency. Proposed API:
 
-* `sys.select(N)` - fairly chooses and returns an integer in the range 0..(N-1). Diverges if N is not a positive integer.
-* `(%select Op1 Op2 ...)` - (tentative) AST primitive for non-deterministic choice, convenient for static analysis.
+* `(%choice Op1 Op2 ...)` - (tentative) AST primitive for non-deterministic choice.
 
 Fair choice means that, given sufficient opportunities, we'll eventually try all of them. However, this doesn't imply *random* or *uniform* choice! A scheduler may be very predictable, and may heuristically choose for performance reasons.
 
@@ -126,18 +120,17 @@ Instead of a stateful random number generator, the runtime will provide a stable
 
 * `sys.random(Seed, N) : Binary` - return a list of N cryptographically random bytes, uniformly distributed. The result varies on Seed, N, and runtime instance. The Seed could feasibly be abstract state or plain old data.
 
-An implementation might involve a secure hash of `[Seed, N, Secret]`, where Secret is obtained from `"/dev/random"` or a configurable source when the application starts. In a distributed runtime, all nodes share the secret. 
+An implementation might involve a secure hash of `[Seed, N, Secret]`, where Secret is obtained from `"/dev/random"` or a configurable source when the application starts. In a distributed runtime, all nodes should produce the same result for a given query.
 
 ## Background Transactions
 
-In some use cases, we want an escape hatch from transactional isolation. This occurs frequently when wrapping FFI with 'safe' APIs. We might (pretend to) support HTTP GET within a single transaction, trigger lazy computations, or manually maintain a cache. To support these scenarios, I propose a reflection API to run a transaction prior to the calling transaction:
+In some use cases, we want an escape hatch from transactional isolation. This occurs frequently when wrapping FFI with 'safe' APIs. We might logically support HTTP GET within a single transaction.
 
-* `sys.refl.bgcall(StaticMethodName, Args) : Result` - asks the runtime to call the indicated method in a separate transaction, wait for commit, then continue the current transaction with the result. If the caller aborts, e.g. due to read-write conflict with a concurrent transaction, an incomplete bgcall may be aborted. If bgcall aborts, it is implicitly retried. In general, args and result must be non-linear and global scoped. 
-  * *StaticMethodName* - for example 'n:"MethodName"' in the abstract assembly, subject to namespace translations. The indicated method will receive the same 'sys.\*' environment passed to application 'step', independent of the caller's environment.
+Conceptually, the idea is that we 'trigger' a runtime via reflection on an incomplete computation to perform some background computation and update a cache. This seems difficult to generalize, but we could explicitly reference a few toplevel handlers in this role.
 
-The bgcall logically runs before the caller, time travel of a limited nature. There is risk of transaction conflict, a time travel 'paradox' where the bgcall modifies something the caller previously observed. In this case, we still commit the bgcall, but then we abort the caller. In context of transaction loops, we rollback and replay the caller from where change is observed. If careless this leads to data loss or thrashing, but is easily mitigated by manual caching.
+There is risk of transaction conflict between the background computation and the caller. We'll commit the background computation and retry the caller. If careless, conflict may lead to thrashing, but this is easily mitigated by manual caching.
 
-Insofar as paradoxes are avoided, background transactions are compatible with transaction-loop optimizations: a bgcall with stable results can be part of an incremental computing prefix, and a non-deterministic bgcall can clone a stable caller per result. Intriguingly, only the result needs to be stable: the bgcall could be processing an event queue in the background and returning 'ok' every time, modeling a background 'step' function active only while a caller is waiting.
+Insofar as conflicts are avoided, background transactions are compatible with transaction-loop optimizations such as incremental computing or support for non-deterministic results logically duplicating the caller.
 
 ## Time
 
@@ -194,8 +187,10 @@ A viable API:
             f   - float
             d   - double
 
+TODO: consider update of API to use environment abstraction instead of abstract data.
+
 * `sys.ffi.*` -
-  * `new(Hint) : FFI` - Return a runtime-scoped reference to a new FFI thread. Hint guides integration, such as creating or attaching to a process, or at which node in a distributed runtime. The FFI thread will start with with a fresh environment.
+  * `new(Hint) : FFI` - Return a linear runtime-scoped reference to a new FFI thread. Hint guides integration, such as creating or attaching to a process, or at which node in a distributed runtime. The FFI thread will start with with a fresh environment.
   * `fork(FFI) : FFI` - Clone the FFI thread. This involves a copy of of the data stack, stash, registers, and runtime-local vars. The next command will run in a new thread. The heap is shared between forks.
   * `status(FFI) : FFIStatus` - recent status of FFI thread:
     * *uncommitted* - initial status for a 'new' or 'fork' FFI.
@@ -274,21 +269,9 @@ We'll eventually need to look at the namespace, e.g. to extract an executable bi
 
 ## Composing Applications
 
-We can compose applications by composing their public interfaces, and by wrapping the algebraic effects handlers to redirect resources like heap vars. My vision for glas systems calls for convenient composition of applications, both for [notebook apps](GlasNotebooks.md) and sandboxing purposes.
+We can compose applications by composing their public interfaces. My vision for glas systems calls for convenient composition of applications, both for [notebook apps](GlasNotebooks.md) and sandboxing purposes.
 
-For efficient composition of applications, and to enable scripts to compose applications, we should include most applications in '%env.appname.app.\*' alongside shared libraries. This influences the user's configuration namespace.
+For efficient composition of applications, and to enable scripts to compose applications, we should define most applications as 'env.AppName.app' in the configuration namespace.
 
-A lot of composition can be automated into namespace macros or user-defined syntax. Ideally, users can very easily express composite applications where components can communicate according to simple conventions (e.g. databus, publish-subscribe, internal RPC).
-
-## Alternative Run Modes
-
-### Threaded Applications
-
-The programmer defines a non-atomic 'app.main' procedure that occasionally yields to given the environment a turn. The program steps between yields will still be atomic. It is feasible to evaluate several coroutines in parallel if an optimizer determines they do not conflict. The application may fork-join coroutines as needed, and may explicitly contain 'atomic' subprograms. Conveniently, this can be mixed with features like 'app.http' to receive HTTP requests, sharing the debug port.
-
-The main opportunity cost of threaded applications is that we cannot robustly transition to new code upon update. As a best effort, we could gradually switch to new functions as they are called from active continuations. We could only mitigate this via application design, e.g. expressing a main loop as tail-recursive or as repeatedly calling the function that we intend to edit.
-
-### Staged Applications
-
-In some cases, we might want to write an application that generates or selects another application based on command-line arguments, perhaps integrating some local files. Staged applications might define 'app.build' as a [namespace procedure](GlasNamespaces.md), generating another application based on command-line arguments. The procedure can be parameterized by a list of command-line arguments. It receives access to the same '%env.\*' environment of shared libraries, languages, and configured applications as scripts.
+A lot of composition can be automated into macros or user-defined syntax. Ideally, users can very easily express composite applications where components can communicate according to simple conventions (e.g. databus, publish-subscribe, internal RPC).
 
