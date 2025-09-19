@@ -37,7 +37,7 @@ An application may be defined within the configuration namespace, usually 'env.A
   * **--script.FileExt FilePath**: as '--script' except we select a front-end compiler based on a given file extension, ignoring the actual extension. Useful in context of Linux shebang lines.
 * **--cmd.FileExt SourceText**: as '--script.FileExt' except we also provide the script text as a command-line argument. We might present this as a read-only virtual file.
 
-An application is expressed as a namespace of handlers that will be called from a runtime process. Typically, these handlers will include 'settings' to support application-specific runtime configuration and integration. Beyond this, 'http' may receive events through a configurable port (multiplexing with remote procedure calls and debugging), and 'step' could support a transaction-loop application, or 'main' a conventional app. See [glas applications](GlasApps.md).
+The definition should be a set of handlers, typically including 'settings' and 'main', not a program directly. But see [glas applications](GlasApps.md) for details.
 
 *Note:* There are no command-line arguments to configure the runtime. However, 'settings' may read command-line arguments and environment variables when guiding integration. Support for staged applications, where an application explicitly builds the next stage app, is also feasible.
 

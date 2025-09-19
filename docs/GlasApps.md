@@ -1,92 +1,99 @@
 # Glas Applications
 
-The [glas executable](GlasCLI.md) lets users select and run an application from the configuration namespace or by compiling a file as a script. By convention, a glas application is defined in 'env.AppName.app' in the configuration [namespace](GlasNamespaces.md), or 'app' in a script. 
+The [glas executable](GlasCLI.md) lets users run an application defined in the configuration namespace or a separate script file. By convention, an application is named 'env.appname.app' in the configuration, or simply 'app' for a script. A script can reference definitions in 'env.\*' and thus compose applications.
 
-Instead of a single 'main' program, an application is defined by a collection of related methods such as 'start' and 'step' for transaction-loop applications, 'http' to receive events, perhaps 'gui' to render a view. Most critically, 'settings' supports application-specific configuration of the runtime.
+## Methods
 
-This set of methods is expressed as a namespace of handlers (see [program model](GlasProg.md)). This allows the application to be reduced to a single definition, and simplifies composition, extension, inheritance, and overrides similar to OOP.
+Applications are expressed as a collection of methods. Useful methods include:
 
-## Application Settings and Adapters  
+* 'settings' - guidance for runtime configuration. The runtime does not observe settings directly, instead providing access to settings when evaluating configuration options.
+* 'main' - a procedure representing the main application process. Is evaluated as a sequence of transactions, each using '%yield' to commit a step and '%fail' to abort a step.
+* 'http' - a flexible interface with many use cases (services, signaling, gui, etc.). The runtime opens a configurable port multiplexed with remote procedure calls. A configurable HTTP path (default "/sys/") is reserved for runtime use, e.g. built-in debug views and APIs. When composing applications, we can compose 'http' interfaces.
+* 'rpc' - receive remote procedure calls in a distributed transaction. The primary basis for inter-process communication between glas applications.
+* 'gui' - a conventional GUI can be implemented via FFI or HTTP, but I have a vision for reactive, immediate-mode GUIs based around transaction-loop optimizations and user participation in transactions. See [Glas GUI](GlasGUI.md).
+* 'switch' - in context of live coding, runs as the first transaction when updating code. If this transaction fails, we'll retry but continue with the old code until it succeeds.
 
-Every application defines at least 'settings' to guide runtime integration. In general, the runtime does not directly observe application settings. Instead, the runtime passes access to 'settings' to the configuration, and the configuration queries the application as needed. This indirection ensures the configuration has robust control and provides greater portability between application conventions and runtime versions.
+Application methods are represented in the [program model](GlasProg.md) as a namespace of handlers. This supports declarative composition, extension, inheritance, and overrides similar to OOP classes. 
 
-Although 'settings' may observe command-line arguments or environment variables, it is preferable that most queries can be processed at compile-time, allowing for greater specialization of the runtime.
+## Standard Behavior
 
-## Application Models and Run Modes
+The runtime process binds application methods to local state and a system API. The runtime will implicitly apply a translation to the application handlers such as `{ "app." => ".", "sys." => "^sys.", "." => NULL, "^" => NULL }`, to support a naming convention:
 
-A runtime may support more than one "run mode" for applications. A run mode would be configured based on application settings. A few useful run modes:
+* 'app.\*' - application-local registers and application methods
+* 'sys.\*' - system API and shared, persistent registers 'sys.db.\*'
+* '$\*' - call-site specific handlers or registers (rarely used)
 
-* *threaded applications* - Very conventional. The runtime runs a non-atomic 'main' program. Whenever main yields, the runtime may process outputs and update input buffers, then eventually resume. Parallelism is opportunistic. Not friendly for live coding because we cannot robustly update behavior except at name or '%call' boundaries.
+The runtime queries the configuration for any application-specific options, passing along 'app.settings' and specializing the runtime based on responses. Then the runtime forks a few coroutines - one to call 'app.main', another to handle 'app.http' requests, etc.. Upon returning from 'app.main', we'll implicitly halt background tasks handling 'app.http' among others.
 
-* *transaction-loop applications* - The primary operation is to repeatedly run 'step' in isolated, atomic transactions. A naive implementation will likely perform a lot of rework, but we can optimize via incremental computing, duplicate the step upon non-deterministic choice, and abort a step when read-write conflicts are detected. Very friendly to live coding.
+Shared, persistent registers in 'sys.db.\*' are bound to a configured database. I expect this will mostly be used for transactional persistence. Asynchronous, shared-memory interaction through the database is possible, but we might not immediately optimize for it, favoring transactional remote procedure calls for inter-process communication.
 
-* *staged applications* - An application could define 'build' to construct the next-stage application. (However, explicit staging may be unnecessary if we have good implicit staging via late-bound dependencies.)
+Aside from persistent registers, the system API provides access to network, filesystem, console, clocks, native GUI, secure random data, etc.. However, it is a huge hassle to implement all these features up front. Initially, I plan to develop a pipelined FFI that is then used to implement those other features.
 
-This document focuses on transaction-loop applications. Though, I imagine that threaded applications will prove more popular in early development due to difficulty of initially implementing transaction-loop optimizations.
+## Concurrency
 
-Aside from the primary behavior, a runtime may support ad hoc event-processing methods:
+The program model supports fork-join coroutines. The normal concern with coroutines is the absence of preemption. A coroutine must yield voluntarily. However, this problem is mitigated by transactional steps and a non-deterministic scheduler. A coroutine that does not yield in a timely manner can be aborted to be retried later. The runtime can evaluate several steps simultaneously, analyze for read-write conflicts, commit a non-conflicting subset of steps and retry the rest.
 
-* 'start' - First transaction. Initial checks and setup. Retried until it commits.
-* 'switch' - First transaction after live update. Old code runs until switch commits.
-* 'http' - Receive HTTP requests from configured port, multiplexed with RPC, debugger, etc.. 
-* 'rpc' - Receive remote procedure calls. A single transaction might receive multiple calls.
-* 'gui' - See [Glas GUI](GlasGUI.md).
-* 'signal' - handle OS-level signals or interrupts.
+Essentially, the glas program model favors [optimistic concurrency control](https://en.wikipedia.org/wiki/Optimistic_concurrency_control).
 
-An important feature of 'http' and such is that we can far more conveniently compose 'http' handlers than we can compose applications that independently open TCP ports to receive HTTP requests. I assume that handling HTTP requests will be the primary mode of external interaction with applications in early development, until the glas system matures.
+Concerns remain regarding starvation and rework. Rework can be mitigated based on static or empirical conflict analysis, scheduling operations that are likely to conflict in different timeslots. Resolving starvation will generally require attention from the developer, e.g. introducing intermediate steps or queues.
 
-This document focuses on transaction loop applications, as the best fit for my vision of glas systems. However, ultimately the application model supported in glas is very flexible and extensible.
+Usefully, this approach to concurrency can also recover from some error conditions. For example, if a step is aborted due to assertion failure or divide-by-zero, we could automatically retry and continue after a concurrent operation updates the relevant state. This would also apply to fixing state through a debugging API, or fixing code through live coding.
 
-## The Transaction Loop
+If a coroutine step includes non-deterministic choice, the runtime may try both choices. This can be useful for expressing timeouts, e.g. one choice waits on the clock, another waits on an empty queue, and the runtime commits whichever can proceed first. 
 
-A transaction loop is a very simple idea: a repeating transaction, atomic and isolated. Those properties - repetition, atomicity, and isolation - allow for several useful optimizations:
+An intriguing opportunity arises with structures similar to:
 
-* *incremental computing* - We don't always need to repeat the entire transaction from the start. Instead, roll-back and recompute based on changed inputs. If repeating the transaction is obviously unproductive, e.g. it aborts, then we don't need to repeat at all until conditions change. If productive, we still get a smaller, tighter repeating transaction that can be optimized with partial evaluation of the stable inputs.
-* *duplication on non-deterministic choice* - If the computation is stable up to the choice, then duplication is subject to incremental computing. This provides a basis for concurrency, a set of threads reactive to observed conditions. If the computation is unstable, then at most one will commit while the other aborts (due to read-write conflict), representing a race condition or search. Both possibilities are useful.
-* *distributed runtimes* - A distributed runtime can mirror a repeating transaction across multiple nodes. For performance, we can heuristically abort transactions best started on another node, e.g. due to locality of resources. Under incremental computing and duplication on non-deterministic choice, this results in different transactions running on different nodes. In case of network partitioning, transactions in each partition may run independently insofar as we can guarantee serializability (e.g. by tracking 'ownership' of variables). An application can be architected such that *most* transactions fully evaluate on a single node and communicate asynchronously through runtime-supported queues, bags, or CRDTs. 
+        while (atomic stable Cond) do { atomic (choice Op1 Op2 Op3); yield }
 
-Assuming these optimizations, the transaction loop supports reactive systems, concurrency, and distributed systems with graceful degradation and resilience. Users can easily understand and debug transactions in isolation. Also, even with these optimizations, the transaction loop remains friendly for live coding and orthogonal persistence. 
+In this case, we can split this loop for each non-deterministic choice, then evaluate the split loops concurrently. This works because isolated transactions are equivalent to sequential transactions, and because exiting the loop will be detected as a read-write conflict. See *Transaction-Loop Optimizations*.
 
-Further, there are several lesser optimizations we might simplify a program:
+## Transaction-Loop Optimizations
 
-* *congestion control* - A runtime can heuristically favor repeating transactions that fill empty queues or empty full queues.
-* *conflict avoidance* - A runtime can arrange for transactions that will likely conflict to evaluate in different time slots. This reduces the amount of rework.
-* *soft real-time* - A repeating transaction can 'wait' for a point in time by observing a clock then diverging. A runtime can precompute the transaction slightly ahead of time and have it ready to commit.
-* *loop fusion* - A runtime can identify repeating transactions that compose nicely and create larger transactions, allowing for additional optimizations. 
+If we repeatedly run isolated transactions, there are a few useful optimizations we can perform:
 
-Transaction loops present two significant challenges. First, the most important optimizations are difficult to implement. Without them, we're effectively limited to an event dispatch loop and heuristic selection of non-deterministic forks based on epoll. Fortunately, the simple event dispatch loop is still a nice application model and sufficient for many applications. Second, request-response interactions must generally commit the request and yield before a response becomes available, which can be awkward to express. This can be mitigated by front-end syntax, perhaps something like 'async' and 'await' keywords.
+* *incremental computing* - Instead of recomputing an entire transaction each time, we can cache the stable prefix of the transaction and roll back based on observable changes. If we determine that repetition is unproductive (e.g. failure or idempotence) we can wait for relevant changes.
+* *concurrent choice* - On non-deterministic choice, we can duplicate the transaction and run both cases. If there is no read-write conflict, we can commit both (due to repetition). If a conflict occurs, we can still commit one and retry the other. Choice in the stable incremental computing prefix effectively results in stable 'threads' that handle different subtasks.
+* *distributed programming* - A transaction loop can be conveniently mirrored across the nodes, observing loop termination conditions through mirrored state. We can avoid unnecessary distributed transactions with a simple heuristic: abort any transaction where the *first* resource written is remote.
+ 
+There are also a few lesser benefits:
 
-*Note:* Regarding [ACID (Atomicity, Consistency, Isolation, Durability)](https://en.wikipedia.org/wiki/ACID) properties, only atomicity and isolation are required for a transaction loop. However, consistency is indirectly supported via type systems and assertions. Durability may be orthogonal, binding some application state to configured persistent storage.
+* *congestion control* - a runtime can heuristically recognize producer and consumer loops, when treating a register as a queue, and tune the scheduler to keep inputs and outputs in balance.
+* *conflict avoidance* - a runtime can arrange transactions that will likely conflict to evaluate in different time slots, aiming to reduce the amount of rework.
 
-## Basic Integration
+Unfortunately, it's a rather daunting task to implement these optimizations. There's an opportunity here, but not one that is easy to grasp. In the short term, this is a non-starter.
 
-Applications are expressed as a set of handlers. However, we'll present the runtime primarily as the 'caller' to the application handlers, instead of the host. This allows for more flexibility per-call in what the runtime presents to the application.
+## Distribution
 
-* host prefix - an empty namespace, link everything to WARN
-* locals prefix - binds to application-local state and app handlers.
-* caller prefix - access runtime effects APIs, shared persistent 'db.\*' registers, and (for some methods) transaction-local ephemeral 'tn.\*' registers. The latter is mostly useful in context of remote procedure calls.
+Assume we distribute a runtime and application state across networked nodes then run an application on this distributed runtime. In the general case, we can use a distributed transaction for each step. However, distributed transactions are expensive and fragile to network failure. Ideally, we should architect the application and structure state such that most steps evaluate locally on a single node, and most distributed transactions require only two nodes.
 
-In this document, I'll generally translate the caller prefix as 'sys.\*' and the locals prefix as 'app.\*'. Thus, 'sys.db.x' would be a shared persistent register while 'app.x' is an application instance register. This may require an explicit translation in practice.
+Between annotations and accelerators, a runtime can recognize common state patterns. It is possible to mirror read-mostly state, or to logically partition a queue between reader and writer nodes. Support for CRDTs or bags (multisets) would support more flexible mirroring and partitioning, allowing each node to perform both reads and writes locally.
 
-In context of shared persistent data, we might record some inferred metadata about register types into the database. This could support a more specialized representation and best-effort type safety for shared memory.
+A coroutine can migrate between nodes, approaching relevant resources for the current step. A subset of registers may heuristically migrate with the coroutine. 
 
-*Note:* Database registers default to zero.
+In context of transaction-loop optimizations, we can also mirror some operations across nodes. HTTP and RPC services can be understood as transaction loops. We could open a TCP port on each node to service those requests and support synchronization between nodes.
 
-## Distributed State
+However, effective support for distribution does require attention to some effects APIs. For example, we cannot model a singular 'clock' for a distributed system. Features such as filesystems, networks, and FFI may need to somehow specify a node.
 
-In context of a distributed runtime, application state and transactions may also be distributed. For performance, we can mirror read-mostly registers, and we can specialize accelerated operations such as treating a register as a FIFO. In the extreme case, we could accelerate CRDT registers that each mirror can update locally, merging updates when network connectivity resumes.
+## Live Coding
+
+Live coding and projectional editing is part of my vision for glas systems. It is possible to configure a runtime to check for updates either continuously or upon a trigger. When new code is discovered, the runtime can use an incremental compiler to rebuild. If rebuild is successful, and there are no obvious problems with switching, we can attempt to evaluate 'switch' in the new code and transition to it atomically.
+
+Unfortunately, the 'main' procedure is not very friendly to live coding. We cannot robustly update a partially-executed procedure after yield. What we can do is switch to new defitinitions for future calls, and recompute declarative structures that were cached. The latter would include rebuilding application handlers after an update to 'app'.
+
+To fully benefit, developers may need to architect applications with live coding in mind. For example, use of tail-recursive loops provides an opportunity to switch to new code within the loop. Or to update data schema, we may need to record version information into types or auxilliary registers.
 
 ## HTTP Interface
 
-Based on application-specific configuration, a runtime will open TCP ports to receive HTTP and RPC requests. A configurable subset of HTTP requests, perhaps `"/sys/*"`, will be routed to the runtime-provided 'sys.refl.dbg.http' to support administration and debugging. Other HTTP requests are routed to the application via 'app.http', if defined. 
+The runtime will intercept a subset of HTTP requests, e.g. to "/sys/". The rest will be passed to the 'app.http' handler. To avoid awkward workarounds, we can also provide access to the runtime HTTP API via 'sys.refl.http' or similar.
 
-        app.http : Request -> [sys] Response
+The HTTP handler is not necessarily atomic. However, it's convenient if most requests are atomic.
 
-The Request and Response are binaries. They may be *accelerated* binaries with structure under-the-hood that can be efficiently queried, manipulated, and validated. Each request runs in a separate transaction. If a request fails to generate a valid response, it is logically retried until timeout, serving as a simple basis for long polling. Asynchronous operations can immediately return "303 See Other", allowing the caller to fetch the result in a future query.
+A relevant concern is how the HTTP request and response is presented. Accelerated binaries are a feasible option, or we could provide a set of handlers to process a request and build a response. I'm quite uncertain which is the better option.
 
-If there is sufficient demand, we can extend this API to accept WebSockets, perhaps via 'app.http.ws'. We can also invent HTTP headers to handle multiple requests in one atomic transaction. To effectively use 'app.http' as an early basis for GUI, we could configure the runtime to open a browser window when the application is started.
+*Aside:* Based on application settings and user configuration, we could automatically open a browser window when an application starts.
 
-*Note:* The application-specific configuration might also describe integration with SSO to support multiple users and roles for the built-in HTTP interface.
+
+
 
 ## Remote Procedure Calls (RPC)
 
@@ -104,16 +111,6 @@ The details need a lot of work. But I believe transactional RPC will be a very e
 
 My vision for [GUI](GlasGUI.md) involves users participating in transactions indirectly via reflection on a user agent. This is essentially an RPC feature, but we might present 'app.gui' or similar to simplify composition of GUI independent of other RPC. In the short term, we will rely on 'app.http' or FFI APIs as a simple basis for GUI.
 
-## Non-Deterministic Choice
-
-In context of a transaction loop, fair non-deterministic choice serves as a foundation for task-based concurrency. Proposed API:
-
-* `(%choice Op1 Op2 ...)` - (tentative) AST primitive for non-deterministic choice.
-
-Fair choice means that, given sufficient opportunities, we'll eventually try all of them. However, this doesn't imply *random* or *uniform* choice! A scheduler may be very predictable, and may heuristically choose for performance reasons.
-
-*Note:* Without transaction-loop optimizations for incremental computing and duplication on non-deterministic choice, a basic single-threaded event-loop will perform better. We can still use sparks for parallelism.
-
 ## Random Data
 
 Instead of a stateful random number generator, the runtime will provide a stable, cryptographically random field. 
@@ -124,13 +121,15 @@ An implementation might involve a secure hash of `[Seed, N, Secret]`, where Secr
 
 ## Background Transactions
 
-In some use cases, we want an escape hatch from transactional isolation. This occurs frequently when wrapping FFI with 'safe' APIs. We might logically support HTTP GET within a single transaction.
+For safe operations with cacheable results, such as HTTP GET, it is convenient to pretend the result is already cached and simply continue with the current transaction. To support this pretense, we can leverage a reflection API. Something like:
 
-Conceptually, the idea is that we 'trigger' a runtime via reflection on an incomplete computation to perform some background computation and update a cache. This seems difficult to generalize, but we could explicitly reference a few toplevel handlers in this role.
+        sys.refl.bgcall(AppMethodName, Argument) : Result
 
-There is risk of transaction conflict between the background computation and the caller. We'll commit the background computation and retry the caller. If careless, conflict may lead to thrashing, but this is easily mitigated by manual caching.
+In this case, we ask the runtime to invoke the named 1--1 arity handler in a separate transaction then return the result to the current transaction. We are relying on reflection to link and call the correct method. The result is not implicitly cached for future requests, but must not be linear.
 
-Insofar as conflicts are avoided, background transactions are compatible with transaction-loop optimizations such as incremental computing or support for non-deterministic results logically duplicating the caller.
+There is risk of transaction conflict between the background computation and the caller. If so, we'll rewind the caller and retry. Manual caching can potentially resist thrashing.
+
+*Note:* It is possible to return a non-deterministic choice of results. Ideally, results are also stable for incremental computing purposes.
 
 ## Time
 
@@ -190,8 +189,8 @@ A viable API:
 TODO: consider update of API to use environment abstraction instead of abstract data.
 
 * `sys.ffi.*` -
-  * `new(Hint) : FFI` - Return a linear runtime-scoped reference to a new FFI thread. Hint guides integration, such as creating or attaching to a process, or at which node in a distributed runtime. The FFI thread will start with with a fresh environment.
-  * `fork(FFI) : FFI` - Clone the FFI thread. This involves a copy of of the data stack, stash, registers, and runtime-local vars. The next command will run in a new thread. The heap is shared between forks.
+  * `new(Hint) : FFI` - Return a runtime-scoped reference to a new FFI thread. Hint guides integration, such as creating or attaching to a process, or at which node in a distributed runtime. The FFI thread will start with with a fresh environment.
+  * `fork(FFI) : FFI` - Clone the FFI thread. This involves a copy of of the data stack, stash, registers, and runtime-local vars. The heap is shared between forks.
   * `status(FFI) : FFIStatus` - recent status of FFI thread:
     * *uncommitted* - initial status for a 'new' or 'fork' FFI.
     * *busy* - ongoing activity in the background - setup, commands, or queries

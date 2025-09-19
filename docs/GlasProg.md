@@ -31,16 +31,18 @@ Data Manipulation:
 * `%take` - "rl-vr" given a radix trie and bitstring label, extract the value and the radix tree minus the label. This is equivalent to '%fail' if no such label exists.
 * `%put` - "vrl-r" given a value, radix trie, and label, add the value to the radix tree at the label. This will diverge if it overwrites existing tree structure.
 
-Environment Manipulation:
+Environment Access and Manipulation:
 * `(%scope EnvTL P)` - apply EnvTL to RegisterNames and HandlerNames in P. This applies across definition boundaries. To support extension, composition, and metaprogramming, EnvTL has a dedicated AST structure.
   * `(%tl TL)` - the common case, same prefix-to-prefix radix tree TL as namespaces.  
     * Translation to NULL or WARN will block use of a register or handler, with WARN reducing compile-time errors to compile-time warnings and runtime errors (by default).
   * `(%tl.arc NewPrefix OldPrefix RegisterName)` - (tentative) support for associative naming structure; see *Environment Abstraction*.
   * `(%tl.seq EnvTL1 EnvTL2 ...)` - apply EnvTL1 then EnvTL2 etc. in sequence.
+* `(%rw RegisterName)` - swap data between named register and top data stack element. 
+* `(%call HandlerName EnvTL)` - invoke a handler, applying a translation to control the handler's view of the caller's environment. Diverges with error if handler is not defined.
+* `(%check HandlerName)` - if HandlerName is defined, is a no-op. Otherwise is equivalent to '%fail'. This should be resolved at compile-time in most contexts.
 * `(%local Prefix P)` - (tentative) allocate a fresh namespace with registers initialized to zero. Translate Prefix to this namespace in context of P. Clear the registers upon exit from P. Clear may diverge if registers contain linear data.
   * we could feasibly integrate with handlers, e.g. `(%local Prefix Handlers P)`
-* `(%rw RegisterName)` - swap data between named register and top data stack element. 
-* `(%call HandlerName EnvTL)` - invoke a handler, applying a translation to control the handler's view of the caller's environment.
+
 * *tbd* - introduce handlers in context of a subprogram.
 
 Tooling and Evolution:
@@ -60,7 +62,7 @@ Metaprogramming:
 
 Annotations are not executable as programs, but they will support macros.
 
-Critical annotations, necessary in early versions of runtime:
+Useful annotations, prioritizing early development:
 
 * `(%an.accel Accelerator)` - non-semantic performance primitives. Indicates that a compiler or interpreter should substitute Op for a built-in Accelerator. By convention, an Accelerator has form `(%accel.OpName Args)` and is invalid outside of '%an.accel'. See *Accelerators* later.
 * `(%an.memo MemoHints)` - we don't immediately need full-featured memoization, but at least enough for incremental compilation, e.g. persistent memoization of pure computations. 
@@ -69,12 +71,14 @@ Critical annotations, necessary in early versions of runtime:
 * `(%an.profile Chan)` - record performance metadata such as entries and exits, time spent, yields, fails, and rework. This may benefit from dynamic virtual channels (tbd).
 * `(%an.chan.scope TL)` - a simple prefix rewrite on Chan names for Operation. 
 * `(%an.arity In Out)` - express the data stack arity for a subprogram. Represents reading 'In' elements and writing 'Out' elements. Operation may read and write fewer so long as balance is maintained.
-* `(%an.data.wrap RegisterName)` - support for abstract data types. The RegisterName determines access control and valid scope for escape analysis. Wraps top item on data stack. Operation must be a no-op. 
-  * `(%an.data.unwrap RegisterName)` - unwrap previously wrapped data
-  * `(%an.data.wrap.linear RegisterName)` - as wrap, but also marks the abstract data as linear, forbidding copy or drop until the data is unwrapped.
+* `(%an.data.wrap RegisterName)` - Support for abstract data types. Wraps top item on data stack, such that it cannot be observed until unwrapped. Operation should be a no-op. The RegisterName provides identity and access control, and also determines valid scope or lifespan (the data should not be stored to a register that is longer-lived than the named register). 
+  * `(%an.data.unwrap RegisterName)` - unwrap previously wrapped data. This is an error if the data was not previously wrapped with the same register. A compiler can eliminate wrap/unwrap pairs based on static analysis.
+  * `(%an.data.wrap.linear RegisterName)` - as wrap, but also marks as linear. Linearity applies until unwrapped. Efficient dynamic enforcement requires metadata bits.
   * `(%an.data.unwrap.linear RegisterName)` - corresponding unwrap for linear data.
+* `(%an.reg.reject (List of Prefix))` - forbid reference to registers whose prefixes are listed. Can be implemented as a specialized scope rule over Operation, applying to registers only. Useful to hide registers from a public interface.
+  * `(%an.reg.accept (List of Prefix))` - forbid reference to registers whose prefixes are not listed.
 
-Nice to haves:
+Future development:
 * hiding parts of data or environment as lightweight types
 * type declarations. I'd like to get bidirectional type checking working in many cases relatively early on.
 * 'static' types in type declarations.
@@ -386,6 +390,7 @@ Some observations:
 * Eventually, we might want to integrate full procedurally generated namespace for local handler definitions. But this can be deferred for now. 
 
 None of this seems too difficult to integrate. Perhaps we introduce `%ns.move` and `%ns.link` and `%ns.def` and so on for building up the handler namespace. `%ns.union` for composition. Unlike full procedurally generated namespaces, we don't need 'eval' or 'read', though we get something similar from macro calls. We can still support lazy evaluation of a namespace in context of macros. Then '%local' implicitly provides the initial translation and integration.
+
 
 ### Type Descriptions
 
