@@ -14,35 +14,35 @@ Control Flow:
   * `(%do P1 ...)` - in context of Sel, represents committed action. Commit the entire chain of prior branch conditions, then run '%do' in the same transactional context as '%cond' or '%loop'.
   * `%fail` - in context of Sel, represents the lack of a case on the current branch. Causes computation to backtrack, aborting the most recent successful branch condition then trying the SelR path. In normal form, appears only in SelR position because we can optimize `(%br C %fail SelR) => SelR`.
   * Beyond these, Sel may also support language declarations, annotations, and macros.
-* `(%loop Sel)` - supports anonymous while-do loops, albeit mixing selection of action. Uses same Sel type as '%cond'. Implicitly exits loop if no '%do' step is selected.
-* `(%co P1 P2 P3 ...)` - execute P1, P2, P3, etc. concurrently as coroutines with independent stacks and voluntary yield. This step only exits when all coroutines complete.
+* `(%loop Sel)` - supports anonymous while-do loops, albeit mixing selection of action. Uses same Sel type as '%cond'. Implicitly exits loop if no '%do' step is selected. 
+* `(%co P1 P2 P3 ...)` - execute P1, P2, P3, etc. concurrently as coroutines with independent data stacks and voluntary yield. This step only exits when all coroutines complete. Scheduling of coroutines must be associative and may be commutative (e.g. non-deterministic scheduling is both).
 * `%yield` - pauses a coroutine, providing an opportunity for concurrent computations to operate. Resumption is implicit. Each yield-to-yield step should be logically atomic, thus '%fail' implicitly rewinds to a prior '%yield' then awaits changes to observed state.
 * `(%atomic P)` - an atomic operation may yield, but will only resume internally. Fails only if all internal resumptions are failing.
 * `(%choice P1 P2 P3 ...)` - represents non-deterministic runtime choice of P1 or P2 or P3. 
+* `%error` - explicit divergence. Unlike '%fail', we do not backtrack on error; it's equivalent to an infinite loop. However, errors can be recoverable in context of non-deterministic choice or non-deterministic scheduling of coroutines.
 
-* `(%sched Schedule P)` - (tentative; low priority) local guidance of a continuation scheduler, would only apply to continuations expressed within P. Not quite sure what a Schedule is.
+* `(%sched Schedule P)` - (tentative) local guidance for a continuation scheduler. Not sure what this should look like, other than that we will likely want to support a few deterministic schedules such as "prioritize leftmost" and "round robin". 
+* *tbd* - (tentative) local guidance for non-deterministic choice
 
 Data Manipulation:
 * `d:Data` - push copy of data to top of data stack
 * `(%dip P)` - run P while hiding top of data stack
 * `%swap` - exchange top two stack elements. i.e. "ab-ba"
 * `%copy` - copy top stack element, i.e. "a-aa".
-* `%drop` - drop top stack element, i.e. "a-".  
-* `%take` - "rl-vr" given a radix trie and bitstring label, extract the value and the radix tree minus the label. This is equivalent to '%fail' if no such label exists.
-* `%put` - "vrl-r" given a value, radix trie, and label, add the value to the radix tree at the label. This will diverge if it overwrites existing tree structure.
+* `%drop` - drop top stack element, i.e. "a-".
+
 
 Environment Access and Manipulation:
 * `(%scope EnvTL P)` - apply EnvTL to RegisterNames and HandlerNames in P. This applies across definition boundaries. To support extension, composition, and metaprogramming, EnvTL has a dedicated AST structure.
   * `(%tl TL)` - the common case, same prefix-to-prefix radix tree TL as namespaces.  
     * Translation to NULL or WARN will block use of a register or handler, with WARN reducing compile-time errors to compile-time warnings and runtime errors (by default).
-  * `(%tl.arc NewPrefix OldPrefix RegisterName)` - (tentative) support for associative naming structure; see *Environment Abstraction*.
+  * `(%tl.arc Prefix RegisterName RegisterName)` - binds Prefix to a namespace indexed by a directed edge between two registers. Useful for access control and *Environment Abstraction*.
   * `(%tl.seq EnvTL1 EnvTL2 ...)` - apply EnvTL1 then EnvTL2 etc. in sequence.
 * `(%rw RegisterName)` - swap data between named register and top data stack element. 
-* `(%call HandlerName EnvTL)` - invoke a handler, applying a translation to control the handler's view of the caller's environment. Diverges with error if handler is not defined.
-* `(%check HandlerName)` - if HandlerName is defined, is a no-op. Otherwise is equivalent to '%fail'. This should be resolved at compile-time in most contexts.
+* `(%call HandlerName EnvTL)` - invoke a handler, applying a translation to control the handler's view of the caller's environment. Error if handler is not defined.
+* `(%call.avail HandlerName)` - if HandlerName is defined, acts as a no-op. Otherwise acts as '%fail'.
 * `(%local Prefix P)` - (tentative) allocate a fresh namespace with registers initialized to zero. Translate Prefix to this namespace in context of P. Clear the registers upon exit from P. Clear may diverge if registers contain linear data.
   * we could feasibly integrate with handlers, e.g. `(%local Prefix Handlers P)`
-
 * *tbd* - introduce handlers in context of a subprogram.
 
 Tooling and Evolution:
@@ -62,21 +62,29 @@ Metaprogramming:
 
 Annotations are not executable as programs, but they will support macros.
 
-Useful annotations, prioritizing early development:
+Acceleration:
+* `(%an.accel Accelerator)` - non-semantic performance primitives. Indicates that a compiler or interpreter should substitute Op for a built-in Accelerator. By convention, an Accelerator has form `(%accel.OpName Args)` and is invalid outside of '%an.accel'. See *Accelerators*.
 
-* `(%an.accel Accelerator)` - non-semantic performance primitives. Indicates that a compiler or interpreter should substitute Op for a built-in Accelerator. By convention, an Accelerator has form `(%accel.OpName Args)` and is invalid outside of '%an.accel'. See *Accelerators* later.
-* `(%an.memo MemoHints)` - we don't immediately need full-featured memoization, but at least enough for incremental compilation, e.g. persistent memoization of pure computations. 
+Instrumentation:
 * `(%an.log Chan MsgSel)` - printf debugging! Rather sophisticated. See *Logging*.
-* `(%an.reject Chan MsgSel)` - negative assertions structured as logging an error message. If there is no error message, the assertion passes, otherwise we diverge.
-* `(%an.profile Chan)` - record performance metadata such as entries and exits, time spent, yields, fails, and rework. This may benefit from dynamic virtual channels (tbd).
-* `(%an.chan.scope TL)` - a simple prefix rewrite on Chan names for Operation. 
+* `(%an.reject Chan MsgSel)` - negative assertions, structured as conditionally logging an error message. If no error message, the assertion passes, otherwise we diverge. A non-deterministic choice of messages is possible, in which case all choices are evaluated.
+* `(%an.profile Chan Hint)` - record performance metadata such as entries and exits, time spent, yields, fails, and rework. Hints may guide 
+This may benefit from dynamic virtual channels (tbd). 
+* `(an.trace Chan Hint)` - record information to support *replay* of a computation
+* `(%an.chan.scope TL)` - a simple prefix-to-prefix rewrite on Chan names for Operation.
+
+Validation:
 * `(%an.arity In Out)` - express the data stack arity for a subprogram. Represents reading 'In' elements and writing 'Out' elements. Operation may read and write fewer so long as balance is maintained.
 * `(%an.data.wrap RegisterName)` - Support for abstract data types. Wraps top item on data stack, such that it cannot be observed until unwrapped. Operation should be a no-op. The RegisterName provides identity and access control, and also determines valid scope or lifespan (the data should not be stored to a register that is longer-lived than the named register). 
   * `(%an.data.unwrap RegisterName)` - unwrap previously wrapped data. This is an error if the data was not previously wrapped with the same register. A compiler can eliminate wrap/unwrap pairs based on static analysis.
   * `(%an.data.wrap.linear RegisterName)` - as wrap, but also marks as linear. Linearity applies until unwrapped. Efficient dynamic enforcement requires metadata bits.
   * `(%an.data.unwrap.linear RegisterName)` - corresponding unwrap for linear data.
-* `(%an.reg.reject (List of Prefix))` - forbid reference to registers whose prefixes are listed. Can be implemented as a specialized scope rule over Operation, applying to registers only. Useful to hide registers from a public interface.
+* `(%an.reg.reject (List of Prefix))` - forbid reference to registers whose prefixes are listed in scope of Operation. 
   * `(%an.reg.accept (List of Prefix))` - forbid reference to registers whose prefixes are not listed.
+
+Incremental computing:
+* `(%an.memo Hints)` - memoize a computation. For simplicity and immediate utility, initial support for memoization may be restricted to pure data stack functions, perhaps extended to pure handlers. Hints may indicate persistent vs. ephemeral memoization, cache-invalidation policy, and other options.
+* `(%an.checkpoint Hints)` - when retrying a transaction, instead of recomputing from the start it can be useful to rollback partially and retry from there. In this context, a checkpoint suggests a rollback boundary. A compiler may heuristically eliminate unnecessary checkpoints, and Hints may guide heuristics. 
 
 Future development:
 * hiding parts of data or environment as lightweight types
@@ -94,7 +102,8 @@ Future development:
 
         (%an (%an.accel (%accel.OpName Args)) Op)
 
-TODO: proposed initial list of accelerators. 
+The data manipulation operations are minimalist, basically just support for 
+
 
 ## Design Motivations
 
@@ -108,31 +117,17 @@ To keep it simple and consistent, I propose that registers and handlers are name
 
 Toplevel application methods ('app.\*') receive access to a finite set of handlers and registers from the runtime. See [glas apps](GlasApps.md) for details. The program may include annotations describing the assumed or expected environment, allowing for validation and optimization.
 
-### In-Place Update
+### In-Place Update? Defer.
 
-Each register contains glas data - an immutable binary tree, albeit subject to accelerated representations, abstract data types, scoping, linearity, and content-addressed storage. However, we can express operations on registers in terms of mutations, such as incrementing a number register or appending a list register. 
+It is possible to support in-place update of 'immutable' data if we hold the only reference to its representation. This can be understood as an opportunistic optimization of garbage-collection: allocate, transfer, and collect in one step. In glas programs, this would be feasible with accelerators, such as a list update operator could swap a list element without reallocatng the list. This is especially useful if the list is represented by an array.
 
-Updates on a specific index (or slice of indices), e.g. of a dict or array, are amenable to an optimization where, instead of allocating a new copy with the change applied, we copy the existing representation if it isn't unique then update in place. This is essentially an optimization of the allocator and garbage-collector, but it can offer a significant performance boon in many cases.
+However, pervasive use of transactions and backtracking complicates this optimization. It is convenient to capture a snapshot of registers so we can revert if necessary. Although this snapshot isn't a logical copy and thus doesn't conflict with linear types, it is a shared representation and thus does hinder in-place update.
 
-I hope to design the program model to readly leverage in-place updates, tracking opportunities to do so both statically and dynamically. For example, we could keep a tag bit (perhaps in the pointer) to track whether a pointer is 'unique' or 'shared' as an efficient alternative to a full reference count. Or we could efficiently maintain a small reference count, and use full GC only for widely shared representations.
+A viable alternative is to maintain a 'log' of updates to apply later. For example, a runtime could feasibly represent the updated list as a special `(update log, original list ref)` pair within runtime. This might generalize to [log-structured merge-tree (LSM trees)](https://en.wikipedia.org/wiki/Log-structured_merge-tree) [ropes](https://en.wikipedia.org/wiki/Rope_(data_structure)).
 
-*Note:* An inherent limitation is that uniqueness doesn't play nicely with transactions. The easiest implementation is often to maintain a copy of prior values for easy reversion. This could be mitigated by recording an update log into transaction registers.
+This doesn't quite support the ideal of in-place update. We must allocate that log, and perhaps some metadata to track elements to process further upon commit. But perhaps we can still perform in-place update upon commit, and benefit from editing nearer to the tree root. This seems a viable approach.
 
-### Static, Structured Behavior
-
-The intermediate language will express behavior in a tree-structured manner to simplify reasoning and optimizations. Coroutines, conditionals, loops, locals, etc.. Notably, glas will avoid mobile code, such as 'jumping' to a dynamic address or function pointer, or calling a first-class function.
-
-That said, we can effectively represent jumps to static labels as tail-calls, and support higher-order programming in terms of algebraic effects handlers or intermediate language macros. We might view a program as operating on a static collection of 'stack objects' in scope. We'll aim for an expressive intermediate language within a few constraints.
-
-Another relevant constraint is that program behavior must not rely on static analysis, such as type-driven overloading and dispatch. The best we can do is use annotations to insist certain registers are computed at compile-time, and dispatch on those.
-
-### Expressions and Statements
-
-At the moment, I lean towards a statement-based intermediate language. We can express 'return values' in terms of a program that writes a 'return' register. Parameters in terms of translating a subprogram's access to an operation environment of registers and handlers.
-
-It is possible to support a mixed language of expressions and statements. However, doing so complicates things a little, e.g. requiring several primitives to regulate interactions between the two, requiring an operational 'evaluation order' semantics for expressions. It seems simpler to model expressions as a calling convention.
-
-An intriguing alternative is to support FP-inspired lenses and prisms and editable views as 'virtual registers' that scatter-gather data with limited calculations. This might offer a viable basis for integrating expressions into a statement-oriented language. However, it's not a priority.
+Meanwhile, we'll still support decent persistent data structures by default, e.g. finger-tree ropes still support O(log(N)) updates in the center, O(1) at the edges, and we can easily use a pair as a gap buffer.
 
 ### Tail Call Optimization
 
@@ -170,15 +165,7 @@ Ideally, we can utilize multiple processors to evaluate coroutines. This is feas
 
 We can evaluate a subprogram that uses coroutines and 'yield' internally with a localized scheduler. This might be expressed as `(%atomic P)`. When evaluating an atomic section, we resume locally and it's an error if no progress is possible. We can assume transaction-loop methods such as 'app.step' are implicitly evaluated in an atomic section.
 
-### Long-Running and Multi-Party Transactions? Defer.
-
-A long-running transaction is executed across multiple coroutine steps. A multi-party transaction is executed across multiple coroutine threads.
-
-It is feasible for a runtime to support abstract, linear, first-class 'transaction' that can be maintained and manipulated across multiple steps. We could support operations like `(%tn.new Reg)`, `(%tn.in Reg Op)`, and `(%tn.commit Reg)` to execute a transaction across multiple steps, perhaps adding `(%tn.split Reg Reg)` for multi-party transactions (with multiple commits). Alternatively, we could favor an effectful reflection API over primitives.
-
-However, I'm not convinced of the cost-benefit tradeoffs. Complexity and performance overhead is non-trivial. I expect atomic sections and queues will prove adequate in practice. Later, if we discover application programmers reinventing transactions for convincing reasons, we can reconsider providing runtime support.
-
-### Conditional Behavior and Hierarchical Transactions
+### Conditional Behavior
 
 I have two main options for conditional behavior:
 
@@ -326,7 +313,9 @@ My idea with projection is that we can extend '%an.log' to instead describe inte
 
 Annotations can transparently guide use of content-addressed storage for large data. The actual transition to content-addressed storage may be transparently handled by a garbage collector. Access to representation details may be available through reflection APIs but should not be primitive or pervasive.
 
-### Data Manipulation
+### Data Stack
+
+It is very convenient to introduce an intermediate data stack. 
 
 With registers alone, we end up naming input and output registers for every little operation. To avoid this, I propose to introduce a data stack and static arity analysis. The data stack serves as an intermediate location for dataflow and a scratch space for computation. With this, the only primitive register operation we might require is linear swap of data between register and stack. Alternatively, we could support a universal 'empty' state for registers.
 
@@ -335,6 +324,22 @@ We can include a basic set of stack manipulators: dip, swap, copy, drop. We can 
 Beyond that, perhaps the only primitive data manipulations we need are dict take and put. These may be linear, too, e.g. treating it as a type error if put would overwrite existing content. Anything else can be implemented via accelerators.
 
 *Aside:* Register and handler names may overlap in theory, but doing so is confusing and hinders independent translation. In practice, such overlap is unlikely to happen by accident, and a compiler can raise an error when it does occur.
+
+### Data Manipulation
+
+In an older version of glas, I had dictionary 'take' and 'put' operations on dynamic bitstring labels:
+
+* `%take` - "rl-vr" given a radix trie and bitstring label, extract the value and the radix tree minus the label. This is equivalent to '%fail' if no such label exists.
+* `%put` - "vrl-r" given a value, radix trie, and label, add the value to the radix tree at the label. This will diverge if it overwrites existing tree structure.
+
+However, I'm not too satisfied here. I'd prefer to go even more primitive, with .
+
+, like my older ao, where we manipulate data only in terms of individual bits and pairs. With these, implementing take and put might involve an unbounded stack or some form of intermediate zipper representation.
+
+
+
+
+
 
 ### Data Abstraction
 
@@ -366,10 +371,9 @@ A caller to a file API provides a volume of registers such as "$file.\*" to the 
 
 A viable encoding is something like:
 
-        (%scope (%tl.arc "f." "$file." FileAPIKey) P)
-          # roughly translating "f." => "$file.(FileAPIKey)." in P 
-          # generalizes to
-        (%scope (%tl.arc NewPrefix OldPrefix RegisterName) P)
+        (%scope (%tl.arc Prefix RegisterName RegisterName) P)
+
+In this case, we're translating Prefix to a volume of the environment indexed by a directed edge between two other registers. Constructing a reference to this volume therefore requires proving access to two other locations. (It doesn't hurt to treat a prefix like "$file." as a register name for this purpose.)
 
 This may require some careful attention to how translations compose. But we could translate a prefix without adding the translation suffix, and treat FileAPIKey as untranslateable in composition. An actual implementation might involve a simple name mangling scheme.
 

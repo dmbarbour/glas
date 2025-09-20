@@ -162,6 +162,12 @@ In normal form, varnats use the smallest number of bytes to encode a value. It i
         0x0F-0x1F
         0xA0-0xFF
 
+## Tentative Extensions
+
+Support for LSM tree style updates could be useful, a notion of 'patching' a tree or a list without the overhead of a 'deep' update.
+
+Support for templates, applying a template to an array of arguments.
+
 ## Conventions and Patterns 
 
 Some ideas about how we might leverage Glas Object for more use cases.

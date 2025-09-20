@@ -29,6 +29,23 @@ Shared, persistent registers in 'sys.db.\*' are bound to a configured database. 
 
 Aside from persistent registers, the system API provides access to network, filesystem, console, clocks, native GUI, secure random data, etc.. However, it is a huge hassle to implement all these features up front. Initially, I plan to develop a pipelined FFI that is then used to implement those other features.
 
+## State
+
+Registers in 'app.\*' or 'sys.db.\*' are the primary locations for application state. Each register contains a value. In general, values may have arbitrary size. Type annotations may describe expected register types, potentially including size constraints. Insofar as a compiler can verify static type analysis, it is feasible to represent state very efficiently.
+
+Database registers are bound to a configured database and thus shared with other applications. Type annotations may also describe these shared registers. Doing so provides an opportunity to verify interaction with the database prior to application start. It is also feasible to record type assumptions into the database to detect conflicting assumptions.
+
+### Heap API? Disfavor. Defer.
+
+It isn't difficult to introduce and implement a heap API. Consider a minimalist API:
+
+* `sys.heap.new : [heap] HeapRef` - allocate a new reference to an abstract heap. 
+* `sys.heap.rw(HeapRef, NewVal) : [heap] OldVal` - swap data with heap. Error if HeapRef was allocated by another heap.
+
+In this API, the 'heap' parameter is a register name via linking `{ "MyRegister" => "heap" }`. The heap is not stored in this register, rather is associated (via '%tl.arc'). The valid scope of HeapRef is determined by the scope of 'heap', i.e. it's an error to store a HeapRef to any longer-lived heap. We can support persistent heaps bound to 'sys.db.\*'. 
+
+Although a heap API isn't difficult to implement, it complicates conflict analysis and garbage collection, and it introduces a form of inconsistency: we cannot conveniently couple 'methods' with heap references. For these reasons, I'm reluctant to include a heap API. But it is a viable feature.
+
 ## Concurrency
 
 The program model supports fork-join coroutines. The normal concern with coroutines is the absence of preemption. A coroutine must yield voluntarily. However, this problem is mitigated by transactional steps and a non-deterministic scheduler. A coroutine that does not yield in a timely manner can be aborted to be retried later. The runtime can evaluate several steps simultaneously, analyze for read-write conflicts, commit a non-conflicting subset of steps and retry the rest.
@@ -39,63 +56,101 @@ Concerns remain regarding starvation and rework. Rework can be mitigated based o
 
 Usefully, this approach to concurrency can also recover from some error conditions. For example, if a step is aborted due to assertion failure or divide-by-zero, we could automatically retry and continue after a concurrent operation updates the relevant state. This would also apply to fixing state through a debugging API, or fixing code through live coding.
 
-If a coroutine step includes non-deterministic choice, the runtime may try both choices. This can be useful for expressing timeouts, e.g. one choice waits on the clock, another waits on an empty queue, and the runtime commits whichever can proceed first. 
+If a coroutine step includes non-deterministic choice, the runtime may try both choices. This can be useful for expressing timeouts, e.g. one choice waits on the clock, another waits on an empty queue, and the runtime commits whichever can proceed first. However, we can extract some concurrency from non-deterministic, atomic loop structures. See *Transaction Loops*. 
 
-An intriguing opportunity arises with structures similar to:
+### Transaction Loops
 
-        while (atomic stable Cond) do { atomic (choice Op1 Op2 Op3); yield }
+An intriguing opportunity for concurrency and reactivity arises in context of non-deterministic, atomic loop structures. For example:
 
-In this case, we can split this loop for each non-deterministic choice, then evaluate the split loops concurrently. This works because isolated transactions are equivalent to sequential transactions, and because exiting the loop will be detected as a read-write conflict. See *Transaction-Loop Optimizations*.
+        while (atomic Cond) do { atomic (choice Op1 Op2 Op3); yield }
 
-## Transaction-Loop Optimizations
+This loop represents sequential repetition of a yield-to-yield transaction. Isolated transactions are equivalent to sequential transactions. Thus, we can implement this loop by running many cycles simultaneously. Running the exact same operation would guarantee read-write conflicts. But, with non-deterministic choice, we can potentially run different choices concurrently without conflict.
 
-If we repeatedly run isolated transactions, there are a few useful optimizations we can perform:
+Predictable repetition simplifies incremental computing. Instead of fully recomputing a transaction on every cycle, we can introduce checkpoints (via annotations) for partial rollback and replay. With some careful design, each choice has a stable prefix but an unstable suffix where most work is performed (e.g. reading and writing queues).
 
-* *incremental computing* - Instead of recomputing an entire transaction each time, we can cache the stable prefix of the transaction and roll back based on observable changes. If we determine that repetition is unproductive (e.g. failure or idempotence) we can wait for relevant changes.
-* *concurrent choice* - On non-deterministic choice, we can duplicate the transaction and run both cases. If there is no read-write conflict, we can commit both (due to repetition). If a conflict occurs, we can still commit one and retry the other. Choice in the stable incremental computing prefix effectively results in stable 'threads' that handle different subtasks.
-* *distributed programming* - A transaction loop can be conveniently mirrored across the nodes, observing loop termination conditions through mirrored state. We can avoid unnecessary distributed transactions with a simple heuristic: abort any transaction where the *first* resource written is remote.
- 
-There are also a few lesser benefits:
+In some cases, we may determine that some branches are unproductive, e.g. leading to failure, divergence, or an idempotent update. In these cases, the runtime may wait indefinitely for observed state to change. This provides a simple basis for reactive systems.
 
-* *congestion control* - a runtime can heuristically recognize producer and consumer loops, when treating a register as a queue, and tune the scheduler to keep inputs and outputs in balance.
-* *conflict avoidance* - a runtime can arrange transactions that will likely conflict to evaluate in different time slots, aiming to reduce the amount of rework.
+Unfortunately, implementation of these optimizations is a daunting task. The opportunity here is not easy to grasp. My vision for glas systems benefits enormously from transaction-loop optimizations, but short term we will rely on the more conventional coroutines.
 
-Unfortunately, it's a rather daunting task to implement these optimizations. There's an opportunity here, but not one that is easy to grasp. In the short term, this is a non-starter.
+### Distribution
 
-## Distribution
+I envision a 'runtime' distributed across networked node, and an application running upon it. This requires compatible design of effects APIs, e.g. supporting multiple filesystems, network cards, and clocks.
 
-Assume we distribute a runtime and application state across networked nodes then run an application on this distributed runtime. In the general case, we can use a distributed transaction for each step. However, distributed transactions are expensive and fragile to network failure. Ideally, we should architect the application and structure state such that most steps evaluate locally on a single node, and most distributed transactions require only two nodes.
+In the worst case, we can run every application step in a distributed transaction. However, this is terribly slow and fragile to network faults. To effectively leverage a distributed runtime, we must architect applications such that most steps run on one node, and most remaining steps on two, with very few transactions touching three or more.
 
-Between annotations and accelerators, a runtime can recognize common state patterns. It is possible to mirror read-mostly state, or to logically partition a queue between reader and writer nodes. Support for CRDTs or bags (multisets) would support more flexible mirroring and partitioning, allowing each node to perform both reads and writes locally.
+Behavior can be distributed. Coroutines can migrate based on which physical resources a current step is accessing. A non-deterministic transaction loop can mirror choices where locality is irrelevant, and partition choices where locality is relevant.
 
-A coroutine can migrate between nodes, approaching relevant resources for the current step. A subset of registers may heuristically migrate with the coroutine. 
+State can be distributed. Read-mostly registers can be mirrored, with updates propagated in a wavefront. Other registers may migrate to their users. Of notable interest are queues, bags, and CRDTs:
 
-In context of transaction-loop optimizations, we can also mirror some operations across nodes. HTTP and RPC services can be understood as transaction loops. We could open a TCP port on each node to service those requests and support synchronization between nodes.
+* *queues* - modeled by a register containing a list. Reader takes from one end. Writer pushes to the other. (For convenience, a reader may also 'unread' data.) A runtime can split the register between reader and writer nodes, and migrate writes as part of batched node sync.
+* *bags* - modeled by a register containing a list. Reader removes a non-deterministic element. Writer inserts an element non-deterministically. A runtime can split the register across all nodes, each may read and write. Data migrates heuristically between nodes.
+* *CRDTs* (Conflict-free Replicated Data Types) - a family of types, so pick a few useful ones. A runtime can split the register such that each node maintains a local replica. Replicas are synchronized as part of node sync (we still want isolated transactions, not weaker eventual consistency).
 
-However, effective support for distribution does require attention to some effects APIs. For example, we cannot model a singular 'clock' for a distributed system. Features such as filesystems, networks, and FFI may need to somehow specify a node.
+The runtime may recognize queues, bags, and CRDTs based on annotations, especially acceleration. 
 
-## Live Coding
+*Note:* It is possible to change data usage patterns at runtime. Doing so generally requires a distributed transaction to rebuild the 'complete' value. But specific cases such as queue to bag may be trivial.
 
-Live coding and projectional editing is part of my vision for glas systems. It is possible to configure a runtime to check for updates either continuously or upon a trigger. When new code is discovered, the runtime can use an incremental compiler to rebuild. If rebuild is successful, and there are no obvious problems with switching, we can attempt to evaluate 'switch' in the new code and transition to it atomically.
+### Live Coding
 
-Unfortunately, the 'main' procedure is not very friendly to live coding. We cannot robustly update a partially-executed procedure after yield. What we can do is switch to new defitinitions for future calls, and recompute declarative structures that were cached. The latter would include rebuilding application handlers after an update to 'app'.
+Live coding can be understood as updating program behavior concurrently with its execution. Robust support for live coding is an essential aspects of my vision for glas systems.
 
-To fully benefit, developers may need to architect applications with live coding in mind. For example, use of tail-recursive loops provides an opportunity to switch to new code within the loop. Or to update data schema, we may need to record version information into types or auxilliary registers.
+There are two elements we can reasonably update in a runtime after a source change. First, calls to names can be transferred to the new namespace. Second, existing handler declarations that included names in the prior namespace can be recomputed in the new namespace. The latter includes updating the 'app' methods.
 
-## HTTP Interface
+Coroutines are not friendly to live coding. We cannot robustly update a partially-executed procedure after its definition changes. We cannot easily introduce new coroutines for background tasks or eliminate defunct ones. But there are some mitigation strategies.
 
-The runtime will intercept a subset of HTTP requests, e.g. to "/sys/". The rest will be passed to the 'app.http' handler. To avoid awkward workarounds, we can also provide access to the runtime HTTP API via 'sys.refl.http' or similar.
+Developers can architect applications and design front-end syntax with live coding in mind. For example, we may favor tail recursion for long-running loops. And syntax for user-defined data types may encourage users to track version info and provide version-to-version update operations.
 
-The HTTP handler is not necessarily atomic. However, it's convenient if most requests are atomic.
+The runtime can support a clean transition. The 'app.switch' method runs first, providing an opportunity to perform critical state updates, run assertions and tests, observe application state to let the application control updates. The actual switch to new code is atomic, treated the same as mirrored state in case of distribution.
 
-A relevant concern is how the HTTP request and response is presented. Accelerated binaries are a feasible option, or we could provide a set of handlers to process a request and build a response. I'm quite uncertain which is the better option.
+Eventually, transaction loops should offer a far more friendly foundation than coroutines.
 
-*Aside:* Based on application settings and user configuration, we could automatically open a browser window when an application starts.
+## Event Handlers
+
+For glas applications, we'll multiplex a configurable port for HTTP and remote procedure calls. The runtime will intercept a configurable subset of HTTP requests to support administration and debugging (e.g. "/sys/"). 
+
+### HTTP 
+
+The 'app.http' handler receives HTTP requests not intercepted by the runtime. 
+
+Instead of operating on a raw binary, this receives an environment of handlers from the runtime providing features to swiftly route on the URL and access headers, and also write a valid, structured response. For details, I intend to borrow inspiration from the huge range of existing web server frameworks.
+
+The 'app.http' method is not implicitly atomic, but it's convenient if most requests are atomic. Atomic requests are both more RESTful and more widely accessible.
+
+*Aside:* Based on application settings and user configuration, we could automatically open a browser window after the application starts to provide a GUI.
+
+### Remote Procedure Calls (RPC)
+
+A lot of design work still needed here!
+
+*Note:* It may be better to bind full RPC 'objects' instead of individual methods.
+
+*Note:* It may be better to model RPC 'objects' as collections of app methods rather than reimplement routing.
+
+ to bind the whole RPC 'objects' instead of individual methods.
+
+
+        app.rpc(MethodRef, Argument) : [cb] Result
+            cb(Argument) : [cb] Result 
+
+To receive RPC requests, an application must do two things:
+
+* define the 'app.rpc' handler
+* publish an RPC interface, including MethodRefs
+
+MethodRefs are not published. Instead, they are translated to random GUIDs when published, then translated back when method calls are received.
 
 
 
 
-## Remote Procedure Calls (RPC)
+Publishing the API may be expressed effectfully. Details later. 
+
+
+ the runtime will maintain some translation tables such that the MethodRefs serve as unforgeable capabilities.
+
+
+
+indicate a 'procedure name' via abstract
+
 
 To receive RPC calls, an application must provide an RPC interface. This interface can be expressed through 'app.settings'. In some cases, we might want a dynamic interface that varies based on application state. Settings can feasibly indicate a dynamic interface routed through a single method, similar to HTTP requests. An application can feasibly publish multiple RPC interfaces for multiple roles, registries, and trust levels.
 
@@ -107,9 +162,47 @@ To perform RPC calls, an application must discover and reference RPC resources i
 
 The details need a lot of work. But I believe transactional RPC will be a very effective and convenient basis for inter-process communication.
 
-## Graphical User Interface? Defer.
+### Graphical User Interface (GUI)
 
-My vision for [GUI](GlasGUI.md) involves users participating in transactions indirectly via reflection on a user agent. This is essentially an RPC feature, but we might present 'app.gui' or similar to simplify composition of GUI independent of other RPC. In the short term, we will rely on 'app.http' or FFI APIs as a simple basis for GUI.
+See [GUI](GlasGUI.md). We could automatically load a GUI view if 'app.gui' is defined.
+
+## Effects APIs
+
+Most runtime-provided effects APIs are essentially some combination of FFI to access external resources and bgcalls to integrate 'safe' effects into a transaction. (An obvious exception is reflection APIs, including bgcalls.) Anyhow, I hope to push most effects API development from the runtime to the application, so we'll focus on FFI and bgcalls.
+
+### Background Calls - The Transaction Escape Hatch
+
+For safe operations with cacheable results, such as HTTP GET, it is very convenient to pretend that we acquired that data ahead of the current transaction. To support this pretense, we can leverage a reflection API. Proposed API:
+
+        sys.refl.bgcall(Argument) : [op] Result
+          # constraint: Argument and Result are non-linear
+          op(Argument) : [$assert-demand] Result
+
+Here 'op' should be a 1--1 handler, e.g. linking `{ "SelectedHandlerName" => "op" }` in context of the bgcall. The runtime will insert a coroutine just within scope of this handler, push Argument onto the call stack, then invoke 'op'. Eventually, 'op' returns Result on the data stack, which is returned to the caller. Result is not implicitly cached by the runtime, leaving that to 'op'.
+
+The caller may abort due to read-write conflict, then rollback and retry, possibly resulting in a bgcall with the same handler and Argument. To avoid unnecessary rework, near-concurrent bgcalls with the same handler and Argument should attach to the same Result. To avoid unnecessary work, an '$assert-demand' handler is provided to 'op' that diverges if nobody needs Result.
+
+Aside from safe queries, bgcall are useful to trigger background tasks, such as lazy processing of an event queue. This is arguably 'safe' because we had previously committed to perform that work 'later'. As a rule, all bgcall operations should be 'safe' in some sense acceptable to the developer even when the caller aborts.
+
+*Note:* If 'op' is defined in context of '%atomic', it cannot await a response to any non-atomic external requests. In practice, 'op' is usually an app method, bypassing this concern.
+
+*Note:* In context of transaction-loop optimizations, bgcalls can support incremental computing and non-deterministic choice. Logically, we're repeatedly executing the bgcall.
+
+### Foreign Function Interface (FFI)
+
+I propose a pipelined FFI where streaming commands may load libraries, manipulate a data stack and a few 'registers', call functions, query data or memory, and define functions (via [jit](https://github.com/frida/tinycc/tree/main)). The calling transaction will buffer commands, yield, then read responses.
+
+
+
+
+
+
+
+
+
+
+
+
 
 ## Random Data
 
@@ -118,18 +211,6 @@ Instead of a stateful random number generator, the runtime will provide a stable
 * `sys.random(Seed, N) : Binary` - return a list of N cryptographically random bytes, uniformly distributed. The result varies on Seed, N, and runtime instance. The Seed could feasibly be abstract state or plain old data.
 
 An implementation might involve a secure hash of `[Seed, N, Secret]`, where Secret is obtained from `"/dev/random"` or a configurable source when the application starts. In a distributed runtime, all nodes should produce the same result for a given query.
-
-## Background Transactions
-
-For safe operations with cacheable results, such as HTTP GET, it is convenient to pretend the result is already cached and simply continue with the current transaction. To support this pretense, we can leverage a reflection API. Something like:
-
-        sys.refl.bgcall(AppMethodName, Argument) : Result
-
-In this case, we ask the runtime to invoke the named 1--1 arity handler in a separate transaction then return the result to the current transaction. We are relying on reflection to link and call the correct method. The result is not implicitly cached for future requests, but must not be linear.
-
-There is risk of transaction conflict between the background computation and the caller. If so, we'll rewind the caller and retry. Manual caching can potentially resist thrashing.
-
-*Note:* It is possible to return a non-deterministic choice of results. Ideally, results are also stable for incremental computing purposes.
 
 ## Time
 
@@ -229,7 +310,7 @@ TODO: consider update of API to use environment abstraction instead of abstract 
     * `null() : Ptr` - pointer with 0 addr, accepted by any FFI
 * `sys.refl.ffi.*` - we could do some interesting things here, e.g. support remote debugging of an FFI process. But it's highly runtime specific.
 
-This API is designed assuming use of [libffi](https://en.wikipedia.org/wiki/Libffi) and the [Tiny C Compiler (TCC)](https://bellard.org/tcc/). For the latter, a [recent version](https://github.com/frida/tinycc/tree/main) lets us redirect `#include` and resolve missing symbols via callbacks.
+This API is designed assuming use of [libffi](https://en.wikipedia.org/wiki/Libffi) and the [Tiny C Compiler (TCC)](https://bellard.org/tcc/). For the latter, a  lets us redirect `#include` and resolve missing symbols via callbacks.
 
 *Note:* The first-class 'FFI' reference in this API will likely be replaced by biunding abstract state to simplify parallel use of FFI.
 
