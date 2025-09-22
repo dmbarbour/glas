@@ -1,26 +1,62 @@
 # Glas Namespaces
 
-The glas namespace is the foundation for modularity, extensibility, metaprogramming, and version control of glas systems.
+The glas namespace must support modularity, metaprogramming, user-defined syntax, lazy loading, flexible linking, version control, and access control for definitions. Evaluation of the namespace supports massive parallelism and robust caching.
 
-A user's view of a glas system is expressed as an enormous namespace importing from multiple files and DVCS repositories. In general, the user will import from some DVCS repositories representing a community, company, or specific projects of interest, then override some definitions for user-specific resources, preferences, or authorities. Working with a huge namespace is mitigated by lazy evaluation and caching.
+Definitions can be loaded from local files and remote DVCS repositories. The anticipated use case is that a user's local configuration inherits most definitions from community or company DVCS, then integrates a few local projects and overrides configuration options as needed. With lazy loading, the community namespace may be very large, defining hundreds of applications and shared libraries.
+
+Version control is oriented around those DVCS resources. Users can transitively name stable branches or immutable version hashes. This supports 'horizontal' versioning where many libraries and applications are updated together. This simplifies whole-system analysis and testing because there are fewer combinations to consider.
+
+User-defined sntax builds upon the metaprogramming facilities and a few conventions. The namespace may include definitions for front-end compilers. We can select a compiler based on file extensions. This is bootstrapped by initially overriding a few user definitions with built-in implementations.
+
+Access control is based around translation of names. We can control which names are in scope when loading a module. Further, definitions may be assigned to a sequence of names, thus requiring multiple names in scope to access. The latter is useful for associative or auxilliary names.
+
+## Proposed Data Types
+
+        type AST = List of AST      # constructor
+                 | d:Data           # embedded data
+                 | n:Name           # namespace ref
+                 | s:(AST, TLL)     # scoped AST for lazy translations
+                 | z:TLL            # localization for metaprogramming
+        type Data is any plain old glas data.
+        type Name = Binary excluding NULL (0x00) 
+        type TLL = List of TL (applied left to right)
+        type Prefix = any binary prefix of (Name + ".!")
+        type TL = Map of Prefix to (Prefix | NULL | WARN) as radix tree
+        type NULL = 0x00
+        type WARN = 0x00 0x77 (NULL 'w')
+
+This AST type supports precise recognition of names, deferred translation of names, and arbitrary embedded data. In general, the first element of a constructor should be a name or another constructor.
+
+Translations will rewrite a longest matching matching prefix of a name. However, names containing "/" receive special attention. Excepting cases where "/" is explicitly matched, we'll repeat translation on the suffix following "/". This allows us to construct a name as a sequence of names, and to support access control on components of names.
+
+A problem with prefix-to-prefix translations is that translating "bar" accidentally affects "bard" and "barrel". To mitigate, we logically add a ".!" suffix to names or "/" components for matching purposes. We raise an error if this suffix isn't preserved. Thus, we could match "bar.!" specifically, or "bar." to translate "bar" together with "bar.\*".
+
+*Aside:* It is possible to compose a list of TLs into a single TL, but non-trivial and not always more efficient. 
+
+## Namespace AST
+
+It seems feasible to support a declarative AST for namespaces. The challenge is ensuring the namespace can both introduce and invoke definitions.
+
+
+I've 
+
+
+I would like to represent a namespace declaratively as an AST. This AST might be understood as a program that constructs a namespace.
+
+
+
+It is feasible to represent a namespace declaratively as an AST. In this case, we would need to interpret the namespace
 
 ## Procedurally Generated Namespaces
 
-I propose to represent a glas namespace *procedurally*, i.e. a program iteratively writes definitions. The API is carefully restricted to simplify laziness, caching, and flexible evaluation order.
+I like the idea of expressing a namespace as a program that iteratively writes names. However, there are a few issues that have me reviewing this design decision:
 
-Viable types:
+* interaction with coroutines is extremely awkward
+* inconvenient to unify with local method namespaces
+* difficult to extract definitions via normal eval
 
-        type Name = binaries excluding NULL or ".!"
-        type Prefix = any prefix of (Name + ".!")
-        type TL = Map of Prefix to (Prefix | NULL | WARN), as radix tree dict
-        type WARN = NULL 'w'                # 0x00 0x77
-        type AST = List of AST              # constructor
-                 | d:Data                   # embedded data
-                 | n:Name                   # namespace ref
-                 | z:List of TL             # localization
-                 | s:(AST, List of TL)      # scoped AST, lazy translate
 
-Viable algebraic effects API:
+Anyhow, a viable API:
 
 * `ns.*` - common prefix for namespace ops
   * `write(Name, AST)` - write a definition. This is modified by prior move and link translations. 
@@ -31,17 +67,6 @@ Viable algebraic effects API:
     * `cb(Arg) : [cb] Result` - a generic 1--1 arity callback handler.
 
 There is no built-in support for aliasing, but I assume the program model will support aliasing indirectly via `ns.write("foo", n:"bar")`, i.e. that a name is equivalent to its definition in most contexts.
-
-## Abstract Assembly AST
-
-The AST representation is an intermediate structure used within the namespace. Essential requirements:
-
-* Precise identification of names for robust rewrite and translate names. (n)
-* Efficient embedding of data that does not contain names, i.e. constants. (d)
-* Precise capture of context, e.g. to support staged metaprogramming. (z)
-* Primitive constructor applications as names for restriction and extension.
-
-The scope rule 's' is not essential, but is convenient for performance and to avoid repeating translation logic within front-end compilers. 
 
 ## Primitive AST Constructors
 

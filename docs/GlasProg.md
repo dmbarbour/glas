@@ -15,35 +15,36 @@ Control Flow:
   * `%fail` - in context of Sel, represents the lack of a case on the current branch. Causes computation to backtrack, aborting the most recent successful branch condition then trying the SelR path. In normal form, appears only in SelR position because we can optimize `(%br C %fail SelR) => SelR`.
   * Beyond these, Sel may also support language declarations, annotations, and macros.
 * `(%loop Sel)` - supports anonymous while-do loops, albeit mixing selection of action. Uses same Sel type as '%cond'. Implicitly exits loop if no '%do' step is selected. 
-* `(%co P1 P2 P3 ...)` - execute P1, P2, P3, etc. concurrently as coroutines with independent data stacks and voluntary yield. This step only exits when all coroutines complete. Scheduling of coroutines must be associative and may be commutative (e.g. non-deterministic scheduling is both).
+* `(%co P1 P2 P3 ...)` - execute P1, P2, P3, etc. concurrently as coroutines with independent data stacks and voluntary yield. This step only exits when all coroutines complete. Scheduling of coroutines is non-deterministic, thus trivially both associative and commutative.
 * `%yield` - pauses a coroutine, providing an opportunity for concurrent computations to operate. Resumption is implicit. Each yield-to-yield step should be logically atomic, thus '%fail' implicitly rewinds to a prior '%yield' then awaits changes to observed state.
-* `(%atomic P)` - an atomic operation may yield, but will only resume internally. Fails only if all internal resumptions are failing.
+* `(%atomic P)` - an atomic operation may yield, but will only resume internally. Fails only if all internal resumptions are failing. 
 * `(%choice P1 P2 P3 ...)` - represents non-deterministic runtime choice of P1 or P2 or P3. 
-* `%error` - explicit divergence. Unlike '%fail', we do not backtrack on error; it's equivalent to an infinite loop. However, errors can be recoverable in context of non-deterministic choice or non-deterministic scheduling of coroutines.
+* `%error` - explicit divergence. Unlike '%fail', we do not backtrack on error; it's equivalent to an infinite loop.
 
-* `(%sched Schedule P)` - (tentative) local guidance for a continuation scheduler. Not sure what this should look like, other than that we will likely want to support a few deterministic schedules such as "prioritize leftmost" and "round robin". 
-* *tbd* - (tentative) local guidance for non-deterministic choice
 
 Data Manipulation:
 * `d:Data` - push copy of data to top of data stack
-* `(%dip P)` - run P while hiding top of data stack
+* `(%dip P)` - run P while hiding top element of data stack
 * `%swap` - exchange top two stack elements. i.e. "ab-ba"
 * `%copy` - copy top stack element, i.e. "a-aa".
 * `%drop` - drop top stack element, i.e. "a-".
+* `%mkp` - "ba-(a,b)" pair elements, right element starts on top
+* `%mkl` - rewrite top stack element to be left branch of tree
+* `%mkr` - rewrite top stack element to br right branch of tree
+* `%unp` - undoes mkp, fails if not a pair.
+* `%unl` - undoes mkl, fails if not a left branch
+* `%unr` - undoes mkr, fails if not a right branch
 
-
-Environment Access and Manipulation:
-* `(%scope EnvTL P)` - apply EnvTL to RegisterNames and HandlerNames in P. This applies across definition boundaries. To support extension, composition, and metaprogramming, EnvTL has a dedicated AST structure.
-  * `(%tl TL)` - the common case, same prefix-to-prefix radix tree TL as namespaces.  
-    * Translation to NULL or WARN will block use of a register or handler, with WARN reducing compile-time errors to compile-time warnings and runtime errors (by default).
-  * `(%tl.arc Prefix RegisterName RegisterName)` - binds Prefix to a namespace indexed by a directed edge between two registers. Useful for access control and *Environment Abstraction*.
-  * `(%tl.seq EnvTL1 EnvTL2 ...)` - apply EnvTL1 then EnvTL2 etc. in sequence.
+Environment Manipulation:
+* `(%scope TLL P)` - translate RegisterNames and MethodNames in scope of P. TLL is same as in the AST representation (see namespaces).
 * `(%rw RegisterName)` - swap data between named register and top data stack element. 
-* `(%call HandlerName EnvTL)` - invoke a handler, applying a translation to control the handler's view of the caller's environment. Error if handler is not defined.
-* `(%call.avail HandlerName)` - if HandlerName is defined, acts as a no-op. Otherwise acts as '%fail'.
-* `(%local Prefix P)` - (tentative) allocate a fresh namespace with registers initialized to zero. Translate Prefix to this namespace in context of P. Clear the registers upon exit from P. Clear may diverge if registers contain linear data.
-  * we could feasibly integrate with handlers, e.g. `(%local Prefix Handlers P)`
-* *tbd* - introduce handlers in context of a subprogram.
+* `(%call MethodName TLL)` - invoke a method, applying a translation to control the method's view of the caller's environment.
+* `(%call.avail MethodName)` - an ifdef of sorts for methods. Does nothing if method is defined, otherwise fails.
+* `(%local Prefix P)` - introduces a set of registers in scope of P. Will mask Prefix. The set of registers is inferred from use, and are initialized to zero.
+* `(%intro Prefix Method P)` - introduces a set of methods in scope of P. Will mask Prefix.
+
+Method Namespaces:
+
 
 Tooling and Evolution:
 
@@ -51,10 +52,12 @@ Tooling and Evolution:
 * `(%lang Version P)` - Language declaration for P. Declarations should be idempotent, so this does nothing if the language version doesn't change. However, in the general case it may result in support for different primitives and distinct interpretations of existing primitives in P. Version may be encoded as a dict.
 
 Metaprogramming:
-* `(%macro Template)` - Template is an AST that locally contains special '%macro.\*' elements for rewriting. In this context, 'locally' restricts rewriting across definition boundaries, i.e. no 'free' macro variables. Macros are applied as a user-defined constructor in programs, selectors, annotations, and other AST types.
+* `(%eval Localization)` - pops AST representation from data stack, links it via the given Localization, performs further expansions as needed, then runs the AST as a program. In most contexts, AST must be statically computed, i.e. implicit '%an.eval.static'. 
+
+* `(%macro Template)` - Template is an AST that contain special '%macro.\*' elements for rewriting. To simplify implementation and user comprehension, the compiler may enforce locality by rejecting '%macro.\*' elements outside '%macro' within the same definition, i.e. no 'free' macro variables. Macros should be supported for all ASTs used in expressing programs. 
 * `(%macro.arg K)` - is substituted by the Kth AST argument to the constructor. This includes K=0 referring to the constructor, the macro definition, thus supporting anonymous recursion.
 * `%macro.argc` - is substituted by the count of AST arguments after arg 0.
-* `(%macro.eval Localization ASTBuilder)` - after macro substitions, ASTBuilder should represent a 0--1 arity program that returns an AST value (see namespace types). This AST is linked based on Localization, replaces the eval constructor, then receives another round of macro substitutions.
+* `(%macro.eval Localization ASTBuilder)` - first perform macro expansion for Localization and ASTBuilder. ASTBuilder must represent a 0--1 program returning an AST representation. We link via Localization, substitute the linked AST, then perform a second round of macro expansion.
 
 ### Annotations
 
@@ -65,34 +68,42 @@ Annotations are not executable as programs, but they will support macros.
 Acceleration:
 * `(%an.accel Accelerator)` - non-semantic performance primitives. Indicates that a compiler or interpreter should substitute Op for a built-in Accelerator. By convention, an Accelerator has form `(%accel.OpName Args)` and is invalid outside of '%an.accel'. See *Accelerators*.
 
+Composition:
+* `(%an.compose Anno1 Anno2 ...)` - function composition of annotations, e.g. might rewrite `(%an (%an.compose A1 A2 A3) Op)` to  `(%an A1 (%an A2 (%an A3 Op)))`.
+
 Instrumentation:
 * `(%an.log Chan MsgSel)` - printf debugging! Rather sophisticated. See *Logging*.
-* `(%an.reject Chan MsgSel)` - negative assertions, structured as conditionally logging an error message. If no error message, the assertion passes, otherwise we diverge. A non-deterministic choice of messages is possible, in which case all choices are evaluated.
-* `(%an.profile Chan Hint)` - record performance metadata such as entries and exits, time spent, yields, fails, and rework. Hints may guide 
-This may benefit from dynamic virtual channels (tbd). 
-* `(an.trace Chan Hint)` - record information to support *replay* of a computation
-* `(%an.chan.scope TL)` - a simple prefix-to-prefix rewrite on Chan names for Operation.
+* `(%an.error.log Chan MsgSel)` - log messages generated only when Operation halts due to an obvious divergence error, such as '%error' or an assertion failure.
+* `(%an.assert Chan ErrorMsgSel)` - assertions structured as logging an error message, i.e. an assertion passes only if no error message is generated. By default, we'll treat non-deterministic choice in the selector branches as a conjunction of conditions.
+* `(%an.static.assert Chan ErrorMsgSel)` - the same as assert, but it's an error if the conditions cannot be computed at compile-time.
+* `(%an.profile Chan BucketSel)` - record performance metadata such as entries and exits, time spent, yields, fails, and rework. Profiles may be aggregated into buckets based on BucketSel. 
+* `(%an.trace Chan MsgSel)` - record information to support *replay* of a computation. The MsgSel allows for conditional tracing and attaches a helpful message to each trace. See *Tracing*.
+* `(%an.chan.scope TLL)` - apply a prefix-to-prefix translation to Chan names in Operation. 
 
 Validation:
-* `(%an.arity In Out)` - express the data stack arity for a subprogram. Represents reading 'In' elements and writing 'Out' elements. Operation may read and write fewer so long as balance is maintained.
-* `(%an.data.wrap RegisterName)` - Support for abstract data types. Wraps top item on data stack, such that it cannot be observed until unwrapped. Operation should be a no-op. The RegisterName provides identity and access control, and also determines valid scope or lifespan (the data should not be stored to a register that is longer-lived than the named register). 
-  * `(%an.data.unwrap RegisterName)` - unwrap previously wrapped data. This is an error if the data was not previously wrapped with the same register. A compiler can eliminate wrap/unwrap pairs based on static analysis.
-  * `(%an.data.wrap.linear RegisterName)` - as wrap, but also marks as linear. Linearity applies until unwrapped. Efficient dynamic enforcement requires metadata bits.
-  * `(%an.data.unwrap.linear RegisterName)` - corresponding unwrap for linear data.
-* `(%an.reg.reject (List of Prefix))` - forbid reference to registers whose prefixes are listed in scope of Operation. 
-  * `(%an.reg.accept (List of Prefix))` - forbid reference to registers whose prefixes are not listed.
+* `(%an.arity In Out)` - express expected data stack arity for Operation. In and Out must be non-negative integers. Serves as an extremely simplistic type description. 
+* `%an.atomic.reject` - error if running Operation from within an '%atomic' scope. Useful for code that that diverges when run within a transaction, e.g. waiting forever on a network response.
+  * `%an.atomic.accept` - pretend Operation is started outside an atomic transaction, excepting external method calls. Intended to support testing code in a simulated environment.
+* `(%an.data.wrap RegisterName)` - support for abstract data types, hides top stack element from observation until unwrapped with the same RegisterName, implies scope for data (e.g. don't store to longer-lived register). Can feasibly be enforced statically or dynamically, or safely ignored.
+  * `(%an.data.unwrap RegisterName)` - removes the wrapper, allowing observation of the data.
+  * `(%an.data.wrap.linear RegisterName)` - as wrap, but also block '%copy' and '%drop' while wrapped. Dynamic enforcement is feasible with a metadata bit per value.
+  * `(%an.data.unwrap.linear RegisterName)` - as unwrap for linear data
+* `%an.data.static` - Indicates that top stack element should be statically computable. Exercise left to compiler! 
+* `%an.eval.static` - Indicates that all '%eval' steps in Operation must be linked at compile-time. This is the default for glas applications, but it doesn't hurt to make the assumption explicit more locally.
+* `(%an.type TypeDesc)` - Describes a partial type of Operation. Or, with a no-op and identity type, we can partially describe the Environment. TypeDesc TBD.
+
+* `%an.choice.reject` - (tentative) forbid non-deterministic choice in Operation. (Interaction with coroutine schedulers TBD.)
+  * `%an.choice.nointro` - (tentative) allow non-deterministic choice, but only via methods presently in scope. That is, all non-deterministic choice should be externalized. 
+
+* `(%an.reg.zexit RegisterName)` - (tentative) tells runtime that a register should be manually cleared (to zero) before it leaves scope. The only impact would be to raise an error, but that can be useful to debug incomplete protocols.
 
 Incremental computing:
-* `(%an.memo Hints)` - memoize a computation. For simplicity and immediate utility, initial support for memoization may be restricted to pure data stack functions, perhaps extended to pure handlers. Hints may indicate persistent vs. ephemeral memoization, cache-invalidation policy, and other options.
+* `(%an.memo Hints)` - memoize a computation. For simplicity and immediate utility, initial support for memoization may be restricted to pure data stack functions, perhaps extended to pure methods. Hints may indicate persistent vs. ephemeral memoization, cache-invalidation policy, and other options.
 * `(%an.checkpoint Hints)` - when retrying a transaction, instead of recomputing from the start it can be useful to rollback partially and retry from there. In this context, a checkpoint suggests a rollback boundary. A compiler may heuristically eliminate unnecessary checkpoints, and Hints may guide heuristics. 
 
 Future development:
-* hiding parts of data or environment as lightweight types
 * type declarations. I'd like to get bidirectional type checking working in many cases relatively early on.
-* 'static' types in type declarations.
-* linear types or valid 'final' states in type declarations.
-* robust data abstraction, optionally including linear data.
-* tail-call declarations. Perhaps not per call but rather an indicator that a subroutine can be optimized for static stack usage, optionally up to handler calls. 
+* tail-call declarations. Perhaps not per call but rather an indicator that a subroutine can be optimized for static stack usage, optionally up to method calls. 
 * stowage. Work with larger-than-memory values via content-addressed storage.
 * lazy computation. Thunk, force, spark. Requires some analysis of registers written.
 * debug trace. Probably should wait until we have a clear idea of what a trace should look like. 
@@ -102,8 +113,7 @@ Future development:
 
         (%an (%an.accel (%accel.OpName Args)) Op)
 
-The data manipulation operations are minimalist, basically just support for 
-
+Todo: list some useful accelerators.
 
 ## Design Motivations
 
@@ -111,11 +121,32 @@ Some discussions that led to the aforementioned selection of primitives.
 
 ### Operation Environment
 
-I propose to express programs as operating on a stable, labeled environment. This environment includes stateful registers and callable 'handlers' for abstraction of state or effects. A program may introduce local registers and handlers in scope of a subprogram, and may translate or restrict a subprogram's access to the program's environment.
+I propose to express programs as operating on a stable environment of names, consisting primarily of methods and registers. A program may define methods and local registers in scope of a subprogram. 
 
-To keep it simple and consistent, I propose that registers and handlers are named with simple strings similar to names in the namespace (ASCII or UTF-8, generally excluding NULL and C0). This allows us to apply the namespace TL type to translate and restrict the environment exposed to a subprogram. It also ensures names are easy to render in a projectional editor or debug view.
+Methods must bind three environments: host, caller, and self. The latter is the collection of methods. 
 
-Toplevel application methods ('app.\*') receive access to a finite set of handlers and registers from the runtime. See [glas apps](GlasApps.md) for details. The program may include annotations describing the assumed or expected environment, allowing for validation and optimization.
+ The 'self' environment would reference the collect (to support a namespace of mutually recursive definitions) each other. This can be expressed as reference through three prefixes. I propose "^", "$", and "." respectively. 
+
+"host." and "client." and "self.", or perhaps "^" and "$" and ".". 
+ '^' for host, 
+
+ bind to both host and caller, and to each other for mutual recursion. 
+
+local resources and 
+
+I would like to structurally guarantee that register and handler names never overlap
+
+
+
+ Registers are inferred from use, but methods must be defined. All registers initialize to zero, and most are implicitly cleared upon exit from P (*Protocol Registers* must be cleared manually).
+
+
+
+ This environment includes stateful registers and callable 'methods' for abstraction of state or effects. A program may introduce local registers and methods in scope of a subprogram, and may translate or restrict a subprogram's access to the program's environment.
+
+To keep it simple and consistent, I propose that registers and methods are named with simple strings similar to names in the namespace (ASCII or UTF-8, generally excluding NULL and C0). This allows us to apply the namespace TL type to translate and restrict the environment exposed to a subprogram. It also ensures names are easy to render in a projectional editor or debug view.
+
+Toplevel application methods ('app.\*') receive access to a finite set of methods and registers from the runtime. See [glas apps](GlasApps.md) for details. The program may include annotations describing the assumed or expected environment, allowing for validation and optimization.
 
 ### In-Place Update? Defer.
 
@@ -137,17 +168,17 @@ In glas systems, I want tail calls to be a robust, checked optimization. Annotat
 
 Even if all recursion is tail calls, we can model dynamic stacks in terms of registers containing list values. Performance in this case might be mitigated by preallocation of a list buffer for in-place update and use as a stack. This could be supported through annotations or accelerators.
 
-### Algebraic Effects and Handlers and Stack Objects
+### Algebraic Effects and Methods and Stack Objects
 
-I propose that most effects APIs are expressed in terms of invoking 'handlers' in the environment. This allows for overrides by the calling program independent of the namespace structure. There may be a few special exceptions, e.g. non-deterministic choice may be expressed as a primitive and restricted through annotations instead of by manipulating the environment.
+I propose that most effects APIs are expressed in terms of invoking 'methods' in the environment. This allows for overrides by the calling program independent of the namespace structure. There may be a few special exceptions, e.g. non-deterministic choice may be expressed as a primitive and restricted through annotations instead of by manipulating the environment.
 
-Unlike first-class functions or closures, handlers introduced by a subprogram cannot be "returned" to a caller. They can only be passed to further subprograms in context. However, it may be convenient to introduce a notion of 'objects' on the stack, modular collections of local state and methods, rather than focus on individual handlers.
+Unlike first-class functions or closures, methods introduced by a subprogram cannot be "returned" to a caller. They can only be passed to further subprograms in context. However, it may be convenient to introduce a notion of 'objects' on the stack, modular collections of local state and methods, rather than focus on individual methods.
 
-When a handler is invoked, it must receive access to two environments - host and caller. With the 'stack object' concept, it is useful to conflate a third environment: local state. Local registers may then be modeled as a stack object with no methods. To resist naming conflicts, access to these environments from within a handler may be distinguished by prefixes, e.g. "^" for host, "$" for caller, and "." for local state. (We may need to see how '.' interacts with hierarchical objects.)
+When a method is invoked, it must receive access to two environments - host and caller. With the 'stack object' concept, it is useful to conflate a third environment: local state. Local registers may then be modeled as a stack object with no methods. To resist naming conflicts, access to these environments from within a method may be distinguished by prefixes, e.g. "^" for host, "$" for caller, and "." for local state. (We may need to see how '.' interacts with hierarchical objects.)
 
 Stack objects should be able to hierarchically compose more stack objects. It seems feasible to express stack objects as namespace constructors, but it may prove simpler to introduce dedicated primitives to declare objects.
 
-*Aside:* It might be interesting to express an application as a handler 'stack object' instead of a collection of definitions. This could be supported by a runtime via application settings.
+*Aside:* It might be interesting to express an application as a method 'stack object' instead of a collection of definitions. This could be supported by a runtime via application settings.
 
 *Note:* It might be convenient to express a set of algebraic effects in terms of a localization of the current namespace.
 
@@ -210,7 +241,17 @@ Separately, we can develop front-end syntax or libraries to more robustly suppor
 
 ### Staged Metaprogramming
 
-The glas program model should support flexible, user-defined AST constructors of form `(UserDef AST1 AST2 ...)`. There are a few ways to approach this. I'm seeking a simple, flexible, and robust solution.
+I propose to initially support two layers:
+
+
+
+
+* Program layer, obtain AST via partial evaluation. Support via `(%eval Localization)`.
+* AST layer, obtain AST via 
+
+At the program layer, we could feasibly support something like `(%eval Localization)` that receives a (usually static) AST from the data stack and links it.
+
+The glas program model should support user-defined AST constructors of form `(UserDef AST1 AST2 ...)`. There are a few ways to approach this. I'm seeking a simple, flexible, and robust solution.
 
 One viable approach is akin to 'template' metaprogramming. We could support something like `(%macro Template)` where the template contains a few special primitives like `(%macro.arg K)` to substitute an AST input. To avoid complications, we can forbid 'free' macro variables or general use of '%macro.\*' words outside a local '%macro' template. However, pure templates are not very flexible. We'll also want some means to compute a program based on static arguments.
 
@@ -223,6 +264,12 @@ Viable model:
 
 This model permits [non-hygienic macros](https://en.wikipedia.org/wiki/Hygienic_macro), leaving problems of hygiene to front-end syntax. Aside from these intermediate-language macros, we could also support text-based macros in a front-end syntax.
 
+However, this doesn't support metaprogramming based on static parameters. For that, we might need a constructor like `(%eval Localization)` that receives its AST from the data stack.
+
+ASTBuilder may receive access to some compile-time effects via '%call'. So far, I don't have a much better idea on how to integrate loading files and DVCS resources. Might need to introduce a notion of local handlers to the macro layer?
+
+
+
 ### Extensible Intermediate Language
 
 We can always extend the intermediate language by adding new primitives. But we could also support something like a scoped 'interpretation' of the existing primitives. It might be useful to support something like `(%lang Ver AST)` or `(%lang.ver AST)` declarations, at least for the toplevel application methods. This would provide more robust integration with the runtime in case of language drift, and would allow languages adjust more flexibly.
@@ -231,11 +278,12 @@ As a convention, front-end compilers could include language declarations for mos
 
 ### Non-Deterministic Choice
 
-I propose to represent access to non-deterministic choice as a primitive (instead of handler). 
+I propose to express non-deterministic choice as a primitive, not relying entirely on runtime 'effects' to introduce non-determinism. This doesn't truly reduce control over where choice is introduced. Relevantly, we could introduce a few annotations to control use of choice:
 
-There are a few reasons for this. First, it does us very little good to intercept non-deterministic choice within a program. Only at the level of a runtime or interpreter might we heuristically guide non-deterministic choice to a useful outcome. Second, we may still control non-deterministic choice via annotations, i.e. to indicate a subprogram is observably deterministic, or at least does not introduce non-determinism (though it may invoke non-deterministic handlers). Third, use of non-deterministic choice in assertions, fuzz testing, etc. make it awkward to present as a handler.
+* annotation to reject choice entirely (forbid non-deterministic effects and RPC, too)
+* annotation to reject *introduction* of choice (choice allowed via methods in scope)
 
-Not quite sure what I want to call this. Perhaps '%choice'.
+Beyond a few annotations, we might want to introduce some means to control non-deterministic choice. However, I'm unclear what this might be.
 
 ### Unit Types
 
@@ -267,6 +315,8 @@ I think it might be best to defer laziness until static analysis is more mature.
 
 ### Accelerators
 
+Essentially, primitives with a reference implementation.
+
         (%an (%an.accel (%accel.OpName Args)) Op)
 
 Accelerators ask a compiler or interpreter to replace Op with an equivalent built-in implementation. The built-in should offer a significant performance advantage, e.g. the opportunity to leverage data representations, CPU bit-banging, SIMD, GPGPU, etc.. Arguments to an accelerator may support specialization or integration.
@@ -283,7 +333,7 @@ We express logging 'over' an Operation. This allows for continuous logging, anim
 
 Log messages are expressed as a conditional message selector, i.e. the `(%br ...)` AST nodes seen in '%cond' or '%loop'. Thus, logging may '%fail' to generate a message. The log message is computed atomically within a hierarchical transaction. The transaction is canceled after capturing the message. This allows for evaluating messages under hypothetical "what if" conditions, and evaluation of multiple messages in context of non-deterministic choice.
 
-We evaluate MsgSel in a 'handler' environment, e.g. implicitly adding a "^" prefix to access host registers and handlers. This enables unambiguous use of a "$" prefix for parameters from the caller. In context, the 'caller' is the runtime, and parameters may include per-channel configuration of verbosity, output format(s), and other integration features. 
+We evaluate MsgSel in a 'method' environment, e.g. implicitly adding a "^" prefix to access host registers and methods. This enables unambiguous use of a "$" prefix for parameters from the caller. In context, the 'caller' is the runtime, and parameters may include per-channel configuration of verbosity, output format(s), and other integration features. 
 
 ### Assertions
 
@@ -301,9 +351,31 @@ As with logging, users may configure ad hoc, per-channel parameters for MsgSel. 
 
 For performance analysis, we can ask the runtime to maintain some extra metadata, e.g. for number of entries and exits and yields, time spent and relative amount of rework (due to '%fail' after '%yield'), and so on.
 
-### Tracing? Defer.
+### Tracing
 
-My idea with tracing is that we can record enough of a computation to replay it in slow-motion. This isn't especially difficult, e.g. take a snapshot of relevant inputs upon entry and resumption from '%yield' (optionally including failed coroutine steps), similar to a memoization trace. However, it's also very low priority until we have an IDE that can easily render a replay.
+We can ask the runtime to record sufficient information to replay a computation. This is expensive, so we might configure tracing (per Chan) to perform random samples or something, switching between traced and untraced versions of the code.
+
+What information do we need?
+
+* input registers - initial, updates after yield, checkpoints from scrubbing
+* updates and return values from calling external methods 
+* non-deterministic choices and scheduling, optionally including backtracking
+* for long-running computations, heuristic checkpoints for timeline scrubbing 
+* for convenience, a complete representation of the subprogram being traced
+* consider adding the contextual stack of log messages etc.
+
+I think this won't be easy to implement, but it may be worthwhile.
+
+Support for conditional tracing may also be useful. 
+
+### Breakpoints
+
+I'm not fond of debugging via breakpoints, but some people swear by them. Conventional breakpoints can be improved a little with a conditional check. In context of glas annotations, we could also 
+
+Break
+
+
+Anyhow, I think we can do a lot better than inserting rigid 'breakpoints' into programs. We could instead apply 'breakpoints' to log messages or similar.
 
 ### Projection? Defer.
 
@@ -323,23 +395,22 @@ We can include a basic set of stack manipulators: dip, swap, copy, drop. We can 
 
 Beyond that, perhaps the only primitive data manipulations we need are dict take and put. These may be linear, too, e.g. treating it as a type error if put would overwrite existing content. Anything else can be implemented via accelerators.
 
-*Aside:* Register and handler names may overlap in theory, but doing so is confusing and hinders independent translation. In practice, such overlap is unlikely to happen by accident, and a compiler can raise an error when it does occur.
+*Aside:* Register and method names may overlap in theory, but doing so is confusing and hinders independent translation. In practice, such overlap is unlikely to happen by accident, and a compiler can raise an error when it does occur.
 
 ### Data Manipulation
 
-In an older version of glas, I had dictionary 'take' and 'put' operations on dynamic bitstring labels:
+In an older version of glas, I had dictionary 'take' and 'put' operations for full bitstring labels:
 
 * `%take` - "rl-vr" given a radix trie and bitstring label, extract the value and the radix tree minus the label. This is equivalent to '%fail' if no such label exists.
 * `%put` - "vrl-r" given a value, radix trie, and label, add the value to the radix tree at the label. This will diverge if it overwrites existing tree structure.
 
-However, I'm not too satisfied here. I'd prefer to go even more primitive, with .
+However, I felt this was a little awkward for primitives. Doing a little too much. Requires too much knowledge of representations. I propose to go a bit more primitive for glas, like operating on individual bits. What do we need? Perhaps the following is sufficient:
 
-, like my older ao, where we manipulate data only in terms of individual bits and pairs. With these, implementing take and put might involve an unbounded stack or some form of intermediate zipper representation.
+* Pair and unpair.
+* Left and unleft.
+* Right and unright.
 
-
-
-
-
+I don't need anything special for unit/zero, since if a value isn't a pair, left, or right it must be unit. With this set, we'll absolutely be relying on accelerators for the vast majority of data manipulations. But that isn't a bad thing - accelerators are essentially primitives with a reference implementation.
 
 ### Data Abstraction
 
@@ -357,57 +428,52 @@ By default, we can '%copy' and '%drop' abstract data. This can hinder enforcemen
         (%an (%an.data.wrap.linear RegisterName) (%do))
         (%an (%an.data.unwrap.linear RegisterName) (%do))
 
-As with abstract data, it's preferrable that safe use of linear data is determined through static analysis, avoiding runtime checks. However, dynamic enforcement is feasible if we maintain metadata (perhaps via tagged pointer bits) about whether data transitively contains linear elements.
+As with abstract data, it's preferable that safe use of linear data is determined through static analysis, avoiding runtime checks. However, dynamic enforcement is feasible if we maintain metadata (perhaps via tagged pointer bits) about whether data transitively contains linear elements.
 
 ### Environment Abstraction
 
-An intriguing alternative to ADTs involves 'second class' bindings. Instead of calling a file API and receiving an abstract, linear file handle, we could call a file API to provide a volume of local registers to allocate the open file. The API could explicitly include methods to migrate the open file between volumes. 
+An ADT essentially allows the client to move things without accessing them. An intriguing alternative is to let a client allocate a space without access it, i.e. hiding parts of a client-allocated environment from that client.
 
-The trick is then to block the caller from peeking and poking at the file representation. This is awkward to express with annotations, at least without a full type system. However, a relatively simple alternative is to extend the structure of the environment namespace to support association. 
+This isn't difficult. Essentially, may require multiple names to reference a register. Thus, by controlling access to one of those names, we prevent direct access to the register. System APIs can easily control an application's access to specific names.
 
-How might we represent this? Let's consider a more concrete example. 
+I've decided to push this feature up to the namespace model, e.g. with specialized translation of "/" separators in names.
 
-A caller to a file API provides a volume of registers such as "$file.\*" to the file API. The file API wants to block the caller from directly accessing these registers, so it effectively wants to use something like "$file.(FileAPIKey).\*", but where FileAPIKey is also a register name and thus unforgeable. We can bind this to another prefix such as "f." within the subprogram, such that the file API is managing "f.fd" and "f.status" and other useful data.
+### Protocol Registers
 
-A viable encoding is something like:
+Linear types are useful for enforcing protocols, but dynamic enforcement has higher overhead than I'd prefer, and I'd prefer to avoid dynamic representations of data abstraction where feasible.
 
-        (%scope (%tl.arc Prefix RegisterName RegisterName) P)
+. A viable alternative is environment abstraction plus annotations that some registers must be manually cleared before exit. Or perhaps on yield?.
 
-In this case, we're translating Prefix to a volume of the environment indexed by a directed edge between two other registers. Constructing a reference to this volume therefore requires proving access to two other locations. (It doesn't hurt to treat a prefix like "$file." as a register name for this purpose.)
-
-This may require some careful attention to how translations compose. But we could translate a prefix without adding the translation suffix, and treat FileAPIKey as untranslateable in composition. An actual implementation might involve a simple name mangling scheme.
-
-Environment abstraction doesn't have a direct analog to linear data types for protocol control. However, we could keep a linear unit value in "$file.(FileAPIKey).stay-open" to force an error if registers are cleared prematurely. Or we could feasibly annotate register types with 'final' states, such that we raise an error if a register is not in an acceptable final state upon leaving scope.
-
-### Handler Namespaces
+### Method Namespaces
 
 Some observations:
 
-* Handlers receive access to at least two 'environments': host and caller. To avoid naming conflicts, we could introduce standard or specified prefixes for these. Standard prefixes seems more convenient for most use cases.
-* It is feasible to translate access to the 'caller' environment for a whole set of handlers instead of for individual handlers.
-* When defining a set of (possibly) mutually recursive handlers, it may be convenient to introduce another prefix to refer to this set.
-* Ideally, we can conveniently compose, extend, inherit, metaprogram, and override sets of handlers. This suggests something akin to an OOP-inspired structure, perhaps via the 'link' and 'move' translations of namespaces.
-* Ideally, an application can be expressed as a set of handlers that we call from a runtime process. This provides a high level of consistency. Applications should support orthogonal persistence and live coding. Thus, it may be best to clearly separate state *allocation* from the description of a set of handlers. 
-* That said, we can usefully conflate introduction of local registers and handlers, e.g. `(%local Prefix Handlers Prog)`. This gives us a clear prefix for the new handlers, ensures handlers have access to some private state aside from the host, and prevents any naming conflicts with existing handlers (because Prefix is a fresh namespace). 
-* Use of `(%call HandlerName TL)` should should have roughly the same performance as use of `n:Name`, and similar optimizations - inlining, partial evaluation, tail-call optimization, etc.. 
-* Macro handlers are possible if we permit a call in constructor position, e.g. `((%call HandlerName TL) AST1 AST2 ...)`. This does require that the caller is aware that the handler defines a macro, but that's consistent with names. These higher-order macros should be useful.
-* Eventually, we might want to integrate full procedurally generated namespace for local handler definitions. But this can be deferred for now. 
+* Methods receive access to at least two 'environments': host and caller. To avoid naming conflicts, we could introduce standard or specified prefixes for these. Standard prefixes seems more convenient for most use cases.
+* It is feasible to translate access to the 'caller' environment for a whole set of methods instead of for individual methods.
+* When defining a set of (possibly) mutually recursive methods, it may be convenient to introduce another prefix to refer to this set.
+* Ideally, we can conveniently compose, extend, inherit, metaprogram, and override sets of methods. This suggests something akin to an OOP-inspired structure, perhaps via the 'link' and 'move' translations of namespaces.
+* Ideally, an application can be expressed as a set of methods that we call from a runtime process. This provides a high level of consistency. Applications should support orthogonal persistence and live coding. Thus, it may be best to clearly separate state *allocation* from the description of a set of methods. 
+* That said, we can usefully conflate introduction of local registers and methods, e.g. `(%local Prefix Methods Prog)`. This gives us a clear prefix for the new methods, ensures methods have access to some private state aside from the host, and prevents any naming conflicts with existing methods (because Prefix is a fresh namespace). 
+* Use of `(%call MethodName TL)` should should have roughly the same performance as use of `n:Name`, and similar optimizations - inlining, partial evaluation, tail-call optimization, etc.. 
+* Macro methods are possible if we permit a call in constructor position, e.g. `((%call MethodName TL) AST1 AST2 ...)`. This does require that the caller is aware that the method defines a macro, but that's consistent with names. These higher-order macros should be useful.
+* Eventually, we might want to integrate full procedurally generated namespace for local method definitions. But this can be deferred for now. 
 
-None of this seems too difficult to integrate. Perhaps we introduce `%ns.move` and `%ns.link` and `%ns.def` and so on for building up the handler namespace. `%ns.union` for composition. Unlike full procedurally generated namespaces, we don't need 'eval' or 'read', though we get something similar from macro calls. We can still support lazy evaluation of a namespace in context of macros. Then '%local' implicitly provides the initial translation and integration.
+None of this seems too difficult to integrate. Perhaps we introduce `%ns.move` and `%ns.link` and `%ns.def` and so on for building up the method namespace. `%ns.union` for composition. Unlike full procedurally generated namespaces, we don't need 'eval' or 'read', though we get something similar from macro calls. We can still support lazy evaluation of a namespace in context of macros. Then '%local' implicitly provides the initial translation and integration.
 
+Ideally, I'd unify method namespaces and the configuration namespace, use the same representations for both. Perhaps procedural generation is not the best direction to *start* with.
 
 ### Type Descriptions
 
         (%an (%an.type TypeDesc) Op)
 
-Types are an incomplete, abstract description of an operation. In context of glas systems, I want gradual typing as the norm, so we must allow type descriptions to have holes or "don't care" fields in them that might be filled later through inference and bidirectional type checking.
+We can just invent some primitive type descriptions like '%type.int' or whatever, things a typechecker is expected to understand without saying, and build up from there. It isn't a big deal if we want to experiment with alternatives later.
 
 
 ## Misc Thoughts
 
 The initial environment model will be kept simple - a static, hierarchical structure of names. 
 
-It seems convenient to model extension of this environment in terms of introducing 'stack objects' under a given name, conflating declaration of local registers, handlers, and hierarchical objects. We should be able to override methods or hierarchical components when declaring stack objects.
+It seems convenient to model extension of this environment in terms of introducing 'stack objects' under a given name, conflating declaration of local registers, methods, and hierarchical objects. We should be able to override methods or hierarchical components when declaring stack objects.
 
 Our runtime may support use of linear or abstract data types, but we can design our APIs to mostly hide this, instead favoring 'abstract' volumes of registers held by the client and explicit 'move' operations.
 
@@ -436,7 +502,7 @@ Although glas data is logically mutable, the program constructs and manipulates 
 
 In context of garbage collection, it is convenient that data has a relatively uniform structure so we can easily follow pointers and know to not inspect integers and other data. Consider adjacent allocation of `(Header, Binary, Pointers)` triples, where the Header encodes size of binary and count of pointers and hints at how to interpret the binary. To keep it simple, Binary size includes the header and is also pointer-aligned. There may be specialized headers to further support weakrefs, caching, and other GC features, but the idea is that GC doesn't need to know much about the data.
 
-The header may also include metadata bits for incremental or generational GC, adding a GC signal handler for automatic cleanup of FFI resources, a few metadata bits for linear, affine, and relevant types, runtime versus global scope, etc.. and perhaps a few bits for how to interpret the structure as a binary tree.
+The header may also include metadata bits for incremental or generational GC, adding a GC signal method for automatic cleanup of FFI resources, a few metadata bits for linear, affine, and relevant types, runtime versus global scope, etc.. and perhaps a few bits for how to interpret the structure as a binary tree.
 
 This encoding is inefficient for fine-grained allocations. We can mitigate this by favoring large allocations. However, large allocations tend to be overly specialized. To resolve this, I propose a generic approach to larger allocations: the binary is interpreted as [glas object](GlasObject.md), and associated pointers are accessed as external references. For efficient indexing of pointers, the header may indicate a runtime-specialized variant of glas object, e.g. binding 0xC0..0xFF to the first sixty-four pointers. (A few other headers could efficiently support arrays and binaries.)
 
