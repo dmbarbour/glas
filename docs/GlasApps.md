@@ -13,6 +13,7 @@ Applications are expressed as a collection of methods in the [program model](Gla
 * 'gui' - see [Glas GUI](GlasGUI.md).
 * 'switch' - in context of live coding, runs as the first transaction when updating code. If this transaction fails, we'll retry but continue with the old code until it succeeds.
 
+
 Applications should define 'settings' to support application-specific configuration. Applications should define 'main' as primary behavior. Most apps should define 'http' because it's convenient. But depending on user-defined front-end syntax, these definitions might be derived automatically rather than explicitly defined by the user.
 
 ### Composition
@@ -41,19 +42,6 @@ Database registers are bound to a configured database and thus shared with other
 ### Checked Shared State
 
 Annotations may describe type assumptions on the shared datbase. The runtime may validate these assumptions to detect type errors, and may also write type assumptions into the database (together with metadata like app name) to support checked, asynchronous interactions. If necessary, we could block database transactions on a subset of registers while the user debugs.
-
-### Rejecting References
-
-It is easy to introduce and implement a heap-like reference API. Consider:
-
-* `sys.heap.alloc : [heap] HeapRef<heap>` - allocate reference to a heap. 
-* `sys.heap.rw(HeapRef<heap>, NewVal) : [heap] OldVal` - swap data with heap. 
-
-Here the 'heap' argument is used associatively, supporting allocation of multiple heaps. It also influences lifespan and valid scope for HeapRefs. 
-
-Unfortunately, a heap API complicate conflict analysis, garbage collection, and support for linear types. In context of live coding, heap refs complicate schema changes. And glas lacks any equivalent to first-class functions, so we introduce an inconsistency where 'methods' and 'registers' can be coupled to support stack objects, but we cannot couple methods to heap refs for first-class OOP.
-
-Perhaps there will be sufficient demand to implement a heap-like API later, but I'd like to see how far we can go without.
 
 ## Concurrency
 
@@ -214,6 +202,7 @@ A viable API:
 * `sys.ffi.*` -
   * `create() : [ffi] ()` - here 'ffi' is a register name, but state is bound associatively. Error if already in use! The runtime will allocate a new FFI thread.
   * `fork() : [src,dst]` - here 'src' must bind to a defined ffi, and 'dst' to an undefined one. We'll copy local resources immediately, i.e. query results, and send a command for the FFI thread to clone itself (copying stack, registers, etc.). Allocation of an OS thread may be lazy.
+  * `close() : [ffi] ()` - release resources associated with an FFI. The FFI thread will continue running any incomplete commands, then terminate.
   * `status() : [ffi] FFIStatus` - recent status of FFI thread:
     * *uncommitted* - status for a 'new' or 'fork' FFI.
     * *busy* - ongoing activity in the background - setup, commands, or queries
@@ -237,7 +226,7 @@ A viable API:
   * `reg.load(Reg) : [ffi] ()` - copy data from local register of FFI thread onto data stack.   
   * `var.*` - receiving data from 'peek' or 'mem.read'. Var should be a short text.
     * `read(Var) : [ffi] Data` - Receive result from a prior query. Will diverge if not *ready*.
-    * `drop(Var) : [ffi] ()` - Remove result and enable reuse of Var.
+    * `drop(Var) : [ffi] ()` - Remove present or future result. Enables reuse of Var. Diverges if not in use.
     * `list() : [ffi] List of Var` - Browse local environment of query results.
     * `status(Var) : [ffi] VarStatus`
       * *undefined* - variable was dropped or never defined
@@ -249,29 +238,40 @@ A viable API:
   * `ptr.*` - safety on a footgun; abstract Ptr is scoped, may be shared between forks of an FFI, but not with independently created FFIs. Also cannot be stored to a database register.
     * `addr(Ptr) : [ffi] Int` - view pointer as integer (per intptr_t). Error if FFI thread does not belong to same OS process as Ptr.
     * `cast(Int) : [ffi] Ptr` - treat any integer as a pointer
-    * `null() : Ptr` - pointer with 0 addr, accepted by any FFI
+    * `null : Ptr` - pointer with 0 addr, accepted by any FFI
+
+* `sys.ffi.pack() : [ffi] FFI` - package FFI into an abstract, linear reference.
+* `sys.ffi.unpack(FFI) : [ffi] ()` - bind a previously packaged FFI thread.
 * `sys.refl.ffi.*` - we could do some interesting things here, e.g. support debugging of an FFI process. But it's highly runtime specific.
 
 This API is designed assuming use of [libffi](https://en.wikipedia.org/wiki/Libffi) and TinyCC. We'll need the version of TinyCC that supports callbacks for includes.
 
+## API Design Policy: Avoid Abstract References
+
+References complicate conflict analysis, garbage collection, and schema changes. The latter is mostly relevant to live coding, but it isn't trivial. I would prefer to avoid them. Linear objects avoid or mitigate these issues, but it's awkward to always be migrating linear objects to whomever is using them. 
+
+We can resolve this by shoving the linear object into a shared register. Or, alternatively, 'unpack' the linear object into an abstract volume of shared registers to support fine-grained conflict analysis and update static locations.
+
+I propose that we build most APIs around the notion of unpacking linear objects into abstract volumes of references. We can 'pack' them up again for migration. But in many cases we'll just keep them unpacked all the time.
+
+As a related point, it is not difficult to model a heap and abstract references to it, but I would prefer to avoid doing so.
+
+## Regarding Filesystem, Network, Native GUI, Etc.
+
+I'm hoping to build most APIs above FFI and bgcall, reducing the development burden on the runtime. We should stick with the 'unpacked linear object' concept instead of references in each case.
+
 ## Time
 
-Query the main system clock.
+Query the system clock.
 
 * `sys.time.now() : TimeStamp` - Returns a TimeStamp for estimated time of commit. By default, this timestamp is a rational number of seconds since Jan 1, 1601 UTC, i.e. the Windows NT epoch but with arbitrary precision. Multiple queries within a transaction will return the same value.
-* `sys.time.after(TimeStamp)` - fails unless `sys.time.now() >= TimeStamp`. Use this if waiting on the clock, as it provides the runtime a clear indicator for how long to wait.
+* `sys.time.after(TimeStamp)` - fails unless `sys.time.now() >= TimeStamp`. Use this if waiting on the clock, as it provides the runtime a clear hint for how long to wait.
 
-When we develop a distributed runtime, we'll probably extend this API to support multiple abstract clocks. But this API seems sufficient to get started. We might understand the default system clock as best-effort and non-deterministic in context of network partitioning and drift.
+When we develop a distributed runtime, we'll need to extend this API to support multiple clocks. But this API seems sufficient to get started. We might understand the default system clock as best-effort and non-deterministic in context of network partitioning and drift.
 
 We can use 'sys.time.after' to wait on a clock. It is possible to express a sleep in terms of fetching time in one transaction then waiting on (time + sleep duration) after yield. 
 
 *Note:* Favor profiling annotations, not timestamps, for performance metrics within a transaction.
-
-## Random Data
-
-Instead of a stateful random number generator, the runtime could provide a stable, cryptographically random field. The more stateful approaches are rather awkward in context of backtracking or transaction loops.
-
-* `sys.random(Seed, N) : Binary` - return a list of N cryptographically random bytes, uniformly distributed. The result varies on Seed, N, and runtime instance. The Seed could feasibly be abstract state or plain old data.
 
 ## Arguments and Environment Variables
 
@@ -298,7 +298,7 @@ A viable API:
 
 The control hint is runtime specific, perhaps something like `(icanon:on, ...)`. I reserve standard error for runtime use - compile-time warnings, logging, etc..
 
-The runtime may keep a large buffer of standard output available for use with the "/sys/" HTTP interface, perhaps via [xterm.js](https://xtermjs.org/). Use of 'unread' could also inject some user inputs through this view.
+A fundamental issue with console IO is that it isn't very composable. The default is to awkwardly mix streams and hope for the best. Or to avoid composing apps within a single process. But with translation, we could feasibly present a distinct 'sys.tty.\*' to each component application. This could support a few slightly-useful forms of composition, e.g. pipes or screens.
 
-Composite applications can feasibly pipeline tty, but it would require careful translations of 'sys.tty' in the app definition.
+*Note:* I would like to mirror the terminal through the runtime HTTP interface, e.g. `"/sys/tty"` via [xterm.js](https://xtermjs.org/).
 

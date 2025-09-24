@@ -7,19 +7,31 @@ The [namespace](GlasNamespaces.md) supports modules and user-defined front-end s
 Control Flow:
 
 * `n:Name` - we can interpret a name in terms of substituting its definition. Performance may involve call stacks and tail-call optimization.
-* `(%do P1 P2 P3 ...)` - execute P1 then P2 then P3 etc. in sequence. We also use `(%do)` as our primary no-op, and '%do' as the constructor for committed action in a decision tree structure.
-* `%fail` - voluntary failure, interpretation is contextual but will gend to abort the current transaction and allow some observable handling of this, e.g. backtracking conditions, or aborting a coroutine step until observed conditions change. For contrast, involuntary failures such as type errors are instead modeled as divergence like an infinite loop.
-* `(%cond Sel)` - supports if/then/else, pattern matching, etc.. The Sel type has a distinct AST structure from full programs.
-  * `(%br C BrL SelR)` - run C within a hierarchical transaction. If C terminates normally, run SelL. If C fails voluntarily, abort then run SelR. Note that committing C is left to SelL. 
-  * `(%do P1 ...)` - in context of Sel, represents committed action. Commit the entire chain of prior branch conditions, then run '%do' in the same transactional context as '%cond' or '%loop'.
-  * `%fail` - in context of Sel, represents the lack of a case on the current branch. Causes computation to backtrack, aborting the most recent successful branch condition then trying the SelR path. In normal form, appears only in SelR position because we can optimize `(%br C %fail SelR) => SelR`.
-  * Beyond these, Sel may also support language declarations, annotations, and macros.
-* `(%loop Sel)` - supports anonymous while-do loops, albeit mixing selection of action. Uses same Sel type as '%cond'. Implicitly exits loop if no '%do' step is selected. 
-* `(%co P1 P2 P3 ...)` - execute P1, P2, P3, etc. concurrently as coroutines with independent data stacks and voluntary yield. This step only exits when all coroutines complete. Scheduling of coroutines is non-deterministic, thus trivially both associative and commutative.
-* `%yield` - pauses a coroutine, providing an opportunity for concurrent computations to operate. Resumption is implicit. Each yield-to-yield step should be logically atomic, thus '%fail' implicitly rewinds to a prior '%yield' then awaits changes to observed state.
+* `(%seq P1 P2)` - execute P1 then P2 in order. 
+* `%pass` - the no-op. Does nothing.
+* `%fail` - voluntary failure, interpretation is contextual but generally aborts the current transaction and allows observable handling of this, e.g. backtracking conditions, or aborting a coroutine step then implicitly yielding. (In contrast, most errors are treated as infinite loops.)
+* `(%cond Sel)` - supports if/then/else, pattern matching, etc.. The Selector has a distinct AST structure from full programs, and everything up to %sel is evaluated atomically within a hierarchical transaction. Error if Sel fails to select any action.
+  * `(%sel P)` - selected action. The condition should be equivalent to running prior chain of branch conditions prior chain of passing branch conditions, followed by running P.
+  * `(%br C L R)` - run branch condition C as a program. If C fails, undo then process selector R. Otherwise, process selector L.  
+  * `%bt` - backtrack to the most recent successful branch condition, cause it to fail, then take the right branch. Or if this is already the rightmost branch, behavior is contextual: error for %cond, exit for %loop, etc.. 
+    * As a special rule, we can optimize `(%br C %bt R) => R` even if C is divergent. Thus, in normal form, %bt appears only in R position.
+  * Sel also supports macro and annotation AST nodes.
+* `(%loop Sel)` - Repeatedly runs Sel until it fails to select an action. Upon failure, exits loop. Essentially, a while-do loop with integrated pattern matching. 
+* `(%co P1 P2)` - execute P1 and P2 as coroutines. To transfer control, a coroutine must voluntarily %yield or %fail. Each coroutine has its own data stack but shares access to methods and registers. Fork-join behavior: %co will continuously yield until all of its coroutines complete. Scheduling is contextual but shall guarantee associativity. In case of non-deterministic scheduling, coroutines support preemption and parallelism with [optimistic concurrency control](https://en.wikipedia.org/wiki/Optimistic_concurrency_control). 
+* `%yield` - commits operations of a coroutine since prior yield, providing an opportunity for other coroutines to observe and interact with shared state. Each yield-to-yield step is implicitly an atomic transaction. A step may %fail, implicitly rewinding to a prior %yield.
 * `(%atomic P)` - an atomic operation may yield, but will only resume internally. Fails only if all internal resumptions are failing. 
-* `(%choice P1 P2 P3 ...)` - represents non-deterministic runtime choice of P1 or P2 or P3. 
+* `(%choice P1 P2)` - run a choice of P1 or P2. If a choice fails, we'll backtrack and try another, thus a choice only fails if all options fail. Evaluation order is contextual, but shall guarantee associativity. If the context is non-deterministic evaluation order, choice will diverge only if all non-failing options diverge.
 * `%error` - explicit divergence. Unlike '%fail', we do not backtrack on error; it's equivalent to an infinite loop.
+
+
+
+Evaluation Order Control (tentative):
+
+* `(%sched Order P)` - (tentative) It is feasible to specify a scheduling rule for coroutines introduced within a given scope. Viable schedules:
+  * `%order.any` - Embrace non-deterministic choice! In context of transactions, we get a limited form of preemption because a scheduler may abort an uncommitted choice to try another. It is possible to evaluate many choices at once. Many coroutines can commit at once if as there are no conflicts, aka optimistic concurrency control.
+  * `%order.rr` - Round robin. After a coroutine yields, schedule the next in sequence, then cycle upon reaching the end. Not valid for choice. 
+  * `%order.lr` - Left to right. Always run the leftmost coroutine that can make progress. Or evaluate choices left to right.
+* `(%choice.order Order P)` - (tentative)
 
 
 Data Manipulation:
@@ -39,9 +51,9 @@ Environment Manipulation:
 * `(%scope TLL P)` - translate RegisterNames and MethodNames in scope of P. TLL is same as in the AST representation (see namespaces).
 * `(%rw RegisterName)` - swap data between named register and top data stack element. 
 * `(%call MethodName TLL)` - invoke a method, applying a translation to control the method's view of the caller's environment.
-* `(%call.avail MethodName)` - an ifdef of sorts for methods. Does nothing if method is defined, otherwise fails.
-* `(%local Prefix P)` - introduces a set of registers in scope of P. Will mask Prefix. The set of registers is inferred from use, and are initialized to zero.
-* `(%intro Prefix Method P)` - introduces a set of methods in scope of P. Will mask Prefix.
+* `(%call.avail MethodName)` - an ifdef of sorts for methods. Pass (no-op) if method is defined to anything other than `()`, otherwise fails. (Here `()` is explicitly undefined.)
+* `(%local Prefix P)` - introduces a set of registers in scope of P. Will mask Prefix, i.e. equivalent to `(%scope {Prefix => NULL} (%local Prefix P))`. The set of registers is inferred from use, thus do not need to be declared explicitly, but must be finite (check recursion). All registers are initialized to zero.
+* `(%def Prefix Methods P)` - introduces a set of methods in scope of P. Will mask Prefix. 
 
 Method Namespaces:
 
@@ -59,6 +71,8 @@ Metaprogramming:
 * `%macro.argc` - is substituted by the count of AST arguments after arg 0.
 * `(%macro.eval Localization ASTBuilder)` - first perform macro expansion for Localization and ASTBuilder. ASTBuilder must represent a 0--1 program returning an AST representation. We link via Localization, substitute the linked AST, then perform a second round of macro expansion.
 
+I might be changing macros into an AST primitive feature.
+
 ### Annotations
 
         (%an Annotation Operation)
@@ -69,33 +83,28 @@ Acceleration:
 * `(%an.accel Accelerator)` - non-semantic performance primitives. Indicates that a compiler or interpreter should substitute Op for a built-in Accelerator. By convention, an Accelerator has form `(%accel.OpName Args)` and is invalid outside of '%an.accel'. See *Accelerators*.
 
 Composition:
-* `(%an.compose Anno1 Anno2 ...)` - function composition of annotations, e.g. might rewrite `(%an (%an.compose A1 A2 A3) Op)` to  `(%an A1 (%an A2 (%an A3 Op)))`.
+* `(%an.compose Anno1 Anno2 ...)` - composition of annotations, applies right to left, e.g. can rewrite `(%an (%an.compose A1 A2 A3) Op)` to  `(%an A1 (%an A2 (%an A3 Op)))`. This is mostly useful for metaprogramming.
 
 Instrumentation:
 * `(%an.log Chan MsgSel)` - printf debugging! Rather sophisticated. See *Logging*.
 * `(%an.error.log Chan MsgSel)` - log messages generated only when Operation halts due to an obvious divergence error, such as '%error' or an assertion failure.
-* `(%an.assert Chan ErrorMsgSel)` - assertions structured as logging an error message, i.e. an assertion passes only if no error message is generated. By default, we'll treat non-deterministic choice in the selector branches as a conjunction of conditions.
-* `(%an.static.assert Chan ErrorMsgSel)` - the same as assert, but it's an error if the conditions cannot be computed at compile-time.
+* `(%an.assert Chan ErrorMsgSel)` - assertions structured as logging an error message, i.e. an assertion passes only if no error message is generated. We'll treat choice in the selector branches as a conjunction of conditions.
+* `(%an.assert.static Chan ErrorMsgSel)` - the same as assert, except it's also an error if the conditions cannot be computed at compile-time.
 * `(%an.profile Chan BucketSel)` - record performance metadata such as entries and exits, time spent, yields, fails, and rework. Profiles may be aggregated into buckets based on BucketSel. 
 * `(%an.trace Chan MsgSel)` - record information to support *replay* of a computation. The MsgSel allows for conditional tracing and attaches a helpful message to each trace. See *Tracing*.
 * `(%an.chan.scope TLL)` - apply a prefix-to-prefix translation to Chan names in Operation. 
 
 Validation:
 * `(%an.arity In Out)` - express expected data stack arity for Operation. In and Out must be non-negative integers. Serves as an extremely simplistic type description. 
-* `%an.atomic.reject` - error if running Operation from within an '%atomic' scope. Useful for code that that diverges when run within a transaction, e.g. waiting forever on a network response.
-  * `%an.atomic.accept` - pretend Operation is started outside an atomic transaction, excepting external method calls. Intended to support testing code in a simulated environment.
+* `%an.atomic.reject` - error if running Operation from within an atomic scope, including %atomic and %br conditions. Useful to detect errors early for code that diverges when run within a hierarchical transaction, e.g. waiting forever on a network response.
+  * `%an.atomic.accept` - to support simulation of code containing %an.atomic.reject, e.g. with a simulated network, we can pretend that Operation is running outside a hierarchical transaction, albeit only up to external method calls.
 * `(%an.data.wrap RegisterName)` - support for abstract data types, hides top stack element from observation until unwrapped with the same RegisterName, implies scope for data (e.g. don't store to longer-lived register). Can feasibly be enforced statically or dynamically, or safely ignored.
   * `(%an.data.unwrap RegisterName)` - removes the wrapper, allowing observation of the data.
-  * `(%an.data.wrap.linear RegisterName)` - as wrap, but also block '%copy' and '%drop' while wrapped. Dynamic enforcement is feasible with a metadata bit per value.
+  * `(%an.data.wrap.linear RegisterName)` - as wrap, but attempts to copy or drop the wrapped value (including implicitly, such as exiting a local registers scope or a coroutine terminating with data on the stack) will diverge if detected at runtime or become a compile-time error if recognized earlier. Dynamic enforcement is feasible with one metadata bit per value.
   * `(%an.data.unwrap.linear RegisterName)` - as unwrap for linear data
-* `%an.data.static` - Indicates that top stack element should be statically computable. Exercise left to compiler! 
+* `%an.data.static` - Indicates that top stack element should be statically computable. Exercise left to compiler!
 * `%an.eval.static` - Indicates that all '%eval' steps in Operation must be linked at compile-time. This is the default for glas applications, but it doesn't hurt to make the assumption explicit more locally.
 * `(%an.type TypeDesc)` - Describes a partial type of Operation. Or, with a no-op and identity type, we can partially describe the Environment. TypeDesc TBD.
-
-* `%an.choice.reject` - (tentative) forbid non-deterministic choice in Operation. (Interaction with coroutine schedulers TBD.)
-  * `%an.choice.nointro` - (tentative) allow non-deterministic choice, but only via methods presently in scope. That is, all non-deterministic choice should be externalized. 
-
-* `(%an.reg.zexit RegisterName)` - (tentative) tells runtime that a register should be manually cleared (to zero) before it leaves scope. The only impact would be to raise an error, but that can be useful to debug incomplete protocols.
 
 Incremental computing:
 * `(%an.memo Hints)` - memoize a computation. For simplicity and immediate utility, initial support for memoization may be restricted to pure data stack functions, perhaps extended to pure methods. Hints may indicate persistent vs. ephemeral memoization, cache-invalidation policy, and other options.
@@ -119,32 +128,36 @@ Todo: list some useful accelerators.
 
 Some discussions that led to the aforementioned selection of primitives.
 
+### Fixed Arity
+
+I originally had the associative ops like %seq, %co, %choice accept variable numbers of arguments. But this has caused me headaches for metaprogramming, requiring much more complicated metaprogramming to process or generate. I'm considering to push the basic substitution-like metaprogramming into the namespace structure with something like lambdas, and it's causing me headaches.
+
+In any case, this should be an intermediate language. It shouldn't be a problem for a front-end compiler to generate a little more structure. The repeating names can be interned.
+
 ### Operation Environment
 
-I propose to express programs as operating on a stable environment of names, consisting primarily of methods and registers. A program may define methods and local registers in scope of a subprogram. 
+Programs operate on a stable environment of named methods and registers. Methods and registers never share a name, and are typically partitioned on separate prefixes (though the two can be mixed via translations). In practice, methods are defined explicitly, while registers are inferred from use.
 
-Methods must bind three environments: host, caller, and self. The latter is the collection of methods. 
+The standard environment provided to an application:
 
- The 'self' environment would reference the collect (to support a namespace of mutually recursive definitions) each other. This can be expressed as reference through three prefixes. I propose "^", "$", and "." respectively. 
+* 'app.\*' - self-reference between application methods
+* 'sys.\*' - runtime-provided APIs
+* 'db.\*' - shared, persistent registers bound to configured database
+* 'g.\*' - application private registers, initially zero
 
-"host." and "client." and "self.", or perhaps "^" and "$" and ".". 
- '^' for host, 
+When applications define methods, those methods receive:
 
- bind to both host and caller, and to each other for mutual recursion. 
+* '.\*' - self-reference between the methods
+* '^\*' - reference to the host environment
+* '$\*' - reference to caller's environment
 
-local resources and 
+These are simply the inital values, subject to translation. Applications are implemented as method definitions with a standard, runtime-provided translation to simplify recognition and documentation.
 
-I would like to structurally guarantee that register and handler names never overlap
+Registers are inferred from use. In context of recursion, the set of external registers in use must be finite, reaching a fixpoint. In general, registers may contain arbitrary glas data of any size, but type annotations may restrict things, enabling a compiler to use specialized data representations.
 
+Methods are explicitly defined, and we can test for their availability before invoking them.
 
-
- Registers are inferred from use, but methods must be defined. All registers initialize to zero, and most are implicitly cleared upon exit from P (*Protocol Registers* must be cleared manually).
-
-
-
- This environment includes stateful registers and callable 'methods' for abstraction of state or effects. A program may introduce local registers and methods in scope of a subprogram, and may translate or restrict a subprogram's access to the program's environment.
-
-To keep it simple and consistent, I propose that registers and methods are named with simple strings similar to names in the namespace (ASCII or UTF-8, generally excluding NULL and C0). This allows us to apply the namespace TL type to translate and restrict the environment exposed to a subprogram. It also ensures names are easy to render in a projectional editor or debug view.
+Register and method names never overlap in context. This can be enforced by separating prefixes upon introduction, and masking the prior environment on prefixes.
 
 Toplevel application methods ('app.\*') receive access to a finite set of methods and registers from the runtime. See [glas apps](GlasApps.md) for details. The program may include annotations describing the assumed or expected environment, allowing for validation and optimization.
 
@@ -162,9 +175,15 @@ Meanwhile, we'll still support decent persistent data structures by default, e.g
 
 ### Tail Call Optimization
 
-Tail calls can support recursive definitions without increasing the call stack. This can be viewed as a form of static garbage collection, recycling memory allocations on the call stack. It is feasible to unroll a recursive loop to simplify this recycling. 
+Tail calls allow for recursive definitions in finite stack space. This optimization isn't always worthwhile - not when we instead model the data stack via memory allocation - but it can be useful in enough cases.
 
-In glas systems, I want tail calls to be a robust, checked optimization. Annotations can indicate that calls are expected to be tail calls. Further, I hope to encourage tail calls as the default form of recursion, as it greatly simplifies compilation.
+This can be viewed as a form of static garbage collection, recycling memory allocations on the call stack. To support a non-moving TCO, we could feasibly unroll a loop a little then recycle all the relevant locations.
+
+In glas systems, I want tail calls to be a robust, checked optimization. But it's awkward to express this on a definition directly on names. Perhaps instead we might express an annotation that the stack is finite? Or finite up to external handlers?
+
+
+
+Annotations can indicate that calls are expected to be tail calls. Further, I hope to encourage tail calls as the default form of recursion, as it greatly simplifies compilation.
 
 Even if all recursion is tail calls, we can model dynamic stacks in terms of registers containing list values. Performance in this case might be mitigated by preallocation of a list buffer for in-place update and use as a stack. This could be supported through annotations or accelerators.
 

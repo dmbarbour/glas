@@ -1,16 +1,50 @@
 # Glas Namespaces
 
-The glas namespace must support modularity, metaprogramming, user-defined syntax, lazy loading, flexible linking, version control, and access control for definitions. Evaluation of the namespace supports massive parallelism and robust caching.
+In my vision for glas systems, huge namespaces define runtime configuration, shared libraries, and applications. Definitions can be distributed across dozens of DVCS repositories, referencing stable branches or hashes for horizontal version control. We rely on laziness to load and extract only what we need, and incremental compilation to reduce rework. 
 
-Definitions can be loaded from local files and remote DVCS repositories. The anticipated use case is that a user's local configuration inherits most definitions from community or company DVCS, then integrates a few local projects and overrides configuration options as needed. With lazy loading, the community namespace may be very large, defining hundreds of applications and shared libraries.
+Applications should be expressed as OO class-like namespaces: methods with open recursion, supporting inheritance and overrides. The final step is binding an application to a namespace of system APIs and runtime state. 
 
-Version control is oriented around those DVCS resources. Users can transitively name stable branches or immutable version hashes. This supports 'horizontal' versioning where many libraries and applications are updated together. This simplifies whole-system analysis and testing because there are fewer combinations to consider.
+Ideally, all namespace-level computation should be completed at compile-time. Though we might permit staged apps that compile just a bit further after receiving access to command-line args and environment variables.
 
-User-defined sntax builds upon the metaprogramming facilities and a few conventions. The namespace may include definitions for front-end compilers. We can select a compiler based on file extensions. This is bootstrapped by initially overriding a few user definitions with built-in implementations.
+## Design Overview
 
-Access control is based around translation of names. We can control which names are in scope when loading a module. Further, definitions may be assigned to a sequence of names, thus requiring multiple names in scope to access. The latter is useful for associative or auxilliary names.
+The lambda calculus awkwardly supports namespaces, e.g. `let x = X in Expr` as syntactic sugar for `((λx.Expr) X)`. With fixpoints, we can also support recursive definitions.
 
-## Proposed Data Types
+We can extend the lambda calculus with reified environments. A keyword, say `__env__`, lazily extracts visible definitions into an abstract environment record. To utilize this environment, we can also introduce a prefix binding: `((νPrefix.Expr) Env)`. This makes names in Env available through Prefix, and implicitly shadows all existing names with Prefix. Prefix may be the empty string, thus we might express dotted-path access as `((ν.foo) Env)`.
+
+To support scoping and interface adapters, we introduce a scoping rule consisting of a set of prefix-to-prefix rewrites, e.g. `{ "a" => "b", "b" => "c", "c" => "a", "d" => NULL }` rotates prefixes a, b, c and hides prefix d. In general, we apply the rule with the longest matching prefix (if any) to each name in the current environment, and we'll support full-name matches too. We can apply scopes to first-class environments through `(ν.(apply scope to __env__) Env)`.
+
+Other useful namespace computation primitives include ifdef and union. With ifdef, we can more easily implement default definitions or compose partial interfaces. With union, we can conveniently integrate definitions into a shared namespace without giving everything a unique prefix. Union does risk ambiguity, but we can raise an error when we detect a name has multiple definitions, forcing developers to resolve the conflict.
+
+Each file should compile to a parameterized namespace as an intermediate representation, i.e. `ν%.(Env Expr)`. By convention, '%' is our pseudo-global namespace and includes [program-model primitives](GlasProg.md), compile-time effects such as loading files, and access to 'env.\*' defined in the user configuration via fixpoint binding to '%env.\*'. The latter supports shared libraries and applications.
+
+The glas system supports user-defined syntax. The operation to load a file selects a front-end compiler '%env.lang.FileExt' from the provided environment (usually the current environment) based on file extension. If everything goes well, we then bind the provided environment and return the Env. Otherwise, we'll raise suitable errors. To bootstrap this, '%env.lang.glas' (and perhaps '%env.lang.glob' for serialized data) may initially link to a built-in.
+
+Applications should be defined within the user configuration, typically 'env.appname.app', or a separate script file, which we'll load via '%env.lang.FileExt' then access 'app'. Applications are also defined as parameterized namespaces, and are expected to have the form `λsys.λself.(AppEnv Expr)`. We bind 'sys' to a runtime effects API, e.g. 'sys.file.\*', then we fixpoint 'self' to support open recursion when composing applications. The resulting AppEnv should define 'settings', 'main', and common, composable event handlers such as 'http' and 'rpc'.
+
+Program methods generally are frequently defined with form `λargs.(Program AST)`. This allows callers to provide a controlled view of their environment. In context of the full program model, this args environment may include local algebraic-effects handlers or pass-by-ref registers. 
+
+Most computation - even metaprogramming - will be handled through the program model. The use of lambda calculus for namespaces is intended to mostly be static computation. The namespace AST may embed glas data, but treats it as fully opaque. However, it is possible to [encode data into lambdas](https://en.wikipedia.org/wiki/Church_encoding). Perhaps, one day, it may even prove useful.
+
+Lazy evaluation is essential for this design to work as intended, applying both to lazy loading of definitions and metaprogramming through fixpoint definitions. However, assuming computation is mostly performed at compile-time and is highly amenable to incremental computing, I shouldn't need to break my brain understanding Simon Peyton Jones's STG machine.
+
+### Incremental Compilation
+
+Lazy evaluation can simplify tracking of dependencies: for each thunk, we can track its dependents. Each thunk may double as a persistent memo cell and reference many other cells.
+
+For persistence, we must assign stable names to these thunks. In general, this could be a secure hash of everything potentially contributing to a given computation, e.g. code, arguments, perhaps compiler version (e.g. for built-ins). Unfortunately, it's easy to accidentally depend on irrelevant things, or to miss some implicit dependencies. To mitigate this, we must enable programmers to annotate code with a proposed stable-name generator.
+
+Whether we persist the *value* of a thunk may be heuristic, e.g. based on the relative size of that value and the estimated cost to recompute it. It's best to store small values with big compute costs, naturally. Like 42. For large values that are cheaply regenerated, we might omit the data and track some proxy for change - hash of data, ETAG, mtime for files, etc. Aside from this, we would track the set of dependent thunks that must be invalidated.
+
+## Representation
+
+
+
+# Deprecated Content
+
+I'm pretty happy with the new direction!
+
+## Relevant Types
 
         type AST = List of AST      # constructor
                  | d:Data           # embedded data
@@ -27,34 +61,19 @@ Access control is based around translation of names. We can control which names 
 
 This AST type supports precise recognition of names, deferred translation of names, and arbitrary embedded data. In general, the first element of a constructor should be a name or another constructor.
 
-Translations will rewrite a longest matching matching prefix of a name. However, names containing "/" receive special attention. Excepting cases where "/" is explicitly matched, we'll repeat translation on the suffix following "/". This allows us to construct a name as a sequence of names, and to support access control on components of names.
+Translations will rewrite a longest matching matching prefix of a name. Names containing "/" receive special attention. Except where "/" is explicitly matched, we repeat translation on the suffix following "/". This allows us to construct a name as a sequence of names, and thus to support more flexible access control.
 
 A problem with prefix-to-prefix translations is that translating "bar" accidentally affects "bard" and "barrel". To mitigate, we logically add a ".!" suffix to names or "/" components for matching purposes. We raise an error if this suffix isn't preserved. Thus, we could match "bar.!" specifically, or "bar." to translate "bar" together with "bar.\*".
 
 *Aside:* It is possible to compose a list of TLs into a single TL, but non-trivial and not always more efficient. 
 
-## Namespace AST
+## Procedurally Generated Namespaces? Tentative.
 
-It seems feasible to support a declarative AST for namespaces. The challenge is ensuring the namespace can both introduce and invoke definitions.
+A viable representation of namespaces is to run a program that iteratively writes names. We could interpret non-deterministic choice as branching the program, forming a union. Non-deterministic coroutines would be awkward here, but we can use a deterministic scheduler, e.g. left-to-right (always evaluate leftmost coroutine that doesn't fail).
 
+However, I'm not entirely satisfied with this solution. It doesn't unify nicely with method namespaces. It requires a different evaluation of programs. The ambiguity of definitions, and the inconsistency of ifdef, are troublesome.
 
-I've 
-
-
-I would like to represent a namespace declaratively as an AST. This AST might be understood as a program that constructs a namespace.
-
-
-
-It is feasible to represent a namespace declaratively as an AST. In this case, we would need to interpret the namespace
-
-## Procedurally Generated Namespaces
-
-I like the idea of expressing a namespace as a program that iteratively writes names. However, there are a few issues that have me reviewing this design decision:
-
-* interaction with coroutines is extremely awkward
-* inconvenient to unify with local method namespaces
-* difficult to extract definitions via normal eval
-
+I think we can do better. Just need to figure out how.
 
 Anyhow, a viable API:
 
@@ -214,3 +233,27 @@ In practice, there is no use case for these channels. It's just an exercise in e
 Divergence and performance are relevant concerns. We'll want quotas for evaluation of the namespace. Quotas can be expressed via user configuration and annotations.
 
 Ideally, quotas should pass or fail deterministically, independent of CPU time or optional optimizations. This requires developing a heuristic cost function and, in general, checking for overruns before accepting generated output.
+
+## Declarative Namespaces
+
+Observations:
+
+* If applications are defined as namespaces, then namespaces and definitions have the same 'type'. That is, if definitions are represented by AST, then so are namespaces.
+* If ASTs are namespaces, then at least some ASTs must define things.
+* Most definitions benefit from utility definitions. It seems worthwhile to support a notion of introducing definitions at least locally within other definitions.
+* The method 'args' as a client-controlled view of the client's namespace seems widely useful. We should make this universal in the namespace model.
+* Ideally, definitions can be inlined without changing their meaning. The definition boundary shouldn't be semantically significant. Thus, to *receive* the arguments, we may need something explicit like a lambda or template. 
+* A localization is a reified translation. Localizations offer a first-class way to represent an environment of names. They can be passed through multiple layers. Of course, the construction of a localization needs some attention.
+* We can unify lambdas binding definitions and localizations if we forbid definitions on the 'empty'. Lambdas can bind entire prefixes, if a localization is bound, use beyond the immediate prefix then binds the other names. But I fear this might reduce usability. Alternative of two distinct structures may prove clearer and more usable.
+* Idea: if an AST can 'evaluate' to a localization that binds introduced local definitions, that could be a very declarative approach to defining a namespace. TBD: representing a localization as a prefix-to-prefix translation seems incompatible with 'local' definitions. Overrides may also prove troublesome. 
+* Idea: if we have something like lambdas that can return lambdas, we can (via currying) support user-defined constructors of multiple arguments. Lambdas would receive a localization by name instead of expanding it under a prefix, of course. TBD: support for var-args?
+* Support for constructors with a variable number of arguments seems problematic. It seems possible to process them, albeit awkward, e.g. lambda with optional arg and two bodies. It seems much more difficult to *generate* var-arg structures as part of an AST. And it's a problem that I'd prefer to avoid entirely.
+* Perhaps it's better to not use var-args in the first place? This is an intermediate language. It isn't a problem to ask a front-end compiler to manage arity.
+* The notion of 'local definitions' needs attention. If we have lambdas, we get local definitions implicitly, e.g. `let x = X in Expr` can be translated into `(λx.Expr X)`, and within Expr we'll we'll be translating 'x' to something that was previously anonymous. We might even capture this within a localization.
+* We can feasibly represent anonymous definitions in a localization by extending a TL type.
+* Perhaps mixing prefix-to-prefix translations with name-to-definition (and maybe prefix-to-localization?) would be an effective way to integrate things? Not sure about this. 
+* Normally, a localization is paired with a global dict. I'd really like to get back to that! A global dict is very nice for rendering and debugging.
+* So, we have one idea of 'evaluating' a localization that defines an internal view of a flexible namespace, and another that involves 'writing' definitions. The problem with writing definitions is that we can easily write the same name twice. The lambda-like approach can structurally guarantee a single definition per name, but it does not directly support inheritance and override of names.
+* To support inheritance and override, my prior approach involved separating the 'move' and 'link' translations. We could move a prior definition then invoke it. Not great, but usable and it maintained the simple TL type.
+* For overriding, we need some way to re-link definitions. This is often through a 'self' argument or similar. Could we do similar, providing a 'self' localization to some code instead of referencing things directly? Can we robustly support something similar to multiple inheritance or mixins?
+* I think we could support 'ifdef' more broadly with this lambdas approach.
