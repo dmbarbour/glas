@@ -69,7 +69,7 @@ Not all operations have AST forms; for example, %load is a compile‑time effect
    - Undefined names are errors.
 
 2. **Application `(F, X)`**  
-   - Evaluate `F` to a function value.  
+   - Evaluate `F` to a function value. Apply to `X`.
    - Lazy semantics: arguments are passed as unevaluated thunks unless forced
 
 3. **Annotations `a:(Anno, X)`**  
