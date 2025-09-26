@@ -6,33 +6,24 @@ The [namespace](GlasNamespaces.md) supports modules and user-defined front-end s
 
 Control Flow:
 
-* `n:Name` - we can interpret a name in terms of substituting its definition. Performance may involve call stacks and tail-call optimization.
-* `(%seq P1 P2)` - execute P1 then P2 in order. 
-* `%pass` - the no-op. Does nothing.
-* `%fail` - voluntary failure, interpretation is contextual but generally aborts the current transaction and allows observable handling of this, e.g. backtracking conditions, or aborting a coroutine step then implicitly yielding. (In contrast, most errors are treated as infinite loops.)
-* `(%cond Sel)` - supports if/then/else, pattern matching, etc.. The Selector has a distinct AST structure from full programs, and everything up to %sel is evaluated atomically within a hierarchical transaction. Error if Sel fails to select any action.
-  * `(%sel P)` - selected action. The condition should be equivalent to running prior chain of branch conditions prior chain of passing branch conditions, followed by running P.
-  * `(%br C L R)` - run branch condition C as a program. If C fails, undo then process selector R. Otherwise, process selector L.  
-  * `%bt` - backtrack to the most recent successful branch condition, cause it to fail, then take the right branch. Or if this is already the rightmost branch, behavior is contextual: error for %cond, exit for %loop, etc.. 
-    * As a special rule, we can optimize `(%br C %bt R) => R` even if C is divergent. Thus, in normal form, %bt appears only in R position.
-  * Sel also supports macro and annotation AST nodes.
-* `(%loop Sel)` - Repeatedly runs Sel until it fails to select an action. Upon failure, exits loop. Essentially, a while-do loop with integrated pattern matching. 
-* `(%co P1 P2)` - execute P1 and P2 as coroutines. To transfer control, a coroutine must voluntarily %yield or %fail. Each coroutine has its own data stack but shares access to methods and registers. Fork-join behavior: %co will continuously yield until all of its coroutines complete. Scheduling is contextual but shall guarantee associativity. In case of non-deterministic scheduling, coroutines support preemption and parallelism with [optimistic concurrency control](https://en.wikipedia.org/wiki/Optimistic_concurrency_control). 
-* `%yield` - commits operations of a coroutine since prior yield, providing an opportunity for other coroutines to observe and interact with shared state. Each yield-to-yield step is implicitly an atomic transaction. A step may %fail, implicitly rewinding to a prior %yield.
-* `(%atomic P)` - an atomic operation may yield, but will only resume internally. Fails only if all internal resumptions are failing. 
-* `(%choice P1 P2)` - run a choice of P1 or P2. If a choice fails, we'll backtrack and try another, thus a choice only fails if all options fail. Evaluation order is contextual, but shall guarantee associativity. If the context is non-deterministic evaluation order, choice will diverge only if all non-failing options diverge.
-* `%error` - explicit divergence. Unlike '%fail', we do not backtrack on error; it's equivalent to an infinite loop.
-
-
-
-Evaluation Order Control (tentative):
-
-* `(%sched Order P)` - (tentative) It is feasible to specify a scheduling rule for coroutines introduced within a given scope. Viable schedules:
-  * `%order.any` - Embrace non-deterministic choice! In context of transactions, we get a limited form of preemption because a scheduler may abort an uncommitted choice to try another. It is possible to evaluate many choices at once. Many coroutines can commit at once if as there are no conflicts, aka optimistic concurrency control.
-  * `%order.rr` - Round robin. After a coroutine yields, schedule the next in sequence, then cycle upon reaching the end. Not valid for choice. 
-  * `%order.lr` - Left to right. Always run the leftmost coroutine that can make progress. Or evaluate choices left to right.
-* `(%choice.order Order P)` - (tentative)
-
+* `n:Name` - we always interpret a name as equivalent to its definition. Of course, compilation of recursive definitions receives special attention for performance.
+* `(%do P1 P2 ...)` - execute P1, P2, etc. in order. Associative.
+* `%pass` - a no-op. Does nothing.
+* `%fail` - voluntary failure. Used for bracktracking a branch condition, choice, or coroutine step. (In contrast, errors are treated as divergence, i.e. infinite loops observable only via reflection APIs.)
+* `(%cond Sel)` - supports if/then/else and pattern matching. The selector, Sel, has a distinct AST structure to support sharing a common prefix. 
+  * `(%br Cond Left Right)` - runs branch condition, Cond. If Cond fails, backtracks to run Right selector, otherwise processes Left selector. The full chain of branch conditions runs atomically.
+  * `(%sel P)` - selected action. Commits prior chain of passing branch conditions, then runs P.
+  * `%bt` - backtrack. Forces most recent passing Cond to fail. If no such Cond, i.e. if %bt is rightmost branch, behavior is context-dependent (e.g. error for %cond, exit for %loop). As a special rule, we optimize `(%br C %bt R) => R` regardless of whether C is divergent.
+* `(%loop Sel)` - Repeatedly runs Sel until it fails to select an action, then exits loop. Same Sel structure as %cond. Essentially a hybrid of while-do and pattern matching.
+* `(%co P1 P2 ...)` - execute P1, P2, etc. as coroutines with a non-deterministic schedule. Each coroutine has its own stack but shares access to registers and methods.
+  * Preemption: scheduler may freely abort a coroutine to select another. 
+  * Parallelism: run many, abort a subset to eliminate conflicts, aka [optimistic concurrency control](https://en.wikipedia.org/wiki/Optimistic_concurrency_control).
+  * Fork-join behavior: %co yields repeatedly until coroutines terminate. We can optimize the case where %co is the final operation of a coroutine, thus no join required.
+* `%yield` - within a coroutine, commit operations since prior yield. Each yield-to-yield step is implicitly an atomic transaction that may abort via fail.
+* `(%atomic P)` - runs P within a hierarchical transaction, restricting 'yield' to internal coroutines within P. In some circumstances, this may cause a scheduler to backtrack to attempt alternative schedules. A chain of branch conditions, up to %sel, are implicitly atomic.
+* `(%ch P1 P2 ...)` - non-deterministic choice of P1, P2, etc.. Associative. Can be implemented by forking the transaction and evaluating all choices, but only one can commit. 
+  * Special case: in context of transaction loops, e.g. `while (Cond) { atomic Action; yield }`, repeated choice can optimize into a reactive form of concurrency. 
+* `%error` - explicit divergence. Logically equivalent to an infinite no-yield loop, but much easier to optimize. Please compose with `%an.error.log` to attach a message!
 
 Data Manipulation:
 * `d:Data` - push copy of data to top of data stack
@@ -75,9 +66,7 @@ I might be changing macros into an AST primitive feature.
 
 ### Annotations
 
-        (%an Annotation Operation)
-
-Annotations are not executable as programs, but they will support macros.
+The AST structure supports annotations on arbitrary AST nodes. However, we'll only recognize a subset of annotation constructors, by convention of form '%an.\*'.
 
 Acceleration:
 * `(%an.accel Accelerator)` - non-semantic performance primitives. Indicates that a compiler or interpreter should substitute Op for a built-in Accelerator. By convention, an Accelerator has form `(%accel.OpName Args)` and is invalid outside of '%an.accel'. See *Accelerators*.
@@ -107,8 +96,10 @@ Validation:
 * `(%an.type TypeDesc)` - Describes a partial type of Operation. Or, with a no-op and identity type, we can partially describe the Environment. TypeDesc TBD.
 
 Incremental computing:
-* `(%an.memo Hints)` - memoize a computation. For simplicity and immediate utility, initial support for memoization may be restricted to pure data stack functions, perhaps extended to pure methods. Hints may indicate persistent vs. ephemeral memoization, cache-invalidation policy, and other options.
+* `(%an.memo MemoHint)` - memoize a computation. Useful memoization hints may include persistent vs. ephemeral, cache-invalidation heuristics, or refinement of a 'stable name' for persistence. TBD. As a minimum viable product, we'll likely start by only supporting 'pure' functions, because that's a low-hanging, very tasty fruit.
 * `(%an.checkpoint Hints)` - when retrying a transaction, instead of recomputing from the start it can be useful to rollback partially and retry from there. In this context, a checkpoint suggests a rollback boundary. A compiler may heuristically eliminate unnecessary checkpoints, and Hints may guide heuristics. 
+
+
 
 Future development:
 * type declarations. I'd like to get bidirectional type checking working in many cases relatively early on.
@@ -120,7 +111,7 @@ Future development:
 
 ### Accelerators
 
-        (%an (%an.accel (%accel.OpName Args)) Op)
+        (%an.accel (%accel.OpName Args))
 
 Todo: list some useful accelerators.
 
@@ -128,11 +119,11 @@ Todo: list some useful accelerators.
 
 Some discussions that led to the aforementioned selection of primitives.
 
-### Fixed Arity
+### Associative Var-Args
 
-I originally had the associative ops like %seq, %co, %choice accept variable numbers of arguments. But this has caused me headaches for metaprogramming, requiring much more complicated metaprogramming to process or generate. I'm considering to push the basic substitution-like metaprogramming into the namespace structure with something like lambdas, and it's causing me headaches.
-
-In any case, this should be an intermediate language. It shouldn't be a problem for a front-end compiler to generate a little more structure. The repeating names can be interned.
+The namespace model doesn't support var-args, thus the three ops that do (%do, %co, %ch) are semantically a bit dubious. We need to understand them as special forms. This is mitaged by them being associative, i.e. we can always re
+ 
+ associative. This is convenient for metaprogramming via namespace lambdas. We can only construct var-args using the more sophisticated %eval or %ast.build mechanisms.
 
 ### Operation Environment
 
@@ -348,11 +339,13 @@ Accelerators support 'performance primitives' without introducing semantic primi
 
         (%an (%an.log Chan MsgSel) Operation)
 
-We express logging 'over' an Operation. This allows for continuous logging, animations when rendering the log, as Operation is evaluated. For example, we might evaluate log messages upon entry and exit to Operation, and also upon '%yield' and resume, and perhaps upon '%fail' when it aborts a coroutine step. Instead of a stream of messages, we might render logging as a 'tree' of animated messages. Of course, we can always use a no-op Operation for conventional logging.
+We express logging 'over' an Operation. This allows for continuous logging, animations when rendering the log, as Operation is evaluated. For example, we might evaluate log messages upon entry and exit to Operation, and also upon '%yield' and resume, perhaps upon '%fail' when it aborts a coroutine step. Instead of a stream of messages, we might render logging as a 'tree' of animated messages. Of course, we can always use a no-op Operation for conventional logging.
 
-Log messages are expressed as a conditional message selector, i.e. the `(%br ...)` AST nodes seen in '%cond' or '%loop'. Thus, logging may '%fail' to generate a message. The log message is computed atomically within a hierarchical transaction. The transaction is canceled after capturing the message. This allows for evaluating messages under hypothetical "what if" conditions, and evaluation of multiple messages in context of non-deterministic choice.
+Log messages are expressed as a conditional message selector, same as %cond or %loop. Thus, logging may fail to generate a message. In case of non-deterministic choice, a runtime may attempt to generate all possible messages. Regardless, the operation is aborted after extraction of the message.
 
-We evaluate MsgSel in a 'method' environment, e.g. implicitly adding a "^" prefix to access host registers and methods. This enables unambiguous use of a "$" prefix for parameters from the caller. In context, the 'caller' is the runtime, and parameters may include per-channel configuration of verbosity, output format(s), and other integration features. 
+MsgSel will receive an environment from the runtime. This provides access to arbitrary per-channel configuration options, perhaps querying the configuration. Additionally, MsgSel receives some methods to query abstract source metadata (from %src.\*), supporting more precise debug messages.
+
+in a 'method' environment, e.g. implicitly adding a "^" prefix to access host registers and methods. This enables unambiguous use of a "$" prefix for parameters from the caller. In context, the 'caller' is the runtime, and parameters may include per-channel configuration of verbosity, output format(s), and other integration features. 
 
 ### Assertions
 

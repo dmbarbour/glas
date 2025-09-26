@@ -13,8 +13,9 @@ Applications are expressed as a collection of methods in the [program model](Gla
 * 'gui' - see [Glas GUI](GlasGUI.md).
 * 'switch' - in context of live coding, runs as the first transaction when updating code. If this transaction fails, we'll retry but continue with the old code until it succeeds.
 
-
 Applications should define 'settings' to support application-specific configuration. Applications should define 'main' as primary behavior. Most apps should define 'http' because it's convenient. But depending on user-defined front-end syntax, these definitions might be derived automatically rather than explicitly defined by the user.
+
+*Aside:* An intriguing alternative is to express an application as a collection of aggregators, e.g. for background behavior, HTTP routes, and RPC methods. However, I imagine we'll leave this style of expression to application frameworks that ultimately define the aforementioned methods.
 
 ### Composition
 
@@ -26,8 +27,8 @@ I imagine we'll ultimately want front-end syntax oriented around composition of 
 
 The runtime provides an initial namespace of registers and methods to the application:
 
-* 'app.\*' - application methods may call each other, e.g. mutual recursion
-* 'g.\*' - application-private 'global' registers, initially zero
+* 'app.\*' - Fixpoint definition of application. Useful for expressing inheritance and override when composing applications. Similar to 'self' in OOP.
+* 'g.\*' - ephemeral, 'global' registers bound to runtime instance; initially zero.
 * 'sys.\*' - system APIs, e.g. network, filesystem, clock, FFI, reflection
 * 'db.\*' - shared, persistent registers, bound to a configured database
 
@@ -35,13 +36,9 @@ The runtime will set things up, fork a few coroutines to call 'app.main', loop '
 
 ## State
 
-Registers in 'g.\*' or 'db.\*' are the primary locations for application state. Each register contains a value. In general, values may have arbitrary size. Type annotations may describe expected register types, potentially including size constraints. Insofar as a compiler can verify static type analysis, it is feasible to represent state very efficiently.
+Registers in 'g.\*' or 'db.\*' are the primary locations for application state. Each register contains a value, glas data of arbitrary size. Though, if compiling with verified type annotations, a compiler can theoretically optimize for conventional i64, u32, or even struct representations.
 
-Database registers are bound to a configured database and thus shared with other applications. Type annotations may also describe these shared registers. Doing so provides an opportunity to verify interaction with the database prior to application start. It is also feasible to record type assumptions into the database to detect conflicting assumptions.
-
-### Checked Shared State
-
-Annotations may describe type assumptions on the shared datbase. The runtime may validate these assumptions to detect type errors, and may also write type assumptions into the database (together with metadata like app name) to support checked, asynchronous interactions. If necessary, we could block database transactions on a subset of registers while the user debugs.
+Database registers are bound to a configured database. This can support asynchronous interactions between applications. It is feasible to share register type annotations with the database to better detect risk of inconsistency upon application start or between apps. We can abort transactions that would commit invalid states, modulo use of reflection APIs to debug a database.
 
 ## Concurrency
 
@@ -57,13 +54,13 @@ The fork-join structure limits expressiveness but simplifies interaction with lo
 
 An intriguing opportunity for concurrency and reactivity arises in context of non-deterministic, atomic loop structures. For example:
 
-        while (atomic Cond) do { atomic (choice Op1 Op2 Op3); yield }
+        while (Cond) do { atomic (choice ...); yield }
 
-This loop represents sequential repetition of a yield-to-yield transaction. Isolated transactions are equivalent to sequential transactions. Thus, we can implement this loop by running many cycles simultaneously. Running the exact same operation would guarantee read-write conflicts. But, with non-deterministic choice, we can potentially run different choices concurrently without conflict.
+This loop represents sequential repetition of a yield-to-yield transaction. Isolated transactions are equivalent to sequential transactions. Thus, we can implement this loop by running many cycles simultaneously. Running the exact same operation is useless. However, with non-deterministic choice, we can run the choices concurrently with optimistic concurrency control.
 
-Predictable repetition simplifies incremental computing. Instead of fully recomputing a transaction on every cycle, we can introduce checkpoints (via annotations) for partial rollback and replay. With some careful design, each choice has a stable prefix but an unstable suffix where most work is performed (e.g. reading and writing queues).
+Predictable repetition simplifies incremental computing. Instead of fully recomputing a transaction on every cycle, we can introduce checkpoints for partial rollback. With careful design, each choice should have a stable prefix but an unstable suffix where most work is performed (e.g. reading and writing queues).
 
-In some cases, we may determine that some branches are unproductive, e.g. leading to failure, divergence, or an idempotent update. In these cases, the runtime may wait indefinitely for observed state to change. This provides a simple basis for reactive systems.
+In case of unproductive loops (failed, diverged, or idempotent), a runtime may wait for relevant state changes. This provides a simple basis for modeling reactive systems.
 
 Unfortunately, implementation of these optimizations is a daunting task. The opportunity here is not easy to grasp. My vision for glas systems benefits enormously from transaction-loop optimizations, but short term we will rely on the more conventional coroutines.
 
@@ -129,19 +126,28 @@ A viable API:
 
 MethodRef is application-provided data that supports routing, context, and a foundation for [capability-based security](https://en.wikipedia.org/wiki/Capability-based_security). The client calls an unforgeable URL, protected from tampering by cryptographic means such as HMAC signature. The optional 'cb' method supports flexible interactions with the caller before returning.
 
-MethodURLs may be persistent or ephemeral, contingent on configuration and application settings. In my vision of glas systems, for greater compatibility with live coding, they're mostly ephemeral, discovered through publish-subscribe and automatically expired after several hours via rotating HMAC secrets. But this API doesn't directly address discovery. 
+This API does not support discovery. It's left to the application to publish the MethodURLs.
 
-### Composing Apps
+### Relative Bind for Composition
 
-The 'bind' argument to 'app.rpc' supports composition. Initially, this links to 'sys.rpc.bind'. However, in the composite application, we will intercept 'bind' to wrap the MethodRef to support routing and other features. 
+The 'bind' method provided to 'rpc' initially links to 'sys.rpc.bind'. However, within a composite application, we can intercept 'bind' to wrap a MethodRef to better support routing and other features. Essentially, 'bind' is relative while 'sys.rpc.bind' is absolute. 
 
-Essentially, 'bind' is relative while 'sys.rpc.bind' is absolute. Of course, we won't receive the compression benefits of relative paths.
+### Revocation
+
+Users can implement revocable capabilities by including expiration times or single-use lookup keys in MethodRef. Expiration is obvious. In case of lookup keys, the capability is disabled if the lookup fails, and we also can conveniently store a large or mutable context with a small, stable MethodURL.
+
+We can also revoke MethodURLs by changing the cryptographic secret so they no longer authenticate. This doesn't need to be all-or-nothing. In practice, we might wish to rotate secrets so old ones remain available for several hours. A minimum viable API:
+
+        sys.refl.rpc.secret.max(N)          # set how many secrets to rotate
+        sys.refl.rpc.secret.update(Binary)  # use a secret (random if empty)
+
+Note that this doesn't allow the app to query its own secrets. The provided secret may be mangled in memory, e.g. storing a secure hash. However, it is feasible to support persistent secrets and thereby support persistent MethodURLs.
 
 ### Implementation
 
         POST /sys/m/encoded-methodref/sig HTTP/1.1
 
-Early implementations of RPC may simply use HTTP. The callback method could be supported by a URL back to the caller, or via special headers in the response to indicate a callback instead of a final response. It is feasible - with clever encoding - to eventually support transactions, to support lazy loading of content-addressed data and reference to content-delivery networks.
+The earliest implementations of RPC might simply use HTTP. The callback method could be supported by a URL back to the caller, or via special headers in the response to indicate a callback instead of a final response. It is feasible - with clever encoding - to eventually support transactions, to support lazy loading of content-addressed data and reference to content-delivery networks.
 
 I eventually will want a protocol that is more friendly for callbacks, transactions, transaction-loop optimizations, multiplexing, content-addressed data and integration with content-delivery networks, etc.. But, with HTTP, I can get something working immediately.
 
@@ -223,7 +229,7 @@ A viable API:
   * `stash(N) : [ffi] ()` - move top N items from data stack to top of auxilliary stack, called stash. Preserves order: top of stack becomes top of stash.
   * `stash.pop(N) : [ffi] ()` - move top N items from top of stash to top of data stack.
   * `reg.store(Reg) : [ffi] ()` - pop data from stack into a local register of the FFI thread. Register names should be short texts.
-  * `reg.load(Reg) : [ffi] ()` - copy data from local register of FFI thread onto data stack.   
+  * `reg.load(Reg) : [ffi] ()` - copy data from local register of FFI thread onto data stack.
   * `var.*` - receiving data from 'peek' or 'mem.read'. Var should be a short text.
     * `read(Var) : [ffi] Data` - Receive result from a prior query. Will diverge if not *ready*.
     * `drop(Var) : [ffi] ()` - Remove present or future result. Enables reuse of Var. Diverges if not in use.
@@ -301,4 +307,8 @@ The control hint is runtime specific, perhaps something like `(icanon:on, ...)`.
 A fundamental issue with console IO is that it isn't very composable. The default is to awkwardly mix streams and hope for the best. Or to avoid composing apps within a single process. But with translation, we could feasibly present a distinct 'sys.tty.\*' to each component application. This could support a few slightly-useful forms of composition, e.g. pipes or screens.
 
 *Note:* I would like to mirror the terminal through the runtime HTTP interface, e.g. `"/sys/tty"` via [xterm.js](https://xtermjs.org/).
+
+## Reflection
+
+* sys.refl.src.\* - access to abstract '%src.\*' metadata from load time.
 
