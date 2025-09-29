@@ -56,10 +56,10 @@ Evaluation of an AST is a lazy, substutive reduction in context of an environmen
 * translation `t:(TL, Body)` - translates Body's view of the current environment through TL. Of semantic relevance, TL controls dictionary keys if the environment is reified in Body.
 * env binding - when applied `(b:(Prefix,Body), Arg)`, binds Arg to Prefix context of evaluating Body.
 
-* annotations `a:(Anno, Target)` - Semantically inert: logically evaluates as Target. In practice, we evaluate Anno to an abstract Annotation in context of compiler-provided Annotation constructors - by convention `%an.name` or `(%an.constructor, Args)`. We then use this Annotation to guide instrumentation, optimization, or validation of Target.
+* annotations `a:(Anno, Target)` - Semantically inert: logically evaluates as Target. In practice, we evaluate Anno to an abstract Annotation using compiler-provided Annotation constructors - by convention `%an.name` or `(%an.ctor Args)`. We then use this Annotation to guide instrumentation, optimization, or verification of Target.
 * data `d:Data` - evaluates to itself 
 * ifdef `c:(Name, (Then, Else))` - evaluates to Then if Name is defined in current environment, otherwise Else. 
-* fixpoint - built-in fixpoint combinator for convenient expression and efficient evaluation of recursive definitions
+* fixpoint - built-in fixpoint for convenient expression and efficient evaluation
 
 ### Translation
 
@@ -97,13 +97,13 @@ A viable environment representation?
 
 There are many optimizations we can perform on Env: move names into matching prefixes, merge similar prefixes, compose translations, remove unreachable definitions, etc.. When these optimizations are applied, we get something similar to radix-tree indexing between translations, but we also pay significant up-front costs and lose structure sharing. Thus, the decision must be heuristic.
 
-This is just an idea at the moment. We must extend the environment or AST type with something like closures, argument offsets, and thunks before we're truly ready to flesh things out.
+This is just an idea at the moment. We might extend the environment with something like closures, argument offsets, and thunks before we're truly ready to flesh things out.
 
 But something like this can potentially work in context of a lexical scope. We might need special support closures once we begin to integrate things.
 
 ### Eval Rules
 
-Note: we'll likely need to introduce some intermediate representations, such as closures and thunks, to properly encode full evaluation.
+Note: we'll likely need to introduce some intermediate representations, such as closures, closure-var refs, and thunks, to properly encode evaluation.
 
         # inline applications are common and easily optimized.
         # TBD: lexical binding to Env.
@@ -152,9 +152,7 @@ As a related convention, we might leverage %src.dir to let users 'load' a folder
 
 ### User-Defined Syntax
 
-After loading a file, the returned binary must be processed into an AST. This computation is performed within the macro. Thus, user-defined macros serve the role of a front-end compiler.
-
-As a convention, I propose that users define a front-end compiler per file extension, integrating via '%env.lang.FileExt'. To bootstrap this setup, the glas executable initially provides a built-in definition for '%env.lang.glas'. A front-end compiler should represent a program of type `Src -> [ct] AST`, receiving macro compile-time effects.
+As a convention, users may define front-end compilers per file extension in '%env.lang.FileExt'. To bootstrap this process, the glas executable initialy injects a built-in definition for '%env.lang.glas'. The front-end compiler should be a purely functional Program of type `Binary -> AST` for use within a macro but separate from operations to load the binary or link the AST.
 
 ### Tagged Definitions and Calling Conventions
 
@@ -168,11 +166,13 @@ A viable encoding for tags:
 
 This function receives an Env of adapters, extracts the TAG adapter, then applies to Definition. If there is no such adapter, we'll get an obvious error, usually at compile time.
 
-### Modules as Mixins
+### Modules and Mixins
 
-The preferred type for module ASTs is `Env -> Env`. This ensures extensible input and output. Interestingly, it also supports sequential composition. A front-end syntax could usefully distinguish 'import' from 'include', treating the latter as applying a module into the namespace.
+The proposed type for module AST is `Env -> Env`. The input Env should at least provide primitives, including access to '%env.\*' and an updated '%src'. But this may be extended to access definitions in client's environment, essentially parameterizing modules. We could support in-out parameters, where a module both receives and returns a definition. And at the extreme, we could 'include' a module into the current namespace.
 
-Although there is no operation to 'union' definitions, a module could leverage 'ifdef' to support something like a union-merge on a per-definition basis.
+Of course, we aren't limited to modules that do this. We can also define `Env -> Env` functions for use as namespace macros, or even `Env -> (Env -> Env)` for parameterization.
+
+The glas namespace model doesn't support a union of definitions, but it isn't difficult to develop modules that support a sort of union-merge of definitions via the ifdef primitive.
 
 ## Incremental Compilation
 

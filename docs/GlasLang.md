@@ -1,11 +1,9 @@
 # Goals for Glas Syntax
 
-* First, this should be a syntax I want to program in. 
+* First, this should be a syntax I want to program in. Pretty. Nice annotations. Convenient support for aggregators.  
 * Implicit fixpoint per-module for module-local recursive definitions.
 * Lightweight declaration of definition 'tags' for adapters.
 * Easy access to low-level code when I want some. 
-
-
 
 # DEPRECATED
 
