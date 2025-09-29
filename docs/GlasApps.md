@@ -117,6 +117,7 @@ A viable API:
         app.rpc(MethodRef, Argument) : [cb?, bind] Result
            cb(Argument) : [cb?] Result
            bind(MethodRef) : MethodURL
+
         sys.rpc.bind(MethodRef) : MethodURL
         sys.rpc(MethodURL, Argument) : [cb?] Result
 
@@ -128,13 +129,15 @@ MethodRef is application-provided data that supports routing, context, and a fou
 
 This API does not support discovery. It's left to the application to publish the MethodURLs.
 
+*Aside:* MethodURL does not have a canonical representation. Each runtime may use its own encoding, compression, encryption or signature, etc.. Regardless of encoding, it's opaque in the normal mode of use. The only critical features are being unforgeable, and stable enough to not significantly harm runtime-level incremental computing.
+
 ### Relative Bind for Composition
 
 The 'bind' method provided to 'rpc' initially links to 'sys.rpc.bind'. However, within a composite application, we can intercept 'bind' to wrap a MethodRef to better support routing and other features. Essentially, 'bind' is relative while 'sys.rpc.bind' is absolute. 
 
 ### Revocation
 
-Users can implement revocable capabilities by including expiration times or single-use lookup keys in MethodRef. Expiration is obvious. In case of lookup keys, the capability is disabled if the lookup fails, and we also can conveniently store a large or mutable context with a small, stable MethodURL.
+Users can implement revocable capabilities by including expiration times or lookup keys in MethodRef. Expiration is obvious. In case of lookup keys, the capability is disabled if the lookup fails, and we also can conveniently store a large or mutable context with a small, stable MethodURL.
 
 We can also revoke MethodURLs by changing the cryptographic secret so they no longer authenticate. This doesn't need to be all-or-nothing. In practice, we might wish to rotate secrets so old ones remain available for several hours. A minimum viable API:
 
@@ -150,6 +153,8 @@ Note that this doesn't allow the app to query its own secrets. The provided secr
 The earliest implementations of RPC might simply use HTTP. The callback method could be supported by a URL back to the caller, or via special headers in the response to indicate a callback instead of a final response. It is feasible - with clever encoding - to eventually support transactions, to support lazy loading of content-addressed data and reference to content-delivery networks.
 
 I eventually will want a protocol that is more friendly for callbacks, transactions, transaction-loop optimizations, multiplexing, content-addressed data and integration with content-delivery networks, etc.. But, with HTTP, I can get something working immediately.
+
+In an HTTP-based implementation, callbacks will likely be represented by runtime-internal MethodURLs, and must be revoked by the runtime when the 'cb' falls out of scope. However, a dedicated protocol should have a built-in notion of lexically scoped callbacks, avoiding that overhead.
 
 *Note:* Until transactions are supported, 'sys.rpc' should be marked with the '%an.atomic.reject' annotation.
 
@@ -176,21 +181,22 @@ Proposed API:
           canceled() # monotonic pass/fail
           # constraint: Argument and Result are non-linear
 
-In this case, the caller provides an 'op' to evaluate in a separate coroutine. That coroutine will run just within scope of op, processing Argument and returning Result. Result is then returned to the caller. Result is not implicitly cached for longer than it takes to complete this transfer, but op may maintain a cache.
+In this case, the caller provides an 'op' to evaluate in a separate coroutine. That coroutine will run just within scope of op, processing Argument and returning Result. The op does not need to be atomic: it may freely yield, e.g. to await an HTTP response. After completion, Result is then returned to the caller.
 
-There is a risk that the caller abandons the bgcall, e.g. due to read-write conflict. This doesn't halt the generated coroutine. There is an opportunity to reattach: concurrent bgcalls with the same op and Argument may share Result. Though, the runtime isn't required to do so. 
+If a bgcall is interrupted, the runtime does not immediately cancel the operation. There is a heuristic grace period, an opportunity to reattach via by repeating the call with a matching op and Argument. The runtime may share Result even between independent bgcalls. However, at some point op may test 'canceled' and pass. After this decision, any Result will be discarded, but op may continue to perform cleanup. OTOH, if op never queries 'canceled', the opportunity to attach remains open.
 
-The op may test whether it has been 'canceled' and voluntarily terminate. The canceled condition is monotonic: once observed, any Result is ignored, and another bgcall with same op and Argument will evaluate in a new coroutine.
+Known Limitations:
+* A bgcall will wait indefinitely for Result. If op diverges, so does bgcall.
+* Result is not held by the runtime longer than it takes to complete the transfer. However, op may explicitly maintain a cache.
+* Potential for thrashing when op conflicts with the calling transaction. No mitigation, but easy to diagnose and debug. Not always a problem if it resolves in a few cycles.
 
-Other than safe queries, bgcall is useful to trigger background tasks, such as lazy processing of a task queue. This is arguably 'safe' because we had previously committed to perform that work 'later'. I'm sure there are many other reasonable concepts of safety.
+Other than safe queries, bgcall is useful to trigger safe background tasks, such as lazy processing of a task queue. This is arguably 'safe' because we had previously committed to perform that work 'later'.
 
 *Note:* In context of a transaction loop, bgcalls can support the incremental computing and non-deterministic choice optimizations. Logically, we're repeatedly executing the bgcall.
 
 ## Foreign Function Interface (FFI)
 
-I propose a pipelined FFI model. A transaction can buffer a stream of commands to an FFI thread or process. Those commands may include loading libraries, calling functions, stack shuffling, reading memory, even JIT-compiling C code via [TinyCC](https://github.com/frida/tinycc/tree/main). Upon commit, commands are delivered, results may begin to return. A future transaction can observe results and issue more commands.
-
-This integration avoids many challenges of FFI, such as interaction with garbage collectors.
+I propose a pipelined FFI model. A transaction builds a stream of commands to be handled by a non-transactional FFI thread. The FFI thread interprets this stream, loading libraries, calling functions, reading memory, perhaps even JIT-compiling C code (via TinyCC). Results are observed in a future transaction through a queue.
 
 A viable API:
 
@@ -206,51 +212,51 @@ A viable API:
             d   - double
 
 * `sys.ffi.*` -
-  * `create() : [ffi] ()` - here 'ffi' is a register name, but state is bound associatively. Error if already in use! The runtime will allocate a new FFI thread.
-  * `fork() : [src,dst]` - here 'src' must bind to a defined ffi, and 'dst' to an undefined one. We'll copy local resources immediately, i.e. query results, and send a command for the FFI thread to clone itself (copying stack, registers, etc.). Allocation of an OS thread may be lazy.
-  * `close() : [ffi] ()` - release resources associated with an FFI. The FFI thread will continue running any incomplete commands, then terminate.
+  * `create(Hints) : [ffi] ()` - create an FFI thread bound to register 'ffi' but abstracted. Error if location is already in use. 
+    * With runtime support and appropriate hints, a separate FFI process is also feasible.
+    * In a distributed runtime, hints would determine which node owns the FFI thread.
+  * `fork() : [src,dst]` - duplicate an FFI thread from src into dst. This sends a command to duplicate thread-local state. The results queue will be duplicated for commands sprior to fork.
+  * `close() : [ffi] ()` - sends a command to terminate the FFI thread, and clears the local 'ffi' state. This does not immediately halt the FFI thread.
+    * Note: We might introduce methods in 'sys.refl.ffi' to browse and kill FFI threads.
   * `status() : [ffi] FFIStatus` - recent status of FFI thread:
-    * *uncommitted* - status for a 'new' or 'fork' FFI.
-    * *busy* - ongoing activity in the background - setup, commands, or queries
-    * *ready* - FFI thread is halted in a good state, can receive more requests.
-    * *error:(text:Message, ...)* - FFI thread is halted in a bad state and cannot receive any more commands or queries. The error is a dict with at least a text message. The FFI cannot receive any more commands or queries.
-  * `link.lib(SharedObject) : [ffi] ()` - SharedObject is runtime or adapter specific, but should indirectly translate to a ".dll" or ".so" file. When looking up a symbol, last linked is first searched.
-  * `link.c.hdr(Name, Text) : [ffi] ()` - redirects `#include<Name>` to Text in future uses of 'link.c.src' or 'cscript'. These are the only headers available!
-  * `link.c.src(Text) : [ffi] ()` - JIT-compile C source in memory and link (via Tiny C Compiler). Consider including a `#line 1 "source-hint"` directive as the first line of text to improve error output.
-  * `call(Symbol, TypeHint) : [ffi] ()` - call a previously linked symbol. Parameters and results are taken from the data stack. TypeHint for `int (*)(float, size_t, void*)` is `"fZp-i"`. In this case, pointer 'p' should be at the top of the data stack. Void type is elided, e.g. `void (*)()` is simply `"-"`.
-  * `cscript(Text, Symbol, TypeHint) : [ffi] ()` - invoke a symbol from a one-off C source. 
-  * `mem.write(Binary) : [ffi] ()` - (type `"p-"`) given a pointer on the data stack, copy a binary to that location. Size is implied from the binary.
-  * `mem.read(Var) : [ffi] ()` - (type `"pZ-"`) given a pointer and size on the data stack, return a binary, accessed through Var in the future.
-  * `push(List of Data, TypeHint) : [ffi] ()` - write data to stack. TypeHint determines conversions, e.g. `"fZp"` can receive a rational, an integer, and an abstract pointer.
-  * `peek(Var, N) : [ffi] ()` - read N items from data stack into Var. If N is 0, this reduces to a status check. Caveat: floating-point NaN or infinity will result in error queries, and pointers are abstracted
-  * `copy(N) : [ffi] ()` - copy top N items on stack
-  * `drop(N) : [ffi] ()` - remove top N items from stack
-  * `xchg(Text)` - ad hoc stack manipulation, described visually. The Text `"abc-abcabc"` is equivalent to 'copy(3)'. In this example, 'c' is top of stack. Mechanically, we find '-', scan backwards popping values from stack into single-assignment local variables, then scan forward pushing variables back onto the stack.
-  * `stash(N) : [ffi] ()` - move top N items from data stack to top of auxilliary stack, called stash. Preserves order: top of stack becomes top of stash.
-  * `stash.pop(N) : [ffi] ()` - move top N items from top of stash to top of data stack.
-  * `reg.store(Reg) : [ffi] ()` - pop data from stack into a local register of the FFI thread. Register names should be short texts.
-  * `reg.load(Reg) : [ffi] ()` - copy data from local register of FFI thread onto data stack.
-  * `var.*` - receiving data from 'peek' or 'mem.read'. Var should be a short text.
-    * `read(Var) : [ffi] Data` - Receive result from a prior query. Will diverge if not *ready*.
-    * `drop(Var) : [ffi] ()` - Remove present or future result. Enables reuse of Var. Diverges if not in use.
-    * `list() : [ffi] List of Var` - Browse local environment of query results.
-    * `status(Var) : [ffi] VarStatus`
-      * *undefined* - variable was dropped or never defined
-      * *uncommitted* - commit transaction to send the query
-      * *pending* - query enqueued, result in the future
-      * *ready* - data is ready, can read in current transaction
-      * *error:(text:Message, ...)* - problem that does not halt FFI thread.
-      * *canceled* - FFI thread halted before query returned. See FFI status.
-  * `ptr.*` - safety on a footgun; abstract Ptr is scoped, may be shared between forks of an FFI, but not with independently created FFIs. Also cannot be stored to a database register.
-    * `addr(Ptr) : [ffi] Int` - view pointer as integer (per intptr_t). Error if FFI thread does not belong to same OS process as Ptr.
+    * *future* - FFI thread doesn't fully exist yet, newly created.
+    * *ready* - FFI thread is awaiting commands, all prior commands complete.
+    * *busy* - ongoing activity, still processing prior commands.
+    * *error:(text:Message, ...)* - FFI thread is halted in a bad state. Unrecoverable without reflection APIs.
+  * `link.lib(SharedObject) : [ffi] ()` - load a ".dll" or ".so" file. When looking up a symbol, last linked is first searched.
+  * `link.c.hdr(Name, Text) : [ffi] ()` - redirects `#include<Name>` to `Text` in context of C JIT.  
+  * `link.c.src(Text) : [ffi] ()` - JIT-compile C source and link (e.g. via Tiny C Compiler).
+  * `call(Symbol, TypeHint) : [ffi] ()` - call a previously linked symbol. Parameters and results are taken from the thread's data stack, and the return value is pushed backk. TypeHint for `int (*)(float, size_t, void*)` is `"fZp-i"`. In this case, float 'p' should be at top of stack to match C calling conventions. 
+    * Void type is elided, e.g. TypeHint for `void (*)()` is simply `"-"`.
+  * `cscript(Text, Symbol, TypeHint) : [ffi] ()` - one-off JIT and call symbol. 
+  * `mem.write(Binary) : [ffi] ()` - (type `"p-"`) send command to write a binary to a pointer found on the FFI thread's data stack. 
+  * `mem.read() : [ffi] ()` - (type `"pZ-"`) given a pointer and size on the data stack, return a binary via the result stream.
+  * `push(List of Data, TypeHint) : [ffi] ()` - send command to push data to FFI thread's data stack. TypeHint determines conversions, e.g. `"fZp"` may receive glas representations of a rational, an integer, and an abstract pointer in that order, i.e. pointer is last element. 
+  * `peek(N) : [ffi] ()` - query a list of N items from the data stack. The FFI data stack tracks types, so no need to provide them. Notes:
+    * N=0 returns empty list, useful to await for prior operations to complete.
+    * floating-point NaNs and infinities aren't supported, result in error status.
+    * order is consistent with push, i.e. last item was top of FFI thread data stack.
+  * `xchg(Text)` - ad hoc stack manipulation, described visually. E.g. Text `"abcd-cdabb"` will swap two pairs of data then copy the new top item. Limited to 'a-z' and each may appear at most once in LHS.
+  * `stash(N) : [ffi] ()` - move top N items from data stack to top of auxilliary stack, called stash. Order is same as repeating `stash(1)` N times, i.e. inverting order onto stash.
+    * *Note:* The 'stash' op is intended to serve a role similar to %dip, hiding the top of the data stack until some operations complete.  
+  * `stash.pop(N) : [ffi] ()` - move top N items from top of stash to top of data stack. Order is same as repeating `stash.pop(1)` N times.
+  * *registers* - TBD. Maybe just support a register per upper-case character? Not a priority.
+  * `results.read(N) : [ffi] (List of Data)` - read and remove N results from the results queue. First result is head of list. Diverges if insufficient data.
+  * `results.unread(List of Data) : [ffi] ()` - push a list back into results for future reads.
+  * `results.peek(N) : [ffi] (List of Data)` - as read, copy, unread.
+  * `ptr.*` - a safety on a footgun. Ptr is an abstract data, and may only be shared between FFI threads ultimately forked from the same 'create' unless 'addr' is used at one and 'cast' at the other.
+    * `addr(Ptr) : [ffi] Int` - view pointer as an integer (via intptr_t). Error if Ptr and FFI thread have different origin 'create'. 
     * `cast(Int) : [ffi] Ptr` - treat any integer as a pointer
-    * `null : Ptr` - pointer with 0 addr, accepted by any FFI
+    * `null() : Ptr` - pointer with 0 addr is a special case, accepted by any FFI
+* `sys.ffi.pack() : [ffi] FFI` - package FFI thread into an abstract, linear object.
+* `sys.ffi.unpack(FFI) : [ffi] ()` - rebind a previously packaged FFI thread.
+* `sys.refl.ffi.*` - *TBD* perhaps debugging, browsing, CPU usage, force kill
 
-* `sys.ffi.pack() : [ffi] FFI` - package FFI into an abstract, linear reference.
-* `sys.ffi.unpack(FFI) : [ffi] ()` - bind a previously packaged FFI thread.
-* `sys.refl.ffi.*` - we could do some interesting things here, e.g. support debugging of an FFI process. But it's highly runtime specific.
+This API is designed assuming use of [libffi](https://en.wikipedia.org/wiki/Libffi) and TinyCC. We'll also need a [version of TinyCC](https://github.com/frida/tinycc/tree/main) that supports callbacks for includes and linking.
 
-This API is designed assuming use of [libffi](https://en.wikipedia.org/wiki/Libffi) and TinyCC. We'll need the version of TinyCC that supports callbacks for includes.
+Potential extensions:
+* support for structs, e.g. `"{ysw}"`
+  * or just use JIT for this.
 
 ## API Design Policy: Avoid Abstract References
 
@@ -270,14 +276,12 @@ I'm hoping to build most APIs above FFI and bgcall, reducing the development bur
 
 Query the system clock.
 
-* `sys.time.now() : TimeStamp` - Returns a TimeStamp for estimated time of commit. By default, this timestamp is a rational number of seconds since Jan 1, 1601 UTC, i.e. the Windows NT epoch but with arbitrary precision. Multiple queries within a transaction will return the same value.
+* `sys.time.now() : TimeStamp` - Returns a TimeStamp for estimated time of commit. By default, this timestamp is a rational number of seconds since Jan 1, 1601 UTC, i.e. the Windows NT epoch but with arbitrary precision.
 * `sys.time.after(TimeStamp)` - fails unless `sys.time.now() >= TimeStamp`. Use this if waiting on the clock, as it provides the runtime a clear hint for how long to wait.
 
-When we develop a distributed runtime, we'll need to extend this API to support multiple clocks. But this API seems sufficient to get started. We might understand the default system clock as best-effort and non-deterministic in context of network partitioning and drift.
+It is possible to wait on a clock and model sleeps, but not within a single transaction. Atomicity is semantic or logical instantaneity. Thus, 'yield' is always required. We can acquire time in one transaction, yield, and await that timestamp plus a sleep duration within another transaction. Timeouts can then be expressed as a non-deterministic choice between awaiting the clock and another operation.
 
-We can use 'sys.time.after' to wait on a clock. It is possible to express a sleep in terms of fetching time in one transaction then waiting on (time + sleep duration) after yield. 
-
-*Note:* Favor profiling annotations, not timestamps, for performance metrics within a transaction.
+Later, when we develop distributed runtimes, we'll want to extend this API to support multiple clocks. Otherwise, semantics get weird due to observing clock drift on "the same" clock.  Perhaps `"sys.clock.time.now() : [clock] TimeStamp"` plus clock creation and so on. With multiple clocks, we could reasonably argue that `sys.time` represents a non-deterministic choice of clocks, allowing best effort with drift.
 
 ## Arguments and Environment Variables
 

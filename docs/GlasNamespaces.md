@@ -2,279 +2,197 @@
 
 In my vision for glas systems, huge namespaces define runtime configuration, shared libraries, and applications. Definitions can be distributed across dozens of DVCS repositories, referencing stable branches or hashes for horizontal version control. We rely on laziness to load and extract only what we need, and incremental compilation to reduce rework. 
 
-Applications should be expressed as OO class-like namespaces: methods with open recursion, supporting inheritance and overrides. The final step is binding an application to a namespace of system APIs and runtime state. 
-
 ## Design Overview
 
-The lambda calculus awkwardly supports namespaces, e.g. `let x = X in Expr` as syntactic sugar for `((λx.Expr) X)`. With fixpoints, we can also support recursive definitions.
+Lambda calculus can express namespaces, e.g. a `let x = X in E` becomes `((λx.E) X)`. However, such namespaces are second-class in the lambda calculus. We can extend the lambda calculus with reification of the environment, a means to integrate environments into the namespace, and more explicit control of a namespace.
 
-We can extend the lambda calculus with reified environments. A keyword, say `__env__`, lazily extracts visible definitions into an abstract environment record. To utilize this environment, we can also introduce a prefix binding: `((νPrefix.Expr) Env)`. This makes names in Env available through Prefix, and implicitly shadows all existing names with Prefix. Prefix may be the empty string, thus we might express dotted-path access as `((ν.foo) Env)`.
+Base Lambda Calculus:
 
-To support scoping and interface adapters, we introduce a scoping rule consisting of a set of prefix-to-prefix rewrites, e.g. `{ "a" => "b", "b" => "c", "c" => "a", "d" => NULL }` rotates prefixes a, b, c and hides prefix d. In general, we apply the rule with the longest matching prefix (if any) to each name in the current environment, and we'll support full-name matches too. We can apply scopes to first-class environments through `(ν.(apply scope to __env__) Env)`.
+* *application* - provide an argument 
+* *arg binding* - bind argument to name in body
+* *name* - substitute definition of name in scope
 
-Other useful namespace computation primitives include ifdef and union. With ifdef, we can more easily implement default definitions or compose partial interfaces. With union, we can conveniently integrate definitions into a shared namespace without giving everything a unique prefix. Union does risk ambiguity, but we can raise an error when we detect a name has multiple definitions, forcing developers to resolve the conflict.
+Namespace extensions:
 
-Modularity in glas systems is file-oriented, albeit including DVCS files. Each file is processed by a front-end compiler, generating an AST representation of type `Env -> Env`, typically of form `ν.(Env Expr)`. The initial environment for the AST is empty, i.e. implicit `{ "" => NULL }` scope, thus it can access external names only through the provided environment.
+* *reification* - capture current view of environment 
+* *translation* - modify body's view of environment
+* *env binding* - bind environment to prefix in body
 
-By convention, modules receive a pseudo-global namespace '%\*'. This provides access to [program-model primitives](GlasProg.md), a method to load more modules, and a user-configurable '%env.\*' that via fixpoint to the user-configuration's 'env.\*'. The latter supports definition of shared libraries and applications.
+Utility extensions:
 
-The glas system supports user-defined syntax. The loader selects a front-end compiler based on file extension, '%env.lang.FileExt'. To bootstrap this, '%env.lang.glas' and '%env.lang.glob' are initially linked to built-ins.
+* *annotations* - structured comments for instrumentation, optimization, verification.
+* *data* - opaque to the calculus, but embedded for convenience
+* *ifdef* - supports expression of defaults, optional defs, flexible mixins
+* *fixpoint* - a built-in fixpoint for lazy, recursive defs
 
-Applications are typically definitions within a configuration, e.g. 'env.AppName.app'. Users may also load scripts that define 'app' (still using the configured '%env.\*'). Like modules, the application type is also `Env -> Env`. In this case the input environment contains 'sys.\*' definitions for runtime effects APIs, 'db.\*' and 'g.\*' registers, and 'app.\*' via fixpoint. The last-second fixpoint supports flexible inheritance and override when composing applications.
-
-Applications typically define a pure 'settings' method to guide runtime configuration, a 'main' method for primary behavior, and 'http' or 'rpc' event handlers that the runtime knows how to integrate. Methods have an `Env -> Program` AST type. The Env input, in this case, binds to call-site specific registers and algebraic-effects handlers, while Program is abstract data constructed through program-model primitives in '%\*'. 
-
-I expect most computation is expressed at the program layer instead of the namespace layer. The namespace AST may embed glas data but treats it as opaque. However, it is possible to encode flexible structure, e.g. we could [encode lists into lambdas](https://en.wikipedia.org/wiki/Church_encoding), or alternatively into reified environments that define 'head' and 'tail'. This may prove useful for some forms of metaprogramming.
-
-Lazy evaluation is essential for this design to work as intended, supporting both lazy loading and metaprogramming through shared libraries, which are bound by fixpoint. 
+The [program model](GlasProg.md) provides a collection of primitive definitions under prefix '%'. Additionally, the runtime will bind '%env.\*' to the configuration's 'env.\*' via fixpoint. This provides a foundation for shared libraries.
 
 ## Abstract Syntax Tree (AST)
 
-We'll represent the AST as structured glas data. This serves as the primary intermediate representation for namespaces and programs.
+The AST encoded as structured glas data. This serves as an intermediate representation for namespaces and programs.
 
         type AST =
-            | Name                  # substitute definition (logically)
+            | Name                  # substitute definition
             | (AST, AST)            # application
-            | a:(AnnoAST, AST)      # annotation of RHS AST 
-            | d:Data                # embedded glas data
-            | e:()                  # reify current environment
-            | t:(TL, AST)           # logically translate names in AST
-            | b:(Prefix, AST)       # environment binder (applicative)
-            | f:(Name, AST)         # function (aka lambda; applicative)
-            | y:AST                 # fixpoint; AST must be applicative
-            | c:(Name, (AST, AST))  # ifdef condition (left AST if defined)  
-            | u:(List of AST)       # union: each AST must represent Env.
-        type Name = binary excluding NULL. Composition via '/'.
-          # convention: printable ascii or utf-8 text, dotted paths
-        type Prefix = any binary prefix of Name + ".."
-        type TL = Map of Prefix to (Prefix | NULL), as radix-tree dict
-
-This representation saves a couple header bytes per name and application at the cost of requiring a little inspection to distinguish them. These are unambiguous, although only barely.
-
-When translating names, we logically add a ".." suffix. This allows us to translate "bar" without accidentally affecting "bard" or "barrel", e.g. `{ "bar.." => "foo.." }`. Use of a singular "." also allows us to conveniently couple translation of 'bar' together with 'bar.\*' via `{ "bar." => "foo." }`. This rule alone doesn't *guarantee* prefix-uniqueness; for that, front-end compilers may reject use of ".." in names.
-
-When '/' appears within a name, it represents a composition of names in scope. The primary use case is access control: a name may serve as the 'key' to unseal more names. Translation is applied left to right; unless '/' is explicitly matched, we translate the suffix following. Overlapping translation rules are permitted but discouraged: results are deterministic but may confuse users. Front‑end compilers may reject overlapping translation maps as ill‑formed.
+            | f:(Name, AST)         # bind name in body (aka lambda)
+            | e:()                  # reifies host environment
+            | t:(TL, AST)           # modify body's view of environment
+            | b:(Prefix, AST)       # bind argument to prefix in body
+            | a:(AST, AST)          # annotation in lhs, target in rhs 
+            | d:Data                # embedded glas data, opaque to AST
+            | c:(Name,(AST,AST))    # ifdef conditional expression
+            | y:AST                 # built-in fixpoint combinator 
+        type Name = binary excluding NULL 
+        type Prefix = any binary prefix of Name
+        type TL = Map of Prefix to (Prefix | NULL) as radix-tree dict
 
 ## Evaluation
 
-Evaluation of an `AST` is defined as lazy, substitutive reduction with respect to an environment mapping `Name → AST`. Environments are extended only by binders (`b:(…)`, `f:(…)`); annotations and translations are semantically inert unless a tool chooses to observe them.  
+Evaluation of an AST is a lazy, substutive reduction in context of an environment that maps a subset of names to definitions (i.e. `Name -> optional AST`). 
 
-Not all operations have AST forms; for example, %load is a compile‑time effect for modularity. See *Loading Files*.
+* application, lambdas, and names: as lazy lambda calculus evaluation
 
-### Core rules
+* reification `e:()` - returns an abstract dictionary containing all names in scope, i.e. `{ "x" = x, "y" = y, ...}`. An empty environment can be expressed as `t:({ "" => NULL }, e:())`.
+* translation `t:(TL, Body)` - translates Body's view of the current environment through TL. Of semantic relevance, TL controls dictionary keys if the environment is reified in Body.
+* env binding - when applied `(b:(Prefix,Body), Arg)`, binds Arg to Prefix context of evaluating Body.
 
-1. **Names**  
-   - A `Name` is resolved by looking up its definition in the current environment.  
-   - If the name is bound to an `AST`, the bound expansion is substituted logically at the point of use.  
-   - Undefined names are errors.
+* annotations `a:(Anno, Target)` - Semantically inert: logically evaluates as Target. In practice, we evaluate Anno to an abstract Annotation in context of compiler-provided Annotation constructors - by convention `%an.name` or `(%an.constructor, Args)`. We then use this Annotation to guide instrumentation, optimization, or validation of Target.
+* data `d:Data` - evaluates to itself 
+* ifdef `c:(Name, (Then, Else))` - evaluates to Then if Name is defined in current environment, otherwise Else. 
+* fixpoint - built-in fixpoint combinator for convenient expression and efficient evaluation of recursive definitions
 
-2. **Application `(F, X)`**  
-   - Evaluate `F` to a function value. Apply to `X`.
-   - Lazy semantics: arguments are passed as unevaluated thunks unless forced
+### Translation
 
-3. **Annotations `a:(Anno, X)`**  
-   - Logically stripped for evaluation.
-   - That is, `a:(Anno, X)` evaluates exactly as `X`.  
-   - Annotations may nevertheless guide external analyses (types, assertions, optimizers, profilers).
+TL is a finite map of form `{ Prefix => (Prefix' | NULL) }`. To translate a name via TL, we find the longest matching prefix, rewrite that to the output prefix. Or, if output is NULL, we'll treat the name as undefined. 
 
-4. **Data `d:Data`**  
-   - A value literal; evaluates to itself.
-   - Opaque within this calculus, but accessible to program-model primitives.
+An obvious weakness of prefix-to-prefix translation is that natural language names are not prefix-unique, e.g. we cannot translate `"bar"` to `"foo"` without also converting `"bard"` to `"food"`. To mitigate this, front-end compilers implicitly extend names with a `".!"` suffix, such that we can use `{ "bar.!" => "foo.!" }` to match 'bar' alone, or `{ "bar." => "foo." }` to modify 'bar' together with 'bar.\*'.
 
-5. **Environment reflection `e:()`**  
-   - Evaluates to a reified representation of the current environment (names and substituted definitions visible at this point).  
-   - This value can be persisted, inspected, or passed within programs.
+Sequential translations can be composed into a single map. Rough sketch: to compute A followed-by B, first extend A with redundant rules such that output prefixes in A match as many input prefixes in B as possible, then translate A's outuput prefixes as names (longest matching prefix). To normalize, optionally erase new redundancy.
 
-6. **Translation `t:(TL, X)`** 
-   - Evaluates as `X` under a **name‑rewriting environment** defined by `TL`.
-   - Translation is purely lexical. It does not otherwise impact semantics.
-   - This has many subtle mechanics. See expanded section below.
+### Environment Representation 
 
-7. **Binder `b:(Prefix, X)`**  
-   - Represents a function awaiting an environment argument.
-   - Applying b:(Prefix, X) to environment Env_arg evaluates X under an environment where:
-     - All prior names beginning Prefix are masked.
-     - Names in Env_arg are bound in X by concatenating Prefix.
-   - No separator is inserted; Prefix is used exactly as supplied.
+A viable environment representation?
 
-8. **Function `f:(Name, X)`**  
-   - Represents a lazy function: in application, `Name` will be bound to the argument AST within body `X`.  
-   - Equivalent to a conventional lambda abstraction.
+        type Env = List of EnvOp
+        type EnvOp =
+            | def:(Name, AST)       # definition
+            | idx:(Prefix, AST)     # env binding
+            | tl:TL                 # translated scope
 
-9. **Fixpoint `y:X`**  
-   - Evaluates to the fixed point of `X`.  
-   - `X` must be applicative: when applied, it reproduces its own definition.  
-   - Enables recursive definitions without introducing new binding forms.
+        lookup N (def:(Name, Def), Env') =
+            if N = Name then 
+                Just Def 
+            else
+                lookup N Env'
+        lookup N (idx:(Prefix, NS), Env') =
+            if Prefix matches N then
+                let N' = skip (len Prefix) N
+                lookup N' NS
+            else
+                lookup N Env'
+        lookup N (tl:TL, Env') =
+            let N' = translate TL N
+            lookup N' Env'
+        lookup N () = None
 
-10. **Conditional definition `c:(Name, (Xthen, Xelse))`**  
-   - If `Name` is defined in the current environment, evaluates as `Xthen`.  
-   - Otherwise, evaluates as `Xelse`.  
-   - This enables conditional specialization without requiring external preprocessing.
+There are many optimizations we can perform on Env: move names into matching prefixes, merge similar prefixes, compose translations, remove unreachable definitions, etc.. When these optimizations are applied, we get something similar to radix-tree indexing between translations, but we also pay significant up-front costs and lose structure sharing. Thus, the decision must be heuristic.
 
-11. **Union `u:[E1, E2, …, En]`**
-   - Each `Ei` must evaluate to an environment (as produced by `e:()` or equivalent).  
-   - The result is a single environment containing the combined bindings.  
-   - **Conflicts are errors** unless one of the following holds:  
-     - The name is never referenced (unused binding).  
-     - Both definitions refer to the **same location** (reference equality).  
-     - Both definitions are **structurally equivalent** ASTs.
-   - Empty union serves as efficient representation of empty environment.
+This is just an idea at the moment. We must extend the environment or AST type with something like closures, argument offsets, and thunks before we're truly ready to flesh things out.
 
-### Translation (Expanded) `t:(TL, X)`
+But something like this can potentially work in context of a lexical scope. We might need special support closures once we begin to integrate things.
 
-`TL` is a finite translation map of the form **Prefix → (Prefix' | NULL)**.  
-Evaluation of `t:(TL, X)` means evaluating `X` where every name is rewritten by the following process.
+### Eval Rules
 
-#### Implicit suffix  
-- Every *full name* is conceptually suffixed with `".."` before translation.  
-- After translation, the suffix is stripped. If suffix was removed, error.  
-- This makes prefix rules safe against accidental overlap.  
-  - Example: rule `"bar.." → "foo.."` rewrites `"bar"` → `"foo"`, but does **not** rewrite `"bard"` to `"food"`.  
+Note: we'll likely need to introduce some intermediate representations, such as closures and thunks, to properly encode full evaluation.
 
-#### Slash components  
-- Names may contain `/` separators:  
+        # inline applications are common and easily optimized.
+        # TBD: lexical binding to Env.
+        eval Env (f:(Name, Body), Arg) =        # inline definition
+            let argThunk = eval Env Arg
+            let Env' = addEnv (def:(Name, argThunk)) Env
+            eval Env' Body
+        eval Env (b:(Prefix, Body), Arg) =      # inline binding
+            let argThunk = eval Env Arg
+            let Env' = 
+                if "" = Prefix then argThunk else  # optimization
+                addEnv (idx:(Prefix, argThunk)) Env
+            eval Env' Body
+        eval Env (t:(TL, Body)) =
+            let Env' = addEnv (tl:TL) Env
+            eval Env' Body
 
-    C1/C2/…/Ck
+## Modularity
 
-- Translation proceeds **left‑to‑right**:  
-  1. Start from the beginning of the name string.  
-  2. Find the **longest prefix** (including possible `/`) that matches an LHS in `TL`.  
-  3. Apply its mapping.  
-     - If the mapping is `NULL`, the entire name is masked.  
-     - Otherwise, replace the matched prefix with its RHS.  
-  4. Skip forward to the next `/`. If none, then done.  
-  5. Repeat translation for the remainder of the name.  
+Modularity is supported by compile-time effects. To prevent compile-time effects from leaking into the runtime, they are provided indirectly as algebraic effects handlers to the %macro primitive. The primary effect is to load files, returning a binary. This binary may be processed within the macro to generate an AST. Lazy compilation may be expressed in terms of returning an AST that contains more macro nodes.
 
-- In this way, each top‑level component is considered in sequence, but rules themselves may span multiple components (e.g. `"math/util.." → "mylib/utils.."`).
+Viable API:
 
-#### Composition of Translations
+        ("%macro", b:("ct.", P))                # bind ct to compile-time effects in P
+        ct.load : Src<Type> -> (Type | FAIL)    # load glas data based on query
 
-- Translations **compose sequentially**. Given two maps `A` and `B`, we can form the composite map:
+Src is an abstract data type. By convention, '%src' carries Src for the current module, while '%src.\*' provides constructors. All Src constructors are relative to enhance control over transitive dependencies and support rendering a dependency graph. To support location-independent compilation and cache sharing, location details only become visible at runtime via 'sys.refl.src.\*' APIs.
 
-  ```
-  A fby B
-  ```
+Possible initial constructors:
 
-  meaning “apply `A`, then apply `B`.”
+        (%src.file FilePath Src) : Src<Binary> 
+        (%src.dir FileRegex Src) : Src<List of FilePath>
+        (%src.dvcs.git Repo Ver Src) : Src<unit>
+          # Repo - e.g. a URL
+          # Ver - branch, tag, or hash
 
-- To construct `A fby B`:
-
-  1. **Expand `A`:** for every input prefix that might be matched by `B`, if possible insert a redundant rule in `A`, mapping that prefix through unchanged (identity).  
-  2. **Reseed outputs:** apply `B` to all outputs of `A`.  
-  3. **Simplify:** eliminate redundant rules. A rule on prefix p is redundant if its effect is implied by the rule on the longest proper prefix of p.
-
-- Example:
-
-  ```
-  { "bar" => "fo" }
-    fby { "f" => "xy", "foo" => "z" }
-  ```
-
-  **Step 1: expand A**
-
-  ```
-  { "bar" => "fo", "baro" => "foo", "f" => "f", "foo" => "foo" }
-    fby { "f" => "xy", "foo" => "z" }
-  ```
-
-  **Step 2: apply B to outputs**
-
-  ```
-  { "bar" => "xyo", "baro" => "z", "f" => "xy", "foo" => "z" }
-  ```
-
-  **Step 3: remove any redundancy** (none here).
-
-- In general, composition can produce new redundant rules; normal form is the minimal map with no redundant entries.
-
-- **Why bother?**  
-  Precomputing `A fby B` can reduce evaluation cost when the composite is applied to many names. In practice, heuristics are required to balance construction and GC overheads against lookup savings.
-
-## Types and Annotations
-
-The AST structure has built-in support for annotations, also expressed as ASTs. Annotations should not influence formal behavior (i.e. a compiler can safely ignore them), but are intended to guide external tools for instrumentation, optimization, verification, projections or debug views, etc..
-
-Among those many potential cases, it is feasible to express types for namespaces and the programs they express. The glas system doesn't specify a type system - the intention is to support gradual typing. Similarly, annotations could guide theorem provers, proof-carrying code. Requesting automatic application of such tools is the domain of the user configuration.
-
-By convention, annotations are expressed as primitive constructors in '%an.\*', e.g. `(%an.type TypeDesc)` to describe types, or `(%an.accel Accelerator)` to represent substitution of slow-code with a built-in. Annotations are frequently applied to subprograms or blocks, but may be inserted like commands within a program sequence, e.g. apply `(%an.assert Cond)` to `%pass`. 
-
-Order of annotations may matter, e.g. profiling within memoization vs. memoization within profiling may significantly impact the output. Annotations may also have influence beyond immediate scope, e.g. a type annotation here may influence type inference there.
-
-A proposed set of annotations are described in the [glas program model](GlasProg.md) document.
-
-## Loading Files
-
-An essential operation for modularity is to load files:
-
-        (%load Env File)
-
-Load will download a file, select a front-end compiler from Env, compile to an `Env -> Env` AST, apply, then return the resulting Env. Any errors or quota failures will be reported, though we may reduce to a compile-time warning followed by a runtime error when a name is used, contingent on configuration or annotations.
-
-To support relative file paths, %src is carried in the environment as the current location. Load wraps Env to bind %src to the loaded file’s location before applying the compiled AST. Users (or a user-defined front-end compiler) may capture %src into other definitions as a capability to load modules relative to other locations.
-
-To support location-independent compilation, data in %src is abstract. To support debugging, logging annotations recieve an algebraic effects handler to read %src. To support projectional editing, the runtime provides API 'sys.refl.src.\*'.
-
-The File argument should use a little DSL of '%file.\*' constructors, such as `(%file.rel d:"foo.glas")`. I haven't fully developed these yet, but it is feasible to support virtual files or fallbacks. DVCS and authorization will need careful attention. TBD.
-
-File paths may include wildcards, e.g. "foo.\*". In this case, we can load every matching file then union the generated environments (per the `u:[List of Env]` AST structure).
+In this API, a DVCS file is relative to a DVCS source, and we'll support treat absolute file paths as relative to DVCS root. This seems sufficient to get started. We might eventually extend to support other DVCS, database or HTTP queries, and content-addressed data.
 
 ### Folders as Packages
 
-To simplify refactoring and sharing of code, glas enforces structural restrictions between file dependencies:
+In my vision for glas systems, users can easily share code by copying folders. Although DVCS bindings are preferred for stable dependencies, copying is suitable for notebook-style applications where live coding and projectional editing are integrated with the experience.
 
-  - The user configuration is implicitly loaded by absolute path.
-  - Absolute file paths may only be used if %src is absolute path.
-  - Anyone can load arbitrary files from DVCS via full references.
-  - DVCS files may load within the repository by relative path.
-  - Parent-relative file paths, i.e. "../", are forbidden.
+To support this vision, I forbid parent-relative (`"../"`) paths in Src constructors. Absolute paths are also restricted: users cannot reference an absolute path via relative-path Src. Upon entry to DVCS, we treat absolute paths as referring to DVCS root.
 
-Absolute file paths are useful for the case where a user configuration references a few projects on the local hard drive. Most cases should be remotely loading from DVCS, or DVCS files loading relative paths within a repository.
+As a related convention, we might leverage %src.dir to let users 'load' a folder as a source after searching for a 'package.\*' file.
 
-The restriction on "../" paths ensures the contents of every folder are location-independent. This makes it easy to copy and share or edit a folder.
+### User-Defined Syntax
 
-Folders may also be treated as files directly. A folder load desugars to loading all files "package.\*" within that folder.
+After loading a file, the returned binary must be processed into an AST. This computation is performed within the macro. Thus, user-defined macros serve the role of a front-end compiler.
+
+As a convention, I propose that users define a front-end compiler per file extension, integrating via '%env.lang.FileExt'. To bootstrap this setup, the glas executable initially provides a built-in definition for '%env.lang.glas'. A front-end compiler should represent a program of type `Src -> [ct] AST`, receiving macro compile-time effects.
+
+### Tagged Definitions and Calling Conventions
+
+A program may work with many types of definitions, e.g. `Env -> Program` vs. `Program` vs. Env -> Env`. This isn't a problem when used in different contexts. However, when they share a context, the caller must syntactically distinguish each call type, which is ugly and annoying.
+
+My proposed solution is to tag every user definition and let front-end compilers provide an adapter. For example, we can easily adapt `Program` into `Env -> Program`. Perhaps we can also express macro expansions as normal program expansions.
+
+A viable encoding for tags:
+
+        f:("w", ((b:("", "TAG"), "w"), Definition))
+
+This function receives an Env of adapters, extracts the TAG adapter, then applies to Definition. If there is no such adapter, we'll get an obvious error, usually at compile time.
+
+### Modules as Mixins
+
+The preferred type for module ASTs is `Env -> Env`. This ensures extensible input and output. Interestingly, it also supports sequential composition. A front-end syntax could usefully distinguish 'import' from 'include', treating the latter as applying a module into the namespace.
+
+Although there is no operation to 'union' definitions, a module could leverage 'ifdef' to support something like a union-merge on a per-definition basis.
 
 ## Incremental Compilation
 
-Lazy evaluation can simplify tracking of dependencies: for each thunk, we can track its dependents. Each thunk may double as a persistent memo cell and reference many other cells.
+Lazy evaluation can simplify incremental computing. Each thunk serves as a memo cell and tracks which thunks must be recomputed if its input ever changes. 
 
 For persistence, we must assign stable names to these thunks. In general, this could be a secure hash of everything potentially contributing to a given computation, e.g. code, arguments, perhaps compiler version (e.g. for built-ins). Unfortunately, it's easy to accidentally depend on irrelevant things, or to miss some implicit dependencies. To mitigate this, we must enable programmers to annotate code with a proposed stable-name generator.
 
 Whether we persist the *value* of a thunk may be heuristic, e.g. based on the relative size of that value and the estimated cost to recompute it. It's best to store small values with big compute costs, naturally. Like 42. For large values that are cheaply regenerated, we might omit the data and track some proxy for change - hash of data, ETAG, mtime for files, etc. Aside from this, we would track the set of dependent thunks that must be invalidated.
 
-## Motivation for Composite Names
-
-The special rule for "/" in translation of names is intended primarily for access control, targeted at the program model's support for *register* environments, which are expressed as:
-
-        (%local b:("r.", ProgramAST))
-
-Logically, this allocates an infinite environment of registers. In practice, the system analyzes recursive program definitions to guarantee allocation is finite, then allocates the finite block of registers on a call stack.
-
-Further, the system logically allocates a register for every path between base registers. For example, if "a" and "b" name distinct registers, then "a/b", "b/a", "a/a", and "a/a/a" name four more registers. The translation rule is designed to preserve these paths.
-
-This supports abstract data environments as a reference-free alternative to abstract data types. Example:
-
-        sys.file.open(Filename) : [loc] ()
-            # loc is a caller-provided register
-
-*Aside:* This informal notation describes that 'sys.file.open' pops Filename off the data stack, uses 'loc' from the caller's environment, then pushes nothing onto the stack.
-
-Assume 'loc' is bound to prefix '$' within 'sys.file.open'. Instead of writing a file-descriptor to `"$loc"`, we can use `"$loc/filesys.fd"` where `"filesys.fd"` is inaccessible outside the runtime. This lets a runtime place state inside the client’s environment without exposing register names, ensuring allocations remain private.
-
-We may discover other use-cases for "/", but this is the motivating one!
-
-*Note:* See prior section on *Translation* for mechanical details.
-
 ## Aggregation
 
-Language features such as multimethods, typeclasses, declaring HTTP routes, etc. don't neatly fit the functional paradigm. Conventional implementations involve construction of global tables. However, I propose an approach that is feasible in glas namespaces.
+Language features such as multimethods, typeclasses, declaring HTTP routes, etc. require constructing and sharing tables. In context of functional programming, we can express iterative construction in terms of repeatedly shadowing a definition with an updated version. We can express sharing via fixpoint if we're careful to avoid datalock. *Caveat:* aggregation across module boundaries hinders lazy loading. 
 
-Assuming support from the front-end syntax, it isn't difficult to repeatedly 'update' a definition, each update shadowing prior definition. By carefully applying a fixpoint, we can feed the final table back into the top of the module.  
+An interesting opportunity is to use Church-encoded lists or free monads to aggregate tagged ASTs. This provides a more flexible structure for postprocessing.
 
-We can Church-encode a list of ASTs. Instead of 'wrapping' a prior definition with some functional code each update, we can build the list of ASTs for later processing. This might be expressed as `table <= Expr` adding an AST to the list.
+## Integration
 
-Aggregation can be expanded across multiple modules or application components. However, this pattern is extremely hostile to lazy loading, thus scope must be carefully controlled at larger scales. Aggregation within composite applications is relatively friendly, given that we load the full application regardless.
+By convention, modules receive a pseudo-global namespace '%\*'. This provides access to [program-model primitives](GlasProg.md), a method to load more modules, and a user-configurable '%env.\*' that via fixpoint to the user-configuration's 'env.\*'. The latter supports definition of shared libraries and applications.
 
-Safety becomes a greater concern as we cross module boundaries and integrate multiple front-end compilers. This can be mitigated by centralizing shared logic into shared libraries, e.g. developing smart constructors for AST nodes and abstracting the 'table' representation. Type annotations may also help.
+Applications are typically defined within a configuration, e.g. 'env.AppName.app'. Users may also load scripts that define 'app' (still using the configured '%env.\*'). Like modules, the application type is also `Env -> Env`. However, in this case, the input environment contains 'sys.\*' definitions for runtime effects APIs, 'db.\*' and 'g.\*' registers, and 'app.\*' via fixpoint. The delayed fixpoint supports flexible inheritance and override when composing applications.
 
-Incremental computing also becomes a concern at larger scales. We'll want to arrange for cache barriers after significant 'reducer' operations to block unnecessary propagation of changes.
+Applications define 'settings' to guide final configuration of the runtime, a 'main' method to represent program behavior, 'http' and 'rpc' methods to handle events. See [glas apps](GlasApps.md). Application methods are generally `Env -> Program`, allowing the program to interact with the runtime via callbacks.
+

@@ -70,7 +70,7 @@ In glas systems, lists are conventionally encoded in a binary tree as a right-sp
 
 However, direct representation of lists is inefficient for many use-cases. Thus, glas runtimes support specialized representations for lists: binaries, arrays, and [finger-tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_(data_structure)). To protect performance, Glas Object also offers specialized list nodes:
 
-* *array* - header (0x0A) . (length - 1) . (array of offsets); represents a list of values of given length. Offsets are varnats all relative to the end of the array, denormalized to the same width. Width is determined by looking at the first varnat.
+* *array* - header (0x0A) . (length - 1) . (array of offsets); represents a list of values of given length. Offsets are varnats, denormalized to the same width, all relative to the very last offset in the array. Width of offsets in the array is determined by looking at the first varnat.
 * *binary* - header (0x0B) . (length - 1) . (bytes); represents a list of bytes. Each byte represents a small positive integer, 0..255.
 * *concat* - header (0x0C) . (offset to right value) . (left list); represents logical concatenation, substituting left list terminal with given right value (usually another list).
 * *drop* and *take* - see *Accessors*, support sharing slices of a list 
@@ -106,6 +106,7 @@ Accessors support fine-grained structure sharing that preserves indexability and
 * *path* - headers (0x80-0x9F) . (offset); uses stem-bit header (ttt=100) to encode a bitstring path. Equivalent to following that path into the target value as a radix tree. 
 * *drop*  - header (0x0D) . (length) . (offset to list); equivalent to path of length '1' bits. 
 * *take* - header (0x0E) . (length) . (inline list value); equivalent to sublist of first length items from list. Although useful to slice lists, this is heavily used to cache list lengths for ropes.
+  * *Note:* you can still reference a list 'inline' via internal reference (header 0x88). But the common use of take for caching rope sizes saves us by avoiding the unnecessary offset in most cases.
 
 Indexing a list is possible via composition of path and drop, but it shouldn't be needed frequently, so it isn't optimized.
 
@@ -162,11 +163,6 @@ In normal form, varnats use the smallest number of bytes to encode a value. It i
         0x0F-0x1F
         0xA0-0xFF
 
-## Tentative Extensions
-
-Support for LSM tree style updates could be useful, a notion of 'patching' a tree or a list without the overhead of a 'deep' update.
-
-Support for templates, applying a template to an array of arguments.
 
 ## Conventions and Patterns 
 
@@ -215,11 +211,23 @@ To mitigate validation overheads, a runtime might implicitly trust hashes it lea
 
 It is possible for a glas system to 'compress' data by generating the same glob binaries, with the same secure hash. This is mostly a good thing, but there are subtle attacks and side-channels. These attacks can be greatly mitigated via controlled introduction of entropy, e.g. [Tahoe's convergence secret](https://tahoe-lafs.readthedocs.io/en/latest/convergence-secret.html).
 
+### Canonicalization  
+
+Glas Object does not enforce strict canonicalization. Different writers may make different chunking and rope balancing decisions, which leads to different binary layouts and therefore different content hashes. What matters is *stability*: given the same runtime and heuristic configuration, encodings should be deterministic. Applications that require strict canonical hashes (e.g. cryptographic signatures) should define a higher‑level canonicalization pass on top of Glas Object.
+
 ## Proposed Extensions
 
 ### Small Arrays and Binaries
 
-We could encode length for small arrays or binaries directly in the header, e.g. `0xA(len)` for arrays and `0xB(len)` for binaries of lengths 1 to 16. However, it isn't clear that this is worthwhile, especially for arrays. Perhaps it would be worthwhile for small binaries alone.
+We could encode length for small arrays or binaries directly in the header, e.g. `0xA(len)` for arrays and `0xB(len)` for binaries of lengths 1 to 16. However, it isn't clear that this is worthwhile, especially for arrays. 
+
+### Inline Arrays
+
+An array variant where each element is inlined rather than a pointer. Can still use pointers with 0x88 header. Would trade compactness for reduced access overhead for small values.
+
+### Log-Structured Merge Tree 'Updates'
+
+It is feasible to record 'patches' to lazily apply into a tree or list. This can be more efficient than use of Accessors to logically 'rebuild' a tree or list. 
 
 ### Templated Structs
 

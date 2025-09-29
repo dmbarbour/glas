@@ -4,12 +4,14 @@ The [namespace](GlasNamespaces.md) supports modules and user-defined front-end s
 
 ## Proposed Program Primitives
 
+*Notation:* `(F X Y Z)` desugars to `(((F,X),Y),Z)`, i.e. curried forms. 
+
 Control Flow:
 
 * `(%do P1 P2)` - execute P1 then P2 in order. Associative.
 * `%pass` - the no-op. Does nothing.
 * `%fail` - voluntary failure. Used for bracktracking a branch condition, choice, or coroutine step. (In contrast, errors are treated as divergence, i.e. infinite loops observable only via reflection APIs.)
-* `(%cond Sel)` - supports if/then/else and pattern matching. The selector, Sel, has a distinct AST structure to support sharing a common prefix. 
+* `(%cond Sel)` - supports if/then/else and pattern matching. The selector, Sel, has a distinct AST structure to support sharing a common prefix. Sel constructors:
   * `(%br Cond Left Right)` - runs branch condition, Cond. If Cond fails, backtracks to run Right selector, otherwise processes Left selector. The full chain of branch conditions runs atomically.
   * `(%sel P)` - selected action. Commits prior chain of passing branch conditions, then runs P.
   * `%bt` - backtrack. Forces most recent passing Cond to fail. If no such Cond, i.e. if %bt is rightmost branch, behavior is context-dependent (e.g. error for %cond, exit for %loop). As a special rule, we optimize `(%br C %bt R) => R` regardless of whether C is divergent.
@@ -18,7 +20,7 @@ Control Flow:
   * Preemption: scheduler may freely abort a coroutine to select another. 
   * Parallelism: run many, abort a subset to eliminate conflicts, aka [optimistic concurrency control](https://en.wikipedia.org/wiki/Optimistic_concurrency_control).
   * Fork-join behavior: %co yields repeatedly until coroutines terminate. We can optimize the case where %co is the final operation of a coroutine, thus no join required.
-* `%yield` - within a coroutine, commit operations since prior yield. Each yield-to-yield step is an atomic transaction that may abort via fail.
+* `%yield` - within a coroutine, commit operations since prior yield. Each yield-to-yield step is an atomic, isolated transaction that may abort via fail.
 * `(%atomic P)` - runs P within a hierarchical transaction, thus yielding within P does not yield from atomic and must be resumed within P. 
   * *Note:* a chain of %br branch conditions, up to %sel, is implicitly atomic.
 * `(%ch P1 P2)` - non-deterministic choice of P1 or P2. Associative. Can be implemented by forking the transaction and evaluating all choices, but only one can commit. 
@@ -26,7 +28,7 @@ Control Flow:
 * `%error` - explicit divergence. Logically equivalent to an infinite no-yield loop, but much easier to optimize. Please compose with `%an.error.log` to attach a message!
 
 Data Stack:
-* `d:Data` - push copy of data to top of data stack
+* `d:Data` - push data to top of data stack
 * `(%dip P)` - run P while hiding top element of data stack
 * `%swap` - exchange top two stack elements. i.e. "ab-ba"
 * `%copy` - copy top stack element, i.e. "a-aa".
@@ -39,70 +41,138 @@ Data Stack:
 * `%unr` - undoes mkr, fails if not a right branch
 
 Registers:
-* `(%rw RegisterName)` - swap data between named register and top data stack element. 
-* `(%local Method)` - here Method is `Env -> Program`, typically `b:(Prefix, P)`. This operation introduces a new environment of registers (initially zero), passes it to Method, evaluates Program, then clear the registers. 
+* `(%rw Register)` - swap value of register and top of data stack.
+  * *Static analysis*: you can model this as also swapping *types* (or logical locations) between the register slot and the stack. That lets checkers propagate stack‑effect typing and enforce invariants.  
+  * *Optimization hint*: unconditional, atomic patterns such as `(%rw x; ... ; %rw x)` can be heavily optimized because logical locations are restored.
+  * *Concurrency semantics*: fine‑grained read-write conflict analysis relies on accelerated composite ops, e.g. read-only get and set, queue read and write, bag, dict, array, CRDTs, etc.
+* `(%local RegOps)` - allocates a fresh register environment, initially zeroes. Passes it to `RegOp : Env -> Program`, runs Program, then clears the environment. The Env logically defines every Name, but Program must use only a static, finite subset.
+* `(%assoc R1 R2 RegOps)` - this binds an implicit environment of registers named by an ordered pair of registers `(R1, R2)`. The primary use case is abstract data environments: an API can use per-client space between client-provided registers and hidden API registers.
 
 Metaprogramming:
-* `(%macro ASTBuilder)` - ASTBuilder must represent a pure Program of 0--1 arity that generates an AST representation on the data stack. This representation is evaluated to an AST in an empty environment, then returned. The macro's context to provide arguments or wrappers as needed.
-* `(%eval Wrapper)` - pop AST representation off data stack. Evaluate representation to AST in an empty environment. Apply `Wrapper : AST -> Program` to this AST, e.g. to provide an interpreter,Env, or sandbox. In most contexts, the input AST must be statically computed, i.e. '%an.eval.static' is the default for glas systems.
-* *note:* We can also do a lot of metaprogramming purely at the namespace layer.
+* `(%macro ASTBuilder)` - ASTBuilder must have type `Env -> ASTGen`. Env provides access to compile-time effects (such as loading files), and ASTGen is a deterministic program of 0--1 arity that returns an AST representation. The AST is evaluated in an empty environment (implicit `t:({"" => NULL}, AST)` scope), then further processing is left to the macro context.
+* `(%eval Adapter)` - pops an AST representation from the data stack, evaluates in an empty environment (implicit `t:({ "" => NULL }, AST)` scope), then passes the result to Adapter of type `AST -> Program`. The resulting program may be verified, instrumented, and optimized in context, then is run. In most cases, the AST argument must be static, i.e. `%an.eval.static` is default for glas systems.
+* *Note:* These primitives enable Programs to participate in metaprogramming. However, we can also support a lot of metaprogramming purely in the namespace layer.
 
-### Annotations
+## Annotations
 
-        a:(Anno, Op)    # dedicated AST node
+        a:(Annotation, Op)    # dedicated AST node
 
 Acceleration:
-* `(%an.accel Accelerator)` - performance primitives. Indicates that a compiler or interpreter should substitute Op for a built-in Accelerator. By convention, an Accelerator has form `(%accel.OpName Args)` and is invalid outside of '%an.accel'. See *Accelerators*.
+* `(%an.accel Accelerator)` - performance primitives. Indicates that a compiler or interpreter should substitute Op for a built-in Accelerator. By convention, Accelerators have form `(%accel.OpName Args ...)` (or `%accel.OpName` if no arguments). Accelerators are not Programs, and are only useful in context of `%an.accel`. 
 
 Instrumentation:
-* `(%an.log Chan MsgSel)` - printf debugging! Rather sophisticated. See *Logging*.
-* `(%an.error.log Chan MsgSel)` - log messages generated only when Operation halts due to an obvious divergence error, such as '%error' or an assertion failure.
-* `(%an.assert Chan ErrorMsgSel)` - assertions structured as logging an error message, i.e. an assertion passes only if no error message is generated. We'll treat choice in the selector branches as a conjunction of conditions.
-* `(%an.assert.static Chan ErrorMsgSel)` - the same as assert, except it's also an error if the conditions cannot be computed at compile-time.
+* `(%an.log Chan MsgSel)` - printf debugging! Logging will *overlay* an Operation, automatically maintaining the message. The MsgSel type is sophisticated; see *Logging*.
+* `(%an.error.log Chan MsgSel)` - log a message only when Operation halts due to an obvious divergence error (such as '%error', assertion failure, or a runtime type error).
+* `(%an.assert Chan ErrorMsgGen)` - assertions are structured as logging an error message. If no error message is generated, the assertion passes. May reduce to warning.
+* `(%an.assert.static Chan ErrorMsgGen)` - assertion that must be computed at compile-time, otherwise it's a compile-time error. May reduce to compile-time warning with or without a runtime error.
 * `(%an.profile Chan BucketSel)` - record performance metadata such as entries and exits, time spent, yields, fails, and rework. Profiles may be aggregated into buckets based on BucketSel. 
-* `(%an.trace Chan MsgSel)` - record information to support *replay* of a computation. The MsgSel allows for conditional tracing and attaches a helpful message to each trace. See *Tracing*.
-* `(%an.chan.scope TL)` - apply a prefix-to-prefix translation to Chan names in Operation. Can disable via rewrites to NULL.
+* `(%an.trace Chan BucketSel)` - record information to support slow-motion replay of Operation. BucketSel helps control and organize traces. See *Tracing*.
+* `(%an.chan.scope TL)` - apply a prefix-to-prefix translation to Chan names in Operation.
 
 Validation:
 * `(%an.arity In Out)` - express expected data stack arity for Operation. In and Out must be non-negative integers. Serves as an extremely simplistic type description. 
 * `%an.atomic.reject` - error if running Operation from within an atomic scope, including %atomic and %br conditions. Useful to detect errors early for code that diverges when run within a hierarchical transaction, e.g. waiting forever on a network response.
   * `%an.atomic.accept` - to support simulation of code containing %an.atomic.reject, e.g. with a simulated network, we can pretend that Operation is running outside a hierarchical transaction, albeit only up to external method calls.
-* `(%an.data.wrap RegisterName)` - support for abstract data types, hides top stack element from observation until unwrapped with the same RegisterName, implies scope for data (e.g. don't store to longer-lived register). Can feasibly be enforced statically or dynamically, or safely ignored.
-  * `(%an.data.unwrap RegisterName)` - removes the wrapper, allowing observation of the data.
-  * `(%an.data.wrap.linear RegisterName)` - as wrap, but attempts to copy or drop the wrapped value (including implicitly, such as exiting a local registers scope or a coroutine terminating with data on the stack) will diverge if detected at runtime or become a compile-time error if recognized earlier. Dynamic enforcement is feasible with one metadata bit per value.
-  * `(%an.data.unwrap.linear RegisterName)` - as unwrap for linear data
+* `(%an.data.wrap RegisterName)` - support for abstract data types, hides top stack element from observation until unwrapped with the same RegisterName, implies scope for data (e.g. don't store to longer-lived registers). May be enforced statically or dynamically, or ignored.
+  * `(%an.data.unwrap RegisterName)` - removes matching wrapper, allowing observation of the data. 
+  * `(%an.data.wrap.linear RegisterName)` - as wrap, but attempts to copy or drop the wrapped value (including implicitly, such as exiting a local registers scope or a coroutine terminating with data on the stack) will be an error. Dynamic enforcement requires one metadata bit per allocation.
+  * `(%an.data.unwrap.linear RegisterName)` - unwrap for linear wrappers. 
 * `%an.data.static` - Indicates that top stack element should be statically computable. Exercise left to compiler!
-* `%an.eval.static` - Indicates that all '%eval' steps in Operation must be linked at compile-time. This is the default for glas applications, but it doesn't hurt to make the assumption explicit more locally.
+* `%an.eval.static` - Indicates that all '%eval' steps in Operation must receive their AST argument at compile-time. This is the default for glas applications, but it doesn't hurt to make the assumption explicit locally.
+* `%an.det` - indicates that Operation should be observably deterministic, restricting %choice and %co (except in the very unusual case where confluence can be proven).
 * `(%an.type TypeDesc)` - Describes a partial type of Operation. Or, with a no-op and identity type, we can partially describe the Environment. TypeDesc TBD.
 
 Incremental computing:
-* `(%an.memo MemoHint)` - memoize a computation. Useful memoization hints may include persistent vs. ephemeral, cache-invalidation heuristics, or refinement of a 'stable name' for persistence. TBD. As a minimum viable product, we'll likely start by only supporting 'pure' functions, because that's a low-hanging, very tasty fruit.
+* `(%an.memo MemoHint)` - memoize a computation. Useful memoization hints may include persistent vs. ephemeral, cache-invalidation heuristics, or refinement of a 'stable name' for persistence. TBD. 
+  * As a minimum viable product, we'll likely start by only supporting 'pure' functions, because that's a low-hanging, very tasty fruit.
 * `(%an.checkpoint Hints)` - when retrying a transaction, instead of recomputing from the start it can be useful to rollback partially and retry from there. In this context, a checkpoint suggests a rollback boundary. A compiler may heuristically eliminate unnecessary checkpoints, and Hints may guide heuristics. 
 
 Future development:
 * type declarations. I'd like to get bidirectional type checking working in many cases relatively early on.
 * tail-call declarations. Perhaps not per call but rather an indicator that a subroutine can be optimized for static stack usage, optionally up to method calls. 
 * stowage. Work with larger-than-memory values via content-addressed storage.
-* lazy computation. Thunk, force, spark. Requires some analysis of registers written.
+* lazy computation. thunk, force, spark. Requires some analysis of registers written.
 * debug trace. Probably should wait until we have a clear idea of what a trace should look like. 
 * debug views. Specialized projectional editors within debuggers.
 
 ### Logging
 
         a:((%an.log Chan MsgSel), Operation)
+        
+        type Chan is AST of form d:Name     
+          # naming conventions apply
 
-We express logging 'over' an Operation. This allows for continuous logging, animations when rendering the log, as Operation is evaluated. For example, we might evaluate log messages upon entry and exit to Operation, and also upon '%yield' and resume, perhaps upon '%fail' when it aborts a coroutine step. Instead of a stream of messages, we might render logging as a 'tree' of animated messages. Of course, we can always use a no-op Operation for conventional logging.
+        type MsgSel : Env -> Sel                    # where
+          (%cond (%br %pass Sel %fail)) : Program   
 
-Log messages are expressed as a conditional message selector, same as %cond or %loop. Thus, logging may fail to generate a message. In case of non-deterministic choice, a runtime may attempt to generate all possible messages. Regardless, the operation is aborted after extraction of the message.
+        type Msg is plain old glas data, often a Text
 
-MsgSel will receive an environment from the runtime. This provides access to query the configuration, and some methods to inspect abstract source metadata (from %src.\*), supporting more precise debug messages.
+Logging overlays Operation. When Operation is a no-op (`%pass`), this reduces to conventional one-off logging. However, more generally, we may recompute messages when Operation yields or halts on error, heuristically at checkpoints or stable failure. Periodic or random sampling is also viable, perhaps heuristically tuning frequency based on performance. This behavior may be configurable per Chan, a precision versus performance decision.
 
+Due to this overlay structure, it is useful to render logs as a time-varying tree structure. Instead of a simple stream of text, a log should be serialized as a stream of events on a tree, e.g. add and remove nodes. Non-deterministic choice adds another dimension to this tree, at least insofar as options are evaluated in parallel.
+
+Messages are computed within hierarchical transactions that are aborted after extracting the message. MsgSel may destructively inspect registers and data stack in scope, or invoke atomic operations as a 'what if'. However, data stack is a special case: it is in scope only when Operation is `%pass`, in which case MsgSel has the same access as the surrounding Program.
+
+The runtime provides the Env argument. Exact contents depend on runtime version and configuration-provided adapters, but should de facto stabilize. The role of Env is to provide reflection APIs, e.g. to read %src, inspect the call stack or data stack, or query configured Chan settings. Configured Chan settings are fully arbitrary, e.g. preferred language, accepted format, level of detail, and degree of sarcasm. Many queries can be completed at compile-time, allowing for partial evaluation and specialization of logging code.
+
+If MsgSel uses non-deterministic choice, the runtime may generate all possible messages (subject to configuration). With runtime support, users may configure a non-deterministic choice of Chan settings, such that we log multiple versions of messages.
+
+### Tracing (TBD)
+
+        a:((%an.trace Chan BucketSel), Operation)
+
+We can ask the runtime to record sufficient information to replay a computation. This is expensive, so we might configure tracing (per Chan) to perform random samples or something, switching between traced and untraced versions of the code.
+
+What information do we need?
+
+* input registers - initial, updates after yield
+* input register updates and return values from calling untraced methods 
+* stream of non-deterministic choices and scheduling for replay
+  * distinguish backtracked choices to allow skipping them
+* for long-running traces, heuristic checkpoints for timeline scrubbing 
+* for convenience, complete representation of subprogram being traced
+  * content-addressed for structure sharing
+* consider adding contextual stack of log messages etc.
+
+I think this won't be easy to implement, but it may be worthwhile.
+
+BucketSel is just a means to conditionally disable tracing. Similar to MsgSel except only evaluated once, and the returned bucket(s) are simply dynamic indices for lookup.
 
 ### Accelerators
 
         (%an.accel (%accel.OpName Args))
 
-Todo: list some useful accelerators.
+*Convention:* For pure representation transforms, such as asking a runtime to represent a list as an array under the hood, I express this as "acceleration" of a no-op. Representation transforms are naturally slower than a no-op, but exist only to support other accelerators.
+
+List Ops:
+* append
+* split
+
+Dict Ops:
+* insert
+* delete
+
+Arithmetic
+* Sum
+* Product
+* Negation
+* Reciprocal
+
+Register Ops:
+
+* Cell
+  * Get
+  * Set
+* Queue
+  * Read
+  * Peek
+  * Unread
+  * Write
+* Bag
+  * Put
+  * Grab
+  * Peek
+* 
 
 ## TBD
 
@@ -120,27 +190,11 @@ Meanwhile, we'll still support decent persistent data structures by default, e.g
 
 ### Tail Call Optimization
 
-Tail calls allow for recursive definitions in finite stack space. This optimization isn't always worthwhile - not when we instead model the data stack via memory allocation - but it can be useful in enough cases.
-
-This can be viewed as a form of static garbage collection, recycling memory allocations on the call stack. To support a non-moving TCO, we could feasibly unroll a loop a little then recycle all the relevant locations.
-
-In glas systems, I want tail calls to be a robust, checked optimization. But it's awkward to express this on a definition directly on names. Perhaps instead we might express an annotation that the stack is finite? Or finite up to external handlers?
-
-
-
-Annotations can indicate that calls are expected to be tail calls. Further, I hope to encourage tail calls as the default form of recursion, as it greatly simplifies compilation.
-
-Even if all recursion is tail calls, we can model dynamic stacks in terms of registers containing list values. Performance in this case might be mitigated by preallocation of a list buffer for in-place update and use as a stack. This could be supported through annotations or accelerators.
-
-
+Instead of TCO moving stuff on the stack, I'd suggest unrolling a recursive loop a few frames then determining whether we can 'recycle' all the stack locations.
 
 ### Unit Types
 
-We'll allow annotations to express types within a program. Static analysis to verify consistency of type assumptions is left to external tooling. However, annotations aren't suitable for unit types on numbers, where we might want to print type information as part of printing a number.
-
-Instead of directly encoding unit types within number values, it may prove convenient to bind unit types to *associated* registers. With some discipline - or sufficient support from the front-end syntax - we can arrange for these associated registers to be computed statically ahead of the runtime arguments or results. We can also test that the unit type variable is static.
-
-The unit type variable may be associated with a 'constant value' type when annotating type information for the implicit environment or an operation, and subject to static or dynamic verification. When rendering numbers, we may peek at the unit type variable for information, which is something we cannot do with annotation of types alone.
+Attaching unit-types to number representations is inefficient. Recording them into type annotations makes units difficult to use, e.g. for printing values. An interesting possibility, however, is to track units for *registers*, aiming for static computation of unit registers. We could use '%assoc' to associate unit registers with a number register.
 
 ### Memoization
 
@@ -152,11 +206,9 @@ However, even the simplest of traces can be useful if users are careful about wh
 
 ### Lazy Computation? Defer.
 
-Might integrate with memoization for incremental computing, can use lazy thunks as memo cells?
-
-        (%an (%an.lazy.thunk Options) Op)
-        (%an %an.lazy.force (%do))
-        (%an %an.lazy.spark (%do))
+        (%an.lazy.thunk Options)
+        %an.lazy.force 
+        %an.lazy.spark 
 
 In the general case, we could 'thunkify' an operation by capturing each input and immediately replacing each output (whether stack or register) with a thunk. However, this requires implicit thunks. If we want explicit thunks, where 'force' is required to extract a value, we may need to explicitly list outputs and restrict the type of Op.
 
@@ -176,36 +228,17 @@ Ideally, the compiler or interpreter should verify equivalence between Op and Ac
 
 Accelerators support 'performance primitives' without introducing semantic primitives. If we build upon a minimalist set of semantic primitives, we'll be relying on accelerators for arithmetic, large lists, and many other use cases.
 
-
-### Tracing
-
-We can ask the runtime to record sufficient information to replay a computation. This is expensive, so we might configure tracing (per Chan) to perform random samples or something, switching between traced and untraced versions of the code.
-
-What information do we need?
-
-* input registers - initial, updates after yield, checkpoints from scrubbing
-* updates and return values from calling external methods 
-* non-deterministic choices and scheduling, optionally including backtracking
-* for long-running computations, heuristic checkpoints for timeline scrubbing 
-* for convenience, a complete representation of the subprogram being traced
-* consider adding the contextual stack of log messages etc.
-
-I think this won't be easy to implement, but it may be worthwhile.
-
-Support for conditional tracing may also be useful. 
-
 ### Breakpoints
 
-I'm not fond of debugging via breakpoints, but some people swear by them. Conventional breakpoints can be improved a little with a conditional check. In context of glas annotations, we could also 
+        (%an.bp Chan BucketSel)
 
-Break
+We could feasibly annotate conditional breakpoints into a program. Ideally, we'll integrate the notion of overlay breakpoints, e.g. breaking when conditions are met.
 
-
-Anyhow, I think we can do a lot better than inserting rigid 'breakpoints' into programs. We could instead apply 'breakpoints' to log messages or similar.
+Not sure exactly what I want here, however.
 
 ### Projection? Defer.
 
-My idea with projection is that we can extend '%an.log' to instead describe interactive debug views in terms of projectional editors over local registers and such. The main distinction from logging is interactivity. With logging the assumption is that messages are written into a log for future review, while for projections we're letting users directly peek and poke into a running system.
+My idea with projection is that we can extend '%an.log' to instead describe interactive debug views in terms of projectional editors over local registers and such. The main distinction from logging is interactivity. With logging the assumption is that messages are serialized into a log for future review, while for projections we're letting users directly peek and poke into a running system.
 
 ### Content-Addressed Storage
 
@@ -213,17 +246,9 @@ Annotations can transparently guide use of content-addressed storage for large d
 
 ### Environment Abstraction
 
-An ADT essentially allows the client to move things without accessing them. An intriguing alternative is to let a client allocate a space without access it, i.e. hiding parts of a client-allocated environment from that client.
+Instead of only abstracting data, it can be useful to abstract volumes of the environment. This allows us to develop APIs where the client provides a location, but cannot access the associated data.
 
-This isn't difficult. Essentially, may require multiple names to reference a register. Thus, by controlling access to one of those names, we prevent direct access to the register. System APIs can easily control an application's access to specific names.
-
-I've decided to push this feature up to the namespace model, e.g. with specialized translation of "/" separators in names.
-
-### Protocol Registers
-
-Linear types are useful for enforcing protocols, but dynamic enforcement has higher overhead than I'd prefer, and I'd prefer to avoid dynamic representations of data abstraction where feasible.
-
-. A viable alternative is environment abstraction plus annotations that some registers must be manually cleared before exit. Or perhaps on yield?.
+Modeling this in names is too awkward. However, it is feasible to introduce a corollary to '%local' for binding associated names. In this case, our goal is to draw an 'arc' between two registers and treat it as a new prefix of registers.
 
 ### Type Descriptions
 
@@ -232,6 +257,8 @@ Linear types are useful for enforcing protocols, but dynamic enforcement has hig
 We can just invent some primitive type descriptions like '%type.int' or whatever, things a typechecker is expected to understand without saying, and build up from there. It isn't a big deal if we want to experiment with alternatives later.
 
 # Runtime Thoughts
+
+I have a big dream, but I hope to start with a simple implementation in C or Zig or Rust then push most logic (even JIT and optimizers) into the user configuration, e.g. under `rtname.jit` definitions.
 
 ## Desiderata
 
