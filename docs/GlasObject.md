@@ -163,6 +163,9 @@ In normal form, varnats use the smallest number of bytes to encode a value. It i
         0x0F-0x1F
         0xA0-0xFF
 
+        PROPOSED
+        0xA0-0xBF   Small binaries (1-32 bytes)
+
 
 ## Conventions and Patterns 
 

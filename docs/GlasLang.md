@@ -1,9 +1,26 @@
-# Goals for Glas Syntax
+# Glas Language
+
+## Design Goals
+
+* multi-line texts
+* vertically structured syntax - not too much indentation
+* clear processing boundaries for errors
+* recursive definitions by default 
+* support for tagged definitions from the start
+* type annotations and type definitions, even if initially unchecked
+* sequencing or streaming commands analogous to Forth?
+
+idea: tagged texts, some keyword tags but user-defined tags are supported, each tag represents a mini-language AND a namespace macro. Texts may be inline or multi-line, in the latter case must be indented.
+
+
+
+
+
+
+
+
 
 * First, this should be a syntax I want to program in. Pretty. Nice annotations. Convenient support for aggregators.  
-* Implicit fixpoint per-module for module-local recursive definitions.
-* Lightweight declaration of definition 'tags' for adapters.
-* Easy access to low-level code when I want some. 
 
 # DEPRECATED
 

@@ -49,7 +49,8 @@ Registers:
 * `(%assoc R1 R2 RegOps)` - this binds an implicit environment of registers named by an ordered pair of registers `(R1, R2)`. The primary use case is abstract data environments: an API can use per-client space between client-provided registers and hidden API registers.
 
 Metaprogramming:
-* `(%macro ASTBuilder)` - ASTBuilder must have type `Env -> ASTGen`. Env provides access to compile-time effects (such as loading files), and ASTGen is a deterministic program of 0--1 arity that returns an AST representation. The AST is evaluated in an empty environment (implicit `t:({"" => NULL}, AST)` scope), then further processing is left to the macro context.
+* `(%macro ASTBuilder)` - ASTBuilder must have type `Env -> Program` where Env provides compile-time effects (e.g. load a file). Program must be deterministic up to Env and 0--1 arity, leaving an AST representation on the data stack. This AST is evaluated in an empty environment then returned.
+  * The simplest proof of determinism is that Program doesn't use '%co' or '%choice'. I'll start there. But I hope to eventually recognize common confluence patterns or support proof annotations.
 * `(%eval Adapter)` - pops an AST representation from the data stack, evaluates in an empty environment (implicit `t:({ "" => NULL }, AST)` scope), then passes the result to Adapter of type `AST -> Program`. The resulting program may be verified, instrumented, and optimized in context, then is run. In most cases, the AST argument must be static, i.e. `%an.eval.static` is default for glas systems.
 * *Note:* These primitives enable Programs to participate in metaprogramming. However, we can also support a lot of metaprogramming purely in the namespace layer.
 
@@ -79,13 +80,16 @@ Validation:
   * `(%an.data.unwrap.linear RegisterName)` - unwrap for linear wrappers. 
 * `%an.data.static` - Indicates that top stack element should be statically computable. Exercise left to compiler!
 * `%an.eval.static` - Indicates that all '%eval' steps in Operation must receive their AST argument at compile-time. This is the default for glas applications, but it doesn't hurt to make the assumption explicit locally.
-* `%an.det` - indicates that Operation should be observably deterministic, restricting %choice and %co (except in the very unusual case where confluence can be proven).
 * `(%an.type TypeDesc)` - Describes a partial type of Operation. Or, with a no-op and identity type, we can partially describe the Environment. TypeDesc TBD.
+
 
 Incremental computing:
 * `(%an.memo MemoHint)` - memoize a computation. Useful memoization hints may include persistent vs. ephemeral, cache-invalidation heuristics, or refinement of a 'stable name' for persistence. TBD. 
   * As a minimum viable product, we'll likely start by only supporting 'pure' functions, because that's a low-hanging, very tasty fruit.
 * `(%an.checkpoint Hints)` - when retrying a transaction, instead of recomputing from the start it can be useful to rollback partially and retry from there. In this context, a checkpoint suggests a rollback boundary. A compiler may heuristically eliminate unnecessary checkpoints, and Hints may guide heuristics. 
+
+Guiding non-deterministic choice: (tentative)
+* `(%an.cost Chan Cost)` - emits a heuristic 'cost'. Choices with high costs - or clearly leading to high costs in the future - can be heuristically disfavored. Does not guarantee a deterministic outcome, but can help programmers express their preferences. The Cost function should be `Env -> Program` receiving Chan configuration options and outputting a rational number cost.
 
 Future development:
 * type declarations. I'd like to get bidirectional type checking working in many cases relatively early on.

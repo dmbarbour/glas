@@ -22,10 +22,10 @@ Utility extensions:
 
 * *annotations* - structured comments for instrumentation, optimization, verification.
 * *data* - opaque to the calculus, but embedded for convenience
-* *ifdef* - supports expression of defaults, optional defs, flexible mixins
+* *ifdef* - flexible expression of defaults, optional defs, merge-union, mixins
 * *fixpoint* - a built-in fixpoint for lazy, recursive defs
 
-The [program model](GlasProg.md) provides a collection of primitive definitions under prefix '%'. Additionally, the runtime will bind '%env.\*' to the configuration's 'env.\*' via fixpoint. This provides a foundation for shared libraries.
+The [program model](GlasProg.md) provides a collection of primitive definitions under prefix '%'. The runtime will also bind '%env.\*' to the configuration's 'env.\*' via fixpoint, supporting shared libraries. The runtime also links '%src' to abstract data representing a user configuration.
 
 ## Abstract Syntax Tree (AST)
 
@@ -42,7 +42,7 @@ The AST encoded as structured glas data. This serves as an intermediate represen
             | d:Data                # embedded glas data, opaque to AST
             | c:(Name,(AST,AST))    # ifdef conditional expression
             | y:AST                 # built-in fixpoint combinator 
-        type Name = binary excluding NULL 
+        type Name = binary excluding NULL
         type Prefix = any binary prefix of Name
         type TL = Map of Prefix to (Prefix | NULL) as radix-tree dict
 
@@ -61,13 +61,48 @@ Evaluation of an AST is a lazy, substutive reduction in context of an environmen
 * ifdef `c:(Name, (Then, Else))` - evaluates to Then if Name is defined in current environment, otherwise Else. 
 * fixpoint - built-in fixpoint for convenient expression and efficient evaluation
 
-### Translation
+### Evaluation Pseudocode
 
-TL is a finite map of form `{ Prefix => (Prefix' | NULL) }`. To translate a name via TL, we find the longest matching prefix, rewrite that to the output prefix. Or, if output is NULL, we'll treat the name as undefined. 
+Notes:
 
-An obvious weakness of prefix-to-prefix translation is that natural language names are not prefix-unique, e.g. we cannot translate `"bar"` to `"foo"` without also converting `"bard"` to `"food"`. To mitigate this, front-end compilers implicitly extend names with a `".!"` suffix, such that we can use `{ "bar.!" => "foo.!" }` to match 'bar' alone, or `{ "bar." => "foo." }` to modify 'bar' together with 'bar.\*'.
+* For lexical scope,  `f:(Name, Body)` we must bind Body to the current environment and 
 
-Sequential translations can be composed into a single map. Rough sketch: to compute A followed-by B, first extend A with redundant rules such that output prefixes in A match as many input prefixes in B as possible, then translate A's outuput prefixes as names (longest matching prefix). To normalize, optionally erase new redundancy.
+* We can directly evaluate binders if they are introduced and applied in the same context, i.e. `(f:(Name, Body), Arg)` or `(b:(Prefix, Body), Arg)` can skip the intermediate closure.
+ heavily optimized.
+
+
+
+Intermediate Representations:
+
+* Closures - We can directly evaluate binders if they are introduced and applied
+
+When we evaluate binders such as `f:(Name, Body)`
+
+
+The proposed AST type represent the intermediate states for evaluation, so we'll add a few:
+
+        type EvalAST = 
+            | AST
+            | C:
+
+Note: we'll likely need to introduce some intermediate representations, such as closures, closure-var refs, and thunks, to properly encode evaluation.
+
+        # inline applications are common and easily optimized.
+        # TBD: lexical binding to Env.
+        eval Env (f:(Name, Body), Arg) =        # inline definition
+            let argThunk = eval Env Arg
+            let Env' = addEnv (def:(Name, argThunk)) Env
+            eval Env' Body
+        eval Env (b:(Prefix, Body), Arg) =      # inline binding
+            let argThunk = eval Env Arg
+            let Env' = 
+                if "" = Prefix then argThunk else  # optimization
+                addEnv (idx:(Prefix, argThunk)) Env
+            eval Env' Body
+        eval Env (t:(TL, Body)) =
+            let Env' = addEnv (tl:TL) Env
+            eval Env' Body
+
 
 ### Environment Representation 
 
@@ -101,25 +136,13 @@ This is just an idea at the moment. We might extend the environment with somethi
 
 But something like this can potentially work in context of a lexical scope. We might need special support closures once we begin to integrate things.
 
-### Eval Rules
+### Translation
 
-Note: we'll likely need to introduce some intermediate representations, such as closures, closure-var refs, and thunks, to properly encode evaluation.
+TL is a finite map of form `{ Prefix => (Prefix' | NULL) }`. To translate a name via TL, we find the longest matching prefix, then rewrite that to the output prefix. Alternatively, if output is NULL, we'll treat the name as undefined.
 
-        # inline applications are common and easily optimized.
-        # TBD: lexical binding to Env.
-        eval Env (f:(Name, Body), Arg) =        # inline definition
-            let argThunk = eval Env Arg
-            let Env' = addEnv (def:(Name, argThunk)) Env
-            eval Env' Body
-        eval Env (b:(Prefix, Body), Arg) =      # inline binding
-            let argThunk = eval Env Arg
-            let Env' = 
-                if "" = Prefix then argThunk else  # optimization
-                addEnv (idx:(Prefix, argThunk)) Env
-            eval Env' Body
-        eval Env (t:(TL, Body)) =
-            let Env' = addEnv (tl:TL) Env
-            eval Env' Body
+The TL type works best with prefix-unique names, where no name is a prefix of another name. Consider that TL `{ "bar" => "foo" }` will convert `"bard"` to `"food"`, and it's awkward to target 'bar' alone. To mitigate, we logically add suffix `".."` to all names, and front-end syntax can strongly discourage `".."` within user-defined names. This logical suffix enables translation of 'bar' together with 'bar.\*' via `{ "bar." => "foo." }` or 'bar' alone via `{ "bar.." => "foo.." }`. If translation removes the suffix, raise an error. (Alternatively, introduce an `N:FullName` intermediate representation.)
+
+Sequential translations can be composed into a single map. Rough sketch: to compute A followed-by B, first extend A with redundant rules such that output prefixes in A match as many input prefixes in B as possible, then translate A's outuput prefixes as names (longest matching prefix). To normalize, optionally erase new redundancy.
 
 ## Modularity
 
@@ -127,52 +150,46 @@ Modularity is supported by compile-time effects. To prevent compile-time effects
 
 Viable API:
 
-        ("%macro", b:("ct.", P))                # bind ct to compile-time effects in P
-        ct.load : Src<Type> -> (Type | FAIL)    # load glas data based on query
+        ("%macro", b:("ct.", P))        # bind ct to effects in P
+        ct.load(Src) : Binary option    # load glas data based on query
+        (%src.file FilePath Src) : Src
+        (%src.dvcs.git Repo Ver FilePath Src) : Src
+ 
+Src is an abstract data type with constructors in '%src.\*'. To support relative file paths and rendering dependency graphs, Src constructors always take a Src argument. By convention, each module receives a link to its own Src via '%src'. To support location-independent compilation, Src is opaque at compile time, but details are available at runtime via 'sys.refl.src.\*'.
 
-Src is an abstract data type. By convention, '%src' carries Src for the current module, while '%src.\*' provides constructors. All Src constructors are relative to enhance control over transitive dependencies and support rendering a dependency graph. To support location-independent compilation and cache sharing, location details only become visible at runtime via 'sys.refl.src.\*' APIs.
+We can later extend Src to stable HTTP queries, content-addressed data, and virtual filesystems. However, I believe this is enough to get started.
 
-Possible initial constructors:
+## Module Overview
 
-        (%src.file FilePath Src) : Src<Binary> 
-        (%src.dir FileRegex Src) : Src<List of FilePath>
-        (%src.dvcs.git Repo Ver Src) : Src<unit>
-          # Repo - e.g. a URL
-          # Ver - branch, tag, or hash
+A proposed module type is `Env -> Env`, albeit tagged for extensibility (see *Tags*).
 
-In this API, a DVCS file is relative to a DVCS source, and we'll support treat absolute file paths as relative to DVCS root. This seems sufficient to get started. We might eventually extend to support other DVCS, database or HTTP queries, and content-addressed data.
+By convention, the input environment is bound to prefix '%', i.e. `b:("%", ModuleBody)`. This space provides access to program primitives, a user-configurable environment '%env.\*' for shared libraries, and '%src' for a module's abstract location. The module will define more names and eventually return its reified environment, optionally hiding '%' and private utility definitions.
 
-### Folders as Packages
+To support mutually-recursive definitions, we must wrap the module body with a fixpoint. Although we could do so within each module, there is a significant benefit to keeping recursion 'open': it allows us to express modules in terms of inheritance and override. Thus, I propose to move the fixpoint to the client 'import', binding a module's definition to '%self.\*'. A module may still close recursion locally where it makes sense.
 
-In my vision for glas systems, users can easily share code by copying folders. Although DVCS bindings are preferred for stable dependencies, copying is suitable for notebook-style applications where live coding and projectional editing are integrated with the experience.
+We can also support a notion of parameterized modules, analogous to OO constructors (for immutable objects). We effectively use '%env.\*' for implicit parameters. I propose to reserve '%arg.\*' for more conventional arguments that should not be implicitly propagated. If there are no explicit user parameters to a module, this volume should be empty.
 
-To support this vision, I forbid parent-relative (`"../"`) paths in Src constructors. Absolute paths are also restricted: users cannot reference an absolute path via relative-path Src. Upon entry to DVCS, we treat absolute paths as referring to DVCS root.
+Altogether, a client module will propagate its own '%\*' after shadowing '%src', '%self', and '%arg.\*'. For '%self' the client will usually fixpoint the module, but an opportunity exists for inheritance or mixins.
 
-As a related convention, we might leverage %src.dir to let users 'load' a folder as a source after searching for a 'package.\*' file.
+## User-Defined Syntax
 
-### User-Defined Syntax
+As a convention, users may define front-end compilers per file extension in '%env.lang.FileExt'. To bootstrap this process, the glas executable initialy injects a built-in definition for '%env.lang.glas'. *Aside:* We should normalize file extensions, e.g. lower case ascii, '.' to '-'. 
 
-As a convention, users may define front-end compilers per file extension in '%env.lang.FileExt'. To bootstrap this process, the glas executable initialy injects a built-in definition for '%env.lang.glas'. The front-end compiler should be a purely functional Program of type `Binary -> AST` for use within a macro but separate from operations to load the binary or link the AST.
+A viable model for the front-end compiler is a Program implementing a pure function of type `Binary -> AST`, where AST represents a closed term of the module definition type. Lazy loads must be expressed as %macro nodes within the generated AST.
 
-### Tagged Definitions and Calling Conventions
+Compilation and linking are stage separated, which has some advantages and disadvantages. A compiler cannot express a closure, e.g. integrating definitions from its own environment. It can only arrange for the generated AST to later link shared libraries. OTOH, this ensures the client controls linking, and that we can share compilers without specializing them per link environment.
 
-A program may work with many types of definitions, e.g. `Env -> Program` vs. `Program` vs. Env -> Env`. This isn't a problem when used in different contexts. However, when they share a context, the caller must syntactically distinguish each call type, which is ugly and annoying.
-
-My proposed solution is to tag every user definition and let front-end compilers provide an adapter. For example, we can easily adapt `Program` into `Env -> Program`. Perhaps we can also express macro expansions as normal program expansions.
+## Tags and Calling Conventions
 
 A viable encoding for tags:
 
-        f:("w", ((b:("", "TAG"), "w"), Definition))
+        f:("E", ((b:("", "T"), "E"), Body))
 
-This function receives an Env of adapters, extracts the TAG adapter, then applies to Definition. If there is no such adapter, we'll get an obvious error, usually at compile time.
+This function receives an Env of adapters E, extracts the T adapter, then applies to Body. Alternatively, if E does not contain T, this raises a clear error when applied.
 
-### Modules and Mixins
+I propose to wrap nearly all modules and definitions in such tags. The overhead is negligible, but the resulting system will be far more extensible and adaptive. There is some risk of different communities overloading the same tags, but we're still better off due to the opportunity for resolution without module-level or call-site adapters.
 
-The proposed type for module AST is `Env -> Env`. The input Env should at least provide primitives, including access to '%env.\*' and an updated '%src'. But this may be extended to access definitions in client's environment, essentially parameterizing modules. We could support in-out parameters, where a module both receives and returns a definition. And at the extreme, we could 'include' a module into the current namespace.
-
-Of course, we aren't limited to modules that do this. We can also define `Env -> Env` functions for use as namespace macros, or even `Env -> (Env -> Env)` for parameterization.
-
-The glas namespace model doesn't support a union of definitions, but it isn't difficult to develop modules that support a sort of union-merge of definitions via the ifdef primitive.
+The motivating use case for tags is something like calling conventions. I would like to support calls to `Env -> Program` and `Program` within the same language without explicit adapters or syntactic distinctions. I would also like to support macro expansions without a separate syntax. We would also benefit from distinguishing embedded data, for use in wider contexts. And so on.
 
 ## Incremental Compilation
 
@@ -184,9 +201,11 @@ Whether we persist the *value* of a thunk may be heuristic, e.g. based on the re
 
 ## Aggregation
 
-Language features such as multimethods, typeclasses, declaring HTTP routes, etc. require constructing and sharing tables. In context of functional programming, we can express iterative construction in terms of repeatedly shadowing a definition with an updated version. We can express sharing via fixpoint if we're careful to avoid datalock. *Caveat:* aggregation across module boundaries hinders lazy loading. 
+Language features such as multimethods, typeclasses, declaring HTTP routes, etc. require constructing and sharing tables. In context of functional programming, we can express iterative construction in terms of repeatedly shadowing a definition with an updated version. We can express sharing via fixpoint if we're careful to avoid datalock. 
 
-An interesting opportunity is to use Church-encoded lists or free monads to aggregate tagged ASTs. This provides a more flexible structure for postprocessing.
+An interesting opportunity is to use Church-encoded lists to aggregate tagged ASTs for later processing. This can be very flexible, and is directly analogous to the Writer monad.
+
+Aggregation across modules is hostile to lazy loading. But we could allow aggressive, automatic aggregation at the *application* layer.
 
 ## Integration
 
@@ -195,4 +214,12 @@ By convention, modules receive a pseudo-global namespace '%\*'. This provides ac
 Applications are typically defined within a configuration, e.g. 'env.AppName.app'. Users may also load scripts that define 'app' (still using the configured '%env.\*'). Like modules, the application type is also `Env -> Env`. However, in this case, the input environment contains 'sys.\*' definitions for runtime effects APIs, 'db.\*' and 'g.\*' registers, and 'app.\*' via fixpoint. The delayed fixpoint supports flexible inheritance and override when composing applications.
 
 Applications define 'settings' to guide final configuration of the runtime, a 'main' method to represent program behavior, 'http' and 'rpc' methods to handle events. See [glas apps](GlasApps.md). Application methods are generally `Env -> Program`, allowing the program to interact with the runtime via callbacks.
+
+## Controlling Entanglement
+
+In my vision for glas systems, users can easily share code by copying folders. Although DVCS bindings are preferred for stable dependencies, copying is suitable for notebook-style applications where live coding and projectional editing are integrated with the experience.
+
+To support this vision, we can report warning or error in case of parent-relative (`"../"`) paths in Src constructors. Absolute paths are similarly restricted: users cannot reference an absolute path via relative-path Src in the same context (with DVCS becoming a new context). 
+
+We might similarly report if a DVCS reached by hash links to other DVCS by branch. This would allow us to more robustly maintain horizontal versioning across bounaries.
 
