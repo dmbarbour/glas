@@ -176,7 +176,7 @@ Compilation and linking are stage separated, which has some advantages and disad
 
 ## Modules
 
-The basic module type is `Env -> Env`, albeit tagged for extensibility (see *Tags*). An Env is naturally very extensible, but we must reserve a few space to resist conflict. Prefix '%' is reserved for the system and front-end compilers.
+The proposed module type is `Env -> Env`, albeit tagged for extensibility (see *Tags*). An Env is naturally very extensible, but we must reserve a few space to resist conflict. Prefix '%' is reserved for the system and front-end compilers.
 
 A few reserved names deserve special attention:
 
@@ -194,9 +194,9 @@ Usefully, modules are first-class values within the glas namespace. We can defin
 
 A viable encoding for tags:
 
-        f:("E", ((b:("", "T"), "E"), Body))
+        f:("Adap", ((b:("", "Tag"), "Adap"), Body))
 
-This function receives an Env of adapters E, extracts the adapter for tag T, then applies to Body. Alternatively, if E does not contain T, this raises a clear error when applied.
+This function receives an Env of adapters, extracts adapter for Tag, applies to Body. Alternatively, if there is no adapter for Tag, raises an obvious error.
 
 I propose to wrap nearly all modules and definitions in such tags. The overhead is negligible, but the resulting system will be far more extensible and adaptive. There is some risk of different communities overloading the same tags, but we're still better off due to the opportunity for resolution without module-level or call-site adapters.
 
@@ -240,7 +240,11 @@ TBD: generalize this as a macro on `Env -> Env`
 
 ### Multiple Inheritance? Defer.
 
-Multiple inheritance seems infeasible without maintaining a lot of extra metadata per module. Perhaps we'll need to extend the module types (new tag) to support it. But see [Prototypes: Object-Orientation, Functionally](http://webyrd.net/scheme_workshop_2021/scheme2021-final91.pdf).
+Effective support for multiple inheritance will require another level of indirection. Each module must represent its dependency structure without immediately applying it, and must support robust identification to recognize shared dependency structure. Then an algorithm such as C3 identifies incompatible inheritance structures and determines a merge order.
+
+This extension seems feasible: Generate module IDs based on a secure hash of generated module AST representations, prior to linking. Front-end compiler builds inheritance lists instead of directly applying dependencies. Introduce a new tag for modules where the `Env -> Env` mixin is only element.
+
+See also [Prototypes: Object-Orientation, Functionally](http://webyrd.net/scheme_workshop_2021/scheme2021-final91.pdf); section 4.3 discusses multiple inheritance.
 
 ## Incremental Compilation
 
