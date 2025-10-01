@@ -4,9 +4,11 @@ In my vision for glas systems, huge namespaces define runtime configuration, sha
 
 ## Design Overview
 
-Lambda calculus can express namespaces, e.g. a `let x = X in E` becomes `((λx.E) X)`. However, such namespaces are second-class in the lambda calculus. We can extend the lambda calculus with reification of the environment, a means to integrate environments into the namespace, and more explicit control of a namespace.
+Lambda calculus can express namespaces, e.g. a `let x = X in Expr` becomes `((λx.Expr) X)`. However, namespaces are second-class in the lambda calculus. I propose to extend lambda calculus with first-class environments. 
 
-Base Lambda Calculus:
+First, we can reify the environment. The program can generate an abstract record `{ "x" = x, "y" = y, ... }` for all names in scope. For binding, we can introduce `((ν"Prefix".Body) Env)`, binding "PrefixName" in Body to "Name" in Env. This shadows a prefix like lambdas shadow names. A simple record accessor can be expressed via empty prefix `((ν.name) Env)`. For control, we introduce translations that modify a subprogram's view of its current environment, also influencing the reified environment key names.
+
+Lambda Calculus:
 
 * *application* - provide an argument 
 * *arg binding* - bind argument to name in body
@@ -15,12 +17,12 @@ Base Lambda Calculus:
 Namespace extensions:
 
 * *reification* - capture current view of environment 
-* *translation* - modify body's view of environment
 * *env binding* - bind environment to prefix in body
+* *translation* - modify body's view of environment
 
 Utility extensions:
 
-* *annotations* - structured comments for instrumentation, optimization, verification.
+* *annotations* - structured comments for instrumentation, optimization, verification
 * *data* - opaque to the calculus, but embedded for convenience
 * *ifdef* - flexible expression of defaults, optional defs, merge-union, mixins
 * *fixpoint* - a built-in fixpoint for lazy, recursive defs
@@ -29,15 +31,15 @@ The [program model](GlasProg.md) provides a collection of primitive definitions 
 
 ## Abstract Syntax Tree (AST)
 
-The AST encoded as structured glas data. This serves as an intermediate representation for namespaces and programs.
+AST encoded as structured glas data. This serves as an intermediate representation for namespaces and programs in glas systems.
 
         type AST =
             | Name                  # substitute definition
             | (AST, AST)            # application
-            | f:(Name, AST)         # bind name in body (aka lambda)
+            | f:(Name, AST)         # bind name in body, aka lambda
             | e:()                  # reifies host environment
-            | t:(TL, AST)           # modify body's view of environment
             | b:(Prefix, AST)       # bind argument to prefix in body
+            | t:(TL, AST)           # modify body's view of environment
             | a:(AST, AST)          # annotation in lhs, target in rhs 
             | d:Data                # embedded glas data, opaque to AST
             | c:(Name,(AST,AST))    # ifdef conditional expression
@@ -52,9 +54,11 @@ Evaluation of an AST is a lazy, substutive reduction in context of an environmen
 
 * application, lambdas, and names: as lazy lambda calculus evaluation
 
-* reification `e:()` - returns an abstract dictionary containing all names in scope, i.e. `{ "x" = x, "y" = y, ...}`. An empty environment can be expressed as `t:({ "" => NULL }, e:())`.
+* reification `e:()` - returns an abstract dictionary containing all names in scope, i.e. `{ "x" = x, "y" = y, ...}`. Trick is to make this lazy. 
+  * Empty environment is expressed as `t:({ "" => NULL }, e:())`. 
+  * Specified prefix is selected by `t:({ "" => Prefix }, e:())`.
+* env binding - when applied `(b:(Prefix,Body), Arg)`, binds Arg to Prefix context of evaluating Body. All external names matching Prefix are shadowed in Body, much as lambdas shadow a single name.
 * translation `t:(TL, Body)` - translates Body's view of the current environment through TL. Of semantic relevance, TL controls dictionary keys if the environment is reified in Body.
-* env binding - when applied `(b:(Prefix,Body), Arg)`, binds Arg to Prefix context of evaluating Body.
 
 * annotations `a:(Anno, Target)` - Semantically inert: logically evaluates as Target. In practice, we evaluate Anno to an abstract Annotation using compiler-provided Annotation constructors - by convention `%an.name` or `(%an.ctor Args)`. We then use this Annotation to guide instrumentation, optimization, or verification of Target.
 * data `d:Data` - evaluates to itself 
@@ -63,29 +67,23 @@ Evaluation of an AST is a lazy, substutive reduction in context of an environmen
 
 ### Evaluation Pseudocode
 
+TBD
+
 Notes:
 
-* For lexical scope,  `f:(Name, Body)` we must bind Body to the current environment and 
+We can directly evaluate applied binders, skip the intermediate closures. For example, `(f:(Name, Body), Arg)` or `(b:(Prefix, Body), Arg)`. This saves a lot of overhead.
 
-* We can directly evaluate binders if they are introduced and applied in the same context, i.e. `(f:(Name, Body), Arg)` or `(b:(Prefix, Body), Arg)` can skip the intermediate closure.
- heavily optimized.
+For a binder in other contexts, `f:(Name, Body)`, we must build a closure that captures the lexical environment of Body. To that, we can add a special item to the environment for Body that indicates we should look for Name in a future argument slot. The main trick is to make this efficient. For referencing 'arguments', we could feasibly use a linked list for closures built within closures.
 
+ need a special translation rule indicating that all prior arguments are another step in a linked list of arguments or similar.
 
+When building closures, consider collapsing patterns such as `f:(N1, f:(N2, ...))` into a single closure
 
-Intermediate Representations:
+In general, we'll need a notion of allocating 'thunks' for deferred evaluation. 
 
-* Closures - We can directly evaluate binders if they are introduced and applied
+Performance isn't critical for my use case, but there is no fundamental reason I couldn't make namespace evaluation highly efficient via Spineless, Tagless G-machine (Simon Peyton Jones) or similar. 
 
-When we evaluate binders such as `f:(Name, Body)`
-
-
-The proposed AST type represent the intermediate states for evaluation, so we'll add a few:
-
-        type EvalAST = 
-            | AST
-            | C:
-
-Note: we'll likely need to introduce some intermediate representations, such as closures, closure-var refs, and thunks, to properly encode evaluation.
+TBD
 
         # inline applications are common and easily optimized.
         # TBD: lexical binding to Env.
@@ -144,40 +142,53 @@ The TL type works best with prefix-unique names, where no name is a prefix of an
 
 Sequential translations can be composed into a single map. Rough sketch: to compute A followed-by B, first extend A with redundant rules such that output prefixes in A match as many input prefixes in B as possible, then translate A's outuput prefixes as names (longest matching prefix). To normalize, optionally erase new redundancy.
 
-## Modularity
+## Loading Files
 
-Modularity is supported by compile-time effects. To prevent compile-time effects from leaking into the runtime, they are provided indirectly as algebraic effects handlers to the %macro primitive. The primary effect is to load files, returning a binary. This binary may be processed within the macro to generate an AST. Lazy compilation may be expressed in terms of returning an AST that contains more macro nodes.
+Modularity is supported by compile-time effects. To prevent compile-time effects from leaking accidentally into the runtime, they are provided indirectly as second-class algebraic effects via the %macro primitive. The primary effect is to load files, returning a binary. This binary may be processed within the macro to generate an AST. Lazy compilation may be expressed in terms of returning an AST that contains more macro nodes.
 
 Viable API:
 
         ("%macro", b:("ct.", P))        # bind ct to effects in P
         ct.load(Src) : Binary option    # load glas data based on query
+        ct.find(Src, FileRegex) : List of FilePath  # search near Src
         (%src.file FilePath Src) : Src
         (%src.dvcs.git Repo Ver FilePath Src) : Src
  
 Src is an abstract data type with constructors in '%src.\*'. To support relative file paths and rendering dependency graphs, Src constructors always take a Src argument. By convention, each module receives a link to its own Src via '%src'. To support location-independent compilation, Src is opaque at compile time, but details are available at runtime via 'sys.refl.src.\*'.
 
-We can later extend Src to stable HTTP queries, content-addressed data, and virtual filesystems. However, I believe this is enough to get started.
+We might eventually extend Src to stable HTTP queries, content-addressed data, and virtual filesystems. However, I believe this is enough to get started.
 
-## Module Overview
+### Controlling Filesystem Entanglement
 
-A proposed module type is `Env -> Env`, albeit tagged for extensibility (see *Tags*).
+In my vision for glas systems, users can easily share code by copying folders between workspaces. Although DVCS bindings are preferred for stable dependencies, copying is suitable for notebook-style applications where live coding and projectional editing are integrated with the experience.
 
-By convention, the input environment is bound to prefix '%', i.e. `b:("%", ModuleBody)`. This space provides access to program primitives, a user-configurable environment '%env.\*' for shared libraries, and '%src' for a module's abstract location. The module will define more names and eventually return its reified environment, optionally hiding '%' and private utility definitions.
+To support this vision, we can report warning or error in case of parent-relative (`"../"`) paths in Src constructors. Absolute paths are similarly restricted: users cannot reference an absolute path via relative-path Src in the same context (with DVCS becoming a new context). 
 
-To support mutually-recursive definitions, we must wrap the module body with a fixpoint. Although we could do so within each module, there is a significant benefit to keeping recursion 'open': it allows us to express modules in terms of inheritance and override. Thus, I propose to move the fixpoint to the client 'import', binding a module's definition to '%self.\*'. A module may still close recursion locally where it makes sense.
-
-We can also support a notion of parameterized modules, analogous to OO constructors (for immutable objects). We effectively use '%env.\*' for implicit parameters. I propose to reserve '%arg.\*' for more conventional arguments that should not be implicitly propagated. If there are no explicit user parameters to a module, this volume should be empty.
-
-Altogether, a client module will propagate its own '%\*' after shadowing '%src', '%self', and '%arg.\*'. For '%self' the client will usually fixpoint the module, but an opportunity exists for inheritance or mixins.
+We might similarly report if a DVCS reached by hash links to other DVCS by branch. This would allow us to more robustly maintain horizontal versioning across bounaries.
 
 ## User-Defined Syntax
 
-As a convention, users may define front-end compilers per file extension in '%env.lang.FileExt'. To bootstrap this process, the glas executable initialy injects a built-in definition for '%env.lang.glas'. *Aside:* We should normalize file extensions, e.g. lower case ascii, '.' to '-'. 
+As a supported convention, users may define front-end compilers per file extension in '%env.lang.FileExt'. To bootstrap this process, the glas executable initialy injects a built-in definition for '%env.lang.glas' for long enough to build and extract the configured 'env.lang.glas'. 
 
 A viable model for the front-end compiler is a Program implementing a pure function of type `Binary -> AST`, where AST represents a closed term of the module definition type. Lazy loads must be expressed as %macro nodes within the generated AST.
 
 Compilation and linking are stage separated, which has some advantages and disadvantages. A compiler cannot express a closure, e.g. integrating definitions from its own environment. It can only arrange for the generated AST to later link shared libraries. OTOH, this ensures the client controls linking, and that we can share compilers without specializing them per link environment.
+
+## Modules
+
+The basic module type is `Env -> Env`, albeit tagged for extensibility (see *Tags*). An Env is naturally very extensible, but we must reserve a few space to resist conflict. Prefix '%' is reserved for the system and front-end compilers.
+
+A few reserved names deserve special attention:
+
+* '%env.\*' - implicit parameters or context. Should propagate implicitly across most imports, but definitions may be shadowed contextually. This serves as the foundation for shared libraries, e.g. '%env.libname.op'. Initially binds to 'env.\*' in the user configuration.
+* '%arg.\*' - explicit parameters. This allows a client to direct a module's behavior or specialize a module. It is feasible to import a module many times with different parameters.
+* '%self.\*' - open recursion. By externalizing fixpoint to the client, we can express modules in terms of inheritance, override, and mixin composition. 
+* '%src.\*' - abstract location '%src' and constructors. When importing a module, the front-end compiler shall temporarily shadow '%src' to that module's location.
+* '%.\*' - reserved for the front-end compiler's private use; should start empty
+
+The glas system provides the initial environment, including an initial '%env.\*', '%self.\*', '%src', and optionally providing runtime version info (or a method to query it) via '%arg.\*'. Front-end compilers must continue this pattern, though ideally the common functions (like wrapping an `Env -> Env` function to set '%src' and '%arg.\*', or common load steps) are shared between them.
+
+Usefully, modules are first-class values within the glas namespace. We can define a name to the result of loading a module for convenient reuse. We can define namespace-level macros or mixins with the same type as loaded modules.
 
 ## Tags and Calling Conventions
 
@@ -185,11 +196,51 @@ A viable encoding for tags:
 
         f:("E", ((b:("", "T"), "E"), Body))
 
-This function receives an Env of adapters E, extracts the T adapter, then applies to Body. Alternatively, if E does not contain T, this raises a clear error when applied.
+This function receives an Env of adapters E, extracts the adapter for tag T, then applies to Body. Alternatively, if E does not contain T, this raises a clear error when applied.
 
 I propose to wrap nearly all modules and definitions in such tags. The overhead is negligible, but the resulting system will be far more extensible and adaptive. There is some risk of different communities overloading the same tags, but we're still better off due to the opportunity for resolution without module-level or call-site adapters.
 
-The motivating use case for tags is something like calling conventions. I would like to support calls to `Env -> Program` and `Program` within the same language without explicit adapters or syntactic distinctions. I would also like to support macro expansions without a separate syntax. We would also benefit from distinguishing embedded data, for use in wider contexts. And so on.
+The motivating use case for tags is similar to calling conventions. I would like to support calls to `Env -> Program` and `Program` in the same context. However, obvious use cases include integration with macros, modules, mixins. Tags can clearly distinguish definitions of 'types' from programs or data. And so on. Essentially all user definitions should be tagged.
+
+## Controlling Shadows
+
+Shadowing of names can be useful, especially in context of fixpoints. We can 'update' a name many times, yet clients bind the final definition via fixpoint. Shadow and update is a viable foundation for *Aggregation* patterns.
+
+However, when users shadow a name *by accident*, it very easily leads to errors. These errors are obvious in many cases, but the subtle ones are a source of unnecessary frustration. To mitigate this, I propose to report name shadowing as an error by default. Then, we provide a simple means to suppress the error. 
+
+The namespace AST has structures that can shadow names:
+
+* `f:("x", Body)` - shadows prior name `"x"` in Body (if any)
+* `b:("foo.", Body)` - shadows all prior names with prefix `"foo."` in Body (if any)
+* `t:({ "foo." => "bar.", "bar." => "baz." }, Body)` - shadows prior names with prefix `"foo."` in body. Whether it shadows `"bar."` is more confusing - it's now available via `"foo."`.
+
+One option is to report shadowing only for `f:` and `b:` binders. Thus, `t:({ "foo." => NULL }, b:("foo.", Body))` will not report because there is no `"foo."` in context of binder `b:`. Alternatively, we could support shadowing annotations.
+
+AST representations from modules, macros, etc. are implicitly evaluated in an empty environment, stand-alone, implicitly `t:({ "" => NULL }, AST)`. Hence, we can evaluate AST for potential shadowing in a context-independent manner. However, we might raise errors only for actual shadowing.
+
+## Inheritance
+
+By externalizing module fixpoints to '%self', we can express one module as inheriting another, sharing the same self. The inheriting module can override definitions, integrating with any mutual recursion through self. 
+
+To support this implicitly, a front-end compiler rewrites names based on usage context:
+
+* defining name - use name directly
+* keyword 'prior' name - use name directly
+* otherwise - instead use '%self.name'
+
+Beyond single inheritance, we can support mixins on modules. Mixins may introduce or override definitions, but generally cannot drop definitions without breaking things. 
+
+*Aside:* I feel keyword 'prior' offers greater clarity than 'super' in most use cases, e.g. `x := 1 + prior x` makes contextual sense whether it's local shadowing, mixins, or inheritance and overrides.
+
+### Open Composition
+
+It is possible to compose hierarchically without first closing the fixpoint. The main benefit is the opportunity to override definitions in the components. This is implemented by translating the component's view of '%self' and the user namespace, then binding its generated definitions to the same location.
+
+TBD: generalize this as a macro on `Env -> Env`
+
+### Multiple Inheritance? Defer.
+
+Multiple inheritance seems infeasible without maintaining a lot of extra metadata per module. Perhaps we'll need to extend the module types (new tag) to support it. But see [Prototypes: Object-Orientation, Functionally](http://webyrd.net/scheme_workshop_2021/scheme2021-final91.pdf).
 
 ## Incremental Compilation
 
@@ -215,11 +266,4 @@ Applications are typically defined within a configuration, e.g. 'env.AppName.app
 
 Applications define 'settings' to guide final configuration of the runtime, a 'main' method to represent program behavior, 'http' and 'rpc' methods to handle events. See [glas apps](GlasApps.md). Application methods are generally `Env -> Program`, allowing the program to interact with the runtime via callbacks.
 
-## Controlling Entanglement
-
-In my vision for glas systems, users can easily share code by copying folders. Although DVCS bindings are preferred for stable dependencies, copying is suitable for notebook-style applications where live coding and projectional editing are integrated with the experience.
-
-To support this vision, we can report warning or error in case of parent-relative (`"../"`) paths in Src constructors. Absolute paths are similarly restricted: users cannot reference an absolute path via relative-path Src in the same context (with DVCS becoming a new context). 
-
-We might similarly report if a DVCS reached by hash links to other DVCS by branch. This would allow us to more robustly maintain horizontal versioning across bounaries.
 

@@ -33,13 +33,15 @@ An application may be defined within the configuration namespace, usually 'env.A
 
 * **--run AppName**: Using 'env.AppName.app' in the configuration namespace. 
   * **--run .AppName**: Elides the 'env.' prefix, running 'AppName.app' instead. As a special case, '--run .' runs the toplevel 'app'.
-* **--script Location**: Compile an indicated file or package folder. The generated namespace must define 'app'. Links '%env.\*' to configured 'env.\*'.
+* **--script Location**: Compile the indicated file or package folder. The generated namespace should define 'app'.
   * **--script.FileExt FilePath**: as '--script' except we select a front-end compiler based on a given file extension, ignoring the actual extension. Useful in context of Linux shebang lines.
 * **--cmd.FileExt SourceText**: as '--script.FileExt' except we also provide the script text as a command-line argument. We might present this as a read-only virtual file.
 
 The definition should be a set of handlers, typically including 'settings' and 'main', not a program directly. But see [glas applications](GlasApps.md) for details.
 
 *Note:* There are no command-line arguments to configure the runtime. However, 'settings' may read command-line arguments and environment variables when guiding integration.
+
+*Note:* A runtime may make even these features configurable, e.g. providing the AppName or Location to a configured function that returns an application. But the above suggests the default behavior.
 
 ## Installing Applications
 

@@ -4,6 +4,8 @@ The [namespace](GlasNamespaces.md) supports modules and user-defined front-end s
 
 ## Proposed Program Primitives
 
+These primitives are constructors for an abstract data time, i.e. constructing a program does not execute it. The exception is '%macro' nodes, which support lazy evaluation of some programs at compile time.
+
 *Notation:* `(F X Y Z)` desugars to `(((F,X),Y),Z)`, i.e. curried forms. 
 
 Control Flow:
@@ -50,7 +52,7 @@ Registers:
 
 Metaprogramming:
 * `(%macro ASTBuilder)` - ASTBuilder must have type `Env -> Program` where Env provides compile-time effects (e.g. load a file). Program must be deterministic up to Env and 0--1 arity, leaving an AST representation on the data stack. This AST is evaluated in an empty environment then returned.
-  * The simplest proof of determinism is that Program doesn't use '%co' or '%choice'. I'll start there. But I hope to eventually recognize common confluence patterns or support proof annotations.
+  * The simplest proof of determinism is that Program doesn't use '%co' or '%choice'. I'll start there, but I hope to eventually recognize common confluence patterns or support proof annotations.
 * `(%eval Adapter)` - pops an AST representation from the data stack, evaluates in an empty environment (implicit `t:({ "" => NULL }, AST)` scope), then passes the result to Adapter of type `AST -> Program`. The resulting program may be verified, instrumented, and optimized in context, then is run. In most cases, the AST argument must be static, i.e. `%an.eval.static` is default for glas systems.
 * *Note:* These primitives enable Programs to participate in metaprogramming. However, we can also support a lot of metaprogramming purely in the namespace layer.
 
@@ -194,7 +196,7 @@ Meanwhile, we'll still support decent persistent data structures by default, e.g
 
 ### Tail Call Optimization
 
-Instead of TCO moving stuff on the stack, I'd suggest unrolling a recursive loop a few frames then determining whether we can 'recycle' all the stack locations.
+Instead of TCO moving stuff on the stack, I'd suggest unrolling a recursive loop a few frames then deciding whether we can 'recycle' all the stack locations.
 
 ### Unit Types
 
@@ -262,7 +264,7 @@ We can just invent some primitive type descriptions like '%type.int' or whatever
 
 # Runtime Thoughts
 
-I have a big dream, but I hope to start with a simple implementation in C or Zig or Rust then push most logic (even JIT and optimizers) into the user configuration, e.g. under `rtname.jit` definitions.
+I have a big dream, but I hope to start with a simple implementation in C or Zig or Rust then push most logic (even JIT and optimizers) into the user configuration.
 
 ## Desiderata
 
