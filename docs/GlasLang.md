@@ -10,6 +10,8 @@
 * type annotations and type definitions, even if initially unchecked
 * sequencing or streaming commands analogous to Forth?
 
+idea: user-definable, tagged blocks that process text into `Env -> Env` AST nodes that manipulate their environment. This includes individual definitions and such, also imports or namespace macros.
+
 idea: tagged texts, some keyword tags but user-defined tags are supported, each tag represents a mini-language AND a namespace macro. Texts may be inline or multi-line, in the latter case must be indented.
 
 

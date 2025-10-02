@@ -71,11 +71,11 @@ In glas systems, lists are conventionally encoded in a binary tree as a right-sp
 However, direct representation of lists is inefficient for many use-cases. Thus, glas runtimes support specialized representations for lists: binaries, arrays, and [finger-tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_(data_structure)). To protect performance, Glas Object also offers specialized list nodes:
 
 * *array* - header (0x0A) . (length - 1) . (array of offsets); represents a list of values of given length. Offsets are varnats, denormalized to the same width, all relative to the very last offset in the array. Width of offsets in the array is determined by looking at the first varnat.
-* *binary* - header (0x0B) . (length - 1) . (bytes); represents a list of bytes. Each byte represents a small positive integer, 0..255.
+* *binary* - header (0x0B) . (length - 1) . (bytes); represents a list of bytes. Each byte represents a small, non-negative integer, 0..255.
 * *concat* - header (0x0C) . (offset to right value) . (left list); represents logical concatenation, substituting left list terminal with given right value (usually another list).
 * *drop* and *take* - see *Accessors*, support sharing slices of a list 
 
-See *Encoding Finger Tree Ropes* for a pattern to leverage concat effectively. Of course, the system is free to convert ropes into larger arrays or binaries if it doesn't need fine-grained structure sharing of list fragments within or between globs.
+See *Encoding Finger-Tree Ropes* for a pattern to leverage concat effectively. Of course, the system is free to convert ropes into larger arrays or binaries if it doesn't need fine-grained structure sharing of list fragments within or between globs.
 
 ### External References
 
@@ -163,8 +163,8 @@ In normal form, varnats use the smallest number of bytes to encode a value. It i
         0x0F-0x1F
         0xA0-0xFF
 
-        PROPOSED
-        0xB0-0xBF   Small binaries (1-16 bytes)
+        PROPOSED:
+        0xA0-0xBF   Small binaries (1-32 bytes)
 
 
 ## Conventions and Patterns 
@@ -222,11 +222,11 @@ Glas Object does not enforce strict canonicalization. Different writers may make
 
 ### Small Arrays and Binaries
 
-We could encode length for small arrays or binaries directly in the header, e.g. `0xA(len)` for arrays and `0xB(len)` for binaries of lengths 1 to 16. However, it isn't clear that this is worthwhile, especially for arrays. 
+We could encode length for small arrays or binaries directly in the header, e.g. `0xA(len)` for arrays and `0xB(len)` for binaries of lengths 1 to 16. However, it isn't clear that this is worthwhile, especially for arrays. Perhaps instead use 0xA0-0xBF all for binaries.
 
 ### Inline Arrays
 
-An array variant where each element is inlined rather than a pointer. Can still use pointers with 0x88 header. Would trade compactness for reduced access overhead for small values.
+We could directly encode data within array slots of fixed sizes instead of offsets. Offsets would still be available via 0x88. The main advantage would be to eliminate the indirection overhead for arrays of smaller values.
 
 ### Log-Structured Merge Tree 'Updates'
 

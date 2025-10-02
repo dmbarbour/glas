@@ -31,13 +31,13 @@ The [program model](GlasProg.md) provides a collection of primitive definitions 
 
 ## Abstract Syntax Tree (AST)
 
-AST encoded as structured glas data. This serves as an intermediate representation for namespaces and programs in glas systems.
+Namespaces encoded as structured glas data. This serves as an intermediate representation for namespaces and programs in glas systems.
 
         type AST =
             | Name                  # substitute definition
             | (AST, AST)            # application
             | f:(Name, AST)         # bind name in body, aka lambda
-            | e:()                  # reifies host environment
+            | e:()                  # reifies current environment
             | b:(Prefix, AST)       # bind argument to prefix in body
             | t:(TL, AST)           # modify body's view of environment
             | a:(AST, AST)          # annotation in lhs, target in rhs 
@@ -47,6 +47,8 @@ AST encoded as structured glas data. This serves as an intermediate representati
         type Name = binary excluding NULL
         type Prefix = any binary prefix of Name
         type TL = Map of Prefix to (Prefix | NULL) as radix-tree dict
+
+This representation does not include closures, thunks, reified environments, etc. necessary for evaluation. Those must be constructed indirectly through evaluation.
 
 ## Evaluation
 
@@ -65,76 +67,18 @@ Evaluation of an AST is a lazy, substutive reduction in context of an environmen
 * ifdef `c:(Name, (Then, Else))` - evaluates to Then if Name is defined in current environment, otherwise Else. 
 * fixpoint - built-in fixpoint for convenient expression and efficient evaluation
 
-### Evaluation Pseudocode
+### Reference Implementation
 
-TBD
+TBD. Will write something up in Haskell or F# and get back on this.
 
-Notes:
+Some requirements or desiderata:
 
-We can directly evaluate applied binders, skip the intermediate closures. For example, `(f:(Name, Body), Arg)` or `(b:(Prefix, Body), Arg)`. This saves a lot of overhead.
+* Lazy evaluation in general, necessary for lazy loading etc.
+* Memoized lazy partial evaluation within function bodies.
 
-For a binder in other contexts, `f:(Name, Body)`, we must build a closure that captures the lexical environment of Body. To that, we can add a special item to the environment for Body that indicates we should look for Name in a future argument slot. The main trick is to make this efficient. For referencing 'arguments', we could feasibly use a linked list for closures built within closures.
+Performance at this layer isn't essential for my use case, though no reason to avoid performance if it's a low-hanging fruit. But I'll be mostly focusing on the Program layer for performance of glas systems.
 
- need a special translation rule indicating that all prior arguments are another step in a linked list of arguments or similar.
-
-When building closures, consider collapsing patterns such as `f:(N1, f:(N2, ...))` into a single closure
-
-In general, we'll need a notion of allocating 'thunks' for deferred evaluation. 
-
-Performance isn't critical for my use case, but there is no fundamental reason I couldn't make namespace evaluation highly efficient via Spineless, Tagless G-machine (Simon Peyton Jones) or similar. 
-
-TBD
-
-        # inline applications are common and easily optimized.
-        # TBD: lexical binding to Env.
-        eval Env (f:(Name, Body), Arg) =        # inline definition
-            let argThunk = eval Env Arg
-            let Env' = addEnv (def:(Name, argThunk)) Env
-            eval Env' Body
-        eval Env (b:(Prefix, Body), Arg) =      # inline binding
-            let argThunk = eval Env Arg
-            let Env' = 
-                if "" = Prefix then argThunk else  # optimization
-                addEnv (idx:(Prefix, argThunk)) Env
-            eval Env' Body
-        eval Env (t:(TL, Body)) =
-            let Env' = addEnv (tl:TL) Env
-            eval Env' Body
-
-
-### Environment Representation 
-
-A viable environment representation?
-
-        type Env = List of EnvOp
-        type EnvOp =
-            | def:(Name, AST)       # definition
-            | idx:(Prefix, AST)     # env binding
-            | tl:TL                 # translated scope
-
-        lookup N (def:(Name, Def), Env') =
-            if N = Name then 
-                Just Def 
-            else
-                lookup N Env'
-        lookup N (idx:(Prefix, NS), Env') =
-            if Prefix matches N then
-                let N' = skip (len Prefix) N
-                lookup N' NS
-            else
-                lookup N Env'
-        lookup N (tl:TL, Env') =
-            let N' = translate TL N
-            lookup N' Env'
-        lookup N () = None
-
-There are many optimizations we can perform on Env: move names into matching prefixes, merge similar prefixes, compose translations, remove unreachable definitions, etc.. When these optimizations are applied, we get something similar to radix-tree indexing between translations, but we also pay significant up-front costs and lose structure sharing. Thus, the decision must be heuristic.
-
-This is just an idea at the moment. We might extend the environment with something like closures, argument offsets, and thunks before we're truly ready to flesh things out.
-
-But something like this can potentially work in context of a lexical scope. We might need special support closures once we begin to integrate things.
-
-### Translation
+## Translation
 
 TL is a finite map of form `{ Prefix => (Prefix' | NULL) }`. To translate a name via TL, we find the longest matching prefix, then rewrite that to the output prefix. Alternatively, if output is NULL, we'll treat the name as undefined.
 
@@ -234,9 +178,20 @@ Beyond single inheritance, we can support mixins on modules. Mixins may introduc
 
 ### Open Composition
 
-It is possible to compose hierarchically without first closing the fixpoint. The main benefit is the opportunity to override definitions in the components. This is implemented by translating the component's view of '%self' and the user namespace, then binding its generated definitions to the same location.
+It is possible to compose hierarchically without first closing the fixpoint. This provides an opportunity for the composite to override component definitions while controlling risk of naming conflicts. To support open composition requires translating each component's view of %self and the user namespace.
 
-TBD: generalize this as a macro on `Env -> Env`
+        # To translate component to Prefix:
+        modifyInput = b:("", 
+            t:({ "%self." => "%self.Prefix", 
+                 "%" => "%", 
+                 "" => "Prefix"}, e:()))
+        moveOutput = b:("Dest.", b:("Output.",  
+            t:({ "Prefix" => "Output.",
+                 "" => Dest." }, e:())))
+        translateOp = f:("EnvOp", f:("InputEnv", 
+            ((moveOutput, "InputEnv"),("EnvOp", (modifyInput, "InputEnv")))))
+
+Due to the second-class nature of translations, this should be constructed either by the compiler or via macro. 
 
 ### Multiple Inheritance? Defer.
 

@@ -24,4 +24,6 @@ Consider sophisticated Src setters that support cooperative development? Probabl
 
 Move most projectional editor logic into shared libraries. Don't generate this logic per module compiled.
 
+### Hooks?
 
+We could use annotations within an application to support reflection, e.g. providing views on demand for access to local registers and debug views. Might even support interactive hooks through reflection, e.g. allowing users to set local registers. Integrating these views into the projectional editor could be expressive.
