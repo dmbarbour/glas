@@ -1,8 +1,12 @@
 # Glas Runtime
 
-I hope to bootstrap the runtime swiftly. 
+I hope to bootstrap the runtime swiftly! But I doubt I'll do so. Thus, the bootstrap implementation should perform adequately, at least.
 
-For a bootstrap implementation, it might be acceptable to skip most things and just focus on extracting binaries defined in the configuration. We could extract an executable binary, perhaps. 
+For a bootstrap implementation, it might be acceptable to skip most things and just focus on extracting binaries defined in the configuration. We could extract an executable binary, perhaps, or at least something we can compile further. 
+
+However, I expect I'll be stuck with the bootstrap impl long enough to make it worth building the FFI APIs.
+
+For performa
 
 ## Desiderata
 

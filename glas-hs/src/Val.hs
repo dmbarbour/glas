@@ -8,8 +8,11 @@ module Val (
     -- ofInt,
     --mkL, mkR, mkP,
     
-    is_bits, has_bits, bits_len, bits_invert,
-    bit_cons, bits_head, bits_tail,
+
+    -- bitstring manipulations
+    is_bits, has_bits, 
+    bits_len, bits_invert, bit_cons, bits_head, bits_tail,
+    has_byte, byte_cons, byte_head, bytes_tail,
 
 
 ) where

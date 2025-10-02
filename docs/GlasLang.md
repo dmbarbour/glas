@@ -1,5 +1,42 @@
 # Glas Language
 
+This document describes the primary '.glas' syntax. 
+
+The primary goal is to develop a synax *I'm* happy with, personally. I hope my taste in syntax is something many others will appreciate, but user-defined syntax is available to mitigate. Anyhow, this document will be heavily driven by *feels*. 
+
+## Things I Dislike about Conventional Languages
+
+* I dislike deep indentation and horizontal scrolling. 
+  * Some shallow indentation is fine, but it should always be possible to refactor deep structures into shallow ones. 
+  * One reason it is often difficult to refactor is explicit parameter lists. Writing out parameters at the call site adds to horizontal depth.
+* I also dislike manual stack shuffling.
+  
+  Ideally, we can refactor those parameters or 
+  
+   pulling explicit parameters 
+
+## Structural Constraints
+
+* Users will mostly define operations of type `Env -> Program`. 
+  * But we'll also define namespace macros, e.g. `Env -> Env`, or tags (`Text -> AST : (Env -> Env)` ?), etc..
+
+
+It will likely be convenient to couple every definition with some 'local variables' via registers.
+
+* An Env 
+The program will have some arity. 
+
+* In context of algebraic effects, I'll either need:
+  * 
+
+
+
+## Vision
+
+The glas syntax s
+
+
+
 ## Design Goals
 
 * multi-line texts
