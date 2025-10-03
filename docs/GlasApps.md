@@ -316,7 +316,7 @@ A fundamental issue with console IO is that it isn't very composable. The defaul
 
 ## Reflection
 
-With FFI handling most things, reflection remains one area where the runtime must provide a wide range of features.
+With FFI and bgcall handling external integration, reflection remains one area where the runtime cannot effectively delegate.
 
 - sys.refl.src.\* - access to abstract '%src' metadata from compile time. 
   - Minimally, support examination of the the abstract data type, Src 
@@ -326,6 +326,9 @@ With FFI handling most things, reflection remains one area where the runtime mus
   - browse log Chans and their activity
   - access to log histories
   - potentially adjust runtime-local configuration options per Chan 
+
+- sys.refl.prof.\* - access profiling stats
+- sys.refl.trace.\* - access recorded traces
 
 - sys.refl.view.\* - debug thyself, application
   - browse view Chans and their activity
@@ -350,7 +353,7 @@ With FFI handling most things, reflection remains one area where the runtime mus
 
 - sys.refl.bgcall.\* - debug existing bgcalls
   - browse active bgcalls (op and Argument)
-  - view activity and progress (step counters?)
+  - view activity, progress, thrashing
   - force cancel or kill, possibly
 
 - sys.refl.http - access runtime's built-in HTTP interface
@@ -371,7 +374,5 @@ With FFI handling most things, reflection remains one area where the runtime mus
   - can also anything app *could* have bound
   - may forcibly update registers
 
-
-
-
-
+- sys.refl.gc.\* - garbage collection stats; trigger GC manually
+- sys.refl.sched.\* - conflicts, rework, backtracking, productivity
