@@ -76,14 +76,13 @@ Validation:
 * `(%an.arity In Out)` - express expected data stack arity for Operation. In and Out must be non-negative integers. Serves as an extremely simplistic type description. 
 * `%an.atomic.reject` - error if running Operation from within an atomic scope, including %atomic and %br conditions. Useful to detect errors early for code that diverges when run within a hierarchical transaction, e.g. waiting forever on a network response.
   * `%an.atomic.accept` - to support simulation of code containing %an.atomic.reject, e.g. with a simulated network, we can pretend that Operation is running outside a hierarchical transaction, albeit only up to external method calls.
-* `(%an.data.wrap RegisterName)` - support for abstract data types, hides top stack element from observation until unwrapped with the same RegisterName, implies scope for data (e.g. don't store to longer-lived registers). May be enforced statically or dynamically, or ignored.
-  * `(%an.data.unwrap RegisterName)` - removes matching wrapper, allowing observation of the data. 
-  * `(%an.data.wrap.linear RegisterName)` - as wrap, but attempts to copy or drop the wrapped value (including implicitly, such as exiting a local registers scope or a coroutine terminating with data on the stack) will be an error. Dynamic enforcement requires one metadata bit per allocation.
-  * `(%an.data.unwrap.linear RegisterName)` - unwrap for linear wrappers. 
+* `(%an.data.seal Key)` - operational support for abstract data types. The sealed data cannot be observed until unsealed with the same Key. The data may be copied or dropped normally. Registers are the most robust keys, but an abstract Src (via %src) or plain old data (e.g. URL or GUID) is also acceptable. A compiler may optimize, tracking seals statically to avoid allocation.
+  * `(%an.data.unseal Key)` - removes matching seal, otherwise error 
+  * `(%an.data.seal.linear Key)` - a variant of seal that also marks the data linear, i.e. no copy or drop, until unsealed. The restriction includes implicit drops, e.g. local registers and the data stack when a coroutine terminates. However, linear data may still be copied or dropped in non-semantic cases such as incremental computing, backtracking, and reflection.
+  * `(%an.data.unseal.linear Key)` - counterpart to a linear seal. If data is sealed linear, it must be unsealed linear.
 * `%an.data.static` - Indicates that top stack element should be statically computable. Exercise left to compiler!
-* `%an.eval.static` - Indicates that all '%eval' steps in Operation must receive their AST argument at compile-time. This is the default for glas applications, but it doesn't hurt to make the assumption explicit locally.
-* `(%an.type TypeDesc)` - Describes a partial type of Operation. Or, with a no-op and identity type, we can partially describe the Environment. TypeDesc TBD.
-
+* `%an.eval.static` - Indicates that all '%eval' steps in Operation must receive their AST argument at compile-time. This is the default for glas systems, but it can make intentions clearer to reiterate the constraint locally.
+* `(%an.type TypeDesc)` - Describes a partial type of Operation. Can also support type inference in the context surrounding Operation. TypeDesc will have its own abstract data constructors in '%type.\*'.
 
 Incremental computing:
 * `(%an.memo MemoHint)` - memoize a computation. Useful memoization hints may include persistent vs. ephemeral, cache-invalidation heuristics, or refinement of a 'stable name' for persistence. TBD. 

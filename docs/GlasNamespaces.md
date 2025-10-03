@@ -97,6 +97,7 @@ Viable API:
         ct.find(Src, FileRegex) : List of FilePath  # search near Src
         (%src.file FilePath Src) : Src
         (%src.dvcs.git Repo Ver FilePath Src) : Src
+        (%src.meta MetaData Src) : Src  # add metadata to Src for reflection
  
 Src is an abstract data type with constructors in '%src.\*'. To support relative file paths and rendering dependency graphs, Src constructors always take a Src argument. By convention, each module receives a link to its own Src via '%src'. To support location-independent compilation, Src is opaque at compile time, but details are available at runtime via 'sys.refl.src.\*'.
 
@@ -127,6 +128,7 @@ A few reserved names deserve special attention:
 * '%env.\*' - implicit parameters or context. Should propagate implicitly across most imports, but definitions may be shadowed contextually. This serves as the foundation for shared libraries, e.g. '%env.libname.op'. Initially binds to 'env.\*' in the user configuration.
 * '%arg.\*' - explicit parameters. This allows a client to direct a module's behavior or specialize a module. It is feasible to import a module many times with different parameters.
 * '%self.\*' - open recursion. By externalizing fixpoint to the client, we can express modules in terms of inheritance, override, and mixin composition. 
+  * '%fin' - (tentative) a special module *output*, applied just prior to fixpoint.
 * '%src.\*' - abstract location '%src' and constructors. When importing a module, the front-end compiler shall temporarily shadow '%src' to that module's location.
 * '%.\*' - reserved for the front-end compiler's private use; should start empty
 

@@ -1,26 +1,25 @@
 # Glas Runtime
 
-I hope to bootstrap the runtime swiftly! But I doubt I'll do so. Thus, the bootstrap implementation should perform adequately, at least.
+I hope to bootstrap the runtime swiftly! Unfortunately, I doubt I'll accomplish this. Thus, the pre-bootstrap implementation must perform adequately, and should be usable long term. A viable solution is to leverage JIT compilation. With this in mind, JVM and .NET are tempting targets. Alternatively, a low-level runtime like C is viable, write my own JIT and GC. At present, I lean towards the latter.
 
-For a bootstrap implementation, it might be acceptable to skip most things and just focus on extracting binaries defined in the configuration. We could extract an executable binary, perhaps, or at least something we can compile further. 
+A basic GC is not difficult to write. I can implement something simple to get started then return to it later.
 
-However, I expect I'll be stuck with the bootstrap impl long enough to make it worth building the FFI APIs.
+So, I propose to start with a C implementation and work from there.
 
-For performa
+## Data Representation
 
-## Desiderata
+It is feasible to allocate 'cons cells' the size of two pointers, like Scheme or Lisp, supporting branches and such. This would require uncomfortably squeezing a lot of data and GC logic into tagged pointers. Alternatively, we can support a more conventional tagged union, perhaps aligned to three or four pointers in size, providing plenty room for metadata per value. I'm inclined to the latter. 
 
-* generational, real-time GC with minimal overhead
-* acceleration of:
-  * lists as finger-tree ropes, with binary and array fragments
-  * exact rational numbers and binary (or decimal) bignums
-  * at least one low-level machine, e.g. GPGPU
-* effective opportunity for JIT compilation
-* effective opportunity for parallel evaluation
+### Small Reference Count
 
-## Runtime Data Representation
+I have the idea of maintaining a 'small' reference count per value, perhaps only capable of counting from 1 to 63 or so. Most values would only have a few references, and this would allow immediate recovery of memory in most cases. Only widely shared data would be subject to GC, and even then we'd still be able to remove most components via reference counts.
 
-Although glas data is logically mutable, the program constructs and manipulates data in terms of mutating *variables* in-place. This can be supported concretely by allocating every variable a local scratch space of sorts, or by heap-allocating data but tracking uniqueness, or perhaps by combining the two.
+### Linearity and Ephemerality Header Bits
+
+To efficiently enforce linear types at runtime, we should maintain a linearity bit per allocation. We may similarly benefit from tracking ephemerality for escape analysis, to ensure data 'sealed' by a short-lived register is never stored to a longer-lived register. In the latter case, it seems sufficient to cover the RPC vs. database vs. runtime-instance vs. transaction-local cases, and simply not worry about escapes between %local frames within a transaction.
+
+These bits can be constructed as a bitwise 'OR' from the same bits in component data, upon construction.
+
 
 In context of garbage collection, it is convenient that data has a relatively uniform structure so we can easily follow pointers and know to not inspect integers and other data. Consider adjacent allocation of `(Header, Binary, Pointers)` triples, where the Header encodes size of binary and count of pointers and hints at how to interpret the binary. To keep it simple, Binary size includes the header and is also pointer-aligned. There may be specialized headers to further support weakrefs, caching, and other GC features, but the idea is that GC doesn't need to know much about the data.
 

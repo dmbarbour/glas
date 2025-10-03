@@ -1,7 +1,0 @@
-# from ref-eval import eval, is-program
-
-open list
-
-data test ["Hello, World!" 0x0a pushr] 
-
-export [test]

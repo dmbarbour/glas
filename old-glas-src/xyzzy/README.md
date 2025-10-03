@@ -1,1 +1,0 @@
-Just some junk for testing the glas command line tool manually.

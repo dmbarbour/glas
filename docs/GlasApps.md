@@ -224,11 +224,11 @@ A viable API:
     * *busy* - ongoing activity, still processing prior commands.
     * *error:(text:Message, ...)* - FFI thread is halted in a bad state. Unrecoverable without reflection APIs.
   * `link.lib(SharedObject) : [ffi] ()` - load a ".dll" or ".so" file. When looking up a symbol, last linked is first searched.
-  * `link.c.hdr(Name, Text) : [ffi] ()` - redirects `#include<Name>` to `Text` in context of C JIT.  
-  * `link.c.src(Text) : [ffi] ()` - JIT-compile C source and link (e.g. via Tiny C Compiler).
+  * `link.hdr(Name, Text) : [ffi] ()` - redirects `#include<Name>` to `Text` in context of C JIT.  
+  * `link.src(Text) : [ffi] ()` - JIT-compile C source and link (e.g. via Tiny C Compiler).
   * `call(Symbol, TypeHint) : [ffi] ()` - call a previously linked symbol. Parameters and results are taken from the thread's data stack, and the return value is pushed backk. TypeHint for `int (*)(float, size_t, void*)` is `"fZp-i"`. In this case, float 'p' should be at top of stack to match C calling conventions. 
     * Void type is elided, e.g. TypeHint for `void (*)()` is simply `"-"`.
-  * `cscript(Text, Symbol, TypeHint) : [ffi] ()` - one-off JIT and call symbol. 
+  * `script(Text, Symbol, TypeHint) : [ffi] ()` - one-off JIT and call symbol. 
   * `mem.write(Binary) : [ffi] ()` - (type `"p-"`) send command to write a binary to a pointer found on the FFI thread's data stack. 
   * `mem.read() : [ffi] ()` - (type `"pZ-"`) given a pointer and size on the data stack, return a binary via the result stream.
   * `push(List of Data, TypeHint) : [ffi] ()` - send command to push data to FFI thread's data stack. TypeHint determines conversions, e.g. `"fZp"` may receive glas representations of a rational, an integer, and an abstract pointer in that order, i.e. pointer is last element. 
@@ -253,6 +253,8 @@ A viable API:
 * `sys.refl.ffi.*` - *TBD* perhaps debugging, browsing, CPU usage, force kill
 
 This API is designed assuming use of [libffi](https://en.wikipedia.org/wiki/Libffi) and TinyCC. We'll also need a [version of TinyCC](https://github.com/frida/tinycc/tree/main) that supports callbacks for includes and linking.
+
+This kind of API can be adapted to other targets, e.g. JVM, .NET, or JavaScript.
 
 Potential extensions:
 * support for structs, e.g. `"{ysw}"`
