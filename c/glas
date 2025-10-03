@@ -1,0 +1,6 @@
+#!/usr/bin/bash
+
+# env var to switch ?
+make debug
+./bin/debug/glas "$@"
+
