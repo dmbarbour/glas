@@ -160,9 +160,9 @@ The namespace AST has structures that can shadow names:
 * `b:("foo.", Body)` - shadows all prior names with prefix `"foo."` in Body (if any)
 * `t:({ "foo." => "bar.", "bar." => "baz." }, Body)` - shadows prior names with prefix `"foo."` in body. Whether it shadows `"bar."` is more confusing - it's now available via `"foo."`.
 
-One option is to report shadowing only for `f:` and `b:` binders. Thus, `t:({ "foo." => NULL }, b:("foo.", Body))` will not report because there is no `"foo."` in context of binder `b:`. Alternatively, we could support shadowing annotations.
+We can support this with annotations to shadow (or no-shadow), keeping user intentions explicit. By default, we might report shadowing only for `f:` and `b:`, omitting `t:` where it's both difficult to compute and more likely to be intentional.
 
-AST representations from modules, macros, etc. are implicitly evaluated in an empty environment, stand-alone, implicitly `t:({ "" => NULL }, AST)`. Hence, we can evaluate AST for potential shadowing in a context-independent manner. However, we might raise errors only for actual shadowing.
+AST representations are usually evaluated in an empty environment, stand-alone, implicitly `t:({ "" => NULL }, AST)`. Hence, we can evaluate AST for potential shadowing in a context-independent manner. However, I think we should raise errors only for *actual* shadowing.
 
 ## Inheritance
 

@@ -4,7 +4,7 @@ This document describes the primary '.glas' syntax.
 
 The primary goal is to develop a synax *I'm* happy with, personally. I hope my taste in syntax is something many others will appreciate, but user-defined syntax is available to mitigate. Anyhow, this document will be heavily driven by *feels*. 
 
-## Notes
+## Design Notes
 
 - Users will mostly define operations of type `Env -> Program`. This allows the each call to receive a caller-controllable view of the caller's environment. The received arguments could either bind to a standard prefix, or be accessed via keyword.
 - It would be convenient to support lightweight binding of data stack inputs and outputs to local registers.
@@ -83,14 +83,14 @@ The primary goal is to develop a synax *I'm* happy with, personally. I hope my t
   - compiler will adapt each block, could be based on the tag
     - adapter may be sensitive to context, instructions from prior blocks
     - can logically insert operations before blocks
-  - can treat eof as a final block per file for some purposes.
-
-- idea: to support more flexible inheritance, finalizer before fixpoint
-  - provides opportunity to cleanup, insert tests, manage aggregators
-  - applied externally by module client, coupled with the fixpoint
-  - proposed definition of '%fin' for this role
+  - treat eof as a final block per file?
+    - dubious! conflict with open inheritance and overrides
+    - instead, externalize; apply finalizer before fixpoint
+    - added tentative '%fin', but must see test if it works
 
 - aggregation - ability to build up flexible tables via overrides
+  - clear access to 'prior' definitions when shadowing/overriding
+  - access to 'final' definitions via implicit module fixpoint
   - Church-encoded lists (or writer monad) of tagged AST elements
 
 - annotations - attaching them to a definition or similar
@@ -108,6 +108,7 @@ The primary goal is to develop a synax *I'm* happy with, personally. I hope my t
   - this could be supported as a design pattern
 
 - refactoring of pattern matching
+  - develop a decent syntax for pattern matching-like behavior
   - it is feasible to build DSLs around %br, %bt, and %sel ops
   - this supports flexible refactoring and composition of pattern-matching
   - there aren't many languages that support this effectively!
@@ -115,105 +116,31 @@ The primary goal is to develop a synax *I'm* happy with, personally. I hope my t
     - but neither of those comes all that close
 
 - unit types: I want them, but I'm still not sure how to model them in context
+  - associative registers don't propagate nicely through data stack ops
+  - 
 
-## Glas
+## Imports
 
-## Toplevel Syntax
+See [namespaces](GlasNamespaces.md) for the mechanics. This section is more about the syntax. Questions:
 
-The relative order of imports and definitions is ignored. Instead, we'll enforce that definitions are unambiguous and that dependencies are acyclic. This gives a 'declarative' feel to the configuration language.
+How to nicely represent a DVCS resource? An inline rep seems ugly. It might be more convenient to describe the resource separately from importing it. This would also provide the opportunity to develop libraries that 'index' other repos.
 
-The use of block structure at multiple layers ('@' blocks in toplevel, ':' blocks in namespace definition) is intended to reduce need for indentation. We'll still use a little indentation in some larger data expressions (pattern matching, loops, multi-line texts, etc.) but it should be kept shallow.
+Do we default to closed fixpoints or open composition? I don't like 'extends' or 'mix' for inheritance. But 'include' seems acceptable and familiar. We may need to clarify that we're not including raw source text, just the final `Env -> Env` op, but we can design for the two to be roughly equivalent in glas syntax (modulo '%src' and '%arg.\*').
 
-Line comments start with '#' and are generally permitted where whitespace is insignificant, which is most places whitespace is accepted outside of text literals. In addition to line comments, there is explicit support for ad-hoc annotations within namespaces.
+        include Src
+        include Src at Prefix
+        import Src
+        import Src as Prefix
+        from Src import alias-list
 
-## Imports and Exports
+In addition, we might add some arguments? This could feasibly be expressed as an alias list, too. Perhaps optional keyword 'with' just after Src, that takes some expression of an Env of args. As a special case, bind a prefix to args with an `prefix as *` special syntax.
 
-Imports and exports must be placed at the head the configuration file, prior to the first '@' block separator. Proposed syntax:
+        include Src with input-alias-list
+        from Src with alias-list import ...
 
-        # statements (commutative, logical lines, '#' line comments)
-        open Source                     # implicit defs (limit one)
-        from Source import Aliases      # explicit defs
-        import Source as Word           # hierarchical defs
-        export Aliases                  # export control (limit one)
+We might also want the ability to treat import as a first-class definition within the namespace. OTOH, this is also true for most other features of glas. Perhaps we can support a generic solution here for binding modules into a definition.
 
-        # grammars
-        Aliases <= (Word|(Path 'as' Word))(',' Aliases)?
-        Word <= ([a-z][a-z0-9]*)('-'Word)?
-        Path <= Word('.'Path)?
-        Source <= 'file' InlineText | 'loc' Path 
+Aside from these options, we might want the option to separate import of a module from immediate integration, i.e. treating the import as an expression. 
 
-Explicit imports forbid name shadowing and are always prioritized over implicit imports using 'open'. We can always determine *where* every import is coming from without searching outside the configuration file. This supports lazy loading and processing of imports.
-
-The Source is currently limited to files or a dotted path that should evaluate to a Location. The Location type may specify computed file paths, DVCS resources with access tokens and version tags, and so on. 
-
-*Note:* When importing definitions, we might want the option to override instead of shadow definitions. This might need to be represented explicitly in the import list, and is ideally consistent with how we distinguish override versus shadowing outside the list. Of course, this is a non-issue if we omit 'open' imports.
-
-## Implicit Parameters and Algebraic Effects
-
-
-
-## Limited Higher Order Programming
-
-The language will support limited higher order programming in terms of overriding functions within a namespace, and in terms of algebraic effects. These are structurally restricted to simplify termination analysis.
-
-These are always static, thus won't interfere with termination analysis. Some higher order loops may be built-in to the syntax for convenience.
-
-The Localization type isn't used for higher order programming in this language because dynamic . It is used only for translating global module names back into the configuration namespace.
-
-
-## Function Definitions
-
-
-## Namespace Blocks
-
-The namespace will define data and functions. We might override definitions by default, providing access to the 'prior' definition, but we could support explicit introduction where we want to assume a name is previously unused.
-
-We can support some local shadowing of implicit definitions in context, so long as we don't refer to those implicit definitions. 
-
-
-
-
-
-
-Data can be modeled as a function that doesn't match any input. 
-
-Name shadowing is only permitted for implicit definitions, and a namespace block must 
-
-In general, a 'complete match' of input is required for a function, meanin
-
-
-
-## Explicit Introduction
-
-By default, definitions will be overrides. If we want to assume we 'introduce' a definition for the first time, we might specify 'intro ListOfNames'. I think this will better fit the normal use case.
-
-
-## Data Expression Language
-
-Definitions within each namespace allow for limited computation of data. The language is not Turing complete, but is capable of simple arithmetic, pattern matching, and [primitive recursion](https://en.wikipedia.org/wiki/Primitive_recursive_function). Data definitions must be acyclic, forming a directed acyclic graph.
-
-There is a sublanguage for 
-
-I want to keep this language very simple. There are no user-defined functions at this layer, but we might, only user-defined data. We'll freely use keywords and dedicated syntax for arithmetic, conditions, etc.
-
-### Multi-Line Texts
-
-### Importing File Data 
-
-### Conditional Expression
-
-Might be based mostly on pattern matching.
-
-### Arithmetic
-
-I'm torn a bit on how much support for arithmetic in configurations should be provided. Integers? Rationals? Vectors and matrices? I'm leaning towards support for ad-hoc polymorphism based on the shape of data.
-
-### Lists and Tables
-
-I don't plan to support full loops, but it might be convenient to support some operations to filter, join, zip, and summarize lists similar to a relational algebra. 
-
-### Structured Data
-
-Support for pairs, lists, and and labeled variants or dictionaries is essential. We could also make it feasible to lift a configuration namespace into data.
 
 

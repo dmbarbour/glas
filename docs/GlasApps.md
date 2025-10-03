@@ -316,5 +316,62 @@ A fundamental issue with console IO is that it isn't very composable. The defaul
 
 ## Reflection
 
-* sys.refl.src.\* - access to abstract '%src.\*' metadata from load time.
+With FFI handling most things, reflection remains one area where the runtime must provide a wide range of features.
+
+- sys.refl.src.\* - access to abstract '%src' metadata from compile time. 
+  - Minimally, support examination of the the abstract data type, Src 
+  - The `(%src.meta MetaData Src)` can bind metadata for context. 
+
+- sys.refl.log.\* - access to log output streams
+  - browse log Chans and their activity
+  - access to log histories
+  - potentially adjust runtime-local configuration options per Chan 
+
+- sys.refl.view.\* - debug thyself, application
+  - browse view Chans and their activity
+  - create, clone, pack, unpack, and destroy linear view register contexts
+  - query a view with a register context and callbacks
+
+- sys.refl.tty.\* - maybe provide xterm view of console via HTTP?
+  - access buffered memory of inputs and outputs
+  - adjust buffer sizes
+  - 'inject' inputs as if from user input 
+
+- sys.refl.ffi.\* - debugging of FFI issues, mostly
+  - browse active FFI threads 
+  - view:
+    - step counter(s)
+    - data stack and stash
+    - current command (if any) and start time 
+    - pending buffered commands 
+    - unprocessed results buffers
+  - estimate CPU utilization (?) 
+  - force kill thread (notably unsafe)
+
+- sys.refl.bgcall.\* - debug existing bgcalls
+  - browse active bgcalls (op and Argument)
+  - view activity and progress (step counters?)
+  - force cancel or kill, possibly
+
+- sys.refl.http - access runtime's built-in HTTP interface
+- sys.refl.http.\* 
+  - browse prior and active requests
+
+- sys.refl.rpc.\* 
+  - control authentication of MethodURL (e.g. rotating expirations)
+  - metadata about past and current requests for debugging
+  - may forcibly kill some requests
+
+- sys.refl.g.\*
+  - browse the application 'global' registers
+  - may forcibly edit them
+
+- sys.refl.db.\*
+  - browse persistent registers in use by app
+  - can also anything app *could* have bound
+  - may forcibly update registers
+
+
+
+
 

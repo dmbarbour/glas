@@ -51,10 +51,9 @@ Registers:
 * `(%assoc R1 R2 RegOps)` - this binds an implicit environment of registers named by an ordered pair of registers `(R1, R2)`. The primary use case is abstract data environments: an API can use per-client space between client-provided registers and hidden API registers.
 
 Metaprogramming:
-* `(%macro ASTBuilder)` - ASTBuilder must have type `Env -> Program` where Env provides compile-time effects (e.g. load a file). Program must be deterministic up to Env and 0--1 arity, leaving an AST representation on the data stack. This AST is evaluated in an empty environment then returned.
-  * The simplest proof of determinism is that Program doesn't use '%co' or '%choice'. I'll start there, but I hope to eventually recognize common confluence patterns or support proof annotations.
+* `(%macro Builder)` - Builder must have type `Env -> Program`. The Program must be 0--1 arity, returns an an AST on the data stack, and deterministic up to Env (per `%an.det`). The Env provides compile-time effects such as loading files. The returned AST is evaluated in an empty environment, then further linking belongs to the macro context.
 * `(%eval Adapter)` - pops an AST representation from the data stack, evaluates in an empty environment (implicit `t:({ "" => NULL }, AST)` scope), then passes the result to Adapter of type `AST -> Program`. The resulting program may be verified, instrumented, and optimized in context, then is run. In most cases, the AST argument must be static, i.e. `%an.eval.static` is default for glas systems.
-* *Note:* These primitives enable Programs to participate in metaprogramming. However, we can also support a lot of metaprogramming purely in the namespace layer.
+* *Note:* These primitives enable Programs to participate in metaprogramming. However, we can also support a lot of metaprogramming purely in the namespace layer without involving the Program type.
 
 ## Annotations
 
@@ -70,6 +69,7 @@ Instrumentation:
 * `(%an.assert.static Chan ErrorMsgGen)` - assertion that must be computed at compile-time, otherwise it's a compile-time error. May reduce to compile-time warning with or without a runtime error.
 * `(%an.profile Chan BucketSel)` - record performance metadata such as entries and exits, time spent, yields, fails, and rework. Profiles may be aggregated into buckets based on BucketSel. 
 * `(%an.trace Chan BucketSel)` - record information to support slow-motion replay of Operation. BucketSel helps control and organize traces. See *Tracing*.
+* `(%an.view Chan Viewer)` - support interactive debug views of a running application. See *Debug Views*
 * `(%an.chan.scope TL)` - apply a prefix-to-prefix translation to Chan names in Operation.
 
 Validation:
@@ -80,17 +80,23 @@ Validation:
   * `(%an.data.unseal Key)` - removes matching seal, otherwise error 
   * `(%an.data.seal.linear Key)` - a variant of seal that also marks the data linear, i.e. no copy or drop, until unsealed. The restriction includes implicit drops, e.g. local registers and the data stack when a coroutine terminates. However, linear data may still be copied or dropped in non-semantic cases such as incremental computing, backtracking, and reflection.
   * `(%an.data.unseal.linear Key)` - counterpart to a linear seal. If data is sealed linear, it must be unsealed linear.
-* `%an.data.static` - Indicates that top stack element should be statically computable. Exercise left to compiler!
+* `%an.data.static` - Indicates that top stack element should be statically computable. This may propagate requirements for static inputs back through a call graph. In context of conditionals, choice, coroutines, etc. the compiler can feasibly attempt to verify that all possible paths (up to a quota) share this result.
 * `%an.eval.static` - Indicates that all '%eval' steps in Operation must receive their AST argument at compile-time. This is the default for glas systems, but it can make intentions clearer to reiterate the constraint locally.
-* `(%an.type TypeDesc)` - Describes a partial type of Operation. Can also support type inference in the context surrounding Operation. TypeDesc will have its own abstract data constructors in '%type.\*'.
+* `(%an.type TypeDesc)` - Describes a partial type of Operation. Not limited to programs, so namespace-layer and higher-kinded types are also relevant. Can also support type inference in the context surrounding Operation. TypeDesc will have its own abstract data constructors in '%type.\*'.
+* `%an.det` - Annotates an `Env -> Program` structure. This expresses the intention that Program should be deterministic *up to Env*. A compiler should prove this or raise an error. 
+  * The simplest proof is that Program doesn't use '%co' or '%choice' or interact with mutable state (even indirectly) except through Env. 
+  * Ideally, we can also recognize simple confluence patterns, e.g. Kahn Process Networks, where coroutines communicate through queues with clear ownership (no races between two readers or between two writers). 
+  * Eventually, proof-of-confluence annotations may be viable. Not sure how feasible this is.
 
 Incremental computing:
 * `(%an.memo MemoHint)` - memoize a computation. Useful memoization hints may include persistent vs. ephemeral, cache-invalidation heuristics, or refinement of a 'stable name' for persistence. TBD. 
   * As a minimum viable product, we'll likely start by only supporting 'pure' functions, because that's a low-hanging, very tasty fruit.
 * `(%an.checkpoint Hints)` - when retrying a transaction, instead of recomputing from the start it can be useful to rollback partially and retry from there. In this context, a checkpoint suggests a rollback boundary. A compiler may heuristically eliminate unnecessary checkpoints, and Hints may guide heuristics. 
 
-Guiding non-deterministic choice: (tentative)
-* `(%an.cost Chan Cost)` - emits a heuristic 'cost'. Choices with high costs - or clearly leading to high costs in the future - can be heuristically disfavored. Does not guarantee a deterministic outcome, but can help programmers express their preferences. The Cost function should be `Env -> Program` receiving Chan configuration options and outputting a rational number cost.
+Guiding non-deterministic choice: 
+* `(%an.cost Chan CostFn)` - (tentative) emits a heuristic 'cost'. CostFn has type `Env -> Program`, with Env providing access to Chan configuration options, ultimately returning a non-negative rational number on the data stack. Like logging, the Program also has implicit access to the host environment for dynamic costs. The only role of costs is to guide non-deterministic choice, disfavoring "high cost" options - or choices that will obviously lead to high costs later on.
+  * Beyond tweaks by CostFn based on Chan configuration, a user configuration could amplify or suppress costs per channel, enabling an encoding of purpose and preference into channel names.
+  * *Aside:* In theory, we could support non-monotonic costs to represent gains, too. But all the efficient search algorithms assume monotonicity. 
 
 Future development:
 * type declarations. I'd like to get bidirectional type checking working in many cases relatively early on.
@@ -142,6 +148,18 @@ What information do we need?
 I think this won't be easy to implement, but it may be worthwhile.
 
 BucketSel is just a means to conditionally disable tracing. Similar to MsgSel except only evaluated once, and the returned bucket(s) are simply dynamic indices for lookup.
+
+### Debug Views
+
+An intriguing opportunity: *interactive views* of running code. 
+
+        (%an.view Chan Viewer)
+
+Viewer may have type `Env -> Program` where the Env includes both channel configuration options and a view context of callbacks and registers. View callbacks support ad-hoc queries (level of detail, user preferences, content-negotiation) and a stream of writes (graphics and texts, GUI update commands, etc.). View registers are opaque to the user but held across requests, supporting persistence of navigation, progressive disclosure, or even retained-mode GUI (by tracking what has already been written). A client may fork, checkpoint, or freeze the view by controlling context.
+
+Like logging, the viewer program runs in a hierarchical transaction. By default, updates to the application are undone after the program returns, while updates to the view context are retained. However, we can introduce a 'commit' callback in Env to change behavior on a per-call basis. This essentially enables editing of local registers in a running application through integrated debug views. Such edits may be rejected, e.g. because the user doesn't agree, or due to read-write conflict with concurrent operations. The [Glas GUI](GlasGUI.md) design document describes some relevant patterns.
+
+The Chan can also serve a role of naming a view for discovery and integration. The compiler can warn if there is more than one view per Chan within an application. An application may serve as its own client through a reflection API (perhaps sys.refl.view.\*), thus serving debug views through non-debugger interfaces.
 
 ### Accelerators
 
@@ -252,10 +270,6 @@ We could feasibly annotate conditional breakpoints into a program. Ideally, we'l
 
 Not sure exactly what I want here, however.
 
-### Projection? Defer.
-
-My idea with projection is that we can extend '%an.log' to instead describe interactive debug views in terms of projectional editors over local registers and such. The main distinction from logging is interactivity. With logging the assumption is that messages are serialized into a log for future review, while for projections we're letting users directly peek and poke into a running system.
-
 ### Content-Addressed Storage
 
 Annotations can transparently guide use of content-addressed storage for large data. The actual transition to content-addressed storage may be transparently handled by a garbage collector. Access to representation details may be available through reflection APIs but should not be primitive or pervasive.
@@ -271,3 +285,10 @@ Modeling this in names is too awkward. However, it is feasible to introduce a co
         (%an (%an.type TypeDesc) Op)
 
 We can just invent some primitive type descriptions like '%type.int' or whatever, things a typechecker is expected to understand without saying, and build up from there. It isn't a big deal if we want to experiment with alternatives later.
+
+Some thoughts:
+- Instead of hard-coding types like 'i64', consider an `(%type.int.range 0 255)` or similar. This would allow for more flexible intermediate type representations when computing things.
+- we could feasibly use 'int range' types as parameters to list length types, for example.
+- obviously need a const type that supports only a single value, too.
+
+

@@ -24,6 +24,9 @@ Consider sophisticated Src setters that support cooperative development? Probabl
 
 Move most projectional editor logic into shared libraries. Don't generate this logic per module compiled.
 
-### Hooks?
+### Annotation-based Hooks?
 
-We could use annotations within an application to support reflection, e.g. providing views on demand for access to local registers and debug views. Might even support interactive hooks through reflection, e.g. allowing users to set local registers. Integrating these views into the projectional editor could be expressive.
+See *Debug Views* in [glas programs](GlasProg.md).
+
+This might prove a convenient way to integrate views into a notebook, relying on the 'sys.refl.view.\*' API to bind it into an application GUI.
+
