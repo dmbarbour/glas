@@ -1,6 +1,12 @@
 #!/usr/bin/bash
 
-# env var to switch ?
-make debug
-./bin/debug/glas "$@"
+# script to build and run glas
+# execute with GLAS_RELEASE defined for release mode.
 
+cd -- "$(dirname -- $0)"
+
+if [ -v GLAS_RELEASE ]; then
+    make release && ./bin/release/glas "$@"
+else
+    make debug && ./bin/debug/glas "$@"
+fi

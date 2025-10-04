@@ -236,10 +236,9 @@ A viable API:
     * N=0 returns empty list, useful to await for prior operations to complete.
     * floating-point NaNs and infinities aren't supported, result in error status.
     * order is consistent with push, i.e. last item was top of FFI thread data stack.
-  * `xchg(Text)` - ad hoc stack manipulation, described visually. E.g. Text `"abcd-cdabb"` will swap two pairs of data then copy the new top item. Limited to 'a-z' and each may appear at most once in LHS.
-  * `stash(N) : [ffi] ()` - move top N items from data stack to top of auxilliary stack, called stash. Order is same as repeating `stash(1)` N times, i.e. inverting order onto stash.
+  * `move(Text)` - ad hoc stack manipulation, described visually. E.g. Text `"abcd-cdabb"` will swap two pairs of data then copy the new top item. Limited to 'a-z' and each may appear at most once in LHS.
+  * `stash(N) : [ffi] ()` - move top N items from data stack to top of auxilliary stack, called stash. Order is same as repeating `stash(1)` N times, i.e. inverting order onto stash. If N is negative, moves data from stash to stack instead.
     * *Note:* The 'stash' op is intended to serve a role similar to %dip, hiding the top of the data stack until some operations complete.  
-  * `stash.pop(N) : [ffi] ()` - move top N items from top of stash to top of data stack. Order is same as repeating `stash.pop(1)` N times.
   * *registers* - TBD. Maybe just support a register per upper-case character? Not a priority.
   * `results.read(N) : [ffi] (List of Data)` - read and remove N results from the results queue. First result is head of list. Diverges if insufficient data.
   * `results.unread(List of Data) : [ffi] ()` - push a list back into results for future reads.
