@@ -39,7 +39,7 @@ If we use a nursery allocator, we might only perform reference counts on objects
 
 To efficiently enforce linear types at runtime, we should maintain a linearity bit per allocation. We may similarly benefit from tracking ephemerality for escape analysis, to ensure data 'sealed' by a short-lived register is never stored to a longer-lived register. In the latter case, it seems sufficient to cover the RPC vs. database vs. runtime-instance vs. transaction-local cases, and simply not dynamically detect issues like escape between %local frames within a transaction or runtime.
 
-These bits can be constructed as a bitwise 'OR' from the same header bits in component data, upon construction.
+These bits can be constructed as a simple composition of the same header bits in component data.
 
 ### Arenas
 

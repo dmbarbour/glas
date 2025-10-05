@@ -52,8 +52,6 @@ Integers in glas systems are typically encoded as variable length bitstrings, ms
         -3        00
         -4       011
 
-See also *Numbers*, below.
-
 ### Lists, Arrays, Queues, Binaries
 
 Sequential structure in glas is usually encoded as a list. A list is either a `(head, tail)` pair or a leaf node, a non-algebraic encoding similar in style to Lisp or Scheme lists.
@@ -75,13 +73,13 @@ The convention for encoding 'optional' data in glas is to use an empty list for 
 
 For 'Either' types, we'll usually switch to symbolic data like `ok:Result | error:(text:Message, ...)`. 
 
-### Numbers, Vectors, and Matrices
+### Rationals, Vectors, and Matrices
 
-Arbitrary rational numbers can be encoded as a dict `(n, d)` of integers. The rational subset of complex or hypercomplex numbers can be modeled as dicts `(r, i)` or `(r, i, j, k)` of rationals or integers. A vector is encoded as a list of numbers. A matrix is encoded as list of vectors or matrices of identical dimensions. Arithmetic operators in glas systems should be overloaded to handle these different number types where it makes sense to do so. 
+Rational numbers can be represented by a pair `(n,d)` of integers, insisting that the denominator is non-zero. A vector might be represented as a list of integers or rationals, and a matrix as a list of vectors of identical dimensions. We could add complex or hypercomplex numbers, too, e.g. as `(r,i)` or `(r,i,j,k)` dicts of rationals or integers.
 
-For performance, a runtime may support optimized internal representations. A useful subset of rationals could be efficiently represented and processed as floating point numbers. Matrices could be implemented as an array with dimension metadata.
+Arithmetic operators in glas systems should be overloaded to handle these different number types where it makes sense to do so. And to prevent rationals from growing out of control, we could include rounding steps where needed.
 
-*Note:* Arithmetic in glas is exact by default, but there will be workarounds for performance.
+We might be able to use floating point, but I'm uncertain we can make it deterministic across processors, which would conflict with some of my design goals. That said, a runtime can represent a useful subset of rational numbers as binary or decimal floating point internally. 
 
 ## Namespaces and Programs 
 

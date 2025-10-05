@@ -206,7 +206,7 @@ Register Ops:
   * Put
   * Grab
   * Peek
-* 
+* KVDB, implicit 'register' per key but dynamic
 
 ## TBD
 
