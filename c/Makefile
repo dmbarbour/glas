@@ -13,9 +13,9 @@ clean:
 	rm -rf build
 	rm -rf bin
 
-SOURCES = main.c lib.c
+SOURCES = main.c glas.c
 OBJECTS = $(SOURCES:.c=.o)
-EXTRA_DEPS = api/glas.h src/impl.h Makefile 
+EXTRA_DEPS = api/glas.h api/glas_ffi.h src/impl.h Makefile 
 
 bin/debug/glas: $(addprefix build/debug/,$(OBJECTS))
 	@mkdir -p bin/debug

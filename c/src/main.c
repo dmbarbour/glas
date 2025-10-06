@@ -81,6 +81,12 @@ glas_cli_parse_args(int argc, char const* const* argv) {
 
 int main(int argc, char const* const* argv) 
 {
+    for(int ii = 0; ii < argc; ++ii) {
+        fprintf(stdout, "arg[%d] = %s\n", ii, argv[ii]);
+    }
+    fprintf(stdout, "sizeof(bool) = %lu", sizeof(bool));
+
+
     glas_cli_options opt = glas_cli_parse_args(argc, argv);
     if(GLAS_ACTION_HELP == opt.action) {
         fprintf(stdout, "glas version %s\n", GLAS_VER);
@@ -88,8 +94,10 @@ int main(int argc, char const* const* argv)
         return 0;
     } 
 
-    glas_client gcx = { stdin, stdout, stderr };
-    glas_rt* grt = glas_create(&gcx);
+    glas* g = glas_cx_new();
+
+    #if 0
+
     if(!glas_apply_user_config(grt)) {
         fprintf(stderr, "Unable to load configuration.\n");
         glas_destroy(grt);
@@ -110,8 +118,9 @@ int main(int argc, char const* const* argv)
         glas_destroy(grt);
         return -1;
     }
+    #endif
 
-    glas_destroy(grt);
+    glas_cx_drop(g);
     return 0;
 
 

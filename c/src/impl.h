@@ -12,11 +12,11 @@
   #else
     #define API __declspec(dllexport)
   #endif
-  #define LOCAL
+  #define LOCAL static
 #else /* Linux, macOS */
   #define API __attribute__((visibility("default")))
+  #define LOCAL static
 #endif
-#define LOCAL static
 
 
 /**
@@ -26,7 +26,23 @@
 _Static_assert(sizeof(void*) == 8, 
     "glas runtime assumes 64-bit pointers");
 
+typedef struct MemPin {
+    // so we can release arrays or binaries
+    _Atomic(size_t) refct;
+    glas_release_cb cb;
+
+    // so we split-append on flat binary can recover 
+    // the original flat binary, we'll track the memory
+    void* mem;
+    size_t len;
+} MemPin;
+
 typedef struct glas_cell {
+    // what type bits do we want in common?
+    //  - ephemerality and abstraction (3 bits?)
+    //  - linearity (1 bit)
+    //  - data containing MemPin or destructors
+    //  - 
     _Atomic(uint8_t) refct; // hybrid reference counts
     _Atomic(uint8_t) gcbits;
     uint16_t type_arg; 
@@ -49,13 +65,12 @@ typedef struct glas_cell {
         struct {
             size_t len;
             uint8_t const* data;
-            struct glas_cell* pin;           // a separate gc_event to free memory.
+            MemPin* pin;         // a separate gc_event to free memory.
         } big_binary;
-        glas_release_cb gc_event;       // invoked by garbage collector.
         struct {
-            size_t len;                     // 
-            struct glas_cell* data;          // pointer to array of glas_cells
-            struct glas_cell* pin;           // to support GC event
+            size_t len;                 // 
+            struct glas_cell** data;    // pointer to array of glas_cells
+            MemPin* pin;         // to support GC event
         } big_array;
 
         struct {
@@ -66,6 +81,13 @@ typedef struct glas_cell {
             struct glas_cell* left;
             struct glas_cell* right;
         } concat;
+
+        struct {
+            struct glas_cell* error_arg;
+            int error_code; // change to enum
+        } error_val;
+
+        // tbd: gc features such as free cells, forwarding pointers
     } data;
 } glas_cell;
 
