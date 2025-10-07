@@ -36,6 +36,10 @@
  * - a data stack (and auxilliary stash)
  * - a namespace of definitions and registers
  * - bookkeeping for transactions, errors, etc..
+ * 
+ * Each context should be used in a single-threaded manner, though
+ * they aren't sticky: contexts may be migrated across OS threads.
+ * Operations on separarate contexts are fully mt-safe.
  */
 typedef struct glas glas;
 
@@ -50,10 +54,9 @@ glas* glas_cx_new();
  * Drop the glas context.
  * 
  * This tells the runtime that the client is done with this context,
- * and that the associated coroutine has terminated.
- * 
- * The runtime may log some warnings if this results in orphaning
- * of linear data.
+ * i.e. that no further client commands are incoming. This does not
+ * mean the runtime is done with the coroutine. The runtime may try
+ * `glas_step_commit`, then `glas_step_abort` if commit fails. 
  */
 void glas_cx_drop(glas*);
 
@@ -61,97 +64,306 @@ void glas_cx_drop(glas*);
  * Fork context for concurrency.
  * 
  * The fork receives a copy of its origin's namespace, and an optional
- * transfer from the data stack. The client may use this in a separate
- * thread or interleave operations.
+ * transfer from the data stack. 
  * 
  * Important Notes:
  * 
- * A fork cannot commit a step before its origin commits the step that
- * created the fork. The fork may be invalidated if its own creation is
- * aborted, becoming a dead branch. Commit before use in most cases.
+ * A fork cannot commit before its origin commits. The origin may yet 
+ * abort the step that created the fork. In most cases, commit before 
+ * starting the fork.
  * 
- * Although forks of callback contexts are permitted, the caller will
- * block until all forks terminate, i.e. fork-join semantics.
+ * In a callback context, all forks must terminate before the caller 
+ * continues, i.e. fork-join semantics.
  */
 glas* glas_cx_fork(glas*, uint8_t stack_transfer);
 
+
 /**
- * Choose between outcomes.
+ * Regarding integration with non-deterministic choice:
  * 
- * This is useful to model concurrent search or race conditions. Each
- * context receives a copy of the namespace, stack, and stash. However,
- * only one may commit. The first to yield becomes committed choice.
- * The other is invalidated, becoming a dead branch.
+ * In general, choices exist only *within* steps. The moment we commit
+ * to a step, we have committed choices. In theory, a glas system may
+ * defer unobserved across steps, but it's complicated (entanglement!)
+ * and isn't required by our semantics.
+ *  
+ * The simplest option to integrate non-deterministic choice is to try 
+ * other choices on abort. We can also provide simple operations, e.g. 
+ * select an integer smaller than N, or pick a value from a list.
+ * 
+ * But it might be interesting to let clients explore choices more
+ * precisely, expanding a single context into several. I'm not sure
+ * how to best express this, however. Perhaps as a parallel callback?
  */
-glas* glas_cx_choice(glas*);
+
+/***************************
+ * MEMORY MANAGEMENT
+ **************************/
+
+/**
+ * A runtime hold on client resources (or vice versa).
+ * 
+ * This is currently used for:
+ * 
+ * - definition of callbacks
+ * - zero-copy binary transfers
+ * - foreign pointers; client ADTs
+ * 
+ * When the associated resource falls out of scope, the pin should be
+ * released. The pin may refer to a reference-count object or similar
+ * instead of directly to the resource in question.
+ * 
+ * If no cleanup is needed, set release function to NULL.
+ */
+typedef struct {
+    void (*release)(void* resource);
+    void *resource;
+} glas_pin;
+
+inline void glas_release(glas_pin cb) {
+    if(NULL != cb.release) {
+        cb.release(cb.resource);
+    }
+}
+
+/************************
+ * NAMESPACES
+ ************************/
+
+/**
+ * Load primitive definitions.
+ * 
+ * This loads the program-model primitives under a specified prefix,
+ * conventionally "%". This doesn't include names managed by front-end
+ * compilers, e.g. %src, %env, %arg, %self.
+ * 
+ * TBD: Variations to override and extend %macro compile-time effects,
+ * or at least load from a virtualized system.
+ */
+void glas_load_prims(glas*, char const* at_prefix);
+
+/**
+ * Load a configuration.
+ * 
+ * This operation loads a configuration file:
+ * 
+ * - fixpoint bindings of %self and %env
+ * - provide %arg for runtime version info 
+ * - bootstrap of %env.lang.glas (and maybe %env.lang.glob) compilers
+ * 
+ * It's difficult to tease this knot apart, and it's convenient to
+ * have it as one big op. 
+ */
+void glas_load_config(glas*, char const* at_prefix, char const* prims_prefix);
+
+/**
+ * TODO:
+ * - load script bound to configuration and primitives
+ */
+
+/**
+ * Prefix-to-prefix Translations.
+ * 
+ * The glas namespace model uses prefix-to-prefix translations for
+ * many purposes, and the client may also make use of them. Within
+ * C, we'll simply represent them as an array of pairs of strings,
+ * where the RHS may be NULL, terminating in `{ NULL,  NULL}`.  
+ * 
+ *    { {"foo.", "bar."}, { "$", NULL }, { NULL, NULL } }
+ * 
+ * In each case, the LHS represents a match prefix, the RHS the update.
+ * The RHS may be NULL, indicating that a prefix is hidden. Only the
+ * longest matching prefix is applied to each name.
+ * 
+ * For performance, the runtime may compose translations or cache the
+ * bindings. Either way, translation overhead is negligible.
+ */
+typedef struct { char const *lhs, *rhs; } glas_tl; 
+
+/**
+ * Translate client view of namespace.
+ * 
+ * The specified translation is applied to referencing names currently
+ * in the namespace. For example, if we translate `{ "bar.", "foo." }`
+ * then a future call (or register operation) on "bar.x" will instead
+ * refer to "foo.x". Note: This also translates "bar" to "foo" due to
+ * the implicit translation suffix, but not "bard" to "food".
+ * 
+ * This does not influence future definitions.
+ */
+void glas_ns_view(glas*, glas_tl const*);
+
+/**
+ * Returns true if a specific name is defined.
+ */ 
+bool glas_ns_has_def(glas*, char const* name);
+
+/**
+ * Returns true if a prefix contains at least one name.
+ */
+bool glas_ns_has_prefix(glas*, char const* prefix);
+
+
+/**
+ * Define programs via callbacks.
+ * 
+ * Each invocation receives a 'glas*' callback context, valid for the
+ * duration of the callback and implicitly dropped upon return. 
+ * 
+ * This context provides access to the caller's environment through a
+ * specified prefix (e.g. "$"), and the host's lexical environment via
+ * another (often "", accepting some name shadowing). The caller's data
+ * stack is also visible up to input arity.
+ * 
+ * To simplify the API, callbacks are marked atomic or not:
+ * 
+ * - An atomic callback cannot commit or abort steps, and cannot fork.
+ *   It may defer operations via on_commit and on_abort.
+ * - A non-atomic callback may commit steps, but cannot be called from
+ *   %atomic sections within a program or atomic invocation.
+ * 
+ * Either way, a callback context may become a dead branch if caller is
+ * aborted. When this happens, a client should return false ASAP. But a 
+ * non-atomic callback is safe from this after first step commit.
+ * 
+ * The glas system distinguishes errors and failures. Callbacks report
+ * failure by returning false, and errors by adding flags to context.
+ * 
+ * In general, callbacks must be multi-threading safe.
+ */
+typedef struct {
+    bool (*operation)(void* client_arg, glas*);
+    void* client_arg;           // opaque, passed to operation
+    char const* caller_prefix;  // e.g. "$"
+    char const* host_prefix;    // e.g. "" (caller shadows "$") 
+    uint8_t ar_in, ar_out;      // data stack arity assumptions
+    bool atomic;
+} glas_prog_cb;
+
+void glas_def_by_cb(glas*, char const* name, glas_prog_cb, glas_pin);
+
 
 /*************************
  * TRANSACTIONS
  ************************/
 
 /**
- * Commit step.
+ * Commit current step.
  * 
  * In glas coroutines, every yield-to-yield step is ideally an atomic,
- * isolated transaction. Upon yield, pending updates are applied, and
- * updates from concurrent operations may be observed.
+ * isolated transaction. Each step is committed: pending updates are
+ * applied, and updates from concurrent operations may be observed.
  * 
- * However, a step may fail to commit. Concurrent changes may conflict.
- * This aligns with optimistic concurrency control: small transactions, 
- * retry as needed, heuristic scheduling to reduce rework. To control
- * data contention, perhaps introduce a queue.
+ * Clients receive a similar experience. Until they commit a step, the
+ * updates are local, and a client operates on a stable view of shared
+ * registers. Though, invoked programs may 'yield', committing a step.
  * 
- * The glas context can be rolled back to prior yield and retried. The
- * client should defer anything difficult to undo until after yield, 
- * awaiting commitment to action.
+ * A step may fail to commit, typically due to error or conflict. The
+ * glas system uses optimistic concurrency control: Resources are not
+ * locked down. Instead, users keep transactions small and avoid data
+ * contention; retry until successful. Queues can mitigate conflicts. 
  * 
- * Aside from conflict, yield will also refuse to proceed in case of
- * errors. Errors are logically treated as forms of divergence, like 
- * infinite loops, thus cannot be committed. The client may check for
- * errors at any time, but after yield fails is a clear opportunity.
+ * When commit fails, the client may abort the step, return to a prior
+ * state and retry. However, most languages are not designed for this
+ * style of use, including C. To keep it simple, the client may commit
+ * prior to any operations that are difficult to undo, i.e. so we have
+ * committed action. The runtime supports deferred callback actions.
  * 
+ * A client is not required to retry the same operation after a step
+ * fails to commit.
  */
 bool glas_step_commit(glas*);
 
 /**
- * Abort the current step. Rewind context to state at start of step.
+ * Abort the current step. 
+ * 
+ * This always rewinds context to the last committed step.
  */
 void glas_step_abort(glas*);
 
 /**
+ * Committed action.
+ * 
+ * For operations that are difficult to undo, clients may defer action 
+ * until after commit. This prevents observation of results within the
+ * transaction, but it greatly simplifies integration.
+ * 
+ * To preserve ordering, transactions may write operations into queues.
+ * These queues will be processed by runtime worker threads. The NULL
+ * queue will be handled locally, e.g. within `glas_step_commit`. This
+ * is useful for resources owned by the thread, or for synchronization,
+ * waiting on workers to complete certain steps.
+ * 
+ * Notes: 
+ * - Use `glas_load_opqueues` to prepare to access opqueues.
+ * - Consider use of on_abort to clean up allocations for arg.
+ */
+void glas_step_on_commit(glas*, void (*op)(void* arg), void* arg, 
+    char const* opqueue);
+
+/**
+ * Prepare for `glas_on_commit` by binding queues into namespace.
+ * 
+ * The operation queues used by on_commit are runtime global, but they
+ * are not implicitly bound to the namespace. Modeling them as part of
+ * the namespace allows for flexible translation and scoping.
+ * 
+ * Similar to register spaces, each name implicitly refers to a distinct
+ * queue.
+ */
+void glas_load_opqueues(glas*, char const* at_prefix);
+
+/**
+ * Defer operations until abort.
+ * 
+ * This is useful to clean up memory allocated for on_commit, but it
+ * may find other use cases. 
+ */
+void glas_step_on_abort(glas*, void (*op)(void* arg), void* arg);
+
+/**
+ * A common coupling of on_commit and on_abort.
+ * The abort operation is represented by the pin.
+ */
+inline void glas_step_defer(glas* g, void (*op)(void* arg), void* arg,
+    char const* opqueue, glas_pin p)
+{
+    glas_step_on_abort(g, p.release, p.resource);
+    glas_step_on_commit(g, op, arg, opqueue);
+}
+
+/**
  * Hierarchical transactions. (Omit.)
  * 
- * The glas program model has '%atomic' sections to support expression
- * of concurrency within transactions. However, I don't have a clear 
- * use case for the client. It only adds complexity to this API.
+ * No clear use case for the client. A lot of added complexity. Let's
+ * just skip support for hierarchical transactions at this layer.
  */
 
 /**
- * Checkpoint. (Tentative.)
+ * Checkpoints. (Tentative.)
  * 
- * Checkpoints would provide intermediate locations for rollback and
- * retry between yields. However, I don't have a clear vision on how
- * the client would integrate this, nor how to efficiently implement.
+ * We could feasibly support partial rollback of a context within a
+ * step, instead of always retrying the full step. But I think this
+ * feature should wait until I have a clearer vision for it, and a
+ * better understanding of the cost.
  * 
- * Not a high priority. 
+ * Not a high priority, at the moment.
  */
 
- /**
-  * Post-Commit Actions.
-  *
-  * This method simplifies some common patterns preparing operations
-  * to run after commit.
-  * 
-  * If the step commits, the operations are written into named queues,
-  * preserving logical transaction commit order. The runtime spins up
-  * worker threads to process the queues.
-  * 
-  * If the step aborts, the 'cancel' actions run during abort (unless
-  * NULL). The primary role is recycle memory associated with 'arg'.
-  */
-void glas_step_postop(glas*, char const* op_queue,
-    void (*op)(void* arg), void* arg, void (*cancel)(void* arg));
-  
+/**
+ * Virtual Registers (Tentative.)
+ * 
+ * We could introdues runtime-global virtual registers, bind them to
+ * the namespace, for purpose of fine-grained read-write conflict
+ * analysis as clients work with these resources. 
+ * 
+ * glas_load_vreg(glas*, char const* at_prefix);
+ * glas_vreg_rw/get/set/read/write(glas*, char const* vreg_name);
+ * 
+ * However, it isn't clear to me how to effectively leverage this.
+ * Will probably need to build something that pushes the boundaries
+ * of what is possible with just on_commit and on_abort.
+ */
+
 
 /***************************************
  * ERRORS 
@@ -160,49 +372,62 @@ void glas_step_postop(glas*, char const* op_queue,
 /**
  * Error Summary. A bitwise `OR` of error flags.
  * 
- * Logically, errors are divergence. They cannot be committed. But a
- * client may abort the step and retry, or try something else. A few
- * errors, such as name shadowing or assertions, can be suppressed by
- * specific means.
+ * Logically, errors are divergence. They cannot be committed. Error
+ * handling is instead based on rewinding via `glas_step_abort` and
+ * retrying, or trying something different.
+ * 
+ * In context of state changes and non-deterministic choice, retrying
+ * even assertion errors may succeed.
+ * 
+ * The 'dead branch' error is a special case. A context cannot recover
+ * from this error: it represents that the creation of the context is
+ * itself aborted. Only thing to do is drop the context and move on.
  */
 typedef enum GLAS_ERROR_FLAGS {
     GLAS_NO_ERRORS          = 0x0000000,   
-    GLAS_E_UNDERFLOW        = 0x0000001, // data stack underflow
-    GLAS_E_DEAD_BRANCH      = 0x0000002, // pruned fork or choice context
-    GLAS_E_LINEARITY        = 0x0000004, // copy or drop of linear data
-    GLAS_E_EPHEMERALITY     = 0x0000008, // short-lived data in long-lived register
-    GLAS_E_DATA_SEAL        = 0x0000010, // error working with sealed data
-    GLAS_E_DATA_TYPE        = 0x0000020, // e.g. list append with not-a-list
-    GLAS_E_NAME_SHADOW      = 0x0000100, // defined name was hidden 
-    GLAS_E_NAME_UNDEF       = 0x0000200, // called an undefined name
-    GLAS_E_NAME_TYPE        = 0x0000400, // e.g. call a non-program, set a non-reg
-    GLAS_E_ASSERT           = 0x0001000, // assertion failure in running program
-    GLAS_E_ERROR_OP         = 0x0002000, // use of '%error' in running program
-    GLAS_E_ATOMIC_CB        = 0x0004000, // you tried to commit an atomic CB
-    GLAS_E_SIGKILL          = 0x0010000, // operation killed willfully
-    GLAS_E_QUOTA            = 0x0020000, // operation killed heuristically
-    GLAS_E_CONFLICT         = 0x0040000, // lost a conflict with a concurrent operation 
-    GLAS_E_CLIENT1          = 0x0100000, // a user may inject errors
-    GLAS_E_CLIENT2          = 0x0200000, //             .
-    GLAS_E_CLIENT3          = 0x0400000, //             .
-    GLAS_E_CLIENT4          = 0x0800000, //             .
+    GLAS_E_CONFLICT         = 0x0000001, // concurrency conflicts; retry might avoid
+    GLAS_E_DEAD_BRANCH      = 0x0000002, // context creation was aborted; fork or callback
+    GLAS_E_SIGKILL          = 0x0000004, // operation killed willfully; clear explicitly
+    GLAS_E_QUOTA            = 0x0000008, // operation killed heuristically
+    GLAS_E_ERROR_OP         = 0x0000010, // use of '%error' in running program
+    GLAS_E_ASSERT           = 0x0000020, // assertion failure in running program
+    GLAS_E_UNDERFLOW        = 0x0000100, // data stack underflow
+    GLAS_E_ATOMICITY        = 0x0000200, // no commit in atomic program callback
+    GLAS_E_LINEARITY        = 0x0001000, // copy or drop of linear data
+    GLAS_E_EPHEMERALITY     = 0x0002000, // short-lived data in long-lived register
+    GLAS_E_SEALED           = 0x0004000, // failed to unseal data before use, or wrong seal
+    GLAS_E_UNDEFINED        = 0x0020000, // call an undefined name
+    GLAS_E_TYPE             = 0x0040000, // generic runtime type errors
+    GLAS_E_CLIENT           = 0x1000000, // user-defined error
 } GLAS_ERROR_FLAGS;
 
-GLAS_ERROR_FLAGS glas_error_get(glas*);         // read error flags
-void glas_error_set(glas*, GLAS_ERROR_FLAGS);   // adds to error flags (monotonic)
-
-
-// Note on hierarchical transactions:
-//  interaction with yield requires some attention.
-//  e.g. commit only applies upon next yield.
-
-
+GLAS_ERROR_FLAGS glas_errors_get(glas*);         // read error flags
+void glas_errors_add(glas*, GLAS_ERROR_FLAGS);   // bitwise 'or' to error flags (monotonic)
 
 /***************************************
- * DATA STACK MANIPULATION
+ * DATA STACK
  ***************************************/
 
-void glas_data_swap(glas*); // A B -- B A
+ /**
+  * Basic Data Manipulations.
+  * 
+  * The glas program model has a few simple operations: %copy, %drop, 
+  * %swap, and %dip. But this assumes a compiler will eliminate these
+  * operations, reducing the stack to logical locations. For this API,
+  * we'll provide a few bulk ops.
+  */
+void glas_data_copy(glas*, uint8_t amt); // A B -- A B A B ; copy 2
+void glas_data_drop(glas*, uint8_t amt); // A B C -- A ; drop 2
+
+/**
+ * Move data to or from an auxilliary stack, called the stash.
+ * 
+ * If amt > 0, moves data to the stash. If amt < 0, transfers |amt| 
+ * from stash to data stack. Equivalent to moving one item at a time.
+ * 
+ * Note: The stash serves the role of %dip in the program model.
+ */
+void glas_data_stash(glas*, int8_t amt);
 
 /**
  * Visualize data shuffling based on a simple moves string.
@@ -211,140 +436,92 @@ void glas_data_swap(glas*); // A B -- B A
  *   "abc-b"        drops a and c
  *   "abcd-abcab"   drops d, copies ab to top of stack
  * 
- * This operation will read stack items into temporary variables based
- * on the LHS of '-'. Each character in [a-zA-Z] may be assigned at most 
- * once on LHS, then written any number of times on RHS. The rightmost
- * character represents 'top' of data stack.
+ * This operation will navigate to '-', scan leftwards popping items
+ * into local variables [a-zA-Z]. Then it scans rightwards from '-',   
+ * pushing variables back onto the stack. It's an error if the string
+ * reuses variables in LHS, refers to unassigned variables in RHS, or
+ * lacks the '-' separator, or is otherwise malformed We'll also detect
+ * linearity errors.
  * 
- * This operation replaces the whole gamut of stack shuffling, but copy
- * and drop have dedicated operations for performance.
- * 
- * This operation fails, returning false, if it would copy or drop linear
- * data unless the context has been flagged to ignore linearity.
- * 
- * Note: If you're using this operation frequently, you should consider
- * introducing registers and simplifying your stack! Stacks are convenient
- * to avoid naming every little thing, but they grow unwieldy.
+ * For complex operations, this compact bit of syntax is likely more
+ * efficient than performing the copies, swaps, stashes, and drops.
+ * It's also far more comprehensible. OTOH, if you feel a frequent
+ * need for this op, consider refactoring or more registers.
  */
 bool glas_data_move(glas*, char const* moves);
-
-/**
- * Specialized 'move' for copy and drop. User specifies the number 
- * of items. Like move, these operations may fail upon linear data
- * unless forced.
- */
-bool glas_data_copy(glas*, size_t amt);
-bool glas_data_drop(glas*, size_t amt);
-
-/**
- * Move data to or from an auxilliary stack, called the stash.
- * 
- * If amt > 0, moves data to the stash. If amt < 0, transfers from stash
- * back to the data stack. Modulo efficiency, equivalent to moving one
- * element at a time.
- * 
- * The stash serves a similar role as 'dip' within the program model. 
- */
-void glas_data_stash(glas*, int amt);
 
 /*********************************************
  * DATA TRANSFER
  *********************************************/
 /** 
- * Push a copy of a binary to the data stack. 
+ * Push a binary to the data stack.
  * 
- * In glas, a binary is logically a list of bytes. A list is formed
- * by a right spine of pairs terminating in unit, e.g. (1,(2,(3,()))).
- * In a binary, each element should be an integer in range 0..255.
- * (See integers below.)
+ * The base version will copy the binary. The zero-copy (_zc) variant
+ * will transfer a reference. Small binaries may be copied regardless.
+ * The client must treat zero-copy data as immutable until released.
  * 
- * The glas runtime optimizes list representations, and binaries even
- * more so. Thus, when first pushed, large binaries will be copied to
- * a runtime array.
- * 
- * In glas systems, texts are typically represented as binaries using
- * the utf-8 encoding. Thus, use binaries for texts, too.
- *
- * Note: there is a zero-copy variant; see below.
+ * The runtime logically treats binaries as a list of small integers, 
+ * but the representation is heavily optimized.
  */
-void glas_binary_push(glas*, uint8_t const* buf, size_t len);
+void glas_binary_push(glas*, uint8_t const*, size_t len);
+void glas_binary_push_zc(glas*, uint8_t const*, size_t len, glas_pin);
 
 /**
- * Copy from binary at top of stack into client buffer.
- * For convenience, a large binary may be read in multiple steps.
+ * Non-destructively read binary data from top of data stack.
  * 
- * Returns 'true' iff end-of-list is reached. There are several
- * reasons this operation might return false:
+ * The base version will copy the binary. The zero-copy (_zc) variant
+ * may need to flatten part of a rope-structured binary, then returns
+ * a pinned reference. The client must not modify the latter memory,
+ * and must release the pin when done.
  * 
- * - more data, not done reading yet
- * - offset is beyond end-of-list
- * - not a pair structure after 'amt'
- * - list contains non-byte element
+ * Flattening a binary involves a copy. However, the zero-copy variant
+ * is useful if the data was already flattened, would be in the future,
+ * or will be requested many times.
  * 
- * If buf is NULL, the actual copy step is skipped, but we'll
- * still scan to compute amt_read and the return value.
+ * The peek operation returns 'true' if end-of-list was reached and
+ * everything available was read. The operation will return false with 
+ * a partial result if data is only partially a valid binary.
  * 
- * Note: there is a zero-copy variant; see below.
+ * Note: If buf/ppBuf is NULL, the runtime still attempts to produce
+ * valid results for amt_read and return value, and flatten for _zc. 
  */
 bool glas_binary_peek(glas*, size_t start_offset, size_t max_read, 
     uint8_t* buf, size_t* amt_read);
-
-/**
- * A callback essentially to 'free' an object, though it perform
- * a decref depending on context, or merely represent a signal. 
- * This is used when objects are referenced across the runtime
- * boundary (in either direction).
- * 
- * The release function may be NULL if no cleanup is required.
- */
-typedef struct {
-    void (*release)(void*);
-    void *release_arg;
-} glas_release_cb;
-
-inline void glas_release(glas_release_cb cb) {
-    if(NULL != cb.release) {
-        cb.release(cb.release_arg);
-    }
-}
-
-/**
- * Zero-copy push for binaries: a performance-safety tradeoff.
- *
- * Moving binaries by copy is safe, but incurs allocation and 
- * copy overheads. A zero-copy push is feasible, but the client
- * must not modify the binary while it is held by the runtime.
- * The client provides a callback for notification when the 
- * runtime releases the data. 
- * 
- * Note: Binaries may be copied regardless, e.g. if smaller than
- * a heuristic threshold. Release may be called before return.
- */
-void glas_binary_push_zc(glas*, uint8_t const* buf, size_t len, glas_release_cb);
-
-/**
- * Zero-copy reads. (With some qualifications.)
- * 
- * The glas runtime represents large binaries as ropes, logically
- * slicing and splicing fragments, heuristically allocating and 
- * copying as smaller chunks are composed.
- * 
- * However, the glas runtime may flatten a binary upon request, 
- * e.g. via program annotations or use of this zero-copy read API.
- * This flatten operation is a copy, but it's also stable and 
- * idempotent. Clients can zero-copy read if already flattened,
- * or to avoid redundant flatten steps later.
- * 
- * As with zero-copy push, the client must not modify the data. When
- * done, the client should run the returned release callback.
- */
 bool glas_binary_peek_zc(glas*, size_t start_offset, size_t max_read,
-    uint8_t const** ppBuf, size_t* amt_read, glas_release_cb* pfree);
+    uint8_t const** ppBuf, size_t* amt_read, glas_pin*);
 
 /**
- * Push an integer to top of data stack.
+ * Push and peek bitstrings as binaries.
  * 
- * Note: Integers are represented as variable-width bitstrings.
+ * In this case, the binary is encoded as a bitstring of octets, i.e.
+ * of a length multiple of eight. 
+ * 
+ * There are no zero-copy variants. Bitstrings are compactly encoded,
+ * but not as binaries. The runtime assumes most bitstrings will be
+ * short, e.g. integers or keys for a radix-tree dict.
+ */
+void glas_bitstr_push(glas*, uint8_t const* buf, size_t len);
+bool glas_bitstr_peek(glas*, size_t start_offset, size_t max_read, 
+    uint8_t* buf, size_t* amt_read);
+
+/**
+ * Push and peek for integers.
+ * 
+ * Integers are represented by variable-width bitstrings, msb to lsb, 
+ * with negatives as the ones complement (just flip the bits):
+ * 
+ *      Int      Bits
+ *       42     101010
+ *       12       1100
+ *        7        111
+ *        0              (empty)
+ *       -7        000
+ *      -12       0011
+ *      -42     010101
+ * 
+ * These numeric operators will perform the conversion to and from the
+ * C representations of integers. The peek operations may fail if the
+ * data is not a bitstring or if the integer is out of range.
  */
 #define glas_integer_push(a,b)      \
   _Generic((b),                     \
@@ -356,19 +533,7 @@ bool glas_binary_peek_zc(glas*, size_t start_offset, size_t max_read,
     uint32_t: glas_u32_push,        \
     uint16_t: glas_u16_push,        \
     uint8_t: glas_u8_push)(a,b)
-void glas_i64_push(glas*, int64_t);
-void glas_i32_push(glas*, int32_t);
-void glas_i16_push(glas*, int16_t);
-void glas_i8_push(glas*, int8_t);
-void glas_u64_push(glas*, uint64_t);
-void glas_u32_push(glas*, uint32_t);
-void glas_u16_push(glas*, uint16_t);
-void glas_u8_push(glas*, uint8_t);
 
-/**
- * Copy an integer from top of data stack into client buffer.
- * Fails if target is not an integer or outside integer range.
- */
 #define glas_integer_peek(a,b)      \
   _Generic((b),                     \
     int64_t*: glas_i64_peek,        \
@@ -379,6 +544,16 @@ void glas_u8_push(glas*, uint8_t);
     uint32_t*: glas_u32_peek,       \
     uint16_t*: glas_u16_peek,       \
     uint8_t*:  glas_u8_peek)(a,b)
+
+void glas_i64_push(glas*, int64_t);
+void glas_i32_push(glas*, int32_t);
+void glas_i16_push(glas*, int16_t);
+void glas_i8_push(glas*, int8_t);
+void glas_u64_push(glas*, uint64_t);
+void glas_u32_push(glas*, uint32_t);
+void glas_u16_push(glas*, uint16_t);
+void glas_u8_push(glas*, uint8_t);
+
 bool glas_i64_peek(glas*, int64_t*);
 bool glas_i32_peek(glas*, int32_t*);
 bool glas_i16_peek(glas*, int16_t*);
@@ -389,19 +564,21 @@ bool glas_u16_peek(glas*, uint16_t*);
 bool glas_u8_peek(glas*, uint8_t*);
 
 /**
- * Push a binary as a bitstring. Writes full octets.
+ * Pointers
+ * 
+ * The runtime treats pointers as an abstract, ephemeral data type. 
+ * The client can push and peek pointers, and use pins for memory 
+ * management. Useful for callback-based APIs.
  */
-void glas_bits_push(glas*, uint8_t const* buf, size_t len);
-
-/**
- * Read a bitstring as a binary. Reads full octets.
- */
-bool glas_bits_peek(glas*, size_t start_offset, size_t max_read, 
-    uint8_t* buf, size_t* amt_read);
+void glas_ptr_push(void*, glas_pin);
+bool glas_ptr_peek(void**, glas_pin*);
 
 
-
-
+/****************
+ * DATA SEALING
+ ****************/
+// seal or unseal with reference to a register, opqueue, vreg - any identity source
+// linearity option
 
 /********************************
  * COMPUTATIONS AND OPERATIONS
@@ -483,12 +660,20 @@ bool glas_dict_remove_l(glas*, char const* label); // Record -- Item Record' | F
  * under the prefix then refers to a separate register. Registers hold
  * the zero value until written. 
  */
-void glas_reg_new(glas*, char const* prefix);
+void glas_reg_new(glas*, char const* at_prefix);
+
+/**
+ * Associative registers.
+ * 
+ * Binds a space of registers identified by a directed edge between two 
+ * registers. Supports abstract data environments in callbacks APIs.
+ */
+void glas_reg_assoc(glas*, char const* r1, char const* r2, char const* at_prefix);
 
 /**
  * Swap data between data stack and a register.
  */
-void glas_reg_rw(glas*, char const* register_name);
+void glas_reg_rw(glas*, char const* register_name); // A -- B
 
 /**
  * Use register as simple data cell. 
@@ -501,8 +686,8 @@ void glas_reg_rw(glas*, char const* register_name);
  * recognize read-write conflicts (without comparing values) 
  * compared to swapping the data.
  */
-void glas_reg_get(glas*, char const* register_name);
-void glas_reg_set(glas*, char const* register_name);
+void glas_reg_get(glas*, char const* register_name); // -- A
+void glas_reg_set(glas*, char const* register_name); // A --
 
 /**
  * View register as a queue.
@@ -582,56 +767,6 @@ bool glas_run(glas_rt*, char const* appname,
     int argc, char const* const* argv);
 
 #endif
-
-/**
- * Returns true if a specific name is defined in view
- * of the context, otherwise false.
- */ 
-bool glas_name_defined(glas*, char const* name);
-
-/**
- * Returns true if a prefix contains at least one name.
- */
-bool glas_prefix_inuse(glas*, char const* prefix);
-
-
-/**
- * Enable shadowing for the next name or prefix.
- * 
- * This flag is cleared when the next name or prefix is defined. This
- * is intended to resist accidents, ensuring shadowing is explicit in
- * the client program. If not enabled, name shadowing is an error.
- */
-void glas_name_shadow(glas*);
-
-
-/**
- * A client may define names with callbacks.
- * 
- * Each callback presents as an `Env -> Program` type to the runtime.
- * The Env parameter provides access to the caller's environment. The
- * caller may restrict Env.
- * 
- * The glas* callback context provides access to the caller's Env via
- * specified prefix, unless NULL. Other names will bind to a copy of
- * the namespace at time of definition (i.e. lexically scoped).
- * 
- * Returning 'false' represents failure, not error. 
- * 
- * Assumed to multi-thread safe.
- */
-typedef struct {
-    bool (*operation)(glas*, void* cbarg);
-    void (*release)(void* cbarg);
-    void* cbarg;                // opaque, passed to operation
-    char const* caller_prefix;  // e.g. "$" so "$cb" calls back to caller.
-    uint8_t ar_in, ar_out;      // data stack arity restrictions
-    bool atomic;                // doesn't yield; no `glas_step_commit`.
-} glas_prog_cb;
-
-void glas_define_by_callback(glas*, char const* name, glas_prog_cb);
-
-
 
 
 

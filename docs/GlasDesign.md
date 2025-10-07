@@ -75,7 +75,7 @@ For 'Either' types, we'll usually switch to symbolic data like `ok:Result | erro
 
 ### Rationals, Vectors, and Matrices
 
-Rational numbers can be represented by a pair `(n,d)` of integers, insisting that the denominator is non-zero. A vector might be represented as a list of integers or rationals, and a matrix as a list of vectors of identical dimensions. We could add complex or hypercomplex numbers, too, e.g. as `(r,i)` or `(r,i,j,k)` dicts of rationals or integers.
+Rational numbers can be represented by a dict `(n,d)` of integers. A vector might be represented as a list of integers or rationals, and a matrix as a list of vectors of identical dimensions. We could add complex or hypercomplex numbers, too, e.g. as `(r,i)` or `(r,i,j,k)` dicts of rationals or integers.
 
 Arithmetic operators in glas systems should be overloaded to handle these different number types where it makes sense to do so. And to prevent rationals from growing out of control, we could include rounding steps where needed.
 

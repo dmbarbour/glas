@@ -29,7 +29,7 @@ _Static_assert(sizeof(void*) == 8,
 typedef struct MemPin {
     // so we can release arrays or binaries
     _Atomic(size_t) refct;
-    glas_release_cb cb;
+    glas_pin pin;
 
     // so we split-append on flat binary can recover 
     // the original flat binary, we'll track the memory
@@ -38,13 +38,16 @@ typedef struct MemPin {
 } MemPin;
 
 typedef struct glas_cell {
+    // GC Bits?
+    //  - refct (6 to 8 bits)
+    //  - mark bits
+    //  - 
+    _Atomic(uint16_t) gchdr; // hybrid reference counts
     // what type bits do we want in common?
     //  - ephemerality and abstraction (3 bits?)
     //  - linearity (1 bit)
-    //  - data containing MemPin or destructors
+    //  - has destructor (glas_pin or MemPin) (1 bit)
     //  - 
-    _Atomic(uint8_t) refct; // hybrid reference counts
-    _Atomic(uint8_t) gcbits;
     uint16_t type_arg; 
     uint32_t stem;
     union {
@@ -83,6 +86,13 @@ typedef struct glas_cell {
         } concat;
 
         struct {
+            // abstract, runtime-ephemeral, maybe-linear
+            void* ref;
+            glas_pin pin;
+        } foreign_ptr;
+
+        struct {
+            // tentative - error values
             struct glas_cell* error_arg;
             int error_code; // change to enum
         } error_val;

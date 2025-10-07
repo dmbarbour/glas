@@ -51,8 +51,8 @@ Registers:
 * `(%assoc R1 R2 RegOps)` - this binds an implicit environment of registers named by an ordered pair of registers `(R1, R2)`. The primary use case is abstract data environments: an API can use per-client space between client-provided registers and hidden API registers.
 
 Metaprogramming:
-* `(%macro Builder)` - Builder must have type `Env -> Program`. The Program must be 0--1 arity, returns an an AST on the data stack, and deterministic up to Env (per `%an.det`). The Env provides compile-time effects such as loading files. The returned AST is evaluated in an empty environment, then further linking belongs to the macro context.
-* `(%eval Adapter)` - pops an AST representation from the data stack, evaluates in an empty environment (implicit `t:({ "" => NULL }, AST)` scope), then passes the result to Adapter of type `AST -> Program`. The resulting program may be verified, instrumented, and optimized in context, then is run. In most cases, the AST argument must be static, i.e. `%an.eval.static` is default for glas systems.
+* `(%macro Builder)` - Builder must have type `Env -> Program`. The Program must be 0--1 arity, returns an an AST on the data stack, and deterministic up to Env (as `%an.det`). The Env provides compile-time effects such as loading files. The returned AST is evaluated in an empty environment. Further linking is handled by the macro context.
+* `(%eval Adapter)` - pops an AST representation from the data stack, evaluates in an empty environment, then passes the result to Adapter of type `AST -> Program`. The resulting program may be verified, instrumented, and optimized in context, then is run. In most cases, the AST argument must be static, i.e. `%an.eval.static` is default for glas systems.
 * *Note:* These primitives enable Programs to participate in metaprogramming. However, we can also support a lot of metaprogramming purely in the namespace layer without involving the Program type.
 
 ## Annotations

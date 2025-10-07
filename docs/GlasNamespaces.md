@@ -57,8 +57,8 @@ Evaluation of an AST is a lazy, substutive reduction in context of an environmen
 * application, lambdas, and names: as lazy lambda calculus evaluation
 
 * reification `e:()` - returns an abstract dictionary containing all names in scope, i.e. `{ "x" = x, "y" = y, ...}`. Trick is to make this lazy. 
-  * Empty environment is expressed as `t:({ "" => NULL }, e:())`. 
-  * Specified prefix is selected by `t:({ "" => Prefix }, e:())`.
+  * Empty environment can be expressed as `t:({ "" => NULL }, e:())`. 
+  * Specified prefix can be selected by `t:({ "" => Prefix }, e:())`.
 * env binding - when applied `(b:(Prefix,Body), Arg)`, binds Arg to Prefix context of evaluating Body. All external names matching Prefix are shadowed in Body, much as lambdas shadow a single name.
 * translation `t:(TL, Body)` - translates Body's view of the current environment through TL. Of semantic relevance, TL controls dictionary keys if the environment is reified in Body.
 
@@ -82,7 +82,7 @@ Performance at this layer isn't essential for my use case, though no reason to a
 
 TL is a finite map of form `{ Prefix => (Prefix' | NULL) }`. To translate a name via TL, we find the longest matching prefix, then rewrite that to the output prefix. Alternatively, if output is NULL, we'll treat the name as undefined.
 
-The TL type works best with prefix-unique names, where no name is a prefix of another name. Consider that TL `{ "bar" => "foo" }` will convert `"bard"` to `"food"`, and it's awkward to target 'bar' alone. To mitigate, we logically add suffix `".."` to all names, and front-end syntax can strongly discourage `".."` within user-defined names. This logical suffix enables translation of 'bar' together with 'bar.\*' via `{ "bar." => "foo." }` or 'bar' alone via `{ "bar.." => "foo.." }`. If translation removes the suffix, raise an error. (Alternatively, introduce an `N:FullName` intermediate representation.)
+The TL type works best with prefix-unique names, where no name is a prefix of another name. Consider that TL `{ "bar" => "foo" }` will convert `"bard"` to `"food"`, and it's awkward to target 'bar' alone. To mitigate, we logically add suffix `".."` to all names, and front-end syntax can strongly discourage `".."` within user-defined names. This logical suffix enables translation of 'bar' together with 'bar.\*' via `{ "bar." => "foo." }` or 'bar' alone via `{ "bar.." => "foo.." }`. If translation removes this suffix, raise an error.
 
 Sequential translations can be composed into a single map. Rough sketch: to compute A followed-by B, first extend A with redundant rules such that output prefixes in A match as many input prefixes in B as possible, then translate A's outuput prefixes as names (longest matching prefix). To normalize, optionally erase new redundancy.
 
