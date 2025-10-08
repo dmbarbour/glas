@@ -78,9 +78,14 @@ glas_cli_parse_args(int argc, char const* const* argv) {
     return result;
 }
 
+void foo(glas_tl const* tl) {
+    (void)tl;
+}
 
 int main(int argc, char const* const* argv) 
 {
+    foo(((glas_tl[]) { {"foo.", "bar."}, { "$", NULL }, { NULL, NULL } }));
+
     for(int ii = 0; ii < argc; ++ii) {
         fprintf(stdout, "arg[%d] = %s\n", ii, argv[ii]);
     }

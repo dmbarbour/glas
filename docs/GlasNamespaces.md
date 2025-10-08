@@ -82,7 +82,7 @@ Performance at this layer isn't essential for my use case, though no reason to a
 
 TL is a finite map of form `{ Prefix => (Prefix' | NULL) }`. To translate a name via TL, we find the longest matching prefix, then rewrite that to the output prefix. Alternatively, if output is NULL, we'll treat the name as undefined.
 
-The TL type works best with prefix-unique names, where no name is a prefix of another name. Consider that TL `{ "bar" => "foo" }` will convert `"bard"` to `"food"`, and it's awkward to target 'bar' alone. To mitigate, we logically add suffix `".."` to all names, and front-end syntax can strongly discourage `".."` within user-defined names. This logical suffix enables translation of 'bar' together with 'bar.\*' via `{ "bar." => "foo." }` or 'bar' alone via `{ "bar.." => "foo.." }`. If translation removes this suffix, raise an error.
+The TL type works best with prefix-unique names, where no name is a prefix of another name. Consider that TL `{ "bar" => "foo" }` will convert `"bard"` to `"food"`, and it's awkward to target 'bar' alone. To mitigate, we logically add suffix `".."` to all names, and front-end syntax will discourage `".."` within user-defined names. The combination of logical suffix and front-end support allows translation of 'bar' together with 'bar.\*' via `{ "bar." => "foo." }` or 'bar' alone via `{ "bar.." => "foo.." }`. There is a possibility of translation *removing* the suffix that should be handled correctly by an evaluator's internal representation of names or environments. 
 
 Sequential translations can be composed into a single map. Rough sketch: to compute A followed-by B, first extend A with redundant rules such that output prefixes in A match as many input prefixes in B as possible, then translate A's outuput prefixes as names (longest matching prefix). To normalize, optionally erase new redundancy.
 
@@ -227,4 +227,20 @@ Applications are typically defined within a configuration, e.g. 'env.AppName.app
 
 Applications define 'settings' to guide final configuration of the runtime, a 'main' method to represent program behavior, 'http' and 'rpc' methods to handle events. See [glas apps](GlasApps.md). Application methods are generally `Env -> Program`, allowing the program to interact with the runtime via callbacks.
 
+## Hierarchy
 
+The proposed convention in glas is to represent hierarchical structure in a 'flat' namespace by use of dotted paths within the names. 
+
+The namespace model can easily represent hierarchical Env structures, and build a syntax around it. But the flat namespace simplifies translation, inheritance, override across boundaries. Also, due to the casual ability to pack up a prefix, e.g. `t:({ "" => Prefix }, e:())`, 
+
+but it does complicate translations
+
+It isn't difficult to represent first-class hierarchical namespaces in glas. We could support a dotted-path syntax to select definitions from Env objects in the namespace. But the proposed convention 
+
+ But favored convention is a flat namespace
+ * with dots in the names. These are almost equivalent, but the latter
+ *  
+ * 
+ * The convention for glas is to favor a large, flat namespaces
+ * instead of hierarchical environments. The two are roughly equivalent,
+ * but a flat namespace is easier to translate and less confusing when

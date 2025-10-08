@@ -2,8 +2,6 @@
 #include <assert.h>
 #include "impl.h"
 
-LOCAL int foo() { return 0; }
-
 API glas* glas_cx_new() {
     return NULL;
 }
