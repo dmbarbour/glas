@@ -24,18 +24,19 @@
  * let's check our assumptions.
  */
 _Static_assert(sizeof(void*) == 8, 
-    "glas runtime assumes 64-bit pointers");
+    "glas runtime assumes 64-bit pointers");    
 
-typedef struct MemPin {
-    // so we can release arrays or binaries
-    _Atomic(size_t) refct;
-    glas_pin pin;
-
-    // so we split-append on flat binary can recover 
-    // the original flat binary, we'll track the memory
+/**
+ * glas_mem_pin extends a glas_refct with the original location.
+ * 
+ * The motive is to support re-joining slices into a flat structure
+ * without reallocation. 
+ */
+typedef struct glas_mem_pin {
+    glas_refct mem_pin;
     void* mem;
     size_t len;
-} MemPin;
+} glas_mem_pin;
 
 typedef struct glas_cell {
     // GC Bits?
@@ -46,7 +47,7 @@ typedef struct glas_cell {
     // what type bits do we want in common?
     //  - ephemerality and abstraction (3 bits?)
     //  - linearity (1 bit)
-    //  - has destructor (glas_pin or MemPin) (1 bit)
+    //  - has destructor (glas_refct or glas_mem_pin) (1 bit)
     //  - 
     uint16_t type_arg; 
     uint32_t stem;
@@ -58,23 +59,25 @@ typedef struct glas_cell {
             struct glas_cell* R; 
         } branch;
         struct {
+            // to distinguish number of filled stems:
+            //   the first non-zero 'stem'
             uint32_t ext_stem[4];
             struct glas_cell* Next;         
             // note: we can also represent a singleton pointer
             // as a stem glas_cell with an empty stem.
         } stem;
-        uint8_t small_binary[24];       // binary of 8..24 items; byte length in type_arg
-        struct glas_cell* tuple[3];          // list of 1..3 items
+        uint8_t small_bin[24];       // binary of 8..24 items; byte length in type_arg
+        struct glas_cell* tuple[3];  // list of 1..3 items
         struct {
             size_t len;
             uint8_t const* data;
-            MemPin* pin;         // a separate gc_event to free memory.
-        } big_binary;
+            glas_mem_pin* pin;         // a separate gc_event to free memory.
+        } big_bin;
         struct {
             size_t len;                 // 
             struct glas_cell** data;    // pointer to array of glas_cells
-            MemPin* pin;         // to support GC event
-        } big_array;
+            glas_mem_pin* pin;         // to support GC event
+        } big_arr;
 
         struct {
             // this is primarily for rope nodes. Represents taking
@@ -88,7 +91,7 @@ typedef struct glas_cell {
         struct {
             // abstract, runtime-ephemeral, maybe-linear
             void* ref;
-            glas_pin pin;
+            glas_refct pin;
         } foreign_ptr;
 
         struct {
@@ -101,4 +104,5 @@ typedef struct glas_cell {
     } data;
 } glas_cell;
 
+_Static_assert(16 >= sizeof(glas_refct), "unexpected refct size");
 _Static_assert(32 == sizeof(glas_cell), "unexpected glas_cell size");
