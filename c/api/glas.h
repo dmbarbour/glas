@@ -17,6 +17,9 @@
  * 
  * Because C is not transactional, on_commit and on_abort callbacks 
  * exist to simplify integration.
+ * 
+ * Note: Names in glas cannot contain NULL values, which makes them
+ * generally compatible with C strings.
  */
 #pragma once
 #ifndef GLAS_H
@@ -485,13 +488,13 @@ void glas_call_prep(glas*, char const* name);
  * 
  * A step may fail to commit, typically due to error or conflict. The
  * glas system uses optimistic concurrency control: Resources are not
- * locked down. Instead, users keep transactions small and avoid data
- * contention; retry until successful. Queues can mitigate conflicts. 
+ * locked down. Instead, clients keep transactions small, avoid data
+ * contention, and retry as needed. 
  * 
- * When commit fails, the client may abort the step, return to a prior
- * state and retry (or try something new). However, most languages are 
- * not designed for this style of use, including C. For operations that
- * are difficult to undo, use `glas_step_on_commit` to defer action.
+ * The C language does not make 'undo' easy. To mitigate, the runtime
+ * provides 'on_commit' and 'on_abort' operations. Clients thus defer
+ * actions that are difficult to undo, or prepare operations that are
+ * easy to undo.
  */
 bool glas_step_commit(glas*);
 
@@ -511,17 +514,15 @@ void glas_step_abort(glas*);
  * until after commit. This prevents observation of results within the
  * step, but if that's acceptable it greatly simplifies integration.
  * 
- * In context of concurrency 
+ * To maintain transactional ordering of operations, operations can be
+ * organized into queues that are written within the transaction. These
+ * queues are then processed sequentially by runtime worker threads. The
+ * NULL queue is an exception, processed before return from step_commit.
  * 
- * transactions may write operations into queues.
- * These queues will be processed by runtime worker threads. The NULL
- * queue will be handled locally, e.g. within `glas_step_commit`. This
- * is useful for resources owned by the thread, or for synchronization,
- * waiting on workers to complete certain steps.
+ * Operations queues are associated with registers: the client names a
+ * register for unique identity, but that register is unmodified. Use of
+ * global registers is recommended in this role.
  * 
- * Every register has a logically associated opqueue via abstract data
- * environments (see `glas_reg_assoc`). But in practice, you'll likely
- * want global registers for client resources not tied to a thread. 
  */
 void glas_step_on_commit(glas*, void (*op)(void* arg), void* arg, 
     char const* opqueue);
@@ -539,26 +540,28 @@ void glas_step_on_abort_decref(glas*, glas_refct);
 /**
  * Checkpoints.
  * 
- * In many cases, aborting to the prior step is a good option. But we
- * can support checkpoints within a step, too. This involves saving more
- * intermediate states.
+ * Each glas thread has a stack of checkpoints, ordered monotonically: 
+ * top of stack is always the most recent checkpoint. At the start of
+ * each step, this stack contains one checkpoint, equivalent to abort.
  * 
- * Each thread has a separate stack just for checkpoints. Clients push
- * new checkpoints, rollback, or drop checkpoints without applying. The
- * checkpoint stack is cleared on every full abort or commit. 
+ * During the step, the program may save or push new checkpoints. Save
+ * will replace the most recent checkpoint. Push will add a new one to
+ * the checkpoint stack. Save and push may fail for the same reasons as
+ * commit may fail: conflict and errors. 
  * 
- * On rolling back, a checkpoint is popped from the stack, and on_abort 
- * actions added since the checkpoint was created will fire. The client
- * can handle this much like abort.
+ * Loading a checkpoint rewinds context state to the moment immediately
+ * before that checkpoint was saved or pushed. Thus, in case of retry, a
+ * client must again save or push the checkpoint and check for failure.
+ * Load will also process 'on_abort' operations corresponding to partial
+ * rollback.
  * 
- * Pushing a new checkpoint may fail for the same reasons commit fails.
- * This forces a checkpoint to literally require a check. In case of 
- * retries, a check is also performed immediately after rollback when 
- * pushing the same checkpoint that was popped on rollback.
+ * Checkpoints are relatively cheap, but they may encourage long-running
+ * transactions that run greater risk of conflict. 
  */
-bool glas_step_cp_push(glas*);
-void glas_step_cp_drop(glas*);
-void glas_step_cp_rollback(glas*);
+bool glas_checkpoint_save(glas*); // overwrite last checkpoint on success
+bool glas_checkpoint_push(glas*); // push new checkpoint onto stack on success
+void glas_checkpoint_drop(glas*); // drop last pushed checkpoint
+void glas_checkpoint_load(glas*); // update state to recent checkpoint
 
 
 /***************************************

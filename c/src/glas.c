@@ -1,11 +1,11 @@
 
 #include <assert.h>
-#include "impl.h"
+#include "glas_internal.h"
 
-API glas* glas_cx_new() {
+API glas* glas_thread_new() {
     return NULL;
 }
 
-API void glas_cx_drop(glas* g) {
+API void glas_thread_exit(glas* g) {
     assert((NULL == g) && "expecting a valid glas context");
 }

@@ -1,6 +1,6 @@
 CC = gcc
 
-CFLAGS_BASE = -Wall -Wextra -std=c11 -I api/ -fvisibility=hidden
+CFLAGS_BASE = -Wall -Wextra -Werror -std=c11 -I api/ -fvisibility=hidden
 DEBUG_CFLAGS = $(CFLAGS_BASE) -g -Og -DDEBUG
 RELEASE_CFLAGS = $(CFLAGS_BASE) -O3 -DNDEBUG
 
@@ -15,7 +15,7 @@ clean:
 
 SOURCES = main.c glas.c
 OBJECTS = $(SOURCES:.c=.o)
-EXTRA_DEPS = api/glas.h api/glas_ffi.h src/impl.h Makefile 
+EXTRA_DEPS = api/glas.h api/glas_ffi.h src/glas_internal.h Makefile 
 
 bin/debug/glas: $(addprefix build/debug/,$(OBJECTS))
 	@mkdir -p bin/debug
