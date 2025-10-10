@@ -14,18 +14,37 @@ We can squeeze many small values into an 8-byte pointer.
 
 * small bitstrings and leaf nodes
 * small binaries (up to 7 bytes)
-* small ratios (i.e. `(n:Int, d:Int)`, up to 30 bits each)
-  * ratios are not necessarily rationals in normal form
+* small trees or shrubs?
+* small rationals 
+  * 0..30 bits num
+  * 1..30 bits denom (implicit '1' bit prefix)
 
-Assuming 8-byte alignment of pointers, we have 3 tag bits. 
+Assuming 8-byte alignment of pointers.
 
         lowbyte             interpretation
-        xxxx0000            pointer
+        xxxxx000            pointer
         xxxxxx01            bitstring (0..61 bits)
-        xxxxxx10            ratio (0..30 bits in num and denom)
+        xxxxxx10            small tree (see below)?
         xxx00011            binary (xxx: encodes 1 to 7 bytes)
+        xxxxx111            small rational numbers
+
+### Shrubs
+
+The essential idea for shrubs is to compactly encode tree structures into bitstrings. This would reduce the space and GC overheads for structured values in the leaf nodes, albeit at the cost of increased CPU costs to handle them. This is possibly worthwhile, but some performance testing is needed.
+
+I could try to encode 'small trees' in general using an encoding such as:
+
+        00 - leaf
+        01 - pair (fby left fby right)
+        10 - left stem 
+        11 - right stem
+
+This would let me encode all trees up to about 30 bits instead of ratios. If I represent rationals as a `(N,D)` pair with non-zero D, I'd still get a lot of ratios within a pointer. Or I could use `111` for ratios.
 
 There is still plenty of unused space, but the above seems to cover all the low-hanging fruit.
+
+We could use 
+
 
 ### Small Reference Count
 

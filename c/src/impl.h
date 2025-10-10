@@ -19,64 +19,80 @@
 #endif
 
 
-/**
- * We'll be embedding some data into pointers, so
- * let's check our assumptions.
- */
 _Static_assert(sizeof(void*) == 8, 
     "glas runtime assumes 64-bit pointers");    
 
-/**
- * glas_mem_pin extends a glas_refct with the original location.
- * 
- * The motive is to support re-joining slices into a flat structure
- * without reallocation. 
- */
-typedef struct glas_mem_pin {
-    glas_refct mem_pin;
-    void* mem;
-    size_t len;
-} glas_mem_pin;
+typedef struct glas_cell glas_cell;
 
-typedef struct glas_cell {
-    // GC Bits?
-    //  - refct (6 to 8 bits)
-    //  - mark bits
-    //  - 
-    _Atomic(uint16_t) gchdr; // hybrid reference counts
-    // what type bits do we want in common?
-    //  - ephemerality and abstraction (3 bits?)
-    //  - linearity (1 bit)
-    //  - has destructor (glas_refct or glas_mem_pin) (1 bit)
-    //  - 
-    uint16_t type_arg; 
-    uint32_t stem;
+struct glas_cell {
+    // Refct 1..255
+    //   0 for sticky; special handling for GC 
+    //   possible max-entry tables
+    _Atomic(uint8_t) refct;
+    // 32-bit header per object
+    // ad hoc GC Bits:
+    //  sticky table
+    //  marking bits (2 for tricolor marking)
+    //  generation or region tracking
+    _Atomic(uint8_t) gcbits;
+    
+    // Type and Tags:
+    //  linearity (1 bit) - no need for affine vs relevant
+    //  ephemerality - 2 bits - 
+    //    options: plain-old-data, database, runtime, transaction
+    //    aggregator tracks most-ephemeral for self and children
+    //  finalizer? unclear it's needed; use doubly linked list.
+    //  Node type (4-5 bits)
+    uint8_t ttag;
+    // Extra stem bits.
+    //   00000000 - look for stem bits further in
+    uint8_t extra_stem;
     union {
         struct { 
-            uint32_t stemL; 
-            uint32_t stemR; 
-            struct glas_cell* L; 
-            struct glas_cell* R; 
+            uint32_t stemH; // bits before split
+            uint32_t stemL; // bits before L
+            uint32_t stemR; // bits before R
+            glas_cell* L; 
+            glas_cell* R; 
         } branch;
         struct {
-            // to distinguish number of filled stems:
-            //   the first non-zero 'stem'
-            uint32_t ext_stem[4];
-            struct glas_cell* Next;         
-            // note: we can also represent a singleton pointer
-            // as a stem glas_cell with an empty stem.
+            // fills from rhs (stem[4]) to lhs (stem[0]).
+            // leftmost unused stems are zero.
+            // leftmost non-zero stem is partial (0..31 bits)
+            // rightmost stems are filled (32 bits).
+            uint32_t stem[5];
+            glas_cell* D;
+
+            // aside: could squeeze in a few more bits with a stem[7]
+            // variant, but 
         } stem;
-        uint8_t small_bin[24];       // binary of 8..24 items; byte length in type_arg
+        struct {
+            // bits are encoded per stem, but interpretation differs
+            //
+            //    00 - leaf
+            //    01 - branch (fby left then right shrubs)
+            //    10 - left (fby shrub)
+            //    11 - right (fby shrub)
+            //
+            // We encode a small tree into a bitstring. Limited to leaf
+            // nodes in the allocated tree structure because pointers.
+            uint32_t bits[7];
+        } shrub;
+        struct {
+
+        } 
+
+        uint8_t small_bin[28];       // binary of 8..24 items; byte length in type_arg
         struct glas_cell* tuple[3];  // list of 1..3 items
         struct {
             size_t len;
             uint8_t const* data;
-            glas_mem_pin* pin;         // a separate gc_event to free memory.
+            glas_bin* pin;         // a separate gc_event to free memory.
         } big_bin;
         struct {
-            size_t len;                 // 
-            struct glas_cell** data;    // pointer to array of glas_cells
-            glas_mem_pin* pin;         // to support GC event
+            size_t len;          // 
+            glas_cell** data;    // pointer to array of glas_cells
+            glas_arr* pin;       // to support GC event
         } big_arr;
 
         struct {
@@ -102,7 +118,7 @@ typedef struct glas_cell {
 
         // tbd: gc features such as free cells, forwarding pointers
     } data;
-} glas_cell;
+};
 
 _Static_assert(16 >= sizeof(glas_refct), "unexpected refct size");
 _Static_assert(32 == sizeof(glas_cell), "unexpected glas_cell size");

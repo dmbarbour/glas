@@ -253,7 +253,7 @@ Fortunately, we don't need many scopes to cover most use-cases in glas systems. 
 * global scope - can send or receive over RPC
 * shared scope - can read or store to shared database
 * runtime scope - open files, network sockets
-* transaction scope - RPC objects, namespace refs
+* transaction scope - transaction-local data
 
 Whether we need all these scopes depends on the effects API and program model. For example, database scope is necessary only if we want abstract database references as first-class values within the database, or we could restrict namespace refs to compile-time. 
 
