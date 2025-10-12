@@ -261,13 +261,13 @@ Potential extensions:
 
 ## API Design Policy: Avoid Abstract References
 
-References complicate conflict analysis, garbage collection, and schema changes. The latter is mostly relevant to live coding, but it isn't trivial. I would prefer to avoid them. Linear objects avoid or mitigate these issues, but it's awkward to always be migrating linear objects to whomever is using them. 
+References complicate static conflict analysis for transactions, garbage collection, and schema changes. The latter is mostly relevant to live coding, but it isn't trivial. 
 
-We can resolve this by shoving the linear object into a shared register. Or, alternatively, 'unpack' the linear object into an abstract volume of shared registers to support fine-grained conflict analysis and update static locations.
+I propose to build most APIs that require 'objects' to build on the notion of abstract data environments. For example, to open a file, the caller provides a register to serve as the abstract location. But the actual data is stored based on association between caller register and a hidden filesystem API register.
 
-I propose that we build most APIs around the notion of unpacking linear objects into abstract volumes of references. We can 'pack' them up again for migration. But in many cases we'll just keep them unpacked all the time.
+To support dynamic numbers of open files and flexible migration, we can supply APIs to 'pack' the open file into a linear object, then 'unpack' before use. 
 
-As a related point, it is not difficult to model a heap and abstract references to it, but I would prefer to avoid doing so.
+In theory, APIs could use linear objects for everything. But I imagine the common use case is to operate on stable, unpacked objects across many transactional steps. Unpacking for multiple transactions simplifies fine-grained read-write conflict analysis of individual registers. The stability is also convenient for user comprehension and debug views.
 
 ## Regarding Filesystem, Network, Native GUI, Etc.
 

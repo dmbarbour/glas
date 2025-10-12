@@ -46,7 +46,7 @@ Namespaces encoded as structured glas data. This serves as an intermediate repre
             | y:AST                 # built-in fixpoint combinator 
         type Name = binary excluding NULL
         type Prefix = any binary prefix of Name
-        type TL = Map of Prefix to (Prefix | NULL) as radix-tree dict
+        type TL = Map of Prefix to (Optional Prefix) as radix-tree dict
 
 This representation does not include closures, thunks, reified environments, etc. necessary for evaluation. Those must be constructed indirectly through evaluation.
 
@@ -80,7 +80,7 @@ Performance at this layer isn't essential for my use case, though no reason to a
 
 ## Translation
 
-TL is a finite map of form `{ Prefix => (Prefix' | NULL) }`. To translate a name via TL, we find the longest matching prefix, then rewrite that to the output prefix. Alternatively, if output is NULL, we'll treat the name as undefined.
+TL is a finite map of form `{ Prefix => Optional Prefix }`. To translate a name via TL, we find the longest matching prefix, then rewrite that to the output prefix. Alternatively, if the rhs has no prefix, we'll treat the name as undefined.
 
 The TL type works best with prefix-unique names, where no name is a prefix of another name. Consider that TL `{ "bar" => "foo" }` will convert `"bard"` to `"food"`, and it's awkward to target 'bar' alone. To mitigate, we logically add suffix `".."` to all names, and front-end syntax will discourage `".."` within user-defined names. The combination of logical suffix and front-end support allows translation of 'bar' together with 'bar.\*' via `{ "bar." => "foo." }` or 'bar' alone via `{ "bar.." => "foo.." }`. There is a possibility of translation *removing* the suffix that should be handled correctly by an evaluator's internal representation of names or environments. 
 
@@ -94,7 +94,6 @@ Viable API:
 
         ("%macro", b:("ct.", P))        # bind ct to effects in P
         ct.load(Src) : Binary option    # load glas data based on query
-        ct.find(Src, FileRegex) : List of FilePath  # search near Src
         (%src.file FilePath Src) : Src
         (%src.dvcs.git Repo Ver FilePath Src) : Src
         (%src.meta MetaData Src) : Src  # add metadata to Src for reflection

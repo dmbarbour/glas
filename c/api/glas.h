@@ -6,9 +6,9 @@
  * begins with an empty namespace, stack, and auxilliary stash.
  * 
  * Information exchange between client and runtime is restricted to 
- * binaries, bitstrings, and client pointers (as abstract data). The
- * stack may contain wider varieties of data, including definitions
- * or reified namespace environments.
+ * binaries, integers, and client pointers (as abstract data). Stacks
+ * may contain other data structures, but they require translation to
+ * exchange. Data operations support translation. 
  * 
  * Error handling is transactional: the client performs a sequence of
  * operations on a thread then commits the step. In case of error or
@@ -141,7 +141,7 @@ void glas_init_default(glas*);
  **************************/
 
 /**
- * Reference counting shared objects.
+ * Reference-counting shared objects.
  * 
  * Zero-copy binaries and foreign pointers are reference-counted to
  * extend garbage collection beyond the runtime boundary. The count 
@@ -173,303 +173,365 @@ inline void glas_incref(glas_refct c) {
  ************************/
 
 /**
- * Test for definitions.
+ * Test for existence of definitions.
  * 
+ * The has_def variant returns true if the specified name is defined.
  * The has_prefix variant returns true if at least one name with the
- * prefix is definied.
+ * prefix is definied. Namespaces are lazily loaded, so testing for
+ * definitions unnecessarily may consume a lot of resources.
  * 
- * In the general case, this test may involve loading and compiling
- * files due to lazy evaluation of bound prefixes.
+ * Consider use of `glas_call_prepare` instead, using runtime worker
+ * threads to load definitions in the background.
  */
 bool glas_ns_has_def(glas*, char const* name);
-bool glas_ns_uses_prefix(glas*, char const* prefix);
+bool glas_ns_has_prefix(glas*, char const* prefix);
 
 /**
- * Define a name.
+ * Utility. Hide names or prefixes from the thread namespace.
  * 
- * A namespace object is popped from the stack and assigned a name. All 
- * namespace objects are supported, not just programs definitions. The 
- * context namespace is lexical, thus the definition is visible only to
- * future operations in the context.
+ * The namespace is lexically scoped, thus definitions may be reachable
+ * indirectly through other definitions. Unreachable definitions may be
+ * garbage collected by the runtime.
  */
-void glas_ns_define(glas*, char const* name);
+void glas_ns_hide_def(glas*, char const* name);
+void glas_ns_hide_prefix(glas*, char const* prefix);
 
 /**
- * Define many names.
+ * Define data.
  * 
- * A subset of namespace objects represent environments, basically a
- * dictionary of names `{ x = x_def, y = y_def, ... }` but with lazy
- * evaluation.
+ * This pops non-linear data from the stack then assigns a specified 
+ * name. Calling the name pushes a copy of the data onto the stack.
  * 
- * This function pops an environment from the data stack and binds it 
- * to a specified prefix. For example, if prefix is "$" we'd define "$x" 
- * and "$y". For dotted paths, we might use "foo." as a prefix.
- * 
- * All previous names with the same prefix are no longer in scope, even
- * when they aren't defined in the bound environment. For example, we 
- * can nuke a thread's namespace by binding an empty environment to "".
- * 
- * Binding a name to a prefix is semantically distinct from defining a
- * name to hold an environment. The two can serve similar roles under
- * assumptions about front-end syntax. In glas systems, the convention
- * is to build a big, flat namespace with hierarchy in names, e.g. the
- * "." in "foo.x" is part of the name, not syntax for env access. This
- * structure simplifies translations and overrides.
- * 
- * Binding preserves lazy evaluation of an environment. Thus, there may
- * be extra processing when first requesting a name. Consider use of
- * `glas_call_prep` to load definitions in a worker thread.
+ * Note: The thread namespace can be useful as a logically-immutable 
+ * data context. Shadowing names allows GC of the older definitions, but
+ * does not affect past forks or callbacks, only future operations. If 
+ * you do need mutability, see registers.
  */
-void glas_ns_bindenv(glas*, char const* prefix);
-
-/**
- * Push copy of definition onto stack.
- * 
- * The definition is lazy, thus no error if name is undefined. Not until
- * called, at least. Also, all namespace objects are abstract. You can
- * only peek inside via reflection APIs.
- */
-void glas_ns_pushdef(glas*, char const* name);
-
-/**
- * Push full or partial copy of the thread's namespace onto stack.
- *  
- * For symmetry with define, pushdef, and bind, includes a prefix. For
- * prefix "foo.", environment includes `{ x = foo.x, y = foo.y }` etc..
- * Use prefix "" for full namespace, NULL for empty namespace.
- */
-void glas_ns_pushenv(glas*, char const* prefix);
-
-
-/**
- * Evaluate namespace AST representation to namespace object.
- * 
- * Clients can construct an AST representation on the data stack, then
- * evaluate to a namespace object. This AST is evaluated in an empty 
- * environment, thus usually represents a function `Env -> AST'`. Error
- * if the AST is non-linear.
- * 
- * See GlasNamespaces.md for details.
- * 
- * Notes:
- * 
- * - Most namespace operations can be defined using eval and apply.
- *   Excepted are references with identity: callbacks, registers, etc.
- * - All namespace objects are sealed by the runtime. Clients cannot
- *   view the evaluated representation (modulo reflection APIs).
- */
-void glas_ns_ast_eval(glas*);
-
-/**
- * Apply a namespace function.
- * 
- * Pops namespace function then namespace argument from stack; pushes a
- * thunk representing a future result of applying function to argument. 
- * 
- * Namespace thunks are evaluated lazily by default, but may be forced
- * or sparked. A consequence of lazy evaluation.
- */
-void glas_ns_op_apply(glas*);
-
-/**
- * Define name to embedded data.
- * 
- * This wraps arbitrary data into a namespace object for use as a
- * definition, then promptly binds to a name.
- */
-void glas_ns_defdata(glas*, char const* name);
-
-/**
- * Extract a definition from Env on stack.
- * 
- * Pops Env from stack, pushes definition of name from that Env. Lazy,
- * thus no error if name is undefined.
- */
-void glas_ns_env_extract(glas*, char const* name);
+void glas_ns_data_def(glas*, char const* name);
 
 /**
  * Prefix-to-prefix Translations.
  * 
  * The glas namespace model uses prefix-to-prefix translations for many
  * purposes. Within C, we'll simply represent these as an array of pairs
- * of strings. 
+ * of strings terminating with NULL in the lhs. Example:
  * 
- *   { {"foo.", "bar."}, { "$", NULL }, { NULL, NULL } }
+ *   { {"bar.", "foo."}, { "$", NULL }, { NULL, NULL } }
  * 
- * In each case, lhs represents a match prefix, the rhs the update. The
- * rhs may be NULL, indicating the matched prefix links to nothing. Only 
- * the longest matching prefix is applied to each name, if any.
+ * During lookup, the runtime will find the longest matching lhs prefix
+ * then rewrite to rhs. If rhs is NULL, name is undefined. Otherwise, we
+ * rewrite the matched prefix to rhs then move on. The runtime speeds
+ * this up via caching.
  * 
- * Note: To support translations, a ".." suffix is logically added to
- * every name. Leveraging this, we can translate "bar.." to "foo.." or
- * "bar." to "foo." (affecting 'bar.*'), without accidentally converting
- * "bard" to "food".
+ * Prefix-to-prefix translations have an obvious weakness: translation
+ * of 'bar' to 'foo' also converts 'bard' to 'food'. To mitigate, the
+ * runtime implicitly adds a ".." suffix onto *every* name. Translations
+ * may take advantage: "bar." applies to both "bar" and "bar.x", and
+ * "bar.." is very unlikely to be a prefix of another name by accident.
  */
-typedef struct { char const *lhs, *rhs; } glas_tl; 
+typedef struct { char const *lhs, *rhs; } glas_ns_tl;
 
 /**
- * Construct an environment translation op.
+ * Apply translation to current namespace.
  * 
- * The resulting namespace object on the stack represents a function 
- * that, when applied, renames things in the environment. Use lhs for
- * the new names, rhs for the current names. 
+ * All future access to names is translated through this TL. Unreachable
+ * definitions can be collected. This can flexibly copy or hide parts of
+ * the namespace.
  */
-void glas_ns_pushtl(glas*, glas_tl const*);
+void glas_ns_tl_apply(glas*, glas_ns_tl const*);
 
 /**
- * Apply any `Env -> Env` namespace op to current namespace.
- * 
- * For example, apply a translation from pushtl, or apply an ad hoc
- * mixin. May apply to a specific prefix. This can be implemented via
- * `pushenv swap apply bindenv`, taking the operation from the stack.
+ * Push translation onto the stack as AST's TL type.
  */
-void glas_ns_include(glas*, char const* target_prefix);
+void glas_ns_tl_push(glas*, glas_ns_tl const*); // -- TL
 
+/** 
+ * Define by evaluation.
+ * 
+ * See GlasNamespaces.md for details on the AST representation. This
+ * operation pops an AST off the stack, validates the AST structure,
+ * then lazily evaluates in the thread namespace (or under an optional
+ * translation), then assigns the given name.
+ * 
+ * Note that any namespace AST can be evaluated and defined, but not all
+ * are valid as callable programs. They can be useful for defining ever
+ * larger constructs.
+ * 
+ * Note: Evaluates in thread namespace when translation is NULL.
+ */
+void glas_ns_eval_def(glas*, char const* name, glas_ns_tl const*);
+
+/**
+ * Define many names by evaluation.
+ * 
+ * Almost the same as eval_def, except the AST must evaluate to a 
+ * reified environment. Glas namespaces reify environments with the
+ * built-in 'e:()' AST node, lazily returning a structure like 
+ * `{ "x" = def_of_x, "y" = def_of_y, ... }`.
+ * 
+ * In this case, we'll bind this reified environment to the prefix. For
+ * example, use prefix "foo." to define "foo.x" and "foo.y" and so on.
+ * Note: There is no implicit separator between prefix and name. 
+ * 
+ * All definitions previously reachable through the prefix are hidden.
+ * That is, there is no merge of definitions.
+ */
+void glas_ns_eval_prefix(glas*, char const* prefix, glas_ns_tl const*);
+
+/**
+ * Rewrite thread namespace by evaluation.
+ * 
+ * Similar to eval_prefix, except the AST must evaluate to a namespace
+ * function of type `Env -> Env`. We then apply this to a specified
+ * prefix. 
+ * 
+ * This is a very flexible operation, capable of selectively merging,
+ * overriding, and hiding definitions. Of course, it's also the hardest 
+ * to control.
+ */
+void glas_ns_eval_apply(glas*, char const* prefix, glas_ns_tl const*);
+
+/**
+ * Utilities for namespace construction.
+ * 
+ * Namespace ASTs are ultimately plain old glas data on the stack.
+ */
+void glas_ns_ast_name_push(glas*, char const*); // -- Name ; just a binary 
+void glas_ns_ast_apply(glas*);  // ArgAST OpAST -- AST = (OpAST, ArgAST)
+void glas_ns_ast_tl(glas*); // ScopedAST TL -- AST = t:(TL, ScopedAST)
+void glas_ns_ast_fn(glas*); // BodyAST Name -- AST = f:(Name, BodyAST)
+void glas_ns_ast_env(glas*); // -- AST = e:() ; refies current environment
+void glas_ns_ast_prefix_push(glas*, char const*); // -- Prefix ; just a binary
+void glas_ns_ast_bind(glas*); //  BodyAST Prefix -- AST = b:(Prefix, AST)
+void glas_ns_ast_anno(glas*); // BodyAST AnnoAST -- AST = a:(AnnoAST, BodyAST)
+void glas_ns_ast_ifdef(glas*); // ElseAST ThenAST Name -- AST = c:(Name,(ThenAST, ElseAST))
+void glas_ns_ast_fix(glas*); // OpAST -- AST = y:OpAST
+void glas_ns_ast_data(glas*); // Data -- AST = d:Data   ; must be non-linear
+
+/**
+ * Composite AST constructors for common operations.
+ * 
+ * These constructors are all closed, i.e. names in the client thread
+ * do not affect their evaluation.
+ */
+void glas_ns_ast_op_tag(glas*, char const* tag); // op to add tag to an AST
+void glas_ns_ast_op_untag(glas*, char const* tag); // op to remove tag from AST
+void glas_ns_ast_op_extract(glas*, char const* name); // op to extract name from Env
+void glas_ns_ast_op_tl(glas*, glas_ns_tl const*); // op to translate an Env
+void glas_ns_ast_op_seq(glas*); // op for function composition (first arg applies last)
+
+/**
+ * Isolate an AST from the eval namespace.
+ * 
+ * Simply wraps AST with `t:({ "" => NULL }, AST)`. But this is a useful
+ * pattern to control bindings and resist accidents.
+ */
+void glas_ns_ast_isolate(glas*);
 
 /**
  * Define programs using callbacks.
  * 
- * A callback receives namespace bindings for host and caller. The host
- * represents lexical closure where the callback was defined. The caller
- * supports pass-by-ref registers and algebraic-effects handlers. 
+ * A callback receives access to two namespaces - host and caller - and
+ * the caller's data stack to a specified arity.
  * 
- * The callback also receives limited access to the caller's data stack 
- * and an empty stash. Access to the data stack is controlled by input 
- * arity. If output arity is not respected, we'll kill the thread.
+ * The host namespace is bound upon definition, a lexical closure. The 
+ * caller namespace is bound at each call site to an indicated prefix. 
+ * The latter provides access to caller registers and effects handlers.
+ * These bindings are subject to local translations.
  * 
- * Step commit is handled in a special way by callbacks:
+ * Step commit is handled carefully by callbacks:
  * 
- * - If the callback never commits, the operation is 'atomic' and commit
- *   is controlled by the caller.
- * - If the callback does commit, then any pending operations after the
- *   final commit are aborted. The runtime may warn if non-trivial.
- * - Attempts to commit in atomic sections cause atomicity errors. The
- *   client may specify no_atomic to support analysis prior to calls. 
+ * - Insofar as the callback does not commit, the operation may be used 
+ *   within atomic sections.
+ * - If a callback commits a step, it must also do so immediately before
+ *   returning. Pending actions are aborted with a warning.
+ * - Attempts to commit within an atomic section are atomicity errors.
+ *   If a callback must commit, consider the 'no_atomic' flag.
  * 
- * An uncreated error is possible prior to first commit, indicating the
- * call itself was aborted due to non-deterministic choice or conflict.
+ * The callback may fork threads, but the caller namespace is valid only
+ * for duration of the call. To support this, the caller waits for all
+ * forks to either exit or or detach (see below).
  * 
- * Forked of threads is also handled carefully: the caller waits for all
- * forks to terminate before continuing, i.e. fork-join semantics. This
- * is because caller environment is often invalid after return.
- * 
- * Callback operations may be called from multiple threads concurrently,
- * in general, thus should be mt-safe, in general.
+ * Note: An uncreated error is possible prior to first commit if caller
+ * was aborted. An unrecoverable arity error is possible if the callback
+ * does not respect its declared stack arity after committing.
  */
 typedef struct {
-    char const* debug_name;
     bool (*operation)(glas*, void* cbarg);
     void* cbarg;                // opaque, passed to operation
     glas_refct refct;           // memory management for cbarg
-    char const* caller_prefix;  // e.g. "$"
-    char const* host_prefix;    // e.g. "" (caller shadows "$")
+    char const* caller_prefix;  // e.g. "$"; shadows host names
     uint8_t ar_in, ar_out;      // data stack arity (enforced!)
     bool no_atomic;             // forbid calls in atomic sections
+    char const* debug_name;     // appears in stack traces, etc.
 } glas_prog_cb;
 
-/**
- * Define by callback.
- * 
- * This is a utility function that can be defined in terms of pushenv,
- * pushcb, apply, and define. But it covers the most common use case,
- * where we want to bind host_prefix to the thread namespace at time
- * of definition (lexical closure). 
- */
-void glas_ns_defcb(glas*, char const* name, glas_prog_cb const*);
+void glas_ns_cb_def(glas*, glas_prog_cb, glas_ns_tl const* host_ns);
 
 /**
- * Push anonymous callback as namespace object to stack.
+ * Detach a callback thread.
  * 
- * If host_prefix is NULL, this represents a ProgDef. Otherwise, it
- * represents `Env -> ProgDef` and must be applied to an Env for the
- * host closure.
+ * The `glas*` argument - the callback thread - starts with a special
+ * 'attached' status bound to the caller namespace. Exception: when the
+ * caller_prefix is NULL, a callback thread begins detached.
+ * 
+ * Upon detaching, the callback thread loses access to its caller's 
+ * environment. Names bound to the caller are treated as undefined. To
+ * fully detach, the callback thread must commit the detach operation.
+ * 
+ * This is mostly relevant for forks of the callback thread. Those forks
+ * may run several steps with access to the caller, detach, commit, then
+ * continue running concurrently with the caller.
+ * 
+ * Note: Attempting to detach when not attached may receive a warning,
+ * albeit at most once per callback definition. 
  */
-void glas_ns_pushcb(glas*, glas_prog_cb const*);
-
-/****************************
- * LOAD DEFINITIONS IN BULK
- ***************************/
+void glas_thread_detach(glas*);
 
 /**
- * Load primitive definitions.
+ * Fork a thread in the detached state.
  * 
- * This pushes an abstract namespace environment onto the data stack
- * that contains all the primitives. The client could use bindenv on
- * prefix "%" to integrate them.
- * 
- * This doesn't include names managed by front-end compilers, such as
- * %src, %env, %arg, and %self. However, it does include annotations,
- * accelerators, etc. not just program-model primitives.
+ * This is useful in context of atomic operations. There is no way to
+ * fully detach without committing, but a fork created in the detached
+ * state doesn't need to detach. The callback may fork detached threads,
+ * pass them to on_commit for deferred operation, then return.
  */
-void glas_load_prims(glas*);
-
-/**
- * TBD: override macro file loader, or perhaps virtualize filesystem.
- * 
- * Enable client to provide 'sources' without the full filesystem.
- */
-
-/**
- * Load a configuration.
- * 
- * This operation loads a configuration file:
- * 
- * - apply built-in compiler to file
- * - fixpoint bindings of %self and %env
- * - provide an %arg for runtime version info 
- * - bootstrap of %env.lang.glas and %env.lang.glob
- * 
- * It's difficult to tease this knot apart, and it's convenient to
- * have it as one big op.
- */
-void glas_load_config(glas*, char const* file);
-
-/**
- * TBD: Load a file. 
- * 
- */
-
-/**
- * Pushes a namespace object onto the stack that represents the 
- * glas built-in compiler for a given file extension (if any).
- * 
- * Fails, returning false, if no such compiler exists.
- */
-bool glas_load_builtin_compiler(glas*, char const* fileExt);
-
+void glas_thread_fork_detached(glas*);
 
 /**************************
  * CALLING FUNCTIONS
  **************************/
-
 /**
  * Run a defined program.
  * 
  * The called program receives access to the caller's data stack and 
- * namespace. We can optionally translate the namespace. NULL for the
- * glas_tl pointer indicates there is no translation. NULL for name
- * indicates popping anonymous definition from stack.
+ * namespace, subject to translation. We may translate the namespace;
+ * NULL for no translation.
  * 
- * The `_atomic` variant implicitly wraps the program with '%atomic'. 
- * This is useful when we want to ensure a program does not commit a
- * step. But it does restrict some operations, e.g. only the callbacks
- * marked 'atomic' are permitted.
+ * The `_atomic` variant forces the call to be atomic, i.e. the call
+ * cannot commit a real world step; attempting is an atomicity error.
  * 
- * Only two kinds of definitions are supported at this time:
- * - tag "prog": Env -> Program.
- * - tag "data": just embedded data
+ * Not every definition can be run as a program. Supported call types:
+ * 
+ * - embedded data, tagged "data", pushes copy of data onto stack
+ * - program definitions of `Env -> Program`, tagged "prog"
+ * - callback definitions, treated as programs
+ * 
  */
-void glas_call(glas*, char const* name, glas_tl const*);
-void glas_call_atomic(glas*, char const* name, glas_tl const*);
+void glas_call(glas*, char const* name, glas_ns_tl const*);
+void glas_call_atomic(glas*, char const* name, glas_ns_tl const*);
 
 /**
  * Ask runtime to prepare definitions.
  * 
- * Namespaces in glas systems are lazily evaluated. Binding to a prefix, 
- * especially. But we may indicate which names we'll need in advance to
- * let the runtime begin working in advance.
+ * This operation is intended to mitigate lazy loading of very large
+ * namespaces, asking runtime worker threads to load in the background.
  */
 void glas_call_prep(glas*, char const* name);
+
+/*********************************
+ * BULK DEFINITION AND MODULARITY
+ *********************************/
+/**
+ * Load primitive definitions.
+ * 
+ * This binds primitive definitions to a specified prefix, by convention
+ * "%". Includes annotations, accelerators, program constructors, etc..
+ * The %macro primitive provides the runtime's built-in file loader.
+ * 
+ * This doesn't include names managed by front-end compilers, such as
+ * %src, %env.*, %arg.*, and %self.*. 
+ */
+void glas_ns_load_prims(glas*, char const* prefix);
+
+/**
+ * Load built-in front-end compilers by file extension.
+ * 
+ * In glas systems, front-end compilers are pure functions of type
+ * `Binary -> AST` and must return a closed namespace AST. This is
+ * necessary for effective use within %macro programs.
+ * 
+ * By convention, compilers are available as '%env.lang.FileExt', and
+ * compilers will leverage this for lazy loading, i.e. returning an AST
+ * that, when applied to an environment, loads more files as needed.
+ * 
+ * Current built-in compilers:
+ * 
+ * - glas - a syntax intended for human use
+ * - glob - binary data serialization format
+ * 
+ * The intention is that these will be bootstrapped by the user
+ * configuration.
+ */
+void glas_ns_load_builtin_compilers(glas*, char const* prefix);
+
+/**
+ * Load a binary with the default loader, excluding the intercept.
+ * 
+ * The runtime generally assumes URIs represent file paths unless a
+ * 'protocol:' descriptor is explicitly included. 
+ * 
+ * Other than URI, everything is an output:
+ * 
+ * - ppBuf - where the data address is written (zero copy)
+ * - size - length of data is written
+ * - refct - destructor; call glas_decref when done with ppBuf.
+ * - return - true if okay, false if no file or other issues.
+ * 
+ */
+bool glas_rt_load_binary_default(char const* URI, 
+    uint8_t const** ppBuf, size_t*, glas_refct*);
+
+/**
+ * Override the default loader.
+ * 
+ * The runtime has a built-in loader, but it can be convenient for the
+ * client to redirect requests to internal structures, or to control 
+ * dependencies entirely.
+ * 
+ * The runtime will grant the client an opportunity to virtualize any
+ * absolute URIs it encounters. Relative paths will inherit from their
+ * origin whether they are treated as virtual or not.
+ */
+typedef struct {
+    bool (*virtualize_path)(char const* URI);
+    bool (*try_load_binary)(char const* URI, 
+        uint8_t const** ppBuf, size_t* len, glas_refct*);
+} glas_vfs;
+
+/**
+ * Override the runtime global loader.
+ * 
+ * Expected to be a one-off operation, before loading any files, perhaps
+ * even before creating the first glas thread. 
+ */
+void glas_rt_loader_intercept(glas_vfs);
+
+/**
+ * Load a file from the runtime.
+ */
+bool glas_rt_load_binary(char const* URI, 
+    uint8_t const** ppBuf, size_t* len, glas_refct*);
+
+/**
+ * Options useful for loading a file as a configuration.
+ */
+typedef struct {
+    char const* src;    // where to find the file
+    char const* as_ext; // if set, use in place of actual file extension
+    char const* prims;  // typically "%", won't get far without it
+    char const* args;   // optional, e.g. runtime version info, client context
+    char const* compilers; // where to find built-in compilers by file extension
+} glas_load_config_opts;
+
+/**
+ * Create a namespace AST that, when evaluated in a suitable namespace,
+ * should lazily load the configuration. 
+ */
+void glas_ns_load_config(glas*, glas_load_config_opts const*, char const* prefix);
+
+
+
 
 /*************************
  * TRANSACTIONS
@@ -563,6 +625,22 @@ bool glas_checkpoint_push(glas*); // push new checkpoint onto stack on success
 void glas_checkpoint_drop(glas*); // drop last pushed checkpoint
 void glas_checkpoint_load(glas*); // update state to recent checkpoint
 
+/**
+ * Timeouts.
+ * 
+ * Timeouts add a quota error to the current thread when it fails to 
+ * set the timeout again or commit in the allotted duration. A timeout 
+ * is canceled by setting 0. 
+ * 
+ * Timeouts cannot be fully respected in the final commit phases, e.g.
+ * for a shared database. They must be considered best effort.
+ * 
+ * Step timeouts do not carry between steps. Checkpoint timeouts are
+ * similar, being automatically reset to 0 after commit or checkpoint.
+ */
+void glas_step_timeout(glas*, uint64_t usec);
+void glas_checkpoint_timeout(glas*, uint64_t usec);
+
 
 /***************************************
  * ERRORS 
@@ -578,7 +656,7 @@ void glas_checkpoint_load(glas*); // update state to recent checkpoint
  * In context of state changes and non-deterministic choice, retrying
  * even assertion errors may succeed.
  */
-typedef enum GLAS_ERROR_FLAGS {
+typedef enum GLAS_ERROR_FLAGS { 
     GLAS_NO_ERRORS          = 0x000000,
     GLAS_E_UNRECOVERABLE    = 0x000001, // abort won't fix unrecoverable errors
 
@@ -596,58 +674,14 @@ typedef enum GLAS_ERROR_FLAGS {
     GLAS_E_ATOMICITY        = 0x020000, // attempted commit in atomic callback
     GLAS_E_ASSERT           = 0x040000, // runtime assertion failures
     GLAS_E_DATA_TYPE        = 0x080000, // runtime type errors
-    GLAS_E_DATA_QTY         = 0x100000, // e.g. for queue reads
+    GLAS_E_DATA_QTY         = 0x100000, // mostly for queue reads
     GLAS_E_UNDERFLOW        = 0x200000, // stack or stash underflow
+    GLAS_E_ARITY            = 0x400000, // callback arity violation; unrecoverable if committed
 } GLAS_ERROR_FLAGS;
 
 GLAS_ERROR_FLAGS glas_errors_read(glas*);           // read error flags
 void glas_errors_write(glas*, GLAS_ERROR_FLAGS);    // monotonic via bitwise 'or'
 
-
-/***************************************
- * DATA STACK MANIPULATION
- ***************************************/
-
- /**
-  * Basic Stack Manipulations.
-  * 
-  * The glas program model has a few simple operations: %copy, %drop, 
-  * %swap, and %dip. But this assumes a compiler will eliminate these
-  * operations, reducing the stack to logical locations. For this API,
-  * we'll provide a few bulk ops.
-  */
-void glas_data_copy(glas*, uint8_t amt); // A B -- A B A B ; copy 2
-void glas_data_drop(glas*, uint8_t amt); // A B C -- A ; drop 2
-void glas_data_swap(glas*);              // A B -- B A
-
-/**
- * Transfer data to or from auxilliary stack, called stash.
- * 
- * If amt > 0, transfers amt items from stack to stash. If amt < 0, 
- * transfers |amt| items from stash to stack. Always equivalent to 
- * transferring one item at a time (modulo performance).
- * 
- * The stash serves a similar role as the program primitive %dip, hiding
- * part of the stack from a subprogram. Callback contexts do not receive 
- * access to the caller's stash, and items in the callback context stash
- * are orphaned upon return.
- */
-void glas_data_stash(glas*, int8_t amt);
-
-/**
- * Visualize data stack shuffling with a C text literal.
- *   
- *   "abc-abcabc"   copy 3
- *   "abc-b"        drops a and c
- *   "abcd-abcab"   drops d, copies ab to top of stack
- * 
- * This operation navigates to '-', scans leftwards, popping items into
- * local variables [a-zA-Z]. Then it scans rightwards from '-', pushing 
- * variables back onto the stack. It's an error if the string reuses a
- * variable on the left, refers to unassigned variables on the right, or
- * lacks the '-' separator. Copy or drop of linear data is detected.
- */
-void glas_data_move(glas*, char const* moves);
 
 /*********************************************
  * DATA TRANSFER
@@ -776,14 +810,22 @@ bool glas_ptr_peek(void**, glas_refct*);
 /**
  * A dynamic approach to abstract data types.
  * 
- * When sealed, a key is referenced in the thread namespace. Currently,
- * the key must name a register, but there is opportunity for extension.
- * This data cannot be accessed until unsealed by the same key. Attempts
- * to do so result in errors.
+ * Data is sealed by a key. Currently, keys are limited to registers.
+ * To unseal the data requires naming the same register, though the
+ * name used to access the register may be different.
+ * 
+ * Any attempt to observe sealed data without unsealing it will error,
+ * as will unsealing with the wrong key.
+ * 
+ * Sealed data may be garbage collected when the register falls out of
+ * scope. Additionally, we may track 'ephemerality' of data, reporting
+ * an error when a client or program attempts to store short-lived data
+ * to a long-lived register by accident. 
+ * 
  * 
  * In glas systems, convention is to favor linear objects and abstract
- * data environments (via `glas_reg_assoc`) instead of abstract data 
- * types for references. But seals remain useful for other roles.
+ * data environments (via `reg_assoc`) instead of abstract data types 
+ * for references. But seals remain useful for other roles.
  */
 void glas_data_seal(glas*, char const* key);
 void glas_data_unseal(glas*, char const* key);
@@ -821,16 +863,15 @@ void glas_data_unseal_linear(glas*, char const* key);
 /**
  * New registers.
  * 
- * Introduces a new environment of registers as a namespace object on 
- * the data stack. All names are defined, each a unique register, all
- * initialized to zero. Logically, at least. In practice, the registers
- * are lazily created and may be garbage-collected if they hold a zero.
+ * In future operations, prefix refers to a fresh volume of registers.
+ * Every name in prefix is defined, i.e. we logically have an infinite
+ * set of registers. But they are lazily allocated by the runtime and
+ * initialized to zero on demand.
  * 
- * Aside: I call these 'registers' in context of glas programs, where
- * they are second-class and statically bounded. However, the client is
- * free to treat environments of registers as mutable dictionaries.
+ * A register that becomes unreachable, e.g. due to name shadowing, may
+ * be garbage collected.
  */
-void glas_load_reg_new(glas*);
+void glas_ns_reg_new(glas*, char const* prefix);
 
 /**
  * Associative registers.
@@ -840,6 +881,9 @@ void glas_load_reg_new(glas*);
  * 
  * Primary use case is abstract data environments. Instead of sealing
  * data, we can hide registers by controlling access to other registers.
+ * 
+ * The entire volume of associative registers may be garbage collected 
+ * if either register becomes unreachable.
  */
 void glas_load_reg_assoc(glas*, char const* r1, char const* r2);
 
@@ -847,8 +891,7 @@ void glas_load_reg_assoc(glas*, char const* r1, char const* r2);
  * Runtime-global registers.
  * 
  * Shared registers bound to static globals in the runtime library. This
- * allows for sharing data even between independent threads, or building
- * something like a shared databus or pubsub model.
+ * allows for communication between glas threads of different origins.
  * 
  * Global registers serve as a useful proxy for client resources, such
  * as for operations queues in `glas_step_on_commit`.
@@ -874,7 +917,7 @@ void glas_load_reg_global(glas*);
 void glas_reg_rw(glas*, char const*); // A -- B
 
 /**
- * The ever popular get/set operations.
+ * The basic get/set operations.
  * 
  * The get operation will copy data from a cell to the stack. The set 
  * operation pops data from the stack and overwrites the register. These
@@ -896,7 +939,7 @@ void glas_reg_set(glas*, char const*); // A --
  * 
  * The register must contain a list, and is used under constraints: the
  * reader cannot perform partial reads, i.e. error if fewer items than 
- * requested are available. A writer must not read register contents.
+ * requested are available. A writer does not read register content.
  * 
  * Under these constraints, we can support a single reader and many
  * concurrent writers without a read-write conflict. Each writer can
@@ -932,12 +975,12 @@ void glas_reg_bag_peek(glas*, char const*); // -- Data; as read copy write
 /**  
  * TBD: More structures I'm interested in accelerating:
  * 
- * We can feasibly treat a register containing a dict as a key-value
- * database, with fine-grained read-write conflicts per key.
+ * Indexed registers containing a dict or array, tracking fine-grained
+ * read-write conflicts per index.
  * 
- * We can support a few CRDTs, allowing multiple transactions to read 
- * and write their own replicas concurrently, synchronizing between
- * transactions. Especially valuable for distributed runtimes.
+ * CRDTs, allowing multiple transactions to concurrently read and write 
+ * their own replicas, synchronizing between transactions. Especially 
+ * valuable for distributed runtimes.
  */
 
 /**
@@ -950,8 +993,45 @@ void glas_reg_bag_peek(glas*, char const*); // -- Data; as read copy write
  */
 
 /********************************
- * COMPUTATIONS AND OPERATIONS
+ * BASIC DATA MANIPULATION
  ********************************/
+
+/**
+ * Primitive Stack Manipulations.
+ */
+void glas_data_copy(glas*, uint8_t amt); // A B -- A B A B ; copy 2
+void glas_data_drop(glas*, uint8_t amt); // A B C -- A ; drop 2
+void glas_data_swap(glas*);              // A B -- B A
+
+/**
+ * Transfer data to or from auxilliary stack, called stash.
+ * 
+ * If amt > 0, transfers amt items from stack to stash. If amt < 0, 
+ * transfers |amt| items from stash to stack. Always equivalent to 
+ * transferring one item at a time (modulo performance).
+ * 
+ * The stash serves a similar role as the program primitive %dip, hiding
+ * part of the stack from a subprogram. Callback threads do not receive 
+ * access to a caller's stash, and items remaining in a callback thread
+ * stash are orphaned upon return.
+ */
+void glas_data_stash(glas*, int8_t amt);
+
+/**
+ * Visualize data stack shuffling with a C text literal.
+ *   
+ *   "abc-abcabc"   copy 3
+ *   "abc-b"        drops a and c
+ *   "abcd-abcab"   drops d, copies ab to top of stack
+ * 
+ * This operation navigates to '-', scans leftwards, popping items into
+ * local variables [a-zA-Z]. Then it scans rightwards from '-', pushing 
+ * variables back onto the stack. It's an error if the string reuses a
+ * variable on the left, refers to unassigned variables on the right, or
+ * lacks the '-' separator. Copy or drop of linear data is detected.
+ */
+void glas_data_move(glas*, char const* moves);
+
 
 /**
  * Primitive Operations
@@ -977,7 +1057,7 @@ bool glas_data_is_list(glas*);      // () or (A, List)
 bool glas_data_is_binary(glas*);    // List of 0..255
 bool glas_data_is_bitstr(glas*);    // () or 0b0.Bits or 0b1.Bits 
 bool glas_data_is_dict(glas*);      // byte-aligned radix-tree dicts
-bool glas_data_is_ratio(glas*);     // dicts of form { n:Bits, d:Bits }
+bool glas_data_is_rational(glas*);  // dicts of form { n:Bits, d:Bits }, non-empty d 
 
 /**
  * List Operations
@@ -999,18 +1079,18 @@ void glas_bits_invert(glas*); // flip 0 to 1 and vice versa
 /**
  * Bitstring-Binary Conversions
  * 
- * The 'from_bin' operation converts binary to bitstring. Each byte
+ * The 'of_bin' operation converts binary to bitstring. Each byte
  * is translated to an 8-bit octet by adding a zeroes prefix, then 
  * appended, preserving order (msb to lsb, first byte to last).
  * 
  * The 'to_bin' operation simply does the opposite. It's an error on
  * a bitstring that isn't a multiple of 8 bits in length.
  * 
- * Note: Bitstrings receive far less optimization than binaries. They
- * are compactly represented
+ * Note: Bitstrings receive less optimization than binaries, and are
+ * O(N), though compactly represented where feasible.
  */
-void glas_bits_from_bin(glas*); // Binary -- Bitstring
-void glas_bits_to_bin(glas*);   // Bitstring -- Binary
+void glas_bits_of_bin(glas*); // Binary -- Bitstring
+void glas_bits_to_bin(glas*); // Bitstring -- Binary
 
 /**
  * Dict Operations 
@@ -1021,8 +1101,8 @@ void glas_bits_to_bin(glas*);   // Bitstring -- Binary
  */
 void glas_dict_insert(glas*);       // Item Record Label -- Record'
 bool glas_dict_remove(glas*);       // Record Label -- Item Record' | FAIL
-void glas_dict_insert_l(glas*, char const* label); // Item Record -- Record'
-bool glas_dict_remove_l(glas*, char const* label); // Record -- Item Record' | FAIL
+void glas_dict_insert_label(glas*, char const* label); // Item Record -- Record'
+bool glas_dict_remove_label(glas*, char const* label); // Record -- Item Record' | FAIL
 // TBD: effecient iteration over dicts, merge of dicts
 
 /**
@@ -1037,37 +1117,55 @@ bool glas_dict_remove_l(glas*, char const* label); // Record -- Item Record' | F
  * Shrubs 
  * 
  * The runtime supports a simple encoding of trees into binaries. This
- * is useful for compact structure near leaf nodes within a tree, but it 
- * can also be useful for pushing or extracting plain glas data.
+ * offers means to push tightly structured data through the API without
+ * too many API calls or allocations. The C program can construct the
+ * binary.
  * 
- *    00 - leaf
+ *    00 - leaf, e.g. terminates a left branch
  *    01 - branch, followed by left then right shrubs
  *    10 - left stem, followed by shrub
  *    11 - right stem, followed by shrub
  *
- * A final suffix of zeroes may be truncated or padded as needed to 
- * represent a complete binary. For example, '01' becomes '01 00 00'
- * which translates to singleton list of the unit value, also the glas
- * representation for 'true'.
- *  
- * Not all binaries represent valid shrubs. Abstract data of any 
- * sort cannot be converted.
+ * A final suffix of zeroes may be truncated or padded as needed. Any
+ * other content will result in an error. 
  */
-void glas_shrub_from_bin(glas*); 
+void glas_shrub_of_bin(glas*); 
 void glas_shrub_to_bin(glas*);
 
-/*******************************
- * NAMESPACES AND DEFINITIONS
- *******************************/
+/******************************
+ * RUNTIME REFLECTION
+ *****************************/
+
+/**
+ * Background calls, a transactional escape.
+ * 
+ * Logically, a bgcall runs *before* the caller's current step. This is
+ * useful for fetching data that could, in principle, have been safely 
+ * collected and cached even without the request. Such as HTTP GET. It's 
+ * also useful for triggering 'lazy' work that could, in principle, have 
+ * been triggered previously.
+ * 
+ * Mechanically, bgcall is initiated by the runtime in another thread.
+ * The operation receives a data argument from the caller, and returns
+ * a data result, both non-linear. The runtime provides a method to
+ * test for cancellation, e.g. "canceled".
+ * 
+ * The caller waits indefinitely, but may be interrupted, e.g. due to 
+ * transaction conflict, choice, or timeout. There is an opportunity to
+ * attach to the same ongoing bgcall via same arg and op. But, at some
+ * point, the runtime may heuristically cancel the operation.
+ * 
+ * Of course, clients of this API don't lack transactional escapes. But
+ * bgcall is still convenient for consistent integration. 
+ */ 
+void glas_refl_bgcall(glas*, char const* op);
 
 /** TBD
- * - access to bgcalls
- * - access to other reflection APIs
- *   - logging
- *   - error info
- *   - etc.
+ * - logging and profiling code
+ * - errors, stack traces
+ * - inspect and kill operations
+ * - memory and gc (profiling, etc.)
  */
-
 
 #define GLAS_H
 #endif

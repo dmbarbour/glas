@@ -18,76 +18,69 @@
   #define LOCAL static
 #endif
 
-_Static_assert(sizeof(void*) == 8, 
+static_assert((sizeof(void*) == 8), 
     "glas runtime assumes 64-bit pointers");    
+static_assert((sizeof(_Atomic(uint8_t)) == 1), 
+    "glas runtime assumes atomic bytes");
 
-/**
- * GC design notes:
- * 
- * I have the idea of using hybrid reference counts, just a small
- * 1..255 count to support in-place updates and push most GC to the
- * mutator. 
- * 
- * When the object reaches 256, we set refct to 0 but push the object
- * into a sticky list (buffer-backed) of objects for the GC to track.
- * This adds about one pointer overhead for every sticky object, but
- * those should be relatively rare.
- * 
- * When we perform a full mark and sweep, we can clear objects from
- * the sticky list, and still propagate decrefs and such to their 
- * children normally, and apply finalizers when those are targeted.
- * The sticky list doubles as our finalizer table, in this sense.
- * 
- * The sticky list can be compacted upon sweep, moving data from 
- * end of list to the opened slots. Alternatively, we can track
- * a simple linked list of open slots.
- * 
- * Can use tricolor marking. No need to mark non-sticky objects in
- * the sense of actually updating the gcbits.
- * 
- * This is a non-compacting GC. Perhaps in the future, I can try to
- * support compacting GC. Adapting G1GC or ZGC could be nice.
- * 
- * A relevant consideration is how reference counts interact with loops.
- * Most glas data operations cannot introduce loops, but loops can be
- * introduced by:
- * 
- * - namespace fixpoint
- * - first-class registers
- * - thunks? uncertain, likely not
- * 
- * To mitigate this, some objects might be moved to the sticky region 
- * immediately, especially namespace environments and registers.
- * 
- * In any case, I should start simple and build from there.
- */
-
+   
 typedef struct glas_cell glas_cell;
-typedef struct glas_pin glas_pin;
+
+typedef enum glas_type_id {
+    GLAS_TYPE_INVALID = 0,
+    GLAS_TYPE_FOREIGN_PTR,
+    GLAS_TYPE_FORWARD_PTR,
+    GLAS_TYPE_STEM,
+    GLAS_TYPE_BRANCH,
+    GLAS_TYPE_SMALL_BIN,
+    GLAS_TYPE_SMALL_ARR,
+    GLAS_TYPE_BIG_BIN,
+    GLAS_TYPE_BIG_ARR,
+    GLAS_TYPE_TAKE_CONCAT, 
+    GLAS_TYPE_SEAL,
+    GLAS_TYPE_REG,
+    GLAS_TYPE_TOMBSTONE,
+    // under development
+    GLAS_TYPE_THUNK,
+    GLAS_TYPE_BLACKHOLE, // thunk being computed
+    GLAS_TYPE_CONTENT_ADDRESSED_DATA,
+    GLAS_TYPE_SHRUB,
+    // end of list
+    GLAS_TYPEID_COUNT
+} glas_type_id;
+// Also use top few bits, e.g. for optional values: singleton list
+// without an extra allocation
+
+static_assert(32 > GLAS_TYPEID_COUNT, 
+    "glas runtime wants to reserve a few bits for logical wrappers");
 
 typedef struct {
-    _Atomic(uint8_t) refct; // 1..255, 0 sticky; leave to GC
-    // ad hoc GC Bits:
-    //  in sticky table? unclear if needed.
-    //  finalizer? unclear if needed
-    //  marking bits (2 for tricolor marking)
-    //  generations and regions - for the future
-    _Atomic(uint8_t) gcbits;
-
-    // Type and Tags:
-    //  linearity (1 bit) - no need for affine vs relevant
-    //  ephemerality - 2 bits - 
-    //    options: plain-old-data, database, runtime, transaction
-    //    aggregator tracks most-ephemeral for self and children
-    //  finalizer? unclear it's needed; use doubly linked list.
-    //  Node type (4-5 bits)
-    uint8_t type;
-    uint8_t arg; // type specific, e.g. binary length
+    uint8_t type_aggr; // monoidal, e.g. linear, ephemeral (2+ bits), abstract
+    uint8_t type_id;   // logical structure of this node
+    uint8_t type_arg;  // e.g. number of bytes in small_bin
+    uint8_t reserved; 
 } glas_cell_hdr;
 
+// For GC, a conservative scan from old to young is probably good
+// enough, but we could track objects per page and per card more 
+// precisely
+
+// note: should have a function from cell_hdr to a static bitmap 
+// of pointer fields to support GC.
+// note: consider tracking objects per card as a bitmap. This would
+// serve as an alternative free list. With 32 byte allocations and 512
+// byte cards, a uint16 per card could give a bitmap of all objects.
 
 
-// For finalizers, just need a glas_refct in a cell, pinned by another. 
+
+// Thought: one shape bit could support 'singleton list' versions of 
+// each shape. This would support optional values without an extra
+// allocation, similar to how pervasive stem bits help. With two bits,
+// this could be multiple levels deep. 
+
+// For finalizers, just need a glas_refct in a cell. 
+// Can couple to foreign pointers.
+// 
 //
 // For array slices, I can maintain a reference to the origin array so
 // I can potentially rejoin array slices on append. Only need to mark
@@ -102,91 +95,97 @@ struct glas_cell {
     uint32_t stemH; // 0..31 bits
     union {
         struct { 
-            uint32_t stemL; // bits before L
-            uint32_t stemR; // bits before R
+            uint32_t stemL; // 0..31 bits before L
+            uint32_t stemR; // 0..31 bits before R
             glas_cell* L; 
             glas_cell* R; 
         } branch;
         struct {
-            // filled right to left, each bits is either 0 or 32
-            // bits (use common cell 'stemH' for partial). Track number
-            // filled in 'arg'. 
+            // track number filled in shape_arg.
+            // only stemH is partial, these are each 32 bits
             uint32_t bits[4]; // 
             glas_cell* D;
         } stem;
         struct {
-            // (Tentative)
-            // bits are encoded per stem, but interpretation differs
+            // (TENTATIVE)
+            // encode a small tree within a bitstring.
+            // (Note: stemH is still a normal stem.)
             //
-            //    00 - leaf, may truncate in suffix
+            //    00 - leaf
             //    01 - branch (fby left then right shrubs)
             //    10 - left (fby shrub)
             //    11 - right (fby shrub)
             //
-            // We encode a small tree into a bitstring. Limited to leaf
-            // nodes in the allocated tree structure because pointers.
+            // can track fill in arg, but also use zeroes prefix,
+            // first 'partial' fill is non-zero.
             uint32_t bits[6];
         } shrub;
+
         uint8_t    small_bin[24];
         glas_cell* small_arr[3]; // a list of 1..3 items
 
         struct {
             uint8_t const* data;
             size_t len;
-            glas_cell* pin; // indirect if slice
+            glas_cell* fptr;
+            // note: append aligned slices back together if fptr matches
         } big_bin;
 
         struct {
             glas_cell** data;
             size_t len;
-            glas_cell* pin; // indirect if slice
+            glas_cell* fptr;
+            // note: append aligned slices back together if fptr matches
         } big_arr;
 
         struct {
-            void* fp;
-            glas_cell* pin;
+            void* ptr;
+            glas_refct pin;
         } foreign_ptr;
 
-        glas_refct pin; // for binaries, arrays, foreign pointers
-
         struct {
-            // this is primarily for rope nodes. Represents takeLeft items
-            // from left, then concatenation onto right. We'll ensure by 
-            // construction that 'takeLeft' is a valid.
-            //
-            // Can also be used for slicing, e.g. with 'right' as unit.
-            size_t takeLeft;
-            struct glas_cell* left;
-            struct glas_cell* right;
+            // this is for inner rope nodes. Concatenate two lists,
+            // and track length of left list for indexing purposes.
+            uint64_t left_len;
+            glas_cell* left;
+            glas_cell* right;
         } concat;
 
         struct {
             // linearity is recorded into header
-            glas_cell* key;
-            glas_cell* data;
+            glas_cell* key;     // weakref to register
+            glas_cell* data;    // sealed data
+            // sealed data may be collected (set to NULL) after the key
+            // becomes unreachable, thus also serves as an ephemeron.
         } seal;
 
         struct {
-            glas_cell* data;
-            glas_cell* assoc_l; // Associated volumes (r, other)
-            glas_cell* assoc_r; // Associated volumes (other, r)
-            // may represent data + assoc list?
-            // may need separate for env
+            glas_cell* content;
+            glas_cell* assoc_lhs; // associated volumes (r,_)
+            glas_cell* tombstone; // weakref + stable ID; reg is finalizer
+            // Note: encode a 'volume' as mutable dict of registers, held
+            // by another register as needed.
+            //
+            // Encode associated volumes via dict (radix tree) mapping a
+            // stable ID of rhs registers to an rhs-sealed volume. GC can 
+            // heuristically cleanup this dict.
         } reg;
 
         struct {
-            // not quite sure what I need here.
-        } thunk;
-
-        // TBD: Namespace objects
-        //   env, closures, etc..
-        //   could feasibly abstract regular data.
-
+            glas_cell* target;  // NULL if collected
+            // glas_cell* pin;  // NULL if collected; extended finalizer
+            uint64_t   id;      // for hashmaps, debugging, etc.
+            // id is global atomic incref; I assume 64 bits is adequate.
+        } tombstone;
 
         struct {
-            // tentative - error values
-            glas_cell* error_arg;
-        } error_val;
+            // distinguish program and namespace layer thunks in arg?
+            glas_cell* operation;
+            glas_cell* environment;
+            // may need to convert to a 'blackhole' for eval to let 
+            // others await the result
+        } thunk;
+        glas_cell* forward_ptr; // e.g. result of thunk
 
         // tbd: gc features such as free cells, forwarding pointers
     } data;

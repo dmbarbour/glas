@@ -63,18 +63,6 @@ void glas_free_cli_options(glas_cli_options* pOpts) {
     free(pOpts);
 }
 
-#if 0
-void glas_cli_print_options(glas_cli_options *pOpts) {
-    fprintf(stdout, "action=%d\n", pOpts->action);
-    fprintf(stdout, "src=%s\n", pOpts->app_src);
-    fprintf(stdout, "script_lang=%s\n", pOpts->script_lang);
-    fprintf(stdout, "argc_rem=%d\n", pOpts->argc_rem);
-    for(int ix = 0; ix < pOpts->argc_rem; ++ix) {
-        fprintf(stdout, "arv_rem[%d]=%s\n", ix, pOpts->argv_rem[ix]);
-    }
-}
-#endif
-
 // just brute forcing this for now. Maybe make it elegant later.
 glas_cli_options* glas_cli_parse_args(int argc, char const* const* argv) {
     #define CLI_ARG_STEP(N) do { argc -= N; argv += N; } while(0)
@@ -91,7 +79,10 @@ glas_cli_options* glas_cli_parse_args(int argc, char const* const* argv) {
         CLI_ARG_STEP(1);
     } else if((0 == strcmp("--extract", argv[0])) && (argc == 2)) {
         result->action = GLAS_ACT_EXTRACT_BINARY;
-        result->app_src = strdup(argv[1]);
+        size_t const buflen = strlen(argv[1]) + 32;
+        char buf[buflen];
+        snprintf(buf, buflen, "env.%s", argv[1]);
+        result->app_src = strdup(buf);
         CLI_ARG_STEP(2);
     } else if((0 == strcmp("--run", argv[0])) && (argc > 1)) {
         result->action = GLAS_ACT_RUN;
@@ -141,28 +132,32 @@ glas_cli_options* glas_cli_parse_args(int argc, char const* const* argv) {
     return result;
 }
 
+int glas_cli_bit(int argc, char const* const* argv);
+int glas_cli_extract(char const* src);
+
 int main(int argc, char const* const* argv) 
 {
+    int result = 0;
     glas_cli_options* pOpt = glas_cli_parse_args(argc, argv);
     //glas_cli_print_options(pOpt);
 
 
-    if(GLAS_ACT_HELP == pOpt->action) {
+    if((GLAS_ACT_HELP == pOpt->action) || 
+       (GLAS_ACT_UNRECOGNIZED == pOpt->action)) 
+    {
         fprintf(stdout, "glas version %s\n", GLAS_VER);
         fprintf(stdout, "%s", GLAS_HELP_STR);
-        fflush(stdout);
-        return 0;
-    } 
+    } else if(GLAS_ACT_BUILT_IN_TEST == pOpt->action) {
+        result = glas_cli_bit(pOpt->argc_rem, pOpt->argv_rem);
+    } else if(GLAS_ACT_EXTRACT_BINARY == pOpt->action) {
+        result = glas_cli_extract(pOpt->app_src);
+    } else {
+        fprintf(stdout, "command not yet supported!\n");
+    }
 
-    glas* g = glas_thread_new();
 
     #if 0
 
-    if(!glas_apply_user_config(grt)) {
-        fprintf(stderr, "Unable to load configuration.\n");
-        glas_destroy(grt);
-        return -1;
-    }
     
     if(GLAS_ACTION_RUN == opt.action) {
         size_t const full_src_len = strlen(opt.app_src) + 32;
@@ -180,9 +175,25 @@ int main(int argc, char const* const* argv)
     }
     #endif
 
-    glas_thread_exit(g);
+    fflush(stdout);
     glas_free_cli_options(pOpt);
-    return 0;
+    return result;
 
 
+}
+
+int glas_cli_bit(int argc, char const* const* argv) {
+    (void) argc; (void) argv;
+    glas* g = glas_thread_new();
+
+    glas_thread_exit(g);
+    return -1;
+}
+
+int glas_cli_extract(char const* src) {
+    (void) src;
+    glas* g = glas_thread_new();
+
+    glas_thread_exit(g);
+    return -1;
 }

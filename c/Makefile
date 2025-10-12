@@ -15,7 +15,7 @@ clean:
 
 SOURCES = main.c glas.c
 OBJECTS = $(SOURCES:.c=.o)
-EXTRA_DEPS = api/glas.h api/glas_ffi.h src/glas_internal.h Makefile 
+EXTRA_DEPS = api/glas.h src/glas_internal.h Makefile 
 
 bin/debug/glas: $(addprefix build/debug/,$(OBJECTS))
 	@mkdir -p bin/debug

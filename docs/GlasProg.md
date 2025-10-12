@@ -241,7 +241,7 @@ However, even the simplest of traces can be useful if users are careful about wh
 
 ### Lazy Computation? Defer.
 
-        (%an.lazy.thunk Options)
+        %an.lazy.thunk
         %an.lazy.force 
         %an.lazy.spark 
 
@@ -250,6 +250,7 @@ In the general case, we could 'thunkify' an operation by capturing each input an
 There are also many restrictions on Op: Op must not '%fail' or '%yield' (outside of '%atomic'). It may diverge, in which case 'force' will also diverge. Checking these conditions implies some static analysis.
 
 I think it might be best to defer laziness until static analysis is more mature. But if there is demand, e.g. for parallel evaluation of sparks, we could get started with laziness of pure 1--1 computations. 
+
 
 ### Accelerators
 
