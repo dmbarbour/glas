@@ -1,6 +1,7 @@
 CC = gcc
 
 CFLAGS_BASE = -Wall -Wextra -Werror -std=c11 -I api/ -fvisibility=hidden
+LINK_FLAGS = -lpthreads
 DEBUG_CFLAGS = $(CFLAGS_BASE) -g -Og -DDEBUG
 RELEASE_CFLAGS = $(CFLAGS_BASE) -O3 -DNDEBUG
 

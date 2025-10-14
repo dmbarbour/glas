@@ -80,7 +80,8 @@ glas* glas_thread_fork(glas* origin, uint8_t stack_transfer);
 /**
  * Set debug name for a thread.
  * 
- * To appear in warning messages, stack traces, etc..
+ * Appears in warning messages, stack traces, and so on. Definitions and
+ * forks may capture the current name of the thread that created them. 
  */
 void glas_thread_set_debug_name(glas*, char const* debug_name);
 
@@ -309,10 +310,10 @@ void glas_ns_ast_fix(glas*); // OpAST -- AST = y:OpAST
 void glas_ns_ast_data(glas*); // Data -- AST = d:Data   ; must be non-linear
 
 /**
- * Composite AST constructors for common operations.
+ * Composite constructors for common combinators.
  * 
- * These constructors are all closed, i.e. names in the client thread
- * do not affect their evaluation.
+ * These constructors produce closed terms, i.e. the AST doesn't depend
+ * on any names in the evaluation environment.
  */
 void glas_ns_ast_op_tag(glas*, char const* tag); // op to add tag to an AST
 void glas_ns_ast_op_untag(glas*, char const* tag); // op to remove tag from AST
@@ -321,32 +322,33 @@ void glas_ns_ast_op_tl(glas*, glas_ns_tl const*); // op to translate an Env
 void glas_ns_ast_op_seq(glas*); // op for function composition (first arg applies last)
 
 /**
- * Isolate an AST from the eval namespace.
+ * Isolate AST from the evaluation environment.
  * 
- * Simply wraps AST with `t:({ "" => NULL }, AST)`. But this is a useful
- * pattern to control bindings and resist accidents.
+ * Mechanically, wraps AST with `t:({ "" => NULL }, AST)`. This enforces
+ * an assumption that an AST represents a closed term.  
  */
-void glas_ns_ast_isolate(glas*);
+void glas_ns_ast_close(glas*);
 
 /**
  * Define programs using callbacks.
  * 
- * A callback receives access to two namespaces - host and caller - and
- * the caller's data stack to a specified arity.
+ * The callback function receives a dedicated `glas*` callback thread.
  * 
- * The host namespace is bound upon definition, a lexical closure. The 
- * caller namespace is bound at each call site to an indicated prefix. 
- * The latter provides access to caller registers and effects handlers.
- * These bindings are subject to local translations.
+ * This thread provides access to two namespaces: a host namespace that
+ * serves as a lexical closure at definition time, and a caller prefix
+ * that provides access to implicit parameters, registers, and effects
+ * handlers. Both bindings are subject to translation.
  * 
- * Step commit is handled carefully by callbacks:
+ * The caller's data stack is also visible to the specified input arity.
  * 
- * - Insofar as the callback does not commit, the operation may be used 
- *   within atomic sections.
- * - If a callback commits a step, it must also do so immediately before
- *   returning. Pending actions are aborted with a warning.
+ * In general, the callback may commit multiple steps. However, there
+ * are caveats and constraints: 
+ * 
+ * - If a callback commits any step, it must commit just before return.
+ *   Pending actions are aborted, warning once per definition.
+ * 
  * - Attempts to commit within an atomic section are atomicity errors.
- *   If a callback must commit, consider the 'no_atomic' flag.
+ *   If a callback must commit to be useful, try the 'no_atomic' flag.
  * 
  * The callback may fork threads, but the caller namespace is valid only
  * for duration of the call. To support this, the caller waits for all
@@ -411,12 +413,13 @@ void glas_thread_fork_detached(glas*);
  * The `_atomic` variant forces the call to be atomic, i.e. the call
  * cannot commit a real world step; attempting is an atomicity error.
  * 
- * Not every definition can be run as a program. Supported call types:
+ * Not every definition can be called as a program. Some definitions may
+ * be useful only for namespace eval. But we can call:
  * 
- * - embedded data, tagged "data", pushes copy of data onto stack
- * - program definitions of `Env -> Program`, tagged "prog"
- * - callback definitions, treated as programs
- * 
+ * - programs, tagged "prog", namespace type `Env -> Program`.
+ * - data, tagged "data", namespace type is embedded data
+ * - callback definitions act as programs
+ *  
  */
 void glas_call(glas*, char const* name, glas_ns_tl const*);
 void glas_call_atomic(glas*, char const* name, glas_ns_tl const*);
@@ -433,37 +436,19 @@ void glas_call_prep(glas*, char const* name);
  * BULK DEFINITION AND MODULARITY
  *********************************/
 /**
- * Load primitive definitions.
+ * Load built-in definitions.
  * 
- * This binds primitive definitions to a specified prefix, by convention
+ * This binds built-in definitions to a specified prefix, by convention
  * "%". Includes annotations, accelerators, program constructors, etc..
- * The %macro primitive provides the runtime's built-in file loader.
+ * Also includes built-in front-end compilers under %env.lang.* for at
+ * least the 'glas' file extension.
+ * 
  * 
  * This doesn't include names managed by front-end compilers, such as
  * %src, %env.*, %arg.*, and %self.*. 
  */
-void glas_ns_load_prims(glas*, char const* prefix);
+void glas_ns_load_builtins(glas*, char const* prefix);
 
-/**
- * Load built-in front-end compilers by file extension.
- * 
- * In glas systems, front-end compilers are pure functions of type
- * `Binary -> AST` and must return a closed namespace AST. This is
- * necessary for effective use within %macro programs.
- * 
- * By convention, compilers are available as '%env.lang.FileExt', and
- * compilers will leverage this for lazy loading, i.e. returning an AST
- * that, when applied to an environment, loads more files as needed.
- * 
- * Current built-in compilers:
- * 
- * - glas - a syntax intended for human use
- * - glob - binary data serialization format
- * 
- * The intention is that these will be bootstrapped by the user
- * configuration.
- */
-void glas_ns_load_builtin_compilers(glas*, char const* prefix);
 
 /**
  * Load a binary with the default loader, excluding the intercept.
@@ -514,21 +499,23 @@ bool glas_rt_load_binary(char const* URI,
     uint8_t const** ppBuf, size_t* len, glas_refct*);
 
 /**
- * Options useful for loading a file as a configuration.
+ * Load a configuration file.
+ * 
+ * Loading a configuration file receives special handling for bootstrap
+ * of provided compilers. This loader expects to receive 
+ * 
+ * binding '%env.*'
+ * boo
+ * 
+ * - primitives in "%"
+ * - 
+ * 
+ * Note that these don't need to be the actual locations
  */
-typedef struct {
-    char const* src;    // where to find the file
-    char const* as_ext; // if set, use in place of actual file extension
-    char const* prims;  // typically "%", won't get far without it
-    char const* args;   // optional, e.g. runtime version info, client context
-    char const* compilers; // where to find built-in compilers by file extension
-} glas_load_config_opts;
-
-/**
- * Create a namespace AST that, when evaluated in a suitable namespace,
- * should lazily load the configuration. 
- */
-void glas_ns_load_config(glas*, glas_load_config_opts const*, char const* prefix);
+void glas_ns_load_as_config(glas*, 
+    char const* src, char const* as_ext,
+    char const* into_prefix, 
+    glas_ns_tl const*);
 
 
 
@@ -1085,9 +1072,6 @@ void glas_bits_invert(glas*); // flip 0 to 1 and vice versa
  * 
  * The 'to_bin' operation simply does the opposite. It's an error on
  * a bitstring that isn't a multiple of 8 bits in length.
- * 
- * Note: Bitstrings receive less optimization than binaries, and are
- * O(N), though compactly represented where feasible.
  */
 void glas_bits_of_bin(glas*); // Binary -- Bitstring
 void glas_bits_to_bin(glas*); // Bitstring -- Binary
@@ -1141,31 +1125,55 @@ void glas_shrub_to_bin(glas*);
  * 
  * Logically, a bgcall runs *before* the caller's current step. This is
  * useful for fetching data that could, in principle, have been safely 
- * collected and cached even without the request. Such as HTTP GET. It's 
- * also useful for triggering 'lazy' work that could, in principle, have 
- * been triggered previously.
+ * collected and cached even without a request, such as HTTP GET or to
+ * read a file. It's also useful for triggering 'lazy' work that could, 
+ * in principle, have been performed previously.
  * 
- * Mechanically, bgcall is initiated by the runtime in another thread.
- * The operation receives a data argument from the caller, and returns
- * a data result, both non-linear. The runtime provides a method to
- * test for cancellation, e.g. "canceled".
+ * Mechanically, bgcall pops an argument off the data stack, runs an op
+ * using a runtime worker thread, then returns the result. Argument and
+ * result must be non-linear data. If op diverges, so does the bgcall.
+ * The op runs detached from the caller, but the runtime provides a call
+ * environment that includes a "canceled" method to query cancellation.
  * 
- * The caller waits indefinitely, but may be interrupted, e.g. due to 
- * transaction conflict, choice, or timeout. There is an opportunity to
- * attach to the same ongoing bgcall via same arg and op. But, at some
- * point, the runtime may heuristically cancel the operation.
+ * The caller may be interrupted before the bgcall operation completes.
+ * For example, a timeout or conflict could abort the call. However, if
+ * the bgcall op has already committed once, it may continue running to
+ * completion, or it may query for cancellation. There is an opportunity
+ * to attach to running bgcall, via matching op and argument, before it 
+ * observes cancellation.
  * 
- * Of course, clients of this API don't lack transactional escapes. But
- * bgcall is still convenient for consistent integration. 
+ * A bgcall should not be used for anything w
  */ 
 void glas_refl_bgcall(glas*, char const* op);
 
 /** TBD
- * - logging and profiling code
- * - errors, stack traces
- * - inspect and kill operations
  * - memory and gc (profiling, etc.)
+ * - logging and profiling
+ *   - client ability to interact with these, too.
+ * - debugging, stack traces
+ * - inspect and kill operations
  */
+
+/**
+ * Run library's built-in tests.
+ */
+bool glas_rt_run_builtin_tests();
+
+/**
+ * Test if glas runtime is initialized. 
+ * 
+ * Some configuration options are only permitted before initialization.
+ */
+bool glas_rt_is_initialized();
+
+/**
+ * Configure runtime memory prior to initialization.
+ * 
+ * Default is 64GB. This address space is reserved and never returned.
+ * However, the actual allocation of memory is deferred and pages may be
+ * returned after compacting GC.
+ */
+void glas_rt_cfg_heap(size_t);
 
 #define GLAS_H
 #endif

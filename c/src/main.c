@@ -184,15 +184,20 @@ int main(int argc, char const* const* argv)
 
 int glas_cli_bit(int argc, char const* const* argv) {
     (void) argc; (void) argv;
+    int tests_failed = 0;
+    if(!glas_rt_run_builtin_tests()) {
+        ++tests_failed;
+        fprintf(stdout, "glas runtime built-in tests failed\n");
+    }
     glas* g = glas_thread_new();
-
     glas_thread_exit(g);
-    return -1;
+    return tests_failed;
 }
 
 int glas_cli_extract(char const* src) {
     (void) src;
     glas* g = glas_thread_new();
+    
 
     glas_thread_exit(g);
     return -1;
