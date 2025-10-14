@@ -1,3 +1,6 @@
+
+#define _DEFAULT_SOURCE
+
 #include <stdint.h>
 #include <stdalign.h>
 #include <stdatomic.h>
@@ -7,6 +10,7 @@
 #include <semaphore.h>
 #include <time.h>
 #include <assert.h>
+#include <errno.h>
 
 #include <sys/mman.h>
 
@@ -31,6 +35,8 @@
   #define debug(fmt, ...) 
 #endif
 
+#pragma GCC diagnostic ignored "-Wunused-function"
+
 #define likely(x)    __builtin_expect(!!(x), 1)
 #define unlikely(x)  __builtin_expect(!!(x), 0)
 
@@ -47,7 +53,7 @@ static_assert((sizeof(_Atomic(uint8_t)) == 1) && (ATOMIC_CHAR_LOCK_FREE == 2),
 
 #define GLAS_HEAP_PAGE_SIZE_LG2 21
 #define GLAS_HEAP_CARD_SIZE_LG2  9
-#define GLAS_HEAP_MAX_SIZE_DEFAULT (((size_t)64) << 30)
+#define GLAS_HEAP_MAX_SIZE_DEFAULT (((size_t)256) << 20)
 #define GLAS_HEAP_PAGE_SIZE (1 << GLAS_HEAP_PAGE_SIZE_LG2)
 #define GLAS_HEAP_CARD_SIZE (1 << GLAS_HEAP_CARD_SIZE_LG2)
 #define GLAS_PAGE_CARD_COUNT (GLAS_HEAP_PAGE_SIZE >> GLAS_HEAP_CARD_SIZE_LG2)
@@ -66,11 +72,7 @@ typedef struct glas_gc_thread glas_gc_thread;
 
 /** 
  * Checking my assumptions for these builtins.
- * 
  * Interaction between stdint and legacy APIs is so awkward.
- * 
- * Could provide a manual implementation as fallback. Or I could use
- * GCC's __builtin_choose_expr to pick a version.
  */
 static inline size_t popcount64(uint64_t n) {
     static_assert(sizeof(unsigned long long) == sizeof(uint64_t));
@@ -89,7 +91,14 @@ static inline size_t ctz32(uint32_t n) {
     return (size_t) __builtin_ctz(n);
 }
 
-
+/**
+ * Some forward declarations.
+ */
+LOCAL void glas_gc_safepoint(glas*); // allow stop-the-world
+LOCAL glas_page* glas_rt_try_pop_page_from_free_list();
+LOCAL void glas_rt_push_page_to_free_list(glas_page*);
+LOCAL glas_page* glas_rt_try_alloc_page_from_os();
+LOCAL void glas_rt_return_page_to_os(glas_page*);
 
 /**
  * A global runtime mutex. Use sparingly!
@@ -106,9 +115,15 @@ LOCAL struct glas_rt {
     size_t mmap_size;
 
     void* pages_start;      // may differ from mmap_start if unaligned
+    void* pages_end;
     size_t page_count;      // number of pages
-    uint64_t* page_bitmap;  // array, '0' is unused, '1' is memory use
+    _Atomic(uint64_t)* page_bitmap;  // array, '0' page unused, '1' page in use
     size_t page_bitmap_len; // u64s; last one may be partial
+    _Atomic(size_t) page_bitmap_cursor; // last allocation (as a hint)
+
+    // note: page_bitmap is 1 bit for every page in the address space.
+    // This doesn't take much: 64GB has a 4kB bitmap (of 2MB pages).
+    // But it won't scale well to terabytes without another index level.
 
     /**
      * Live pages.
@@ -189,31 +204,37 @@ LOCAL inline uint64_t glas_rt_genid() {
     return atomic_fetch_add_explicit(&glas_rt.idgen, 1, memory_order_relaxed);
 }
 
+LOCAL inline void* glas_rt_addr_to_page(void* addr) {
+    return (void*)(((uintptr_t) addr) & ~(GLAS_HEAP_PAGE_SIZE - 1));
+}
+
+LOCAL inline bool glas_rt_addr_in_heap(void* addr) {
+    return (glas_rt.pages_end > addr) && (addr >= glas_rt.pages_start);
+}
+
 LOCAL void glas_rt_init_locked() {
-    if(0 == glas_rt.mmap_size) {
+    if(likely(0 == glas_rt.mmap_size)) {
         glas_rt.mmap_size = GLAS_HEAP_MAX_SIZE_DEFAULT;
     }
     assert(0 == (glas_rt.mmap_size & (GLAS_HEAP_PAGE_SIZE - 1)));
-    static int const map_flags = 0
-        | MAP_PRIVATE | MAP_ANONYMOUS // not shared or saved
-        | MAP_HUGETLB | (21 << MAP_HUGE_SHIFT) // contiguous pages, please
-        | MAP_NORESERVE // just the address space!
-        ;
+    int map_flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE;
+    // TODO: Make HUGETLB support configurable, perhaps via env vars.
+    //    | MAP_HUGETLB | (21 << MAP_HUGE_SHIFT) // not on my machine
     glas_rt.mmap_start = mmap(NULL, glas_rt.mmap_size, PROT_NONE, map_flags, -1, 0);
-    if(MAP_FAILED == glas_rt.mmap_start) {
+    if(unlikely(MAP_FAILED == glas_rt.mmap_start)) {
         debug("failed to allocate heap address space (size %lu)", glas_rt.mmap_size);
         exit(EXIT_FAILURE);
     }
 
-    glas_rt.pages_start = (void*)
-        (((uintptr_t)glas_rt.mmap_start + (GLAS_HEAP_PAGE_SIZE - 1)) & ~(GLAS_HEAP_PAGE_SIZE - 1));
+    glas_rt.pages_start = glas_rt_addr_to_page((void*) ((uintptr_t)glas_rt.mmap_start + (GLAS_HEAP_PAGE_SIZE - 1)));
     glas_rt.page_count = (glas_rt.mmap_size / GLAS_HEAP_PAGE_SIZE) - 
-        ((glas_rt.pages_start == glas_rt.mmap_start) ? 0 : 1); // may lose one page to alignment
+        ((glas_rt.pages_start == glas_rt.mmap_start) ? 0 : 1); // may lose one page to realignment
+    glas_rt.pages_end = (void*)(((uintptr_t) glas_rt.pages_start) + (glas_rt.page_count * GLAS_HEAP_PAGE_SIZE));
 
     glas_rt.page_bitmap_len = ((glas_rt.page_count + 63) / 64);
     size_t const page_bitmap_bytes = sizeof(uint64_t) * glas_rt.page_bitmap_len;
-    glas_rt.page_bitmap = (uint64_t*) malloc(page_bitmap_bytes);
-    if(NULL == glas_rt.page_bitmap) {
+    glas_rt.page_bitmap = (_Atomic(uint64_t)*) malloc(page_bitmap_bytes);
+    if(unlikely(NULL == glas_rt.page_bitmap)) {
         debug("failed to allocate page bitmap (size %lu)", page_bitmap_bytes);
         exit(EXIT_FAILURE);
     }
@@ -223,10 +244,12 @@ LOCAL void glas_rt_init_locked() {
     // so we don't allocate them later. 
     size_t const last_bitmap_pages = (glas_rt.page_count % 64);
     if(0 != last_bitmap_pages) {
-        uint64_t* const last_bitmap = glas_rt.page_bitmap + glas_rt.page_bitmap_len - 1;
+        _Atomic(uint64_t)* const last_bitmap = glas_rt.page_bitmap + glas_rt.page_bitmap_len - 1;
         for(size_t ix = last_bitmap_pages; ix < 64; ++ix) {
-            (*last_bitmap) |= (((uint64_t)1) << ix);
+            atomic_fetch_or_explicit(last_bitmap, (((uint64_t)1)<<ix), memory_order_relaxed);
         }
+        uint64_t bitmap_final = atomic_load(last_bitmap);
+        debug("final bitmap: %lx", bitmap_final);
     }
 }
 
@@ -239,37 +262,43 @@ LOCAL void glas_rt_init_slow() {
     glas_rt_unlock();
 }
 
-/** note: optimized a bit because it appears in some API ops. */
 LOCAL inline void glas_rt_init() {
+    // only init once, but avoid locking every time
     if(unlikely(!atomic_load_explicit(&glas_rt.initialized, memory_order_relaxed))) {
         glas_rt_init_slow();
     }
 };
 
-
 API void glas_rt_cfg_heap(size_t heap_size) {
-    static size_t const min_heap_size = 4 * GLAS_HEAP_PAGE_SIZE;
+    static size_t const min_heap_size = 8 * GLAS_HEAP_PAGE_SIZE;
     heap_size = (min_heap_size > heap_size) ? min_heap_size : heap_size;
     heap_size = (heap_size & ~(GLAS_HEAP_PAGE_SIZE - 1));
     glas_rt_lock();
-    if(!glas_rt_is_initialized()) {
+    if(likely(!glas_rt_is_initialized())) {
         glas_rt.mmap_size = heap_size;
     } else {
-        debug("Cannot configure heap size. Heap already initialized!");
+        debug("Cannot configure heap size: heap already initialized!");
     }
     glas_rt_unlock();
 }
 
+API void glas_rt_loader_intercept(glas_vfs vfs) {
+    glas_rt_lock();
+    glas_rt.vfs = vfs;
+    glas_rt_unlock();
+}
+
+
 
 typedef enum glas_card_t {
-    GLAS_CARD_OLD_TO_YOUNG = 0,
-    GLAS_CARD_FINALIZER,
+    GLAS_CARD_OLD_TO_YOUNG = 0, // track refs from older to younger gens
+    GLAS_CARD_FINALIZER,        // track locations of finalizers in page
     // end of list
     GLAS_CARD_TYPECOUNT
 } glas_card_t;
 
 /**
- * This structure is just the page header, really.
+ * actually just the page header
  */
 struct glas_page {
     /** double buffering of mark bitmaps for concurrent mark and lazy sweep */
@@ -285,13 +314,12 @@ struct glas_page {
 
     // tentative: index to first gc_marked cell with open spaces.
     // heuristics for GC
+    _Atomic(size_t) occupancy;          // number of cells
 
-
+    // Last thing is our 
     uint32_t gen;                       // 0 - nursery, higher is older
     glas_page *gen_next, *gen_prev;     // e.g. nursery, survivor, or old pages
     glas_page *next, *prev;             // live or free pages
-
- 
 
 } __attribute__((aligned(GLAS_HEAP_CARD_SIZE)));
 
@@ -303,25 +331,112 @@ static_assert((0 == (sizeof(glas_page) & (GLAS_HEAP_CARD_SIZE - 1))),
 static_assert((GLAS_HEAP_PAGE_SIZE >> 6) >= sizeof(glas_page), 
     "page header is too large!");
 
-
-LOCAL inline glas_page* glas_rt_addr_to_page_hdr(void* addr) {
-    return (glas_page*)(((uintptr_t) addr) & ~((uintptr_t)GLAS_HEAP_PAGE_SIZE - 1));
+/** An 8kB scan! Don't do it often! */
+LOCAL size_t glas_page_marked_count(glas_page* page) {
+    size_t const buflen = GLAS_PAGE_CELL_COUNT >> 6;
+    size_t result = 0;
+    for(size_t ix = 0; ix < buflen; ++ix) {
+        uint64_t const bitmap = atomic_load_explicit(page->gc_marked + buflen, memory_order_relaxed);
+        result += popcount64(bitmap);
+    }
+    return result;
 }
 
 LOCAL inline size_t glas_rt_card_offset(void* addr) {
-    return (size_t)(((uintptr_t) addr) & ((uintptr_t)GLAS_HEAP_PAGE_SIZE - 1)) 
+    return (size_t)(((uintptr_t) addr) & (GLAS_HEAP_PAGE_SIZE - 1)) 
                         >> GLAS_HEAP_CARD_SIZE_LG2;
 }
 
-//LOCAL inline void glas_page_dirty()
-
-
-
-API void glas_rt_loader_intercept(glas_vfs vfs) {
-    glas_rt_lock();
-    glas_rt.vfs = vfs;
-    glas_rt_unlock();
+/**
+ * Attempt to grab a page from the free list, if one exists.
+ */
+LOCAL glas_page* glas_rt_try_pop_page_from_free_list() {
+    glas_page* result = atomic_load_explicit(&glas_rt.free_pages, memory_order_acquire);
+    while(NULL != result) {
+        glas_page* next = result->next;
+        if(atomic_compare_exchange_weak(&glas_rt.free_pages, &result, next)) {
+            atomic_fetch_sub_explicit(&glas_rt.free_page_count, 1, memory_order_release);
+            return result;
+        }
+    }
+    return NULL;
 }
+
+/** push a page to the free list. */
+LOCAL void glas_rt_push_page_to_free_list(glas_page* const page) {
+    // page must not be connected to anything
+    assert((NULL != page) && (NULL == page->next) && (NULL == page->prev) &&
+           (NULL == page->gen_next) && (NULL == page->gen_prev) &&
+           (0 == atomic_load(&(page->occupancy))));
+    page->next = atomic_load_explicit(&glas_rt.free_pages, memory_order_acquire);
+    do {} while(!atomic_compare_exchange_weak(&glas_rt.free_pages, &(page->next), page));
+    atomic_fetch_add_explicit(&glas_rt.free_page_count, 1, memory_order_release);
+}
+
+/** Basic initialization. Does not attach page to live pages. */
+LOCAL glas_page* glas_page_init(void* addr) {
+    assert(glas_rt_addr_in_heap(addr));
+    if(0 != mprotect(addr, GLAS_HEAP_PAGE_SIZE, PROT_READ | PROT_WRITE)) {
+        int err = errno;
+        debug("error %d on mprotect: %s", err, strerror(err));
+        exit(EXIT_FAILURE);
+    }
+    #ifdef GLAS_PAGE_INIT_MZERO
+    memset(addr, 0, sizeof(glas_page)); // should be unnecessary with mmap
+    #endif
+    glas_page* const page = (glas_page*) addr;
+    page->gc_marked = page->gc_mark_bitmap[0];
+    page->gc_marking = page->gc_mark_bitmap[1];
+    return page;
+}
+
+LOCAL glas_page* glas_rt_try_alloc_page_from_os() {
+    // simple round-robin search, remembers where it left off
+    size_t const start = atomic_load_explicit(&glas_rt.page_bitmap_cursor, memory_order_relaxed);
+    assert(start < glas_rt.page_bitmap_len);
+    for(size_t offset = 0; offset < glas_rt.page_bitmap_len; ++offset) {
+        size_t const bitmap_ix = (start + offset) % glas_rt.page_bitmap_len;
+        _Atomic(uint64_t)* const pbitmap = glas_rt.page_bitmap + bitmap_ix;
+        uint64_t bitmap = atomic_load_explicit(pbitmap, memory_order_relaxed);
+        while(0 != ~bitmap) {
+            size_t const bit_ix = ctz64(~bitmap);
+            uint64_t const bit = ((uint64_t)1) << bit_ix;
+            bitmap = atomic_fetch_or(pbitmap, bit);
+            if(likely(0 == (bitmap & bit))) {
+                // won the race and now own the page
+                // save cursor state so we can continue
+                atomic_store_explicit(&glas_rt.page_bitmap_cursor, bitmap_ix, memory_order_relaxed);
+                size_t const page_ix = (64 * bitmap_ix) + bit_ix;
+                assert(page_ix < glas_rt.page_count);
+                void* const addr = (void*)(((uintptr_t) glas_rt.pages_start) +
+                        (GLAS_HEAP_PAGE_SIZE * page_ix));
+                debug("allocated page %lu (addr %p) from runtime heap", page_ix, addr);
+                return glas_page_init(addr);
+            } // end if acquired page
+        } // end while unoccupied bits remain
+    } // end loop over all bitmaps
+    return NULL; // every page is in use (or was when we looked)
+}
+
+LOCAL void glas_rt_return_page_to_os(glas_page* page) {
+    debug("returning page %p to OS", page);
+    // should ensure page is detached first
+    assert((NULL != page) && (NULL == page->next) && (NULL == page->prev) &&
+           (NULL == page->gen_next) && (NULL == page->gen_prev) &&
+           (0 == atomic_load(&(page->occupancy))));
+    assert(glas_rt_addr_in_heap((void*)page));
+
+    if(0 != mprotect((void*) page, GLAS_HEAP_PAGE_SIZE, PROT_NONE)) {
+        int err = errno;
+        debug("error %d on mprotect: %s", err, strerror(err));
+    }
+    if(0 != madvise((void*) page, GLAS_HEAP_PAGE_SIZE, MADV_DONTNEED)) {
+        int err = errno;
+        debug("error %d on madvise: %s", err, strerror(err));
+    }
+}
+
+
 
 
 
@@ -530,10 +645,35 @@ API void glas_thread_exit(glas* g) {
     assert((NULL == g) && "expecting a valid glas context");
 }
 
+
+LOCAL bool glas_rt_bit_popcount() {
+    return (64 == popcount64(~0))
+        && (32 == popcount32(~0))
+        && ( 3 == popcount64(7))
+        && ( 3 == popcount32(7 << 29))
+        && ( 3 == popcount64(7ULL << 61));
+}
+
+LOCAL bool glas_rt_bit_ctz() {
+    return (64 == ctz64(0))
+        && (32 == ctz32(0))
+        && ( 3 == ctz32(8))
+        && (21 == ctz32(1<<21))
+        && (63 == ctz64(8ULL << 60));
+}
+
 API bool glas_rt_run_builtin_tests() {
+    bool const popcount_test = glas_rt_bit_popcount();
+    debug("popcount test: %s", popcount_test ? "pass" : "fail");
+    bool const ctz_test = glas_rt_bit_ctz();
+    debug("ctz test: %s", ctz_test ? "pass" : "fail");
     glas* g = glas_thread_new();
+    glas_page* page = glas_rt_try_alloc_page_from_os();
+    glas_rt_return_page_to_os(page);
 
     glas_thread_exit(g);
-    return true;
+    return popcount_test 
+        && ctz_test
+        ;
 }
 

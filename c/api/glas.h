@@ -1168,10 +1168,6 @@ bool glas_rt_is_initialized();
 
 /**
  * Configure runtime memory prior to initialization.
- * 
- * Default is 64GB. This address space is reserved and never returned.
- * However, the actual allocation of memory is deferred and pages may be
- * returned after compacting GC.
  */
 void glas_rt_cfg_heap(size_t);
 
