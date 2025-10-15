@@ -52,6 +52,25 @@ typedef struct glas glas;
 glas* glas_thread_new();
 
 /**
+ * The default initializer.
+ * 
+ * A user configuration is sought in:
+ * 
+ * - GLAS_CONF environment variable     if defined
+ * - ${HOME}/.config/glas/conf.glas     on Linux
+ * - %AppData%\glas\conf.glas           on Windows (eventually)
+ * 
+ * This initializer operates on the namespace. The data stack is not
+ * modified. It binds primitives to "%", the compiled user configuration 
+ * to "conf.", then rebinds "%env." to final "conf.env.". Will bootstrap 
+ * %env.lang.glas if possible, otherwise leaving the built-in versions.
+ * 
+ * This prepares a client for running configured applications or loading 
+ * scripts.
+ */
+void glas_init_default(glas*);
+
+/**
  * Terminate a glas thread.
  * 
  * This tells the runtime that the client is done with this thread,
@@ -115,27 +134,9 @@ void glas_thread_set_debug_name(glas*, char const* debug_name);
  * The runtime is expected to evaluate clones concurrently using worker
  * threads, though how many may depend on resource constraints.
  */
-void glas_choice(glas* origin, size_t N, void* cbarg, 
-    void (*callback)(glas* clone, size_t index, void* cbarg));
+void glas_choice(glas* origin, size_t N, void* client_arg, 
+    void (*callback)(glas* clone, size_t index, void* client_arg));
 
-
-/**
- * The default initializer.
- * 
- * A user configuration is sought in:
- * 
- * - GLAS_CONF environment variable     if defined
- * - ${HOME}/.config/glas/conf.glas     on Linux
- * - %AppData%\glas\conf.glas           on Windows (eventually)
- * 
- * This initializer binds primitives to "%", and the compiled user 
- * configuration to "conf.". Binds "%env." to final "conf.env.". Also
- * supports bootstrap of %env.lang.glas and %env.lang.glob if feasible.
- * 
- * This sets the client up for most use cases for glas systems. We'll
- * add further steps for loading scripts and running applications.
- */
-void glas_init_default(glas*);
 
 /***************************
  * MEMORY MANAGEMENT
@@ -144,13 +145,10 @@ void glas_init_default(glas*);
 /**
  * Reference-counting shared objects.
  * 
- * Zero-copy binaries and foreign pointers are reference-counted to
- * extend garbage collection beyond the runtime boundary. The count 
- * itself is abstracted.
- * 
- * All runtime APIs assume references are pre-incremented. Thus, to
- * release the object, the recipient needs only to decref. Unmanaged
- * objects may set refct_upd to NULL.
+ * Abstract reference counting is used for foreign pointers, callbacks,
+ * and zero-copy binaries. The count is abstracted through a method to
+ * incref or decref one step at a time. The refct_obj is separated from
+ * the data to support flexible indirection.
  */
 typedef struct {
     void (*refct_upd)(void* refct_obj, bool incref);
@@ -185,7 +183,6 @@ inline void glas_incref(glas_refct c) {
  * threads to load definitions in the background.
  */
 bool glas_ns_has_def(glas*, char const* name);
-bool glas_ns_has_prefix(glas*, char const* prefix);
 
 /**
  * Utility. Hide names or prefixes from the thread namespace.
@@ -354,21 +351,36 @@ void glas_ns_ast_close(glas*);
  * for duration of the call. To support this, the caller waits for all
  * forks to either exit or or detach (see below).
  * 
- * Note: An uncreated error is possible prior to first commit if caller
- * was aborted. An unrecoverable arity error is possible if the callback
- * does not respect its declared stack arity after committing.
+ * Note: An uncreated error is possible prior to commit if the caller
+ * was aborted. An unrecoverable arity error is possible if a callback
+ * does not respect its declared stack arity after committing. Use of
+ * a NULL callback will cause an error where called, not when defined.
  */
 typedef struct {
-    bool (*operation)(glas*, void* cbarg);
-    void* cbarg;                // opaque, passed to operation
-    glas_refct refct;           // memory management for cbarg
+    bool (*prog)(glas*, void* client_arg);
+    void* client_arg;           // opaque, passed to operation
+    glas_refct refct;           // integrate GC for client_arg
     char const* caller_prefix;  // e.g. "$"; shadows host names
     uint8_t ar_in, ar_out;      // data stack arity (enforced!)
     bool no_atomic;             // forbid calls in atomic sections
     char const* debug_name;     // appears in stack traces, etc.
 } glas_prog_cb;
+void glas_ns_cb_def(glas*, char const* name, glas_prog_cb const*, glas_ns_tl const* host_ns);
 
-void glas_ns_cb_def(glas*, glas_prog_cb, glas_ns_tl const* host_ns);
+/**
+ * Lazy linking for an entire namespace of callbacks.
+ * 
+ * A linker callback is invoked only if the name is referenced, and must
+ * write the glas_prog_cb into a provided output parameter. It is called 
+ * at most once for each name, caching results. Link may fail, returning 
+ * false, in which case the runtime treats the name as undefined.
+ */
+typedef struct {
+    bool (*link)(char const* name, glas_prog_cb*, void* client_arg);
+    void* client_arg;
+    glas_refct refct;
+} glas_link_cb;
+void glas_ns_cb_prefix(glas*, char const* prefix, glas_link_cb const*, glas_ns_tl const*);
 
 /**
  * Detach a callback thread.
@@ -399,6 +411,110 @@ void glas_thread_detach(glas*);
  * pass them to on_commit for deferred operation, then return.
  */
 void glas_thread_fork_detached(glas*);
+
+
+/*********************************
+ * BULK DEFINITION AND MODULARITY
+ *********************************/
+
+/**
+ * Load built-in definitions.
+ * 
+ * This binds built-in definitions to a specified prefix, by convention
+ * "%". Includes annotations, accelerators, program constructors, etc..
+ * 
+ * Also includes built-in front-end compilers under %env.lang.* for at
+ * least the 'glas' file extension.
+ * 
+ * Note: This doesn't include names managed by front-end compilers, such
+ * as %src, %env.*, %arg.*, and %self.*. 
+ */
+void glas_load_builtins(glas*, char const* prefix);
+
+/**
+ * Override the runtime-global file loader.
+ * 
+ * The %macro primitive enables namespaces to load files. Intercepting
+ * this loader enables a client to redirect files or integrate client
+ * local resources into a compilation.
+ * 
+ * When 'intercept' returns false, the runtime uses a built-in loader.
+ * Otherwise, the runtime uses 'tryload'. This decision extends to all
+ * relative file paths, thus is only decided for absolute paths or URIs.
+ * 
+ * If 'tryload' returns false, it's treated as a failure, like a missing
+ * file. The compiler can recover from that. Alternatively, tryload may
+ * return true with a NULL ppBuf to represent divergence errors.
+ * 
+ * This API relies on zero-copy transfer. See `glas_binary_peek_zc`.
+ */
+typedef struct {
+    bool (*intercept)(char const* FilepathOrURI);
+    bool (*tryload)(char const* FilepathOrURI, 
+        uint8_t const** ppBuf, size_t* len, glas_refct*);
+} glas_file_cb;
+
+void glas_file_intercept(glas_file_cb const*);
+
+/**
+ * Flexible 'file' references.
+ * 
+ * - src: usually a filepath. May be file text in some cases.
+ * - lang: NULL, or a file extension (for override or embedded)
+ * - embedded: if true, treat src as file content, not file name
+ * 
+ * There is a limitation that embedded src cannot contain NULL bytes.
+ * If you need greater flexibility, use `glas_file_intercept` to name
+ * a virtual file like "/vfs/mysource.mylang".
+ */
+typedef struct {
+    char const* src;
+    char const* lang;
+    bool embedded;
+} glas_file_ref;
+
+
+/**
+ * Load file as module.
+ * 
+ * This operation loads a file binary then compiles it according to its
+ * file extension, i.e. based on '%env.lang.FileExt' or defaulting to a
+ * built-in.
+ * 
+ * Files are expected to compile to the namespace AST, i.e. a plain old
+ * data structure. An AST representing a closed-term namespace operation
+ * of type `Env->Env`, tagged "module". Constructing this is the job of
+ * front-end compilers.
+ * 
+ * The loader performs lightweight verification of the AST, then wraps
+ * it to add '%src' and fixpoint '%self.*', then links to the thread's
+ * '%*' namespace (under a given translation), then evaluates and binds
+ * to a given prefix. 
+ * 
+ * By convention, front-end compilers should treat '%env.*' as implicit 
+ * parameters (propagated across imports), and '%arg.*' as explicit. The
+ * translation can thus hide or provide parameters.
+ */
+void glas_load_file(glas*, char const* prefix, glas_file_ref const*, glas_ns_tl const*);
+
+/**
+ * Load user configuration file.
+ * 
+ * A user configuration is the heart of a glas system. One big namespace
+ * per user, inheriting from and extending community configurations.
+ * 
+ * Loading a configuration file requires special handling for bootstrap
+ * of user-defined compilers and fixpoint of the environment. Otherwise,
+ * it behaves as loading a regular file.
+ * 
+ * This special handling:
+ * 
+ * - the configuration's 'env.*' output is visible as '%env.*' input.
+ * - the runtime will attempt to bootstrap the configuration's front-end
+ *   compilers, using whatever starts in '%env.lang.*' as the built-ins.
+ */
+void glas_load_config(glas*, char const* prefix, glas_file_ref const*, glas_ns_tl const*);
+
 
 /**************************
  * CALLING FUNCTIONS
@@ -431,93 +547,6 @@ void glas_call_atomic(glas*, char const* name, glas_ns_tl const*);
  * namespaces, asking runtime worker threads to load in the background.
  */
 void glas_call_prep(glas*, char const* name);
-
-/*********************************
- * BULK DEFINITION AND MODULARITY
- *********************************/
-/**
- * Load built-in definitions.
- * 
- * This binds built-in definitions to a specified prefix, by convention
- * "%". Includes annotations, accelerators, program constructors, etc..
- * Also includes built-in front-end compilers under %env.lang.* for at
- * least the 'glas' file extension.
- * 
- * 
- * This doesn't include names managed by front-end compilers, such as
- * %src, %env.*, %arg.*, and %self.*. 
- */
-void glas_ns_load_builtins(glas*, char const* prefix);
-
-
-/**
- * Load a binary with the default loader, excluding the intercept.
- * 
- * The runtime generally assumes URIs represent file paths unless a
- * 'protocol:' descriptor is explicitly included. 
- * 
- * Other than URI, everything is an output:
- * 
- * - ppBuf - where the data address is written (zero copy)
- * - size - length of data is written
- * - refct - destructor; call glas_decref when done with ppBuf.
- * - return - true if okay, false if no file or other issues.
- * 
- */
-bool glas_rt_load_binary_default(char const* URI, 
-    uint8_t const** ppBuf, size_t*, glas_refct*);
-
-/**
- * Override the default loader.
- * 
- * The runtime has a built-in loader, but it can be convenient for the
- * client to redirect requests to internal structures, or to control 
- * dependencies entirely.
- * 
- * The runtime will grant the client an opportunity to virtualize any
- * absolute URIs it encounters. Relative paths will inherit from their
- * origin whether they are treated as virtual or not.
- */
-typedef struct {
-    bool (*virtualize_path)(char const* URI);
-    bool (*try_load_binary)(char const* URI, 
-        uint8_t const** ppBuf, size_t* len, glas_refct*);
-} glas_vfs;
-
-/**
- * Override the runtime global loader.
- * 
- * Expected to be a one-off operation, before loading any files, perhaps
- * even before creating the first glas thread. 
- */
-void glas_rt_loader_intercept(glas_vfs);
-
-/**
- * Load a file from the runtime.
- */
-bool glas_rt_load_binary(char const* URI, 
-    uint8_t const** ppBuf, size_t* len, glas_refct*);
-
-/**
- * Load a configuration file.
- * 
- * Loading a configuration file receives special handling for bootstrap
- * of provided compilers. This loader expects to receive 
- * 
- * binding '%env.*'
- * boo
- * 
- * - primitives in "%"
- * - 
- * 
- * Note that these don't need to be the actual locations
- */
-void glas_ns_load_as_config(glas*, 
-    char const* src, char const* as_ext,
-    char const* into_prefix, 
-    glas_ns_tl const*);
-
-
 
 
 /*************************
@@ -591,7 +620,7 @@ void glas_step_on_abort_decref(glas*, glas_refct);
  * 
  * Each glas thread has a stack of checkpoints, ordered monotonically: 
  * top of stack is always the most recent checkpoint. At the start of
- * each step, this stack contains one checkpoint, equivalent to abort.
+ * each step the stack contains one checkpoint, equivalent to abort.
  * 
  * During the step, the program may save or push new checkpoints. Save
  * will replace the most recent checkpoint. Push will add a new one to
@@ -601,15 +630,15 @@ void glas_step_on_abort_decref(glas*, glas_refct);
  * Loading a checkpoint rewinds context state to the moment immediately
  * before that checkpoint was saved or pushed. Thus, in case of retry, a
  * client must again save or push the checkpoint and check for failure.
- * Load will also process 'on_abort' operations corresponding to partial
- * rollback.
+ * Load executes 'on_abort' operations created after the checkpoint to
+ * support partial rollback.
  * 
  * Checkpoints are relatively cheap, but they may encourage long-running
  * transactions that run greater risk of conflict. 
  */
 bool glas_checkpoint_save(glas*); // overwrite last checkpoint on success
 bool glas_checkpoint_push(glas*); // push new checkpoint onto stack on success
-void glas_checkpoint_drop(glas*); // drop last pushed checkpoint
+void glas_checkpoint_drop(glas*); // drop a pushed checkpoint
 void glas_checkpoint_load(glas*); // update state to recent checkpoint
 
 /**
@@ -798,21 +827,18 @@ bool glas_ptr_peek(void**, glas_refct*);
  * A dynamic approach to abstract data types.
  * 
  * Data is sealed by a key. Currently, keys are limited to registers.
- * To unseal the data requires naming the same register, though the
- * name used to access the register may be different.
+ * To unseal the data requires naming the same register, though often by
+ * a different name. It's an error to observe or access the data without 
+ * first unsealing it.
  * 
- * Any attempt to observe sealed data without unsealing it will error,
- * as will unsealing with the wrong key.
+ * The register is not modified by its use as a key. It mostly serves as
+ * a robust, unforgeable identity source. But it also serves as a source
+ * of ephemerality: The runtime reports ephemerality errors when writing
+ * short-lived data into long-lived registers. Data sealed by a register
+ * can be garbage-collected if that register becomes unreachable.
  * 
- * Sealed data may be garbage collected when the register falls out of
- * scope. Additionally, we may track 'ephemerality' of data, reporting
- * an error when a client or program attempts to store short-lived data
- * to a long-lived register by accident. 
- * 
- * 
- * In glas systems, convention is to favor linear objects and abstract
- * data environments (via `reg_assoc`) instead of abstract data types 
- * for references. But seals remain useful for other roles.
+ * Mechanically, sealing data involves an allocation, wrapping the data. 
+ * Unseal unwraps the data. There's a small performance tradeoff.
  */
 void glas_data_seal(glas*, char const* key);
 void glas_data_unseal(glas*, char const* key);
@@ -821,24 +847,17 @@ void glas_data_unseal(glas*, char const* key);
  * A dynamic approach to abstract, linear data objects.
  * 
  * The _linear variants seal data as above, but also forbid the sealed
- * data from being copied or dropped, raising linearity errors. Linear 
- * seal must be matched by linear unseal.
+ * data from being copied or dropped, raising linearity errors. This is
+ * useful for enforcing protocols, e.g. ensuring files are closed after 
+ * opening.
  * 
- * Linearity is useful for enforcing protocols, such as ensuring files 
- * are closed after opening.
+ * Dynamic linearity isn't perfect. There are ways to drop data: clients
+ * can exit a thread with linear data on the stack, or remove registers
+ * from scope that contain linear data. Also, in context of transactions
+ * and non-deterministic choice, linear objects may have many references
+ * without ever being *logically* copied.
  * 
- * Although linearity forbids logical copying, this doesn't imply that 
- * there is only one reference to the object. Transactions will hold a
- * copy of data for undo. Non-deterministic is subject to concurrent
- * evaluation (see `glas_cx_choice`), thus a cient might see the same
- * linear data or pointer from many threads.
- * 
- * Linearity also isn't bullet-proof against drops. Although an error to
- * drop linear data directly, it isn't an error to close the thread that
- * holds linear data on its stack. At most, the runtime reports warnings 
- * when linear data is orphaned.
- * 
- * Despite these caveats, linearity remains useful.
+ * Despite those caveats, linearity remains useful.
  */
 void glas_data_seal_linear(glas*, char const* key);
 void glas_data_unseal_linear(glas*, char const* key);
@@ -858,21 +877,20 @@ void glas_data_unseal_linear(glas*, char const* key);
  * A register that becomes unreachable, e.g. due to name shadowing, may
  * be garbage collected.
  */
-void glas_ns_reg_new(glas*, char const* prefix);
+void glas_load_reg_new(glas*, char const* prefix);
 
 /**
  * Associative registers.
  * 
  * Introduces a unique space of registers identified by an ordered pair 
- * of registers. The same registers will always find the same space.
+ * of registers. The same registers always name the same space.
  * 
- * Primary use case is abstract data environments. Instead of sealing
- * data, we can hide registers by controlling access to other registers.
- * 
- * The entire volume of associative registers may be garbage collected 
- * if either register becomes unreachable.
+ * A primary use case is abstract data environments: instead of sealing
+ * data, we can seal entire volumes of registers. This avoids the wrap
+ * and unwrap mechanic of sealed data, and enables fine-grained conflict
+ * analysis on individual registers in the volume.   
  */
-void glas_load_reg_assoc(glas*, char const* r1, char const* r2);
+void glas_load_reg_assoc(glas*, char const* prefix, char const* r1, char const* r2);
 
 /**
  * Runtime-global registers.
@@ -883,7 +901,7 @@ void glas_load_reg_assoc(glas*, char const* r1, char const* r2);
  * Global registers serve as a useful proxy for client resources, such
  * as for operations queues in `glas_step_on_commit`.
  */
-void glas_load_reg_global(glas*);
+void glas_load_reg_global(glas*, char const* prefix);
 
 /**
  * TBD: Persistent registers.
@@ -896,10 +914,10 @@ void glas_load_reg_global(glas*);
  */
 
 /**
- * Swap (read-write) data between data stack and named register.
+ * Swap (read-write) data between stack and register.
  * 
- * This is the only primitive operation on registers: the linear swap. 
- * In practice, I expect clients will favor get, set, and queue ops.
+ * This is the primitive operation on registers in the program model. It
+ * is friendly for linearity, but awkward to use directly.
  */
 void glas_reg_rw(glas*, char const*); // A -- B
 
@@ -1044,7 +1062,7 @@ bool glas_data_is_list(glas*);      // () or (A, List)
 bool glas_data_is_binary(glas*);    // List of 0..255
 bool glas_data_is_bitstr(glas*);    // () or 0b0.Bits or 0b1.Bits 
 bool glas_data_is_dict(glas*);      // byte-aligned radix-tree dicts
-bool glas_data_is_rational(glas*);  // dicts of form { n:Bits, d:Bits }, non-empty d 
+bool glas_data_is_ratio(glas*);     // dicts of form { n:Bits, d:Bits }, non-empty d 
 
 /**
  * List Operations
@@ -1097,24 +1115,6 @@ bool glas_dict_remove_label(glas*, char const* label); // Record -- Item Record'
  * Arithmetic. TBD.
  */
 
-/**
- * Shrubs 
- * 
- * The runtime supports a simple encoding of trees into binaries. This
- * offers means to push tightly structured data through the API without
- * too many API calls or allocations. The C program can construct the
- * binary.
- * 
- *    00 - leaf, e.g. terminates a left branch
- *    01 - branch, followed by left then right shrubs
- *    10 - left stem, followed by shrub
- *    11 - right stem, followed by shrub
- *
- * A final suffix of zeroes may be truncated or padded as needed. Any
- * other content will result in an error. 
- */
-void glas_shrub_of_bin(glas*); 
-void glas_shrub_to_bin(glas*);
 
 /******************************
  * RUNTIME REFLECTION
@@ -1132,6 +1132,7 @@ void glas_shrub_to_bin(glas*);
  * Mechanically, bgcall pops an argument off the data stack, runs an op
  * using a runtime worker thread, then returns the result. Argument and
  * result must be non-linear data. If op diverges, so does the bgcall.
+ * 
  * The op runs detached from the caller, but the runtime provides a call
  * environment that includes a "canceled" method to query cancellation.
  * 
@@ -1142,7 +1143,9 @@ void glas_shrub_to_bin(glas*);
  * to attach to running bgcall, via matching op and argument, before it 
  * observes cancellation.
  * 
- * A bgcall should not be used for anything w
+ * A bgcall can conflict with its own caller, forcing caller to abort.
+ * This has potential for thrashing in context of retries, but that is
+ * relatively easy to detect, debug, and design around.
  */ 
 void glas_refl_bgcall(glas*, char const* op);
 
@@ -1154,22 +1157,12 @@ void glas_refl_bgcall(glas*, char const* op);
  * - inspect and kill operations
  */
 
+
 /**
  * Run library's built-in tests.
  */
 bool glas_rt_run_builtin_tests();
 
-/**
- * Test if glas runtime is initialized. 
- * 
- * Some configuration options are only permitted before initialization.
- */
-bool glas_rt_is_initialized();
-
-/**
- * Configure runtime memory prior to initialization.
- */
-void glas_rt_cfg_heap(size_t);
 
 #define GLAS_H
 #endif

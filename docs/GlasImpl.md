@@ -67,6 +67,12 @@ Ideally, GC may recognize and collapse completed thunks. GC could also recognize
 
 ## Garbage Collection
 
+### Redesign of Memory Layout
+
+Several mmap 'heaps', each of which contain many aligned 'pages'. Each page has a page header whose address is determined by masking any address within the page. 
+
+
+
 ### Page Allocations
 
 mmap a few gigabytes to start, allocate in ~2MB pages. Each page gets a page header that includes a mark bitmap, a local card table for 'dirty' pages (e.g. old-to-young, perhaps a few more states), and some metadata (e.g. generation number, next and prev page, bump-pointer allocator, page-local free list).

@@ -96,7 +96,7 @@ Viable API:
         ct.load(Src) : Binary option    # load glas data based on query
         (%src.file FilePath Src) : Src
         (%src.dvcs.git Repo Ver FilePath Src) : Src
-        (%src.meta MetaData Src) : Src  # add metadata to Src for reflection
+        (%src.meta MetaData Src) : Src  # adds metadata to Src purely for reflection
  
 Src is an abstract data type with constructors in '%src.\*'. To support relative file paths and rendering dependency graphs, Src constructors always take a Src argument. By convention, each module receives a link to its own Src via '%src'. To support location-independent compilation, Src is opaque at compile time, but details are available at runtime via 'sys.refl.src.\*'.
 
