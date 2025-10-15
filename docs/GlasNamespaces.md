@@ -230,16 +230,10 @@ Applications define 'settings' to guide final configuration of the runtime, a 'm
 
 The proposed convention in glas is to represent hierarchical structure in a 'flat' namespace by use of dotted paths within the names. 
 
-The namespace model can easily represent hierarchical Env structures, and build a syntax around it. But the flat namespace simplifies translation, inheritance, override across boundaries. Also, due to the casual ability to pack up a prefix, e.g. `t:({ "" => Prefix }, e:())`, 
+The namespace model can easily represent hierarchical Env structures, and build a syntax around it. Due to the casual ability to pack up a prefix, e.g. `t:({ "" => Prefix }, e:())`, and to unpack via `b:`, there is no technical trouble switching between conventions at will if some front-end compiler favors hierarchical Env structures in the future. 
 
-but it does complicate translations
+But one big, flat namespace has fewer barriers, e.g. no need to repeatedly pack and unpack names for overlay and override and fixpoint inheritance structures.
 
-It isn't difficult to represent first-class hierarchical namespaces in glas. We could support a dotted-path syntax to select definitions from Env objects in the namespace. But the proposed convention 
+## Indexed Modularity
 
- But favored convention is a flat namespace
- * with dots in the names. These are almost equivalent, but the latter
- *  
- * 
- * The convention for glas is to favor a large, flat namespaces
- * instead of hierarchical environments. The two are roughly equivalent,
- * but a flat namespace is easier to translate and less confusing when
+An interesting opportunity is to model some modules as indexing other modules, i.e. so we can load a search index as a module then load other modules from the search index. We can even install the search index into '%env.\*' for use as a shared library. This seems quite feasible in this namespace model, but I have yet to fully explore the opportunity.
