@@ -5,10 +5,12 @@
  * context. This represents a remote-controlled glas coroutine that 
  * begins with an empty namespace, stack, and auxilliary stash.
  * 
- * Information exchange between client and runtime is restricted to 
- * binaries, integers, and client pointers (as abstract data). Stacks
- * may contain other data structures, but they require translation to
- * exchange. Data operations support translation. 
+ * Efficient data exchange with the runtime uses binaries or bitstrings.
+ * This API provides means to tease apart or construct other data types,
+ * but bulk binary transfers .
+ * 
+ *  require translation to
+ * exchange. There are some operations support translation. 
  * 
  * Error handling is transactional: the client performs a sequence of
  * operations on a thread then commits the step. In case of error or
