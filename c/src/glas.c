@@ -66,19 +66,11 @@ static_assert((ATOMIC_POINTER_LOCK_FREE == 2) &&
 #define GLAS_CELL_SIZE 32
 #define GLAS_PAGE_CELL_COUNT (GLAS_HEAP_PAGE_SIZE / GLAS_CELL_SIZE)
 #define GLAS_GC_MAX_GEN 3
+#define GLAS_GC_SCAN_SIZE 1000
+#define GLAS_GC_POLL_WAIT_NSEC (1000 * 1000)
+#define GLAS_GC_POLL_STOP_NSEC (200 * 1000)
 static_assert((0 == (0x2F & GLAS_PAGE_CARD_COUNT)),
     "glas runtime assumes cards align to a 64-bit bitmaps");
-
-typedef struct glas_heap glas_heap; // mmap location    
-typedef struct glas_page glas_page; // aligned region
-typedef struct glas_cell glas_cell; // datum in page
-typedef struct glas_thread glas_thread;
-typedef struct glas_thread_stack glas_thread_stack;
-
-// note: a glas* may wrap or extend glas_thread with API-specific stuff.
-
-typedef struct glas_gc_scan glas_gc_scan;
-typedef struct glas_gc_thread glas_gc_thread; 
 
 /**
  * GC state transitions.
@@ -118,12 +110,12 @@ typedef enum {
  * - Wait - suspended, waiting for GC to complete
  * 
  * Transitions:
- * - Idle->Busy|Wait - set Busy, check GC Stop. 
- *   - If Stop, drain semaphore then switch to Wait.
+ * - Idle->Busy|Wait - set Busy, check GC Stop.
+ *   - If Stop, switch to Wait.
  *   - Otherwise, continue with Busy.
- * - Busy->Idle - just set the state and gtfo
- * - Wait->Idle - after signaled by GC to wake up
- * - Busy|Idle->Done - set the state, then never change it again
+ * - Wait->Busy - repetitive retries when waiting
+ * - Busy->Idle - thread sets this state at any time.
+ * - Idle|Busy->Done - set Done, and never change state again
  * 
  * Note that the idle state includes waiting on client APIs, waiting on 
  * thunks, etc.. Anything that isn't waiting on GC wakeup. The thread
@@ -173,7 +165,15 @@ typedef enum glas_card_id {
     GLAS_CARD_IDYPECOUNT
 } glas_card_id;
 
-typedef struct {
+typedef struct glas_heap glas_heap; // mmap location    
+typedef struct glas_page glas_page; // aligned region
+typedef struct glas_cell glas_cell; // datum in page
+typedef struct glas_tls glas_tls; // per OS thread
+typedef struct glas_thread glas_thread; // green threads
+typedef struct glas_siglist glas_siglist;
+typedef struct glas_gc_scan glas_gc_scan;
+
+typedef struct glas_cell_hdr {
     uint8_t type_id;   // logical structure of this node
     uint8_t type_arg;  // e.g. number of bytes in small_bin
     uint8_t type_aggr; // monoidal, e.g. linear, ephemeral (2+ bits), abstract
@@ -191,9 +191,7 @@ struct glas_cell {
             glas_cell* R; 
         } branch;
         struct {
-            // track number filled in shape_arg.
-            // only stemH is partial, these are each 32 bits
-            uint32_t bits[4]; // 
+            uint32_t stem32[4]; // full 32-bit stems, count in type arg
             glas_cell* D;
         } stem;
 
@@ -261,20 +259,20 @@ struct glas_cell {
         } xref;
 
         struct {
+            // (Tentative)
+            // constraints:
+            //  - can 'claim' or 'set' a thunk. No need to await transactions.
+            //  - can await thunks
+            //  - wait can be interrupted safely, e.g. cancellation
+            //  - canceled waits can be garbage-collected (weakrefs?)
+            //  
             // the computation 'language' is indicated in type_arg.
             // the computation captures function and inputs, perhaps a
             // frozen view of relevant registers in the general case. 
             _Atomic(glas_cell*) computation;
             _Atomic(glas_cell*) result;
-            _Atomic(glas_cell*) signal;
+            // ~ need some way to wait for a result, but interruptible.
         } thunk;
-
-        struct {
-            // auxilliary to thunks.
-            void *arg;
-            void (*signal)(void* arg);
-            glas_cell* next;
-        } thunk_signal;
 
         // TBD: I may want specialized foreign pointers for glas_link_cb
         // and glas_prog_cb objects. 
@@ -284,19 +282,16 @@ struct glas_cell {
 
         struct {
             // (TENTATIVE)
-            // represent data as indexing into a glob binary, ideally verified
-            // unlike binaries, data cannot easily be s
+            // represent data as indexing into a compact binary, ideally verified
             size_t index;
             uint8_t const* binary;
             glas_cell* fptr;
         } glob;
 
-
         struct {
             // (TENTATIVE)
             // for very large stems or bitstrings, it is possible to
-            // represent the stem as a binary.
-            uint32_t stemH2, stemT; 
+            // directly represent the stem as a binary.
             glas_cell* binary;
             glas_cell* fby;
         } stem_of_bin;
@@ -324,8 +319,6 @@ struct glas_page {
     // tentative: index to first gc_marked cell with open spaces.
     // heuristics for GC
     _Atomic(size_t) occupancy;          // number of cells
-
-    uint32_t cycle;                     // how many GCs has page seen
     uint32_t gen;                       // 0 - nursery, higher is older
     glas_page *next;                    // page in linked list
     glas_heap *heap;                    // owning heap object
@@ -344,37 +337,137 @@ struct glas_heap {
     _Atomic(uint64_t) page_bitmap;
 };
 
-
 /**
  * GC's view of a thread.
  * 
- * This should be wrapped within a larger structure that specializes a
- * thread for its purpose (e.g. worker threads vs. API client threads).
+ * Represents either an active execution thread or a passive collection
+ * of GC roots. Specialized implementations (workers, API threads, root
+ * storage) embed this structure and implement the callback hooks.
+ * 
+ * LIFECYCLE
+ * - Created and added to global thread list
+ * - State transitions coordinated with GC
+ * - Marked DONE when finished
+ * - Removed from list and finalized at next GC
+ * 
+ * PASSIVE ROOTS
+ * For passive root storage (no execution), set:
+ * - state = GLAS_THREAD_IDLE until DONE
+ * - finalizer = cleanup function
+ * 
+ * Passive roots can be edited by any BUSY thread when GC is not stopping
+ * operations. During marking, write barriers are required.
  */
 struct glas_thread {
     glas_thread* next;  // global thread list
-    glas_refct refct;   // finalizer for extended thread structure 
+    _Atomic(glas_thread_state) state;
 
-    _Atomic(glas_thread_state) status;
-    sem_t wakeup;           // for waiting
+    /**
+     * A temporary semaphore for waiting on GC.
+     * 
+     * Should initialize to NULL. This is assigned temporarily for the
+     * GLAS_THREAD_WAIT state, e.g. shared via OS thread-local storage.
+     */
+    sem_t* wakeup;
+
+    /**
+     * Self-reference to derived structure.
+     * 
+     * Points to containing structure (worker thread, api thread, etc.).
+     * Used by callbacks to access thread-specific state.
+     */
+    void* self;
+
+    /**
+     * Finalizer called when thread is removed from global list.
+     * 
+     * Called during GC after MUTATING phase, before clearing STOP.
+     * At this point:
+     * - Thread is in DONE state
+     * - No other threads are BUSY
+     * - Safe to free memory and clean up resources
+     * 
+     * May be NULL if no cleanup needed.
+     */
+    void (*finalizer)(void* self);
 
     /** 
-     * The glas thread may have an associated data stack and registers.
-     * The structure must be stable while the GC is marking or busy. 
-     * Content of roots may update only when thread is busy.
+     * Root set specification.
      * 
-     * Roots are described by a pointer paired with an array of offsets
-     * to `glas_cell*` fields (use `offsetof`). Sentinel is UINT16_MAX.
-     * Ideally, the offsets array can be a shared, static structure. 
+     * Array of uint16_t offsets to `glas_cell*` fields, relative to 
+     * `self`. Terminated by UINT16_MAX sentinel.
+     * 
+     * This limits each glas_thread to 8192 roots. For larger root sets, 
+     * options include:
+     * - Spill excess roots to glas heap arrays
+     * - Create additional passive glas_thread for overflow
+     * 
+     * MUTATION RULES
+     * 1. At least one thread is in BUSY state to ensure GC not MUTATING
+     * 2. During GC's MARKING phase, write barriers must be used
+     * 3. Any BUSY thread may modify any thread's roots (coordination 
+     *    via application-level locking or atomics, not GC)
+     * 
+     * The roots array itself must be stable (never reallocated) for the
+     * thread's lifetime.
      */
-    void* obj;
-    uint16_t const* offsets;
-    
+    uint16_t const* roots;
 };
 
+/**
+ * TBD: Allocation of cells.
+ * 
+ * To allocate cells, we'll need a page. But a page isn't at the right
+ * level for a glas_thread to work with - too big, too awkward. Instead,
+ * we might introduce some thread-local storage per OS thread to support
+ * allocations. 
+ * 
+ * We can also use thread-local storage to support write barriers, e.g. 
+ * keeping a GC scan list per OS thread. This would reduce contention.
+ * 
+ * When GC is performed, the GC may decided to perform nursery collections
+ * on the thread-local nursery pages.
+ */
+
+
+/**
+ * A scan stack or queue for concurrent GC marking
+ * 
+ * During concurrent mark and sweep, marked cells are added to a scan
+ * list. This forms an implicit basis for tri-color marking:
+ * 
+ * - WHITE is unmarked, unscanned, not awaiting scan
+ * - GREY is marked and awaiting scan
+ * - BLACK is marked and scan completed
+ * 
+ * Mutation during the mark phase may require a write barrier that adds
+ * some items to a thread-local scan stack. When filled, we can push the
+ * entire stack for background processing and allocate another.
+ */
+struct glas_gc_scan {
+    glas_gc_scan* next; // sequential composition
+    size_t fill; // items 0..(fill-1) are assigned
+    glas_cell* stack[GLAS_GC_SCAN_SIZE];
+};
+
+/**
+ * An 'immutable' runtime configuration.
+ * 
+ * Via copy-on-write, and in-place updates when refct is 1. This design
+ * ensures we don't have any "torn" reads when API is updating options,
+ * without writers waiting on readers. 
+ */
+typedef struct glas_conf {
+    _Atomic(size_t) refct;
+    glas_file_cb cb;
+} glas_conf;
+
+/**
+ * A global runtime lock - use very sparingly!
+ */
 static pthread_mutex_t glas_rt_mutex = PTHREAD_MUTEX_INITIALIZER;
 LOCAL inline void glas_rt_lock() { pthread_mutex_lock(&glas_rt_mutex); }
-LOCAL inline void glas_rt_unlock() { pthread_mutex_unlock(&glas_rt_mutex); } 
+LOCAL inline void glas_rt_unlock() { pthread_mutex_unlock(&glas_rt_mutex); }
 
 LOCAL struct glas_rt {
     _Atomic(uint64_t) idgen;
@@ -394,16 +487,81 @@ LOCAL struct glas_rt {
     // TBD: 
     // - on_commit operations queues, 
     // - worker threads for opqueues, GC, lazy sparks, bgcalls
+    // idea: count threads, highest number thread quits if too many,
+    // e.g. compared to a configuration; configured number vs. actual.
 
     struct {
         _Atomic(glas_gc_flags) state;    
-        // note: may need scan stacks and a semaphore or similar.
-        _Atomic(glas_gc_scan*) gc_scan_head;
+        _Atomic(glas_gc_scan*) scan_head;
+
+        // enable busy threads to signal GC. The wakeup here must
+        // be allocated only once. 
+        _Atomic(size_t) busy_threads_count;
+        sem_t wakeup;
+        _Atomic(bool) wakeup_init;
     } gc;
-    glas_file_cb vfs;
+
+    glas_conf* conf; // 'immutable' via copy on write, uses mutex
+    _Atomic(uint32_t) initialized;
 } glas_rt;
 
-
+LOCAL inline uint64_t glas_rt_genid() {
+    return atomic_fetch_add_explicit(&glas_rt.idgen, 1, memory_order_relaxed);
+}
+LOCAL glas_conf* glas_conf_new() {
+    glas_conf* result = malloc(sizeof(glas_conf));
+    memset(result, 0, sizeof(glas_conf));
+    atomic_init(&(result->refct), 1);
+    return result;
+}
+LOCAL glas_conf* glas_conf_clone(glas_conf const* src) {
+    glas_conf* result = glas_conf_new();
+    // copy all fields except refct
+    result->cb = src->cb;
+    return result;
+}
+LOCAL inline void glas_conf_incref(glas_conf* conf) {
+    atomic_fetch_add_explicit(&(conf->refct), 1, memory_order_relaxed);
+}
+LOCAL inline void glas_conf_decref(glas_conf* conf) {
+    size_t const prior_refct = atomic_fetch_sub_explicit(&(conf->refct), 1, memory_order_relaxed);
+    if(1 == prior_refct) {
+        free(conf);
+    }
+}
+LOCAL void glas_rt_withlock_conf_prepare_for_write() {
+    // copy on write, but skip copy if refct is 1 (likely)
+    if(unlikely(NULL == glas_rt.conf)) {
+        glas_rt.conf = glas_conf_new();
+    }
+    size_t const prior_refct = atomic_fetch_add_explicit(&(glas_rt.conf->refct), 1, memory_order_relaxed);
+    if(likely(1 == prior_refct)) {
+        atomic_store_explicit(&(glas_rt.conf->refct), 1, memory_order_relaxed);
+        // prepared! no other refs to config, and lock prevents new ones
+    } else {
+        // copy-on-write
+        glas_conf* const tmp = glas_rt.conf;
+        glas_rt.conf = glas_conf_clone(tmp);
+        glas_conf_decref(tmp);
+    }
+}
+LOCAL glas_conf* glas_rt_conf_copy_for_read() {
+    glas_rt_lock();
+    if(unlikely(NULL == glas_rt.conf)) {
+        glas_rt.conf = glas_conf_new();
+    }
+    glas_conf* result = glas_rt.conf;
+    glas_conf_incref(result);
+    glas_rt_unlock();
+    return result;
+}
+API void glas_rt_set_loader(glas_file_cb const* pvfs) {
+    glas_rt_lock();
+    glas_rt_withlock_conf_prepare_for_write();
+    glas_rt.conf->cb = *pvfs;
+    glas_rt_unlock();
+    // note: all configuration updates should look like this
+}
 
 /** 
  * Checking my assumptions for these builtins.
@@ -471,18 +629,18 @@ LOCAL glas_heap* glas_heap_try_create() {
         MAP_ANONYMOUS | MAP_PRIVATE | MAP_NORESERVE,
         -1, 0);
     if(unlikely(MAP_FAILED == heap->mem_start)) {
-        int const err = errno;
-        debug("mmap failed to reserve memory for glas heap, error %d: %s", err, strerror(err));
+        debug("mmap failed to reserve memory for glas heap, error %d: %s", errno, strerror(errno));
         free(heap);
         return NULL;
     }
     atomic_init(&(heap->page_bitmap), glas_heap_initial_bitmap(heap));
+    //debug("%luMB heap created at %p", (size_t)GLAS_HEAP_MMAP_SIZE>>20, heap->mem_start); 
+    return heap;
 }
 LOCAL void glas_heap_destroy(glas_heap* heap) {
     assert(glas_heap_is_empty(heap));
     if(0 != munmap(heap->mem_start, GLAS_HEAP_MMAP_SIZE)) {
-        int const err = errno;
-        debug("munmap failed, error %d: %s", err, strerror(err));
+        debug("munmap failed, error %d: %s", errno, strerror(errno));
         // address-space leak, but not a halting error
     }
     free(heap);
@@ -498,11 +656,9 @@ LOCAL void* glas_heap_try_alloc_page(glas_heap* heap) {
             // won the potential race; return the page, but first mark it read-writable
             void* const page = (void*)(((uintptr_t)glas_heap_pages_start(heap)) + (ix * GLAS_HEAP_PAGE_SIZE));
             if(unlikely(0 != mprotect(page, GLAS_HEAP_PAGE_SIZE, PROT_READ | PROT_WRITE))) {
-                int const err = errno;
-                debug("could not mark page for read+write, error %d: %s", err, strerror(err));
+                debug("could not mark page for read+write, error %d: %s", errno, strerror(errno));
                 return NULL; // tried and failed
             }
-            debug("allocated page %p (ix %lu) from runtime heap %p", page, ix, heap);
             return page;
         } 
     }
@@ -517,17 +673,14 @@ LOCAL void glas_heap_free_page(glas_heap* heap, void* page) {
     uint64_t const bit = ((uint64_t)1)<<ix;
     // return page to OS
     if(unlikely(0 != mprotect(page, GLAS_HEAP_PAGE_SIZE, PROT_NONE))) {
-        int const err = errno;
-        debug("error protecting page %p from read-write, %d: %s", page, err, strerror(err));
+        debug("error protecting page %p from read-write, %d: %s", page, errno, strerror(errno));
         // not a halting error
     }
     if(unlikely(0 != madvise(page, GLAS_HEAP_PAGE_SIZE, MADV_DONTNEED))) {
-        int const err = errno;
-        debug("error expunging page %p from memory, %d: %s", page, err, strerror(err));
+        debug("error expunging page %p from memory, %d: %s", page, errno, strerror(errno));
         // not a halting error, but may start with garbage when allocated again.
     }
     atomic_fetch_and_explicit(&(heap->page_bitmap),~bit, memory_order_release);
-    debug("returned page %p (ix %lu) to heap %p", page, ix, heap);
 }
 
 
@@ -553,7 +706,7 @@ LOCAL inline uint64_t glas_page_magic_word_by_addr(void* addr) {
 LOCAL glas_page* glas_page_init(glas_heap* heap, void* addr) {
     assert(glas_mem_page_ceil(addr) == addr);
     assert(glas_heap_includes_addr(heap, addr));
-    memset(addr, 0, sizeof(glas_page)); // reset page header
+    memset(addr, 0, sizeof(glas_page));
     glas_page* const page = (glas_page*) addr;
     page->gc_marked = page->gc_mark_bitmap[0];
     page->gc_marking = page->gc_mark_bitmap[1];
@@ -568,17 +721,6 @@ LOCAL inline glas_page* glas_page_from_internal_addr(void* addr) {
     assert(likely(glas_page_magic_word_by_addr(page) == page->magic_word));
     return page;
 }
-
-LOCAL inline uint64_t glas_rt_genid() {
-    return atomic_fetch_add_explicit(&glas_rt.idgen, 1, memory_order_relaxed);
-}
-
-API void glas_file_intercept(glas_file_cb const* pvfs) {
-    glas_rt_lock();
-    glas_rt.vfs = *pvfs;
-    glas_rt_unlock();
-}
-
 LOCAL glas_page* glas_rt_try_alloc_page_from_freelist() {
     glas_page* page = atomic_load_explicit(&glas_rt.free.pages, memory_order_acquire);
     while(NULL != page) {
@@ -602,7 +744,7 @@ LOCAL bool glas_rt_try_add_heap() {
     // goal for this function is to have a heap at head of heaps list
     // that is not fully allocated. Doesn't actually matter who adds it.
     glas_heap* const curr_heap = atomic_load_explicit(&glas_rt.heaps, memory_order_relaxed);
-    if(!glas_heap_is_full(curr_heap)) {
+    if((NULL != curr_heap) && !glas_heap_is_full(curr_heap)) {
         return true;
     }
     glas_heap* const new_heap = glas_heap_try_create();
@@ -621,10 +763,9 @@ LOCAL bool glas_rt_try_add_heap() {
     }
     return true;
 }
-
 LOCAL glas_page* glas_rt_try_alloc_page() {
     // strategy: free list, head of old heaps, new heap.
-    //  note: we don't scan the old heaps list because it should
+    //  note: we don't scan old heaps list because they should
     //  be fully allocated. Let GC decided what to do with that.
     do {
         // Priority: allocate from free list.
@@ -639,10 +780,8 @@ LOCAL glas_page* glas_rt_try_alloc_page() {
         }
         // Tertiary: allocate a new heap and try again. 
     } while(glas_rt_try_add_heap());
-    debug("glas runtime is out of memory!");
     return NULL;
 }
-
 LOCAL void glas_rt_free_page(glas_page* const page) {
     // always go to free list; GC can maybe clean up later
     assert(0 == atomic_load(&(page->occupancy)));
@@ -651,17 +790,194 @@ LOCAL void glas_rt_free_page(glas_page* const page) {
     atomic_fetch_add_explicit(&glas_rt.free.count, 1, memory_order_release);
 }
 
+LOCAL void glas_rt_gc_wakeup_init() {
+    glas_rt_lock();
+    bool const ready = atomic_load_explicit(&(glas_rt.gc.wakeup_init), memory_order_acquire);
+    if(!ready) {
+        if(0 != sem_init(&(glas_rt.gc.wakeup), 0, 0)) {
+            debug("error initializing GC wakeup mutex (%d): %s", errno, strerror(errno));
+            abort();
+        }
+    }
+    atomic_store_explicit(&(glas_rt.gc.wakeup_init), true, memory_order_release);
+    glas_rt_unlock();
+}
+LOCAL inline sem_t* glas_rt_gc_wakeup_get() {
+    bool const ready = atomic_load_explicit(&(glas_rt.gc.wakeup_init), memory_order_relaxed);
+    if(unlikely(!ready)) {
+        glas_rt_gc_wakeup_init();
+    }
+    return &(glas_rt.gc.wakeup);
+}
+LOCAL inline glas_thread_state glas_thread_get_state(glas_thread* t) {
+    return atomic_load_explicit(&(t->state), memory_order_relaxed);
+}
+LOCAL void glas_thread_become_busy(glas_thread* t) {
+    assert(GLAS_THREAD_DONE != glas_thread_get_state(t)); // no exiting DONE!
+    assert(GLAS_THREAD_BUSY != glas_thread_get_state(t)); // no recursive BUSY! 
+    bool wakeup_init = false;
+    sem_t wakeup; 
+    do {
+        // Attempt to enter the busy state, blocking GC mutation
+        atomic_store_explicit(&(t->state), GLAS_THREAD_BUSY, memory_order_relaxed);
+        glas_gc_flags gc = atomic_load_explicit(&(glas_rt.gc.state), memory_order_seq_cst);
+        if(0 == (GLAS_GC_STOP & gc)) {
+            atomic_fetch_add_explicit(&(glas_rt.gc.busy_threads_count), 1, memory_order_relaxed);
+            if(wakeup_init) { 
+                sem_destroy(&wakeup); 
+            }
+            t->wakeup = NULL;
+            return; // successfully became busy
+        }
+
+        // Before waiting on GC, we'll need a semaphore. For the moment, 
+        // allocating on call stack. But could share via OS thread-local 
+        // storage. TODO: profile.
+        if(!wakeup_init) {
+            wakeup_init = true;
+            sem_init(&wakeup, 0, 0);
+            t->wakeup = &wakeup;
+        }
+
+        // Attempt to enter the GC waiting state. 
+        atomic_store_explicit(&(t->state), GLAS_THREAD_WAIT, memory_order_release);
+        gc = atomic_load_explicit(&(glas_rt.gc.state), memory_order_seq_cst); 
+        if(likely(0 != (GLAS_GC_STOP & gc))) {
+            static_assert(GLAS_GC_POLL_WAIT_NSEC < (1000 * 1000 * 1000));
+            static struct timespec const duration = { .tv_nsec = GLAS_GC_POLL_WAIT_NSEC };
+            sem_timedwait(t->wakeup, &duration);
+            // not a problem if wakeup early, simply cycle again.
+        }
+    } while(1);
+}
+LOCAL void glas_thread_become_idle(glas_thread* t) {
+    assert(GLAS_THREAD_DONE != glas_thread_get_state(t));
+    glas_thread_state const st = atomic_load_explicit(&(t->state), memory_order_relaxed);
+    atomic_store_explicit(&(t->state), GLAS_THREAD_IDLE, memory_order_relaxed);
+    if(GLAS_THREAD_BUSY == st) {
+        // see if we can trigger GC
+        size_t const prior_ct = atomic_fetch_sub_explicit(&(glas_rt.gc.busy_threads_count), 1, memory_order_relaxed);
+        if(1 == prior_ct) {
+            glas_gc_flags const gc = atomic_load_explicit(&(glas_rt.gc.state), memory_order_relaxed);
+            if(0 != (GLAS_GC_STOP & gc)) {
+                sem_post(glas_rt_gc_wakeup_get());
+            }
+        }
+    }
+}
+LOCAL void glas_thread_become_done(glas_thread* t) {
+    glas_thread_become_idle(t);
+    atomic_store_explicit(&(t->state), GLAS_THREAD_DONE, memory_order_relaxed);
+}
+LOCAL void glas_gc_wait_for_thread(glas_thread* t) {
+    glas_thread_state ts = atomic_load_explicit(&(t->state), memory_order_relaxed);
+    while(GLAS_THREAD_BUSY == ts) {
+        static_assert(GLAS_GC_POLL_STOP_NSEC < (1000 * 1000 * 1000));
+        static struct timespec const duration = { .tv_nsec = GLAS_GC_POLL_STOP_NSEC };
+        sem_timedwait(glas_rt_gc_wakeup_get(), &duration);
+        ts = atomic_load_explicit(&(t->state), memory_order_seq_cst);
+    }
+}
+LOCAL inline bool glas_gc_is_stopped() {
+    glas_gc_flags const gc = atomic_load_explicit(&glas_rt.gc.state, memory_order_relaxed);
+    size_t const ct = atomic_load_explicit(&glas_rt.gc.busy_threads_count, memory_order_relaxed);
+    return ((0 != (GLAS_GC_STOP & gc)) && (0 == ct));
+}
+LOCAL void glas_gc_stop_the_world() {
+    // set the STOP flag
+    atomic_fetch_or_explicit(&glas_rt.gc.state, GLAS_GC_STOP, memory_order_seq_cst);
+
+    // Wait for busy threads to exit. We'll use simple polling here.
+    // Single pass, because new threads are IDLE.
+    for(glas_thread* t = atomic_load_explicit(&glas_rt.root.threads, memory_order_acquire);
+        (NULL != t); t = t->next) 
+    {
+        glas_gc_wait_for_thread(t);
+    }
+    // Trust but verify:
+    assert(glas_gc_is_stopped());
+}
+LOCAL void glas_gc_resume_the_world() {
+    assert(glas_gc_is_stopped());
+    atomic_fetch_and_explicit(&glas_rt.gc.state, ~GLAS_GC_STOP, memory_order_seq_cst);
+    for(glas_thread* t = atomic_load_explicit(&glas_rt.root.threads, memory_order_acquire);
+        (NULL != t); t = t->next) 
+    {
+        glas_thread_state const ts = atomic_load_explicit(&(t->state), memory_order_relaxed);
+        if(GLAS_THREAD_WAIT == ts) {
+            assert(NULL != t->wakeup);
+            sem_post(t->wakeup);
+        }
+    }
+}
+LOCAL void glas_gc_remove_done_threads() {
+    assert(glas_gc_is_stopped());
+    // strategy: grab the entire list, modify-in-place, put it back.
+    glas_thread* hd = atomic_exchange_explicit(&(glas_rt.root.threads), NULL, memory_order_acquire);
+    glas_thread** cursor = &hd;
+    while(NULL != *cursor) {
+        glas_thread_state const ts = atomic_load_explicit(&((*cursor)->state), memory_order_relaxed);
+        if(GLAS_THREAD_DONE == ts) {
+            // remove item at cursor
+            glas_thread* const tdone = (*cursor);
+            (*cursor) = tdone->next;
+            tdone->next = NULL;
+            if(NULL != tdone->finalizer) {
+                tdone->finalizer(tdone->self);
+            }
+        } else {
+            // advance cursor to next item
+            cursor = &((*cursor)->next);
+        }
+    }
+    // if threads were added concurrently, move them to tail via cursor
+    do {} while(!atomic_compare_exchange_weak(&(glas_rt.root.threads), cursor, hd));
+}
+
+// TBD
+// - initial 'glas*' thread type
+// - thread local storage and allocators
+// - GC and worker threads
+// - moving and marking GC
+
+
+
+LOCAL inline glas_gc_scan* glas_gc_scan_new() {
+    glas_gc_scan* result = malloc(sizeof(glas_gc_scan));
+    result->fill = 0;
+    return result;
+}
+LOCAL inline void glas_gc_scan_free(glas_gc_scan* scan) {
+    free(scan);
+}
+LOCAL inline bool glas_gc_scan_stack_is_full(glas_gc_scan* scan) {
+    return (GLAS_GC_SCAN_SIZE == scan->fill);
+}
+LOCAL inline bool glas_gc_scan_stack_is_empty(glas_gc_scan* scan) {
+    return (0 == scan->fill);
+}
+LOCAL inline void glas_gc_scan_stack_push(glas_gc_scan* scan, glas_cell* data) {
+    assert(likely(!glas_gc_scan_stack_is_full(scan)));
+    scan->stack[(scan->fill)++] = data;
+}
+
+
+
+
+
+
+
 
 
 API void glas_i64_push(glas* g, int64_t n) {
-    (void)g;
+    (void)g; (void) n;
     debug("push signed int %ld", n);
 }
 API void glas_i32_push(glas* g, int32_t n) { glas_i64_push(g, (int64_t) n); }
 API void glas_i16_push(glas* g, int16_t n) { glas_i64_push(g, (int64_t) n); }
 API void glas_i8_push(glas* g, int8_t n) { glas_i64_push(g, (int64_t) n); }
 API void glas_u64_push(glas* g, uint64_t n) {
-    (void)g;
+    (void)g; (void) n;
     debug("push unsigned int %lu", n);
 }
 API void glas_u32_push(glas* g, uint32_t n) { glas_u64_push(g, (uint64_t) n); }
@@ -710,6 +1026,10 @@ API bool glas_rt_run_builtin_tests() {
     debug("popcount test: %s", popcount_test ? "pass" : "fail");
     bool const ctz_test = glas_rt_bit_ctz();
     debug("ctz test: %s", ctz_test ? "pass" : "fail");
+
+    glas_page* page = glas_rt_try_alloc_page();
+    glas_rt_free_page(page);
+
     glas* g = glas_thread_new();
 
     // TBD: memory tests, structured data tests, computation tests, GC tests

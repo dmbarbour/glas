@@ -39,9 +39,8 @@
  * a stack, stash, and namespace, plus bookkeeping for transactions,
  * checkpoints, and errors. The thread awaits commands from the client.
  * 
- * Individual glas threads are not mt-safe, but operations on separate
- * threads is mt-safe. The glas runtime does not use thread-local state,
- * thus glas threads may freely migrate between OS threads. 
+ * mt-safety: Each glas thread must be used in a single-threaded manner,
+ * but may be shared via mutex. Separate glas threads are fully mt-safe.
  */
 typedef struct glas glas;
 
@@ -434,7 +433,7 @@ void glas_thread_fork_detached(glas*);
 void glas_load_builtins(glas*, char const* prefix);
 
 /**
- * Override the runtime-global file loader.
+ * Configure the runtime-global file loader.
  * 
  * The %macro primitive enables namespaces to load files. Intercepting
  * this loader enables a client to redirect files or integrate client
@@ -456,7 +455,7 @@ typedef struct {
         uint8_t const** ppBuf, size_t* len, glas_refct*);
 } glas_file_cb;
 
-void glas_file_intercept(glas_file_cb const*);
+void glas_rt_set_loader(glas_file_cb const*);
 
 /**
  * Flexible 'file' references.

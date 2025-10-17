@@ -52,7 +52,28 @@ I'll probably want to model explicit thunks for at least some use cases, such as
 
 Ideally, GC may recognize and collapse completed thunks. GC could also recognize and complete 'selector' thunks, e.g. accessing a particular definition from an environment, or a particular field from a dict, when it is available.
 
+Waiting on thunks needs attention. In context of transactions, especially, a wait may be interrupted because we decide to backtrack. This requires some robust way to represent waits that can be canceled. Tying back directly to the host is probably a bad idea. An intermediate heap object that we can GC might work, at the cost of adding an allocation for every thunk wait.
+
+
 ## Garbage Collection
+
+### Allocators and Thread Local Storage
+
+I want nursery-style allocations, but I don't want a lot of fine-grained nurseries for `glas*` objects. A viable approach is to use thread-local storage for 'affinity' when allocating, i.e. where the `glas*` thread allocates depends on which OS thread it's using. 
+
+By keeping a linked list of thread-local structures, when GC is performed, it can fetch back all the nurseries and force threads to grab new ones on their next allocation.
+
+Aside from allocators, TLS may prove convenient for write barriers, e.g. keeping a `glas_gc_scan*` per OS thread to avoid contention on a global scan list. Maybe move the semaphore here, too.
+
+### Snapshot at the Beginning?
+
+GHC's GC uses a 'snapshot at the beginning' strategy for garbage collection. An IORef that has been marked but not scanned, i.e. a 'grey' IORef, can still be updated. But we'll mark the *prior* value for scan, and we'll not mark any new values. This is achieved via write barrier.
+
+This results in newly allocated and rooted data not being marked at all in the current cycle, but that's acceptable so long as we aren't using marks for allocation in the nursery generation.
+
+. But that is acceptable because Haskell uses compacting GC for newly allocated data, i.e. we don't use "marks" for allocation in the nursery generation.
+
+
 
 ### Thread Roots
 
