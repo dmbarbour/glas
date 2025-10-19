@@ -5,23 +5,15 @@
  * context. This represents a remote-controlled glas coroutine that 
  * begins with an empty namespace, stack, and auxilliary stash.
  * 
- * Efficient data exchange with the runtime uses binaries or bitstrings.
- * This API provides means to tease apart or construct other data types,
- * but bulk binary transfers .
- * 
- *  require translation to
- * exchange. There are some operations support translation. 
+ * Efficient data exchange with the runtime is possible via zero-copy
+ * binaries. Other structures may require dozens of calls to construct
+ * or analyze.
  * 
  * Error handling is transactional: the client performs a sequence of
  * operations on a thread then commits the step. In case of error or
  * conflict, the step fails to commit. But the client can rewind and 
- * retry, or try something new. 
- * 
- * Because C is not transactional, on_commit and on_abort callbacks 
- * exist to simplify integration.
- * 
- * Note: Names in glas cannot contain NULL values, which makes them
- * generally compatible with C strings.
+ * retry, or try something new. The on_commit and on_abort callbacks 
+ * simplify integration with C.
  */
 #pragma once
 #ifndef GLAS_H
@@ -1164,6 +1156,19 @@ void glas_refl_bgcall(glas*, char const* op);
  */
 bool glas_rt_run_builtin_tests();
 
+/**
+ * Clear thread-local storage for calling thread.
+ * 
+ * The glas runtime uses thread-local storage, e.g. for a bump-pointer
+ * allocator per OS thread. This API will clear the storage as if the OS
+ * thread had exited. The OS thread may freely use the API again, but it 
+ * will be treated as a new OS thread by the glas runtime.
+ */
+void glas_rt_tls_reset();
+
+/**
+ * TBD: control of garbage collection
+ */
 
 #define GLAS_H
 #endif

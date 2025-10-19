@@ -28,6 +28,7 @@ Assuming 8-byte alignment of pointers.
         xxxxxx10            shrubs of 0,2,4..62 bits (see below)
         xxxxx011            small rationals
         nnn00111            binary (nnn: encodes 1 to 7 bytes)
+        11111111            special constants, e.g. claimed thunks
 
 
 ### Linearity and Ephemerality Header Bits
@@ -39,6 +40,19 @@ These bits can be constructed as a simple composition of the same header bits in
 ### Binaries and Arrays
 
 Might be worth having a couple options here, based on whether we want to allocate in-arena or outside of it. Will need to consider my options. Might heuristically keep smaller binaries or arrays within the arena. Support for slices would be good, too.
+
+### Shrubs
+
+We can encode small trees as a bitstring:
+
+        00  - leaf
+        01  - branch (left tree) (right tree)
+        10  - left stem (tree)
+        11  - right stem (tree)
+
+We can pad with '00'.
+
+The advantage of shrubs is the ability to encode a complex branching structure without pointers. The disadvantage is the lack of indexing, i.e. 'unpair' takes time linear in the size of the left tree. Despite this limitation, I think it would be very useful for in-pointer encodings. For larger structures, we could use a glob encoding for similar benefits.
 
 ### Globs
 
@@ -54,6 +68,9 @@ Ideally, GC may recognize and collapse completed thunks. GC could also recognize
 
 Waiting on thunks needs attention. In context of transactions, especially, a wait may be interrupted because we decide to backtrack. This requires some robust way to represent waits that can be canceled. Tying back directly to the host is probably a bad idea. An intermediate heap object that we can GC might work, at the cost of adding an allocation for every thunk wait.
 
+## Note on callbacks
+
+Use `pthread_cleanup` to properly handle when a callback closes an OS thread, especially for callbacks into user code.
 
 ## Garbage Collection
 
@@ -67,11 +84,32 @@ Aside from allocators, TLS may prove convenient for write barriers, e.g. keeping
 
 ### Snapshot at the Beginning?
 
-GHC's GC uses a 'snapshot at the beginning' strategy for garbage collection. An IORef that has been marked but not scanned, i.e. a 'grey' IORef, can still be updated. But we'll mark the *prior* value for scan, and we'll not mark any new values. This is achieved via write barrier.
+Some thoughts on adapting SATB to glas.
 
-This results in newly allocated and rooted data not being marked at all in the current cycle, but that's acceptable so long as we aren't using marks for allocation in the nursery generation.
+GHC's GC uses a 'snapshot at the beginning' (SATB) strategy for garbage collection. The idea, IIUC, is that a collection should only sweep garbage that was present (i.e. was already garbage) when the collection started. This ensures the collection is consistent with performing a full GC under stop-the-world. 
 
-. But that is acceptable because Haskell uses compacting GC for newly allocated data, i.e. we don't use "marks" for allocation in the nursery generation.
+The trick is to extend to concurrent marking and mutation. New allocations obviously create new garbage. But we must touch none of that until a future GC. Mutations can transform older allocations into new garbage. But we must GC as if no mutation occurred.
+
+This will be supported by a write barrier. When the write barrier sees a mutation on a slot, it must take action depending on whether it's the first mutation on that slot in the GC cycle. If so, copy prior value, atomically claim the scan, write new value, then if the claim was successful, add prior value to a scan buffer. This is our basic barrier for SATB. Otherwise, just update.
+
+But now we have a new problem: How does the write barrier know whether a specific slot has been scanned? Some options:
+
+* hashtable - unpredictable size, poor locality, easy to understand
+* bitmaps - predictable size, good locality, easy to understand, but 1.6% memory overhead
+* other ideas?
+
+I lean towards bitmaps in this role. We'll need 1 bit per 8-byte slot (1.6% overhead, unless we can roll it into currently wasted space) for tracking scans. For a `glas_cell` we have a 32-bit header per 32-byte object, of which only 24 bits are currently assigned. I can dedicate 3 bits to support 3 slots per cell. For a `glas_thread` we could add an `_Atomic(uint64_t)* scan_bitmap` to every thread, allocating based on a thread's root offsets. If we allocate arrays, we could allocate extra space for scan bits walking backwards from the array data.
+
+We flip every GC cycle whether we interpret '1' as scanned or '0' as scanned. At the start of marking, all 'live' slots must begin with the same mark. Thus, slots for new allocations must also be marked as scanned. This is doable. For new cells, we can add bits from runtime-global state to our initial header, flipping this interpretation only while stopped. For new threads, we might need to block the runtime from flipping scan bits while threads are initializing, but a simple counter and semaphore is adequate.
+
+With this design, we'll need a separate 'write' function for registers, threads, and mutable arrays. These write functions can handle the write barrier, whether it's by GC flipping a `void (*write_reg)(glas_cell* reg, glas_cell* newval)` while GC is stopped, or branching on GC state. (I have no intuition for which option would perform better.)
+
+Some notes:
+
+* I still favor bump-pointer allocation, but I'm not married to it. This design doesn't rely on location to distinguish cells as 'new', thus I can also use fragmented allocation, e.g. using the prior marks. Mixed allocation modes are feasible.
+* New registers, thunks, etc. are initialized as 'scanned', thus don't need special handling within a GC cycle.
+* When writing to a slot that initially contains NULL - or perhaps small constant data embedded into pointer bitfields - pushing the prior value to a scan buffer becomes dropping the prior value.
+
 
 
 
