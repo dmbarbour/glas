@@ -4,7 +4,7 @@ The [namespace](GlasNamespaces.md) supports modules and user-defined front-end s
 
 ## Proposed Program Primitives
 
-These primitives are constructors for an abstract data time, i.e. constructing a program does not execute it. The exception is '%macro' nodes, which support lazy evaluation of some programs at compile time.
+These primitives are constructors for an abstract data time, i.e. constructing a program does not execute it. The %macro and %load primitives are special exceptions, lazily evaluating at the namespace layer to support metaprogramming and modularity.
 
 *Notation:* `(F X Y Z)` desugars to `(((F,X),Y),Z)`, i.e. curried forms. 
 
@@ -51,9 +51,20 @@ Registers:
 * `(%assoc R1 R2 RegOps)` - this binds an implicit environment of registers named by an ordered pair of registers `(R1, R2)`. The primary use case is abstract data environments: an API can use per-client space between client-provided registers and hidden API registers.
 
 Metaprogramming:
-* `(%macro Builder)` - Builder must have type `Env -> Program`. The Program must be 0--1 arity, returns an an AST on the data stack, and deterministic up to Env (as `%an.det`). The Env provides compile-time effects such as loading files. The returned AST is evaluated in an empty environment. Further linking is handled by the macro context.
-* `(%eval Adapter)` - pops an AST representation from the data stack, evaluates in an empty environment, then passes the result to Adapter of type `AST -> Program`. The resulting program may be verified, instrumented, and optimized in context, then is run. In most cases, the AST argument must be static, i.e. `%an.eval.static` is default for glas systems.
+* `(%macro Builder)` - Builder shall represent a deterministic program of 0--1 arity. This program must return a closed-term AST representation on the data stack. This returned AST is validated then replaces the macro node. Any further linking is handled by macro context. (See `%an.det` regarding determinism.)
+* `(%eval Adapter)` - pop a closed-term AST representation from the data stack, evaluate in an empty environment, validates, then passes to an Adapter of type `AST -> Program`. The resulting program may further be verified, instrumented, and optimized in context, then runs. In most cases, the AST argument must be static, i.e. `%an.eval.static` is default for glas systems.
 * *Note:* These primitives enable Programs to participate in metaprogramming. However, we can also support a lot of metaprogramming purely in the namespace layer without involving the Program type.
+
+Modularity:
+* `(%load Src)` - Load external resources at compile time. If the Src is malformed or unreachable, this diverges. The result is embedded data, which may be processed further via %macro.
+* `%src.*` - The Src type is abstract, via `%src.*` constructors that can verify some inputs.
+
+
+A compile-time loader. Resource may represent a file path, DVCS access, or  or other external .
+
+The loader returns arbitrary, structured data based on the given Source,.
+
+, typically as embedded data (`d:Data`) to be further processed by a 
 
 ## Annotations
 

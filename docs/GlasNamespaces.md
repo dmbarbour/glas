@@ -27,7 +27,7 @@ Utility extensions:
 * *ifdef* - flexible expression of defaults, optional defs, merge-union, mixins
 * *fixpoint* - a built-in fixpoint for lazy, recursive defs
 
-The [program model](GlasProg.md) provides a collection of primitive definitions under prefix '%'. The runtime will also bind '%env.\*' to the configuration's 'env.\*' via fixpoint, supporting shared libraries. The runtime also links '%src' to abstract data representing a user configuration.
+The [program model](GlasProg.md) provides an initial collection of definitions. By convention, these are bound under prefix '%'. Front-end compilers further support conventions for %src, %self.\*, %env.\*, and %arg.\*.
 
 ## Abstract Syntax Tree (AST)
 
@@ -88,27 +88,27 @@ Sequential translations can be composed into a single map. Rough sketch: to comp
 
 ## Loading Files
 
-Modularity is supported by compile-time effects. To prevent compile-time effects from leaking accidentally into the runtime, they are provided indirectly as second-class algebraic effects via the %macro primitive. The primary effect is to load files, returning a binary. This binary may be processed within the macro to generate an AST. Lazy compilation may be expressed in terms of returning an AST that contains more macro nodes.
+Modularity is supported through several system-provided definitions:
 
-Viable API:
+* `(%macro Program) : AST` - evaluates a deterministic, 0--1 arity program that returns a closed-term AST representation. This AST is validated then can be 'linked' in context by applying to an environment.
+* `(%load Src) : d:Data` - loads external resources at compile-time. The Src type is abstract. If Src is malformed or unreachable, this diverges with error. Otherwise, returns embedded data that can be further processed via %macro. 
+* `%src.*` - constructors for abstract Src data. All constructors are relative. 
+  * `(%src.file FilePath Src) : Src` - evaluates to an abstract Src representing a FilePath relative to another Src. When loaded, returns an optional binary, supporting 'file does not exist' as a valid state. For other errors - unreachable, permissions issues - the loader diverges with a compile-time error.
+    * Note: glas systems forbids `"../"` relative paths and absolute paths relative to relative paths. See *Controlling Filesystem Entanglement* for motivations.
+    * Note: absolute paths are still contextually relative, e.g. absolute paths within DVCS repository are relative to repository root.
+  * `(%src.dir FileRegex Src) : Src` - search for files matching a pattern, relative to another Src. When loaded, returns a deterministically sorted list of FilePath.
+  * `(%src.dvcs.git URI Ver Src) : Src` - returns a Src representing a DVCS git repository. If loaded, returns unit or diverges with error. Use '%src.file' to access files within a repository. 
+  * `(%src.an Annotation Src) : Src` - here Annotation is represented by embedded data. It is not observed by the loader, but is available later in context of runtime reflection on sources, e.g. `sys.refl.src.*`.
+  * Note: Loading the same source twice may receive a warning even when acyclic. A linear dependency structure encourages shared libraries via '%env.\*' and simplifies live coding.
+* `%src : Src` - by convention, refers to the source being linked. Relies on support from front-end compilers to update %src in context of each load. 
 
-        ("%macro", b:("ct.", P))        # bind ct to effects in P
-        ct.load(Src) : Binary option    # load glas data based on query
-        (%src.file FilePath Src) : Src
-        (%src.dvcs.git Repo Ver FilePath Src) : Src
-        (%src.meta MetaData Src) : Src  # adds metadata to Src purely for reflection
- 
-Src is an abstract data type with constructors in '%src.\*'. To support relative file paths and rendering dependency graphs, Src constructors always take a Src argument. By convention, each module receives a link to its own Src via '%src'. To support location-independent compilation, Src is opaque at compile time, but details are available at runtime via 'sys.refl.src.\*'.
-
-We might eventually extend Src to stable HTTP queries, content-addressed data, and virtual filesystems. However, I believe this is enough to get started.
+We might eventually extend Src to stable HTTP queries or content-addressed data. However, the above is sufficient to get started.
 
 ### Controlling Filesystem Entanglement
 
 In my vision for glas systems, users can easily share code by copying folders between workspaces. Although DVCS bindings are preferred for stable dependencies, copying is suitable for notebook-style applications where live coding and projectional editing are integrated with the experience.
 
-To support this vision, we can report warning or error in case of parent-relative (`"../"`) paths in Src constructors. Absolute paths are similarly restricted: users cannot reference an absolute path via relative-path Src in the same context (with DVCS becoming a new context). 
-
-We might similarly report if a DVCS reached by hash links to other DVCS by branch. This would allow us to more robustly maintain horizontal versioning across bounaries.
+To support this vision, we forbid parent-relative (`"../"`) paths in Src constructors, and absolute file paths may only be constructed relative to other absolute file paths or a DVCS source.
 
 ## User-Defined Syntax
 
