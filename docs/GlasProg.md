@@ -293,4 +293,3 @@ Some thoughts:
 - we could feasibly use 'int range' types as parameters to list length types, for example.
 - obviously need a const type that supports only a single value, too.
 
-

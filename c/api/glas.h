@@ -324,12 +324,13 @@ void glas_ns_ast_close(glas*);
  * 
  * The callback function receives a dedicated `glas*` callback thread.
  * 
- * This thread provides access to two namespaces: a host namespace that
- * serves as a lexical closure at definition time, and a caller prefix
- * that provides access to implicit parameters, registers, and effects
- * handlers. Both bindings are subject to translation.
+ * The callback receives access to two namespaces: closure and caller.
+ * The closure binds to host definitions and registers, while caller 
+ * supports pass-by-reference implicits, registers, effects handlers.
+ * Both are subject to translation.
  * 
- * The caller's data stack is also visible to the specified input arity.
+ * The caller's data stack is also received to a specified input arity.
+ * The callback's specified output arity is verified at runtime.
  * 
  * In general, the callback may commit multiple steps. However, there
  * are caveats and constraints: 
@@ -338,7 +339,7 @@ void glas_ns_ast_close(glas*);
  *   Pending actions are aborted, warning once per definition.
  * 
  * - Attempts to commit within an atomic section are atomicity errors.
- *   If a callback must commit to be useful, try the 'no_atomic' flag.
+ *   If a callback must commit to be useful, set the 'no_atomic' flag.
  * 
  * The callback may fork threads, but the caller namespace is valid only
  * for duration of the call. To support this, the caller waits for all
@@ -685,7 +686,8 @@ typedef enum GLAS_ERROR_FLAGS {
     GLAS_E_DATA_TYPE        = 0x080000, // runtime type errors
     GLAS_E_DATA_QTY         = 0x100000, // mostly for queue reads
     GLAS_E_UNDERFLOW        = 0x200000, // stack or stash underflow
-    GLAS_E_ARITY            = 0x400000, // callback arity violation; unrecoverable if committed
+    GLAS_E_OVEFLOW          = 0x400000, // stack or stash overflow
+    GLAS_E_ARITY            = 0x800000, // callback arity violation (unrecoverable if committed)
 } GLAS_ERROR_FLAGS;
 
 GLAS_ERROR_FLAGS glas_errors_read(glas*);           // read error flags
