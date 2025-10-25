@@ -267,7 +267,7 @@ void glas_ns_eval_def(glas*, char const* name, glas_ns_tl const*);
  * All definitions previously reachable through the prefix are hidden.
  * That is, there is no merge of definitions.
  */
-void glas_ns_eval_prefix(glas*, char const* prefix, glas_ns_tl const*);
+void glas_ns_eval_bind(glas*, char const* prefix, glas_ns_tl const*);
 
 /**
  * Rewrite thread namespace by evaluation.
@@ -384,12 +384,13 @@ void glas_ns_cb_prefix(glas*, char const* prefix, glas_link_cb const*, glas_ns_t
  * caller_prefix is NULL, a callback thread begins detached.
  * 
  * Upon detaching, the callback thread loses access to its caller's 
- * environment. Names bound to the caller are treated as undefined. To
- * fully detach, the callback thread must commit the detach operation.
+ * environment. Names bound to the caller are treated as undefined. But
+ * detach remains reversible until the current step is committed.
  * 
- * This is mostly relevant for forks of the callback thread. Those forks
- * may run several steps with access to the caller, detach, commit, then
- * continue running concurrently with the caller.
+ * Detaching an initial callback thread is useless: it still exits after
+ * returning from the callback. But detach allows a fork to commit a few
+ * steps with the caller's environment then continue after the initial 
+ * callback returns.
  * 
  * Note: Attempting to detach when not attached may receive a warning,
  * albeit at most once per callback definition. 
@@ -399,10 +400,9 @@ void glas_thread_detach(glas*);
 /**
  * Fork a thread in the detached state.
  * 
- * This is useful in context of atomic operations. There is no way to
- * fully detach without committing, but a fork created in the detached
- * state doesn't need to detach. The callback may fork detached threads,
- * pass them to on_commit for deferred operation, then return.
+ * This is useful in context of atomic operations. A detached fork still
+ * cannot commit before its origin commits the fork operation. However,
+ * this supports creation of threads for background tasks after commit.
  */
 void glas_thread_fork_detached(glas*);
 
@@ -412,11 +412,10 @@ void glas_thread_fork_detached(glas*);
  *********************************/
 
 /**
- * Load built-in definitions.
+ * Bind built-in definitions to a prefix.
  * 
- * This binds built-in definitions to a specified prefix, by convention
+ * This binds built-in definitions to a specified prefix, conventionally
  * "%". Includes annotations, accelerators, program constructors, etc..
- * 
  * Also includes built-in front-end compilers under %env.lang.* for at
  * least the 'glas' file extension.
  * 
@@ -425,30 +424,54 @@ void glas_thread_fork_detached(glas*);
  */
 void glas_load_builtins(glas*, char const* prefix);
 
+
+typedef enum glas_loader_status {
+    GLAS_LOAD_FILE = 1,     // valid file read
+    GLAS_LOAD_DIR,          // distinguish when a directory is listed
+    GLAS_LOAD_NOENT,        // specified file or folder does not exist
+    GLAS_LOAD_ERROR,        // e.g. unreachable, permissions issues
+} glas_loader_status;
+
 /**
- * Configure the runtime-global file loader.
+ * Logical overlay of the local filesystem.
  * 
- * The %macro primitive enables namespaces to load files. Intercepting
- * this loader enables a client to redirect files or integrate client
- * local resources into a compilation.
+ * The %load primitive supports loading files from the local filesystem
+ * or DVCS. There is also limited support for searching directories. But
+ * it is frequently convenient for clients to control some dependencies.
  * 
- * When 'intercept' returns false, the runtime uses a built-in loader.
- * Otherwise, the runtime uses 'tryload'. This decision extends to all
- * relative file paths, thus is only decided for absolute paths or URIs.
+ * This is presented as overlaying the local filesystem. Currently, DVCS
+ * resources cannot be overlayed. Overlays are aligned to absolute-path 
+ * prefixes in the filesystem.
  * 
- * If 'tryload' returns false, it's treated as a failure, like a missing
- * file. The compiler can recover from that. Alternatively, tryload may
- * return true with a NULL ppBuf to represent divergence errors.
+ * Multiple overlays are supported, later overlays shadowing earlier. If
+ * an overlay becomes unreachable due to shadowing, it is released. NULL 
+ * `glas_file_cb const*` indicates use of default loader for a prefix.
  * 
- * This API relies on zero-copy transfer. See `glas_binary_peek_zc`.
+ * FilePath is always a suffix to the overlayed prefix. There is no need
+ * for prefixes to align with directory structure. Could specify half a 
+ * file name in the prefix, for example:
+ * 
+ *     overlay prefix: "/foo/ba"
+ *     "/foo/bar.txt" => callback receives path "r.txt"
+ *     "/foo/baz/" => callback receives path "z/"
+ * 
+ * When asked to load a folder, the returned binary should list one path
+ * per line, separated by '\n', then return GLAS_LOAD_DIR. This list is
+ * split by lines, drops last line if empty, then provided to compiler.
+ * Conventions: '/' suffix for subdirs, don't list recursively.
+ * 
+ * Note: A NOENT result is not a stopping error in glas systems. We can
+ * usefully 'compile' this in context of projectional editor live code. 
+ * An ERROR result is considered divergent and optionally returns an
+ * error description in the buffer, e.g. for routing to error logs. 
  */
 typedef struct {
-    bool (*intercept)(char const* FilepathOrURI);
-    bool (*tryload)(char const* FilepathOrURI, 
-        uint8_t const** ppBuf, size_t* len, glas_refct*);
+    void* client_arg;
+    glas_refct refct; // callback to release client_arg
+    glas_loader_status (*load)(char const* Filepath, 
+        uint8_t const** ppBuf, size_t* len, glas_refct*, void* client_arg);
 } glas_file_cb;
-
-void glas_rt_set_loader(glas_file_cb const*);
+void glas_rt_file_loader(glas_file_cb const*, char const* filepath_prefix);
 
 /**
  * Flexible 'file' references.
@@ -457,9 +480,9 @@ void glas_rt_set_loader(glas_file_cb const*);
  * - lang: NULL, or a file extension (for override or embedded)
  * - embedded: if true, treat src as file content, not file name
  * 
- * There is a limitation that embedded src cannot contain NULL bytes.
- * If you need greater flexibility, use `glas_file_intercept` to name
- * a virtual file like "/vfs/mysource.mylang".
+ * There is a limitation that embedded src cannot contain NULL bytes. If
+ * greater flexibility is needed, use `glas_rt_file_loader` to overlay a
+ * filesystem.
  */
 typedef struct {
     char const* src;
@@ -469,45 +492,33 @@ typedef struct {
 
 
 /**
- * Load file as module.
- * 
- * This operation loads a file binary then compiles it according to its
- * file extension, i.e. based on '%env.lang.FileExt' or defaulting to a
- * built-in.
- * 
- * Files are expected to compile to the namespace AST, i.e. a plain old
- * data structure. An AST representing a closed-term namespace operation
- * of type `Env->Env`, tagged "module". Constructing this is the job of
- * front-end compilers.
- * 
- * The loader performs lightweight verification of the AST, then wraps
- * it to add '%src' and fixpoint '%self.*', then links to the thread's
- * '%*' namespace (under a given translation), then evaluates and binds
- * to a given prefix. 
- * 
- * By convention, front-end compilers should treat '%env.*' as implicit 
- * parameters (propagated across imports), and '%arg.*' as explicit. The
- * translation can thus hide or provide parameters.
- */
-void glas_load_file(glas*, char const* prefix, glas_file_ref const*, glas_ns_tl const*);
-
-/**
  * Load user configuration file.
  * 
- * A user configuration is the heart of a glas system. One big namespace
+ * A user configuration is the heart of a glas system: one big namespace
  * per user, inheriting from and extending community configurations.
  * 
  * Loading a configuration file requires special handling for bootstrap
  * of user-defined compilers and fixpoint of the environment. Otherwise,
- * it behaves as loading a regular file.
+ * it behaves as binding a script.
  * 
  * This special handling:
  * 
- * - the configuration's 'env.*' output is visible as '%env.*' input.
+ * - the configuration's 'env.*' output is fed back as '%env.*' input.
  * - the runtime will attempt to bootstrap the configuration's front-end
  *   compilers, using whatever starts in '%env.lang.*' as the built-ins.
  */
-void glas_load_config(glas*, char const* prefix, glas_file_ref const*, glas_ns_tl const*);
+void glas_load_config(glas*, char const* prefix, glas_file_ref const* src, glas_ns_tl const*);
+
+/**
+ * Load a script file.
+ * 
+ * After loading a configuration, script files can bind the configured
+ * environment, constructing applications from a shared library. Scripts
+ * receive access to their own definitions via fixpoint of `%self.*`.
+ * 
+ * The translation in this case should overlay config.env onto `%env.*`.
+ */
+void glas_load_script(glas*, char const* prefix, glas_file_ref const* src, glas_ns_tl const*);
 
 
 /**************************
@@ -526,8 +537,8 @@ void glas_load_config(glas*, char const* prefix, glas_file_ref const*, glas_ns_t
  * Not every definition can be called as a program. Some definitions may
  * be useful only for namespace eval. But we can call:
  * 
- * - programs, tagged "prog", namespace type `Env -> Program`.
- * - data, tagged "data", namespace type is embedded data
+ * - programs, tagged "p", namespace type `Env -> Program`.
+ * - data, tagged "d", namespace type is embedded data
  * - callback definitions act as programs
  *  
  */
@@ -674,6 +685,7 @@ typedef enum GLAS_ERROR_FLAGS {
     GLAS_E_UNCREATED        = 0x000005, // an aborted fork or callback context
     GLAS_E_QUOTA            = 0x000008, // client-requested quota or timeout
     GLAS_E_CLIENT           = 0x000010, // client-inserted error
+    GLAS_E_IMPL             = 0x000020, // incomplete implementation
 
     // OPERATION ERRORS
     GLAS_E_ERROR_OP         = 0x001000, // explicit divergence in program
@@ -685,8 +697,8 @@ typedef enum GLAS_ERROR_FLAGS {
     GLAS_E_ASSERT           = 0x040000, // runtime assertion failures
     GLAS_E_DATA_TYPE        = 0x080000, // runtime type errors
     GLAS_E_DATA_QTY         = 0x100000, // mostly for queue reads
-    GLAS_E_UNDERFLOW        = 0x200000, // stack or stash underflow
-    GLAS_E_OVEFLOW          = 0x400000, // stack or stash overflow
+    GLAS_E_UNDERFLOW        = 0x200000, // stack underflow
+    GLAS_E_OVERFLOW         = 0x400000, // stack overflow
     GLAS_E_ARITY            = 0x800000, // callback arity violation (unrecoverable if committed)
 } GLAS_ERROR_FLAGS;
 
@@ -862,7 +874,7 @@ void glas_data_unseal_linear(glas*, char const* key);
  ****************************************/
 
 /**
- * New registers.
+ * Bind new registers to a prefix.
  * 
  * In future operations, prefix refers to a fresh volume of registers.
  * Every name in prefix is defined, i.e. we logically have an infinite
@@ -872,10 +884,10 @@ void glas_data_unseal_linear(glas*, char const* key);
  * A register that becomes unreachable, e.g. due to name shadowing, may
  * be garbage collected.
  */
-void glas_load_reg_new(glas*, char const* prefix);
+void glas_reg_bind_new(glas*, char const* prefix);
 
 /**
- * Associative registers.
+ * Bind associated registers to a prefix.
  * 
  * Introduces a unique space of registers identified by an ordered pair 
  * of registers. The same registers always name the same space.
@@ -885,10 +897,10 @@ void glas_load_reg_new(glas*, char const* prefix);
  * and unwrap mechanic of sealed data, and enables fine-grained conflict
  * analysis on individual registers in the volume.   
  */
-void glas_load_reg_assoc(glas*, char const* prefix, char const* r1, char const* r2);
+void glas_reg_bind_assoc(glas*, char const* prefix, char const* r1, char const* r2);
 
 /**
- * Runtime-global registers.
+ * Bind global registers to a prefix.
  * 
  * Shared registers bound to static globals in the runtime library. This
  * allows for communication between glas threads of different origins.
@@ -896,7 +908,7 @@ void glas_load_reg_assoc(glas*, char const* prefix, char const* r1, char const* 
  * Global registers serve as a useful proxy for client resources, such
  * as for operations queues in `glas_step_on_commit`.
  */
-void glas_load_reg_global(glas*, char const* prefix);
+void glas_reg_bind_global(glas*, char const* prefix);
 
 /**
  * TBD: Persistent registers.
@@ -1172,7 +1184,30 @@ void glas_rt_tls_reset();
  * TBD: control of garbage collection
  */
 
+
+
+
+
 #define GLAS_H
 #endif
+
+/**
+ *   A glas runtime api.
+ * 
+ *   Copyright (C) 2025 David Barbour
+ *
+ *   This program is free software: you can redistribute it and/or modify
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation, either version 3 of the License, or
+ *   (at your option) any later version.
+ *
+ *   This program is distributed in the hope that it will be useful,
+ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *   GNU General Public License for more details.
+ *
+ *   You should have received a copy of the GNU General Public License
+ *   along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
 
 

@@ -72,6 +72,10 @@ Waiting on thunks needs attention. In context of transactions, especially, a wai
 
 Use `pthread_cleanup` to properly handle when a callback closes an OS thread, especially for callbacks into user code.
 
+## TBD
+
+Try to get raylib and GUI FFIs working ASAP.
+
 ## Garbage Collection
 
 ### Allocators and Thread Local Storage
@@ -110,8 +114,11 @@ Some notes:
 * New registers, thunks, etc. are initialized as 'scanned', thus don't need special handling within a GC cycle.
 * When writing to a slot that initially contains NULL - or perhaps small constant data embedded into pointer bitfields - pushing the prior value to a scan buffer becomes dropping the prior value.
 
+### Arrays
 
+We can model big arrays, mutable or otherwise, as a foreign pointer to some `glas_roots*`. But use of roots in this role has a 25% overhead for the root offsets and may touch unreachable slices. 
 
+We can simplify by focusing on immutable arrays, which don't need old-to-young tracking. Later, if I need mutable arrays, I can develop a dedicated structure.
 
 ### Thread Roots
 

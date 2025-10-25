@@ -56,15 +56,8 @@ Metaprogramming:
 * *Note:* These primitives enable Programs to participate in metaprogramming. However, we can also support a lot of metaprogramming purely in the namespace layer without involving the Program type.
 
 Modularity:
-* `(%load Src)` - Load external resources at compile time. If the Src is malformed or unreachable, this diverges. The result is embedded data, which may be processed further via %macro.
-* `%src.*` - The Src type is abstract, via `%src.*` constructors that can verify some inputs.
-
-
-A compile-time loader. Resource may represent a file path, DVCS access, or  or other external .
-
-The loader returns arbitrary, structured data based on the given Source,.
-
-, typically as embedded data (`d:Data`) to be further processed by a 
+* `(%load Src)` - Load external resources at compile time. The result is embedded data, which may be processed further via %macro. Errors are possible, e.g. if Src is malformed or unreachable, in which case the operation logically diverges.
+* `%src.*` - The Src type is abstract, but we'll provide a few constructors. See [namespaces](GlasNamespaces.md) for details.
 
 ## Annotations
 

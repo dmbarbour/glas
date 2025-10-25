@@ -120,7 +120,7 @@ Compilation and linking are stage separated, which has some advantages and disad
 
 ## Modules
 
-The proposed module type is `Env -> Env`, albeit tagged for extensibility (see *Tags*). An Env is naturally very extensible, but we must reserve a few space to resist conflict. Prefix '%' is reserved for the system and front-end compilers.
+The proposed module type is `Env -> Env`, albeit tagged "m" for extensibility (see *Tags*). An Env is naturally very extensible, but we must reserve a few space to resist conflict. Prefix '%' is reserved for the system and front-end compilers.
 
 A few reserved names deserve special attention:
 
