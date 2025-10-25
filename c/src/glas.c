@@ -153,15 +153,27 @@ static_assert(sizeof(void*)==sizeof(uint64_t));
 #define GLAS_DATA_IS_SHRUB(P) (0b10 == (((uint64_t)P) & 0b11))
 #define GLAS_DATA_IS_RATIONAL(P) (0b011 == (((uint64_t)P) & 0b111))
 #define GLAS_DATA_IS_BINARY(P) (0b00111 == (((uint64_t)P) & 0b11111))
+#define GLAS_DATA_IS_ABSTRACT_CONST(P) (0xFF == (((uint64_t)P) & 0xFF))
 
-#define GLAS_SPECIAL_CONST(N) ((glas_cell*)((((uint64_t)N)<<8)|0xFF))
+#define GLAS_ABSTRACT_CONST(N) ((glas_cell*)((((uint64_t)N)<<8)|0xFF))
 
 /**
  * We'll use GLAS_VOID as an alternative to NULL for cells. It can be 
  * modeled as a sealed value that cannot be unsealed. Also simplifies
  * checking for valid pointers.
  */
-#define GLAS_VOID ((glas_cell*)(0xFF))
+#define GLAS_VOID GLAS_ABSTRACT_CONST(0)
+
+/**
+ * Stem bits (32 bits in cells, 62 bits in ptr)
+ * 
+ *  1000..0     empty
+ *  a100..0     1 bit
+ *  ab10..0     2 bits
+ *  abcd..1     (Width-1) bits
+ *  0000..0     unused
+ */
+#define GLAS_CELL_STEM_EMPTY (((uint32_t)1)<<31)
 
 /**
  * Thread state for GC coordination.
@@ -214,14 +226,12 @@ typedef enum glas_type_id {
     GLAS_TYPE_THUNK,
     GLAS_TYPE_EXTREF,
     // experimental
-    GLAS_TYPE_SMALL_GLOB, // interpret binary as glas object
-    GLAS_TYPE_BIG_GLOB,
-    GLAS_TYPE_STEM_OF_BIN,
+    GLAS_TYPE_SMALL_GLOB,   // interpret small_bin as glas object
+    GLAS_TYPE_BIG_GLOB,     // interpret big_bin as glas object
+    GLAS_TYPE_STEM_OF_BIN, 
     // end of list
     GLAS_TYPE_ID_COUNT
 } glas_type_id;
-// Also use top few bits, e.g. for optional values: singleton lists
-// without allocation.
 static_assert(32 > GLAS_TYPE_ID_COUNT, 
     "glas runtime reserves a few bits for logical wrappers");
 
@@ -239,6 +249,10 @@ typedef enum glas_card_id {
  * type_arg: type_id specific
  * type_aggr: lowest four bits in use:  xxxxeeal
  *    ee: two ephemerality bits 
+ *      00 - plain old data (can share via RPC)
+ *      01 - database lifespan (can persist)
+ *      10 - runtime lifespan (e.g. all foreign pointers)
+ *      11 - transaction lifespan 
  *    a: abstract
  *    l: linear
  * gcbits: three slot scan bits: xxxxxsss
@@ -250,7 +264,6 @@ struct glas_cell_hdr {
     uint8_t type_aggr; // monoidal, e.g. linear, ephemeral (2+ bits), abstract
     _Atomic(uint8_t) gcbits;  // for write barriers, concurrent marking, tiny refct 
 };
-
 
 struct glas_cell {
     glas_cell_hdr hdr;
@@ -985,7 +998,7 @@ LOCAL void glas_rt_page_free(glas_page* page) {
 LOCAL glas_cell* glas_cell_alloc_slowpath(glas_os_thread* t) {
     assert(GLAS_OS_THREAD_BUSY == t->state);
     assert(t->alloc_next == t->alloc_end);
-    static size_t const batch_size = 512; // 512 * 32-bytes per cell is 16kB
+    static size_t const batch_size = 512; // 512 cells * 32-bytes per cell is 16kB
     t->alloc_next = atomic_load_explicit(&glas_rt.alloc.alloc_next, memory_order_relaxed);
     do {
         glas_cell* const page_ceil = (glas_cell*)(glas_mem_page_ceil(t->alloc_next));
@@ -1018,32 +1031,149 @@ LOCAL inline glas_cell* glas_cell_alloc() {
     glas_cell* const cell = (likely(t->alloc_next < t->alloc_end)) 
         ? (t->alloc_next)++ : glas_cell_alloc_slowpath(t); 
     cell->hdr.gcbits = glas_rt.gc.gcbits;
+    #if DEBUG
+    cell->hdr.type_id = GLAS_TYPE_INVALID;
+    cell->stemH = 0; // also invalid
+    #endif
     return cell;
 }
-
-LOCAL uint8_t glas_cell_array_type_aggr(glas_cell** data, size_t len) {
-    (void)data;(void)len;
-    return 0; // TODO!
+LOCAL inline void glas_cell_mark_finalizer(glas_cell* cell) {
+    assert(likely(GLAS_DATA_IS_PTR(cell)));
+    glas_page_card_mark_finalizer(glas_page_from_internal_addr(cell), glas_mem_card_index(cell));
+}
+LOCAL inline bool glas_gc_b0scan() {
+    // return true iff a 0 bit means 'scanned'
+    return (0 == (1 & glas_rt.gc.gcbits));
 }
 
+LOCAL inline uint8_t glas_type_aggr_comp(uint8_t lhs, uint8_t rhs) {
+    // bits: xxxxeeal
+    // xxxx - reserved (zero for now)
+    // ee - max ephemerality
+    // a, l - abstraction, linearity - bitwise or
+    uint8_t const le = (lhs & 0b1100);
+    uint8_t const re = (rhs & 0b1100);
+    uint8_t const ee = (le > re) ? le : re;
+    uint8_t const al = (lhs|rhs)&(0b0011);
+    return (ee|al);
+}
+LOCAL inline uint8_t glas_cell_type_aggr(glas_cell* cell) {
+    return GLAS_DATA_IS_PTR(cell) ? cell->hdr.type_aggr :
+           GLAS_DATA_IS_ABSTRACT_CONST(cell) ? 0b10 : 0;
+}
+LOCAL uint8_t glas_cell_array_type_aggr(glas_cell** data, size_t len) {
+    uint8_t result = 0;
+    for(size_t ix = 0; ix < len; ++ix) {
+        result = glas_type_aggr_comp(result, glas_cell_type_aggr(data[ix]));
+    }
+    return result;
+}
+LOCAL void glas_cell_array_free(void* base_ptr, bool incref) {
+    // we encode as refct, but we should never incref a cell array
+    assert(!incref); // check that assumption
+    free(base_ptr);
+}
 LOCAL glas_cell* glas_cell_array_alloc(glas_cell** data, size_t len) {
-    // allocate a flat array.
+    // array as a list
     if(len < 4) {
         if(0 == len) { return GLAS_VAL_UNIT; }
+        // TBD: shrub representation if 'data' is very small values
         glas_cell* const cell = glas_cell_alloc();
         cell->hdr.type_id = GLAS_TYPE_SMALL_ARR;
         cell->hdr.type_arg = len;
         cell->hdr.type_aggr = glas_cell_array_type_aggr(data, len);
+        cell->stemH = GLAS_CELL_STEM_EMPTY;
         cell->small_arr[0] = data[0];
         cell->small_arr[1] = (len > 1) ? data[1] : GLAS_VOID;
         cell->small_arr[2] = (len > 2) ? data[2] : GLAS_VOID;
         return cell;
     } else {
-        debug("todo: big arrays");
+        static_assert(sizeof(_Atomic(uint64_t)) == 8);
+        static_assert(sizeof(glas_cell*) == 8);
+        size_t const bitmap_count = ((len+63) / 64);
+        size_t const total_size = (len + bitmap_count) * 8;
+        void* const base_addr = malloc(total_size);
+        glas_cell** const data_copy = ((glas_cell**)base_addr) + bitmap_count;
+        memset(base_addr, (glas_gc_b0scan() ? 0x00 : 0xFF), (bitmap_count * 8));
+        for(size_t ix = 0; ix < len; ++ix) {
+            data_copy[ix] = data[ix];
+        }
+        // Need two cells, one for the fptr, other for slice
+        glas_cell* const slice = glas_cell_alloc();
+        glas_cell* const fptr = glas_cell_alloc();
+        slice->hdr.type_id = GLAS_TYPE_BIG_ARR;
+        slice->hdr.type_arg = 0;
+        slice->hdr.type_aggr = glas_cell_array_type_aggr(data, len);
+        slice->stemH = GLAS_CELL_STEM_EMPTY;
+        slice->big_arr.data = data_copy;
+        slice->big_arr.len = len;
+        slice->big_arr.fptr = fptr;
+        fptr->hdr.type_id = GLAS_TYPE_FOREIGN_PTR;
+        fptr->hdr.type_arg = 0;
+        fptr->hdr.type_aggr = 0b1010; 
+        fptr->stemH = GLAS_CELL_STEM_EMPTY;
+        fptr->foreign_ptr.pin.refct_upd = glas_cell_array_free;
+        fptr->foreign_ptr.pin.refct_obj = base_addr;
+        fptr->foreign_ptr.ptr = data_copy;
+        glas_cell_mark_finalizer(fptr);
+        return slice;
     }
-
 }
-
+LOCAL void glas_cell_binary_refct_upd(void* addr, bool incref) {
+    // The API can zero-copy binaries, so we use incref/decref
+    _Atomic(size_t)* const pRefct = addr;
+    if(incref) {
+        atomic_fetch_add_explicit(pRefct, 1, memory_order_relaxed);
+    } else {
+        size_t const prior = atomic_fetch_sub_explicit(pRefct, 1, memory_order_relaxed);
+        if(1 == prior) {
+            free(addr);
+        }
+    }
+}
+LOCAL glas_cell* glas_cell_binary_alloc(uint8_t const* data, size_t len) {
+    if(7 >= len) {
+        if(0 == len) { return GLAS_VAL_UNIT; }
+        uint8_t const base = (len & 0b111)<<5 | 0b00111;
+        uint64_t result = 0;
+        for(size_t ix = 0; ix < len; ++ix) {
+            result = (result | (uint64_t) data[ix]) << 8;
+        }
+        result = (result << (8 * (7 - len))) | (uint64_t) base;
+        return (glas_cell*) result;
+    } else if(24 >= len) {
+        glas_cell* const cell = glas_cell_alloc();
+        cell->hdr.type_id = GLAS_TYPE_SMALL_BIN;
+        cell->hdr.type_arg = len;
+        cell->hdr.type_aggr = 0;
+        cell->stemH = GLAS_CELL_STEM_EMPTY;
+        memcpy(cell->small_bin, data, len);
+        return cell;
+    } else {
+        glas_cell* const slice = glas_cell_alloc();
+        glas_cell* const fptr = glas_cell_alloc();
+        void* const addr = malloc(sizeof(_Atomic(size_t)) + len); // include space for refct
+        atomic_init((_Atomic(size_t)*) addr, 1);
+        uint8_t* const data_copy = (uint8_t*)(((uintptr_t)addr) + sizeof(_Atomic(size_t)));
+        memcpy(data_copy,data,len);
+        slice->hdr.type_id = GLAS_TYPE_BIG_BIN;
+        slice->hdr.type_arg = 0;
+        slice->hdr.type_aggr = 0;
+        slice->stemH = GLAS_CELL_STEM_EMPTY;
+        slice->big_bin.data = data_copy;
+        slice->big_bin.len = len;
+        slice->big_bin.fptr = fptr;
+        fptr->hdr.type_id = GLAS_TYPE_FOREIGN_PTR;
+        fptr->hdr.type_arg = 0;
+        fptr->hdr.type_aggr = 0b1010;
+        fptr->stemH = GLAS_CELL_STEM_EMPTY;
+        fptr->foreign_ptr.pin.refct_upd = glas_cell_binary_refct_upd;
+        fptr->foreign_ptr.pin.refct_obj = addr;
+        fptr->foreign_ptr.ptr = data_copy;
+        glas_cell_mark_finalizer(fptr);
+        return slice;
+    }
+}
 
 LOCAL void glas_os_thread_enter_busy() {
     glas_os_thread* const t = glas_os_thread_get();
@@ -1168,6 +1298,7 @@ LOCAL glas_roots* glas_gc_extract_detached_roots() {
 }
 
 // TBD
+// - debug view of cells
 // - initial 'glas*' thread type
 // - thread local storage and allocators
 // - GC and worker threads
@@ -1195,10 +1326,6 @@ LOCAL void glas_gc_scan_push(glas_gc_scan* scan, glas_cell* data) {
     assert(likely(GLAS_GC_SCAN_BUFFER_SIZE > fill));
     scan->buffer[fill] = data;
     atomic_store_explicit(&(scan->fill), (1 + fill), memory_order_release);
-}
-LOCAL inline bool glas_gc_b0scan() {
-    // return true iff a 0 bit means 'scanned'
-    return (0 == (1 & glas_rt.gc.gcbits));
 }
 LOCAL void glas_roots_init(glas_roots* r, void* self, void (*finalizer)(void*), uint16_t const* roots) {
     r->self = self;
@@ -1499,6 +1626,8 @@ API bool glas_rt_run_builtin_tests() {
     glas_page* page = glas_rt_page_alloc();
     glas_rt_page_free(page);
     glas* g = glas_thread_new();
+    glas_u64_push(g,GLAS_PTR_MAX_INT);
+    glas_i64_push(g,GLAS_PTR_MIN_INT);
 
 
     // TBD: memory tests, structured data tests, computation tests, GC tests
