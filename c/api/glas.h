@@ -138,10 +138,16 @@ void glas_choice(glas* origin, size_t N, void* client_arg,
 /**
  * Reference-counting shared objects.
  * 
- * Abstract reference counting is used for foreign pointers, callbacks,
- * and zero-copy binaries. The count is abstracted through a method to
- * incref or decref one step at a time. The refct_obj is separated from
- * the data to support flexible indirection.
+ * Abstract reference counting is used in callbacks, pointers, zero-copy
+ * binaries. Reference counts shall be mt-safe, and are pre-incremented
+ * before crossing the API, i.e. such that a decref indicates release of
+ * the referenced resource. The `refct_obj` is separate from the target
+ * to permit indirection, e.g. logical slices of binaries.
+ * 
+ * The `refct_upd` function may be NULL if an object does not need to be
+ * managed. When reading data from the runtime, `glas_refct*` arguments
+ * may be NULL assuming the client maintains a reference to the resource
+ * on stack or in stash to guard against garbage collection. 
  */
 typedef struct {
     void (*refct_upd)(void* refct_obj, bool incref);
@@ -433,7 +439,7 @@ typedef enum glas_loader_status {
 } glas_loader_status;
 
 /**
- * Logical overlay of the local filesystem.
+ * Logical overlay of local filesystem.
  * 
  * The %load primitive supports loading files from the local filesystem
  * or DVCS. There is also limited support for searching directories. But
@@ -684,8 +690,7 @@ typedef enum GLAS_ERROR_FLAGS {
     GLAS_E_CONFLICT         = 0x000002, // concurrency conflicts; retry might avoid
     GLAS_E_UNCREATED        = 0x000005, // an aborted fork or callback context
     GLAS_E_QUOTA            = 0x000008, // client-requested quota or timeout
-    GLAS_E_CLIENT           = 0x000010, // client-inserted error
-    GLAS_E_IMPL             = 0x000020, // incomplete implementation
+    GLAS_E_IMPL             = 0x000010, // incomplete implementation
 
     // OPERATION ERRORS
     GLAS_E_ERROR_OP         = 0x001000, // explicit divergence in program
@@ -714,7 +719,7 @@ void glas_errors_write(glas*, GLAS_ERROR_FLAGS);    // monotonic via bitwise 'or
  * 
  * The base version will copy the binary. The zero-copy (_zc) variant
  * will transfer a reference. Small binaries may be copied regardless.
- * The runtime assumes the client does not modify a zero-copy binary.
+ * The runtime assumes the client will not modify a zero-copy binary.
  * 
  * The runtime logically treats binaries as a list of small integers, 
  * but the representation is heavily optimized.
@@ -729,18 +734,17 @@ void glas_binary_push_zc(glas*, uint8_t const*, size_t len, glas_refct);
  * Non-destructively read binary data from top of data stack.
  * 
  * The base version will copy the binary. The zero-copy (_zc) variant
- * may need to flatten part of a rope-structured binary, then returns
- * a reference. The client must not modify the latter memory, and must 
- * decref the reference count when done.
- * 
- * Flattening a binary involves a copy. However, the zero-copy variant
- * is useful if the data was already flattened, would be in the future,
- * or will be requested many times.
+ * may flatten a rope-structured binary then return a reference. It is
+ * undefined behavior for the client to mutate a zero-copy buffer.
  * 
  * The peek operation returns 'true' if end-of-list was reached and
  * everything available was read. The operation will return false with 
  * a partial result if data is only partially a valid binary. Peek does
  * not cause a runtime error even for invalid data.
+ * 
+ * Note: Arguably, flattening a binary is a copy. The zero-copy variant
+ * has potential for zero-copy, i.e. to avoid redundant alloc and copy,
+ * but it's best-effort and does not truly guarantee zero-copy.
  * 
  * Note: If buf/ppBuf is NULL, the runtime still attempts to produce
  * valid results for amt_read and return value, and flatten for _zc.
@@ -815,15 +819,20 @@ bool glas_u8_peek(glas*, uint8_t*);
  * Pointers - abstract client data
  * 
  * The runtime treats pointers as an abstract, runtime-ephemeral data
- * type. Pointers aren't linear, but I encourage clients to seal most
- * pointers with `glas_data_seal_linear` unless there is a good reason
- * to not do so.
+ * type. Optionally, a pointer may be marked linear, in which case copy
+ * and drop operations will raise an error (see `glas_data_seal`).
  * 
- * Peek will fail, returning false, if either argument is NULL or if 
- * the top stack element is not a pointer.
+ * Operations:
+ * - push: puts pointer on stack, optionally linear
+ * - peek: read value of pointer, leave on stack
+ * - pop: as peek then drop, can drop linear pointers
+ * 
+ * It is permitted to peek at a linear pointer, i.e. it does not count 
+ * as a copy. But a linear pointer may be dropped only via pop.
  */
-void glas_ptr_push(void*, glas_refct);
+void glas_ptr_push(void*, glas_refct, bool linear);
 bool glas_ptr_peek(void**, glas_refct*);
+bool glas_ptr_pop(void**, glas_refct*);
 
 
 /****************
@@ -831,48 +840,31 @@ bool glas_ptr_peek(void**, glas_refct*);
  ****************/
 
 /**
- * A dynamic approach to abstract data types.
+ * Sealed values - a dynamic approach to abstract data types
  * 
- * Data is sealed by a key. Currently, keys are limited to registers.
- * To unseal the data requires naming the same register, though often by
- * a different name. It's an error to observe or access the data without 
- * first unsealing it.
+ * Data is sealed by a key. Currently, keys must refer to registers in 
+ * the thread's namespace. To unseal data requires naming the register
+ * used to seal it, though the alias used may be different.
  * 
- * The register is not modified by its use as a key. It mostly serves as
- * a robust, unforgeable identity source. But it also serves as a source
- * of ephemerality: The runtime reports ephemerality errors when writing
- * short-lived data into long-lived registers. Data sealed by a register
- * can be garbage-collected if that register becomes unreachable.
+ * The register serves as a source of identity and ephemerality. If the
+ * register becomes unreachable and is garbage collected, data sealed by
+ * that register may also be garbage collected. Thus, sealed data can be
+ * useful for ephemeron tables and similar structures. A register is not
+ * modified by its use as a key.
  * 
- * Mechanically, sealing data involves an allocation, wrapping the data. 
- * Unseal unwraps the data. There's a small performance tradeoff.
+ * Sealed data may optionally be marked linear, forbidding copy or drop.
+ * There may still be many references to linear data, e.g. checkpoints 
+ * or concurrent non-deterministic choice. Linear data can be dropped 
+ * indirectly, e.g. shoving it into a register then hiding it. But any
+ * direct copy or drop - or indirect via containing structure - raises a
+ * linearity error. This detects many accidental protocol violations.
  */
-void glas_data_seal(glas*, char const* key);
+void glas_data_seal(glas*, char const* key, bool linear);
 void glas_data_unseal(glas*, char const* key);
-
-/** 
- * A dynamic approach to abstract, linear data objects.
- * 
- * The _linear variants seal data as above, but also forbid the sealed
- * data from being copied or dropped, raising linearity errors. This is
- * useful for enforcing protocols, e.g. ensuring files are closed after 
- * opening.
- * 
- * Dynamic linearity isn't perfect. There are ways to drop data: clients
- * can exit a thread with linear data on the stack, or remove registers
- * from scope that contain linear data. Also, in context of transactions
- * and non-deterministic choice, linear objects may have many references
- * without ever being *logically* copied.
- * 
- * Despite those caveats, linearity remains useful.
- */
-void glas_data_seal_linear(glas*, char const* key);
-void glas_data_unseal_linear(glas*, char const* key);
 
 /*****************************************
  * REGISTERS
  ****************************************/
-
 /**
  * Bind new registers to a prefix.
  * 
@@ -895,18 +887,16 @@ void glas_reg_bind_new(glas*, char const* prefix);
  * A primary use case is abstract data environments: instead of sealing
  * data, we can seal entire volumes of registers. This avoids the wrap
  * and unwrap mechanic of sealed data, and enables fine-grained conflict
- * analysis on individual registers in the volume.   
+ * analysis for individual registers in the volume.
  */
 void glas_reg_bind_assoc(glas*, char const* prefix, char const* r1, char const* r2);
 
 /**
  * Bind global registers to a prefix.
  * 
- * Shared registers bound to static globals in the runtime library. This
- * allows for communication between glas threads of different origins.
- * 
- * Global registers serve as a useful proxy for client resources, such
- * as for operations queues in `glas_step_on_commit`.
+ * This provides access to shared state across all glas threads sharing
+ * the runtime process. Global registers also serve as useful proxy for 
+ * client resources, e.g. for `glas_step_on_commit` operations queues.
  */
 void glas_reg_bind_global(glas*, char const* prefix);
 
@@ -921,33 +911,26 @@ void glas_reg_bind_global(glas*, char const* prefix);
  */
 
 /**
- * Swap (read-write) data between stack and register.
- * 
- * This is the primitive operation on registers in the program model. It
- * is friendly for linearity, but awkward to use directly.
- */
-void glas_reg_rw(glas*, char const*); // A -- B
-
-/**
  * The basic get/set operations.
  * 
- * The get operation will copy data from a cell to the stack. The set 
- * operation pops data from the stack and overwrites the register. These
- * are the primitive mutable variable operations in most languages.
- * 
- * In glas, they are not primitive because they conflict with linearity.
- * But they are still very useful for precise conflict analysis. 
- * 
- * A transaction can often operate on a read-only snapshots of state. A
- * write-only transaction cannot conflict with any other transaction. By
- * operating in terms of get and set, optimistic concurrency will have 
- * fewer read-write conflicts.
+ * Get copies data from a register, pushing it on the stack. Set removes
+ * data from the stack and writes to register, dropping its prior value.
+ * The implicit copy and drop may result in linearity errors, depending
+ * on the data.
  */
 void glas_reg_get(glas*, char const*); // -- A
 void glas_reg_set(glas*, char const*); // A --
 
 /**
- * Treat a register as a queue.
+ * Linear exchange (read-write) of data between stack and register.
+ * 
+ * This is the only primitive operation on registers in the glas program
+ * model. Everything else is considered an accelerator.
+ */
+void glas_reg_rw(glas*, char const*); // A -- A'
+
+/**
+ * Register as a queue.
  * 
  * The register must contain a list, and is used under constraints: the
  * reader cannot perform partial reads, i.e. error if fewer items than 
@@ -968,17 +951,13 @@ void glas_reg_queue_peek(glas*, char const*); // N -- List ; read copy unread
  * 
  * The register must contain a list, representing a multiset, aka 'bag'.
  * 
- * Every bag operation is free to non-deterministically reorder the list
- * and insert or remove items at non-deterministic locations. The bag is
- * essentially distillation of non-determinism into a data structure.
+ * Every bag operation may non-deterministically reorder the list, or 
+ * take and insert items at non-deterministic locations. Bags should be
+ * favored over queues where order and determinism are irrelevant.
  * 
  * The advantage of bags is that they support any number of concurrent
- * readers and writers. The only requirement is to avoid the case where
- * two readers concurrently grab the same item. The runtime can freely 
- * partition the bag between readers, and move data opportunistically or
- * heuristically between partitions.
- * 
- * Bags should be favored over queues where order is irrelevant.
+ * readers and writers. A runtime can partition the bag then move data 
+ * heuristically, to avoid conflict or rebalance loads.
  */
 void glas_reg_bag_read(glas*, char const*); // -- Data
 void glas_reg_bag_write(glas*, char const*); // Data --
@@ -1122,7 +1101,6 @@ bool glas_dict_remove_label(glas*, char const* label); // Record -- Item Record'
  * Arithmetic. TBD.
  */
 
-
 /******************************
  * RUNTIME REFLECTION
  *****************************/
@@ -1181,12 +1159,17 @@ bool glas_rt_run_builtin_tests();
 void glas_rt_tls_reset();
 
 /**
- * TBD: control of garbage collection
+ * Trigger garbage collection ASAP.
+ * 
+ * Garbage collection is performed by background threads. If collecting,
+ * this schedules the GC to immediately begin another collection after
+ * the current one finishes.
+ * 
+ * The glas runtime uses a generational collector, so heuristics usually
+ * determine whether to collect just 'young' data or more. But this API
+ * can force the triggered collection to be a full GC.
  */
-
-
-
-
+void glas_rt_gc_trigger(bool fullgc);
 
 #define GLAS_H
 #endif

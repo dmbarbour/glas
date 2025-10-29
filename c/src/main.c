@@ -196,8 +196,6 @@ int main(int argc, char const* const* argv)
     fflush(stdout);
     glas_free_cli_options(pOpt);
     return result;
-
-
 }
 
 int glas_cli_bit(int argc, char const* const* argv) {

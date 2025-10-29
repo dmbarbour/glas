@@ -76,6 +76,39 @@ Use `pthread_cleanup` to properly handle when a callback closes an OS thread, es
 
 Try to get raylib and GUI FFIs working ASAP.
 
+## Transactional Registers
+
+It isn't difficult to ensure updates across multiple registers are consistent via mutex for writes. But ensuring isolated reads, and thus ensuring a read-only transaction never aborts, is a bit more difficult. What are our options?
+
+One idea is horizontal versions. 
+- A version has associated, sealed data for each register updated 
+- A register has a strong reference to the most recent version
+- A version may have a weak-ref to previous version per register
+
+That is, so long as a register survives, its most recent version of data also survives. So long as a version survives, we can also access data from that version across all surviving registers. The cost is a fair bit of indirection. 
+
+How does this help? We could test for consistency when first reading a register, i.e. check that there are no missed updates to vars previously read within the same transaction. This makes register reads relatively expensive, i.e. upon a transaction bringing a version into scope, it may invalidate prior reads to other registers, or we can opportunistically read an older version where there is no conflict (if it hasn't been garbage-collected yet).
+
+This makes reads more expensive, but it isn't too bad.
+
+We could optionally remove the data directly, instead a version just tracks which registers were updated, and perhaps the nature of those updates. This would prevent us from switching to older versions of data to allow a transaction to complete, but it would reduce indirection and simplify GC.
+
+
+
+
+
+A "version" captures updates to multiple registers, and the most recent version for each register is strongly referenced, but the version itself only has weakrefs back to the registers.  
+
+One idea is to 
+
+Atomic reads also need some attention: ideally, we can operate on a snapshot view of all
+registers, i.e. such that we never observe inconsistent states and abort read-only transactions. Perhaps we could capture version numbers within each register instead of data. 
+
+
+
+
+
+
 ## Garbage Collection
 
 ### Allocators and Thread Local Storage
@@ -85,6 +118,12 @@ I want nursery-style allocations, but I don't want a lot of fine-grained nurseri
 By keeping a linked list of thread-local structures, when GC is performed, it can fetch back all the nurseries and force threads to grab new ones on their next allocation.
 
 Aside from allocators, TLS may prove convenient for write barriers, e.g. keeping a `glas_gc_scan*` per OS thread to avoid contention on a global scan list. Maybe move the semaphore here, too.
+
+### Finalizers
+
+It is necessary to precisely recognize finalizers in the heap. However, I cannot afford a linked list, nor even an additional mark bit per object, so I'm thinking to use cards to track finalizers to a small region (e.g. 128 bytes, a quarter-bit per object), then rely on gcbits to mark unexecuted finalizers more precisely.
+
+
 
 ### Snapshot at the Beginning?
 
@@ -113,6 +152,19 @@ Some notes:
 * I still favor bump-pointer allocation, but I'm not married to it. This design doesn't rely on location to distinguish cells as 'new', thus I can also use fragmented allocation, e.g. using the prior marks. Mixed allocation modes are feasible.
 * New registers, thunks, etc. are initialized as 'scanned', thus don't need special handling within a GC cycle.
 * When writing to a slot that initially contains NULL - or perhaps small constant data embedded into pointer bitfields - pushing the prior value to a scan buffer becomes dropping the prior value.
+
+### Compacting old gen?
+
+I'd like to occasionally compact a subset of old pages, e.g. to free up some heap address space. But at the moment, I don't have a good solution for moving data from old pages without breaking old-to-old links. 
+
+One viable option is to track old-to-old references in cards, or perhaps to build up a special card for ref-to-compacting when performing marks. Or perhaps, while marking, we could record the 
+
+
+        // Problem: I want to compact a subset of old pages, but I cannot 
+        // find old-to-old references. One option is intra-gen cards, but
+        // that adds overhead to a lot of allocations (whereas old-to-young
+        // only impacts mutations, )
+
 
 ### Arrays
 
