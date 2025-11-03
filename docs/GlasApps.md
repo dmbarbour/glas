@@ -21,7 +21,7 @@ Applications should define 'settings' to support application-specific configurat
 
 It is feasible to define new applications in terms of composition, extension, inheritance, and override of existing applications. We could develop macros to support composition. 
 
-I imagine we'll ultimately want front-end syntax oriented around composition of applications, with great defaults for partitioning registers, routing HTTP, composing TTY interfaces via pipelines or something like ncurses. 
+I imagine we'll ultimately want front-end syntax oriented around composition of applications, with great defaults for partitioning registers, routing HTTP, even composing TTY (console UI). 
 
 ## Standard Behavior
 
@@ -375,3 +375,4 @@ With FFI and bgcall handling external integration, reflection remains one area w
 
 - sys.refl.gc.\* - garbage collection stats; trigger GC manually
 - sys.refl.sched.\* - conflicts, rework, backtracking, productivity
+

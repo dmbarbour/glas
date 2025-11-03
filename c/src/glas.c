@@ -87,9 +87,23 @@ static_assert((ATOMIC_POINTER_LOCK_FREE == 2) &&
 #define GLAS_PAGE_CELL_COUNT (GLAS_HEAP_PAGE_SIZE / GLAS_CELL_SIZE)
 #define GLAS_CELL_BATCH_ALLOC 400
 
+/**
+ * GC design:
+ * - non-moving GC, concurrent mark + lazy sweep on alloc
+ * - because all cells are 32 bytes, there is no need to compact
+ * - concurrent mark requires a write barrier
+ * - snapshot at the beginning; new allocations marked but not traced
+ * - double mark buffers, flip buffers after mark completes
+ * - non-generational, at least initially. can add later.
+ * 
+ * As part of lazy sweep, each OS thread allocates from its own page.
+ * Pages are marked for reallocation after they undergo GC unless they
+ * are currently 'owned' by an OS thread.
+ */
 #define GLAS_GC_CELL_BUFFSZ 120
+#define GLAS_GC_STAT_SIZE 16
 #define GLAS_GC_POLL_USEC (10 * 1000)
-#define GLAS_GC_THREAD_MAX 8
+#define GLAS_GC_THREADS_MAX 8
 #define GLAS_GC_THREAD_IDLE_CYCLES 3
 #define GLAS_THREAD_CHECKPOINT_MAX 9
 #define GLAS_STACK_MAX 32
@@ -161,10 +175,7 @@ static_assert(sizeof(void*)==sizeof(uint64_t));
 #define GLAS_DATA_IS_RATIONAL(P) (0b011 == (((uint64_t)P) & 0b111))
 #define GLAS_DATA_IS_BINARY(P) (0b00111 == (((uint64_t)P) & 0b11111))
 #define GLAS_DATA_IS_ABSTRACT_CONST(P) (0xFF == (((uint64_t)P) & 0xFF))
-
 #define GLAS_DATA_BINARY_LEN(P) (0b111 & (((uint64_t)P) >> 5))
-
-#define GLAS_ABSTRACT_CONST(N) ((glas_cell*)((((uint64_t)N)<<8)|0xFF))
 /**
  * Abstract values.
  * 
@@ -172,6 +183,7 @@ static_assert(sizeof(void*)==sizeof(uint64_t));
  * 
  * - GLAS_VOID - treat as permanently sealed value.
  */
+#define GLAS_ABSTRACT_CONST(N) ((glas_cell*)((((uint64_t)N)<<8)|0xFF))
 #define GLAS_VOID GLAS_ABSTRACT_CONST(0)
 
 /**
@@ -241,32 +253,7 @@ typedef enum glas_os_thread_state {
     GLAS_OS_THREAD_DONE,
 } glas_os_thread_state;
 
-/**
- * Rough design:
- * - mutators always allocate into a nursery
- * - GC fills survivor and old gen via evacuations
- * - nursery is always compacted
- * - survivors heuristic, may age in place
- * - old gen is non-moving, alloc via mark bitmap
- */
-typedef enum glas_page_gen {
-    GLAS_PAGE_NURSERY=0,
-    GLAS_PAGE_SURVIVOR,     
-    GLAS_PAGE_OLD,          
-    // ---
-    GLAS_PAGE_GEN_COUNT
-} glas_page_gen;
-
-typedef enum glas_gc_op {
-    GLAS_GC_OP_NONE = 0,
-    GLAS_GC_OP_MARK,
-    GLAS_GC_OP_EVAC,
-} glas_gc_op;
-
 typedef enum glas_type_id {
-    GLAS_TYPE_INVALID = 0, 
-    GLAS_TYPE_FOREIGN_PTR,
-    GLAS_TYPE_FORWARD_PTR,
     GLAS_TYPE_STEM,
     GLAS_TYPE_BRANCH,
     GLAS_TYPE_SMALL_BIN,
@@ -274,9 +261,10 @@ typedef enum glas_type_id {
     GLAS_TYPE_BIG_BIN,
     GLAS_TYPE_BIG_ARR,
     GLAS_TYPE_TAKE_CONCAT, 
-    GLAS_TYPE_SEAL,
+    GLAS_TYPE_FOREIGN_PTR,
     GLAS_TYPE_REGISTER,
     GLAS_TYPE_TOMBSTONE,
+    GLAS_TYPE_SEAL,
     // under development
     GLAS_TYPE_THUNK,
     GLAS_TYPE_EXTREF,
@@ -289,14 +277,6 @@ typedef enum glas_type_id {
 } glas_type_id;
 static_assert(32 > GLAS_TYPEID_COUNT, 
     "glas reserves a two type bits for logical wrappers");
-
-typedef enum glas_card_id {
-    GLAS_CARD_OLD_TO_YOUNG = 0, // track refs from older to younger gens
-    // tentative old-to-old cards
-    // finalizers? scan buffers instead
-    // end of list
-    GLAS_CARD_IDYPECOUNT
-} glas_card_id;
 
 /**
  * Cell header.
@@ -314,9 +294,8 @@ typedef enum glas_card_id {
  *      special constants
  *    l: linear
  *      forbid copy and drop
- * gcbits: yyyyfsss
- *    y: cycle counter per gen, updated when traced
- *    f: finalizer, clear upon evacuation or processing
+ * gcbits: yyyyysss
+ *    y: GC survival counter, roughly 'age' of object 
  *    s: once-per-slot write barrier, also update on scan
  */
 struct glas_cell_hdr {
@@ -326,8 +305,7 @@ struct glas_cell_hdr {
     _Atomic(uint8_t) gcbits;  // reserved for use by GC
 };
 #define GLAS_GCBITS_SCAN    0b00000111
-#define GLAS_GCBIT_FIN      0b00001000
-#define GLAS_GCBITS_AGE     0b11110000
+#define GLAS_GCBITS_AGE     0b11111000
 
 struct glas_cell {
     glas_cell_hdr hdr;
@@ -447,19 +425,19 @@ struct glas_cell {
 static_assert(GLAS_CELL_SIZE == sizeof(glas_cell), "invalid glas_cell size");
 
 struct glas_page {
-    // one bit per marked object
-    _Atomic(uint64_t) gc_mark[GLAS_PAGE_CELL_COUNT/64];
-    // cards help find finalizers, old-to-young pointers, etc.. via rough locations
-    _Atomic(uint64_t) gc_card[GLAS_CARD_IDYPECOUNT][GLAS_PAGE_CARD_COUNT/64]; 
+    _Atomic(uint64_t) marks[2][GLAS_PAGE_CELL_COUNT/64]; // bit per mark
+    _Atomic(uint64_t) *marking, *marked; // swapped per mark cycle
+    uint8_t utilization[GLAS_GC_STAT_SIZE]; // inverse of free space last sweep
+    uint8_t defer_reuse;    // delay sweep+realloc if utilization high
 
-    // heuristics for GC
-    uint8_t gen;
-    uint16_t alloc_iter;
+    // track how long pages are held.
+    uint64_t cycle_acquired;
+    uint64_t cycle_released; 
 
-
-    glas_page *next;                    // page in linked list
-    glas_heap *heap;                    // owning heap object
-    uint64_t magic_word;                // used in assertions
+    glas_page *gc_next;     // GC private linked list to reduce locking (rebuilt each cycle)
+    glas_page *next;        // allocator linked lists
+    glas_heap *heap;        // owning heap object
+    uint64_t magic_word;    // only used in debug assertions
 } __attribute__((aligned(GLAS_HEAP_CARD_SIZE)));
 
 static_assert((0 == (sizeof(glas_page) & (GLAS_HEAP_CARD_SIZE - 1))),
@@ -468,8 +446,6 @@ static_assert((GLAS_HEAP_PAGE_SIZE >> 6) >= sizeof(glas_page),
     "glas page header is too large");
 static_assert((0 == (GLAS_PAGE_CARD_COUNT & 0x1ff)),
     "glas page cards not nicely aligned");
-static_assert((UINT16_MAX > (GLAS_PAGE_CELL_COUNT/64)),
-    "glas page card needs bigger alloc iterator");
 
 struct glas_heap {
     // each 'heap' tracks 63-64 'pages', depending on alignment
@@ -485,9 +461,14 @@ struct glas_os_thread {
     glas_os_thread *next;
 
     /**
-     * ID for this thread. In case we want to send a kill or similar.
+     * ID for this thread.
      */
     pthread_t self;
+
+    /**
+     * Semaphore for waiting on GC stop.
+     */
+    sem_t wakeup;
 
     /**
      * A state for blocking on GC.
@@ -499,24 +480,20 @@ struct glas_os_thread {
     size_t busy_depth; 
 
     /**
-     * Semaphore for waiting on GC.
+     * As part of GC concurrent mark + lazy sweep, a thread owns a page
+     * and scans the mark bitmap during allocation. This can result in a
+     * high allocation cost in some cases, i.e. if a page is mostly full
+     * and has a high survival rate for data. To mitigate, we can track
+     * how many allocations we got out of a page, and pull pages out of
+     * circulation for a while if the number is low.
      */
-    sem_t wakeup;
-
-    /**
-     * thread-local bump-pointer allocator. We'll allocate a batch of
-     * addresses whenever we run low. This reduces contention on the
-     * shared runtime allocator.
-     */
-    glas_cell* alloc_next;
-    glas_cell* alloc_end;
-
-    /** 
-     * Track some extra content to support garbage collection.
-     */
-    glas_gc_mb* mb; // cells marked via write-barriers
+    struct glas_os_thread_alloc {
+        glas_page* page;        // owned page.
+        size_t mark_word;       // offset into mark bitmap
+        uint64_t free_bits;     // free bits from recent alloc
+        size_t free_count;      // t
+    } alloc;
     glas_gc_fl* fl; // recently allocated finalizers
-
 };
 
 /**
@@ -527,8 +504,9 @@ struct glas_os_thread {
  * by any OS thread in the mutator state.
  */
 struct glas_roots {
-    glas_roots* next;       // for global roots list
-    _Atomic(size_t) refct;  // usually 1 or 0, but simplifies sharing
+    glas_roots* next;                   // for global roots list
+    _Atomic(size_t) refct;              // usually 1 or 0, but simplifies sharing
+    _Atomic(uint64_t) trace_cycle;      // for concurrent mark
 
     /**
      * Self-reference to associated structure.
@@ -558,8 +536,8 @@ struct glas_roots {
      * it isn't a hard requirement.
      */
     uint16_t const* roots; 
-    uint16_t max_offset; 
-    uint16_t root_count; 
+    size_t max_offset; 
+    size_t root_count; 
 
     /**
      * A slot bitmap, computed based on root offsets.
@@ -695,32 +673,29 @@ struct glas_gc_fl {
     glas_gc_fl* next;
 };
 
-typedef struct glas_gc_worker {
-    pthread_t thread_id;
-    size_t index;
-} glas_gc_worker;
-
-typedef struct glas_gc_worker_pool {
-    // array of workers (excludes GC thread)
-    glas_gc_worker* workers; 
-    size_t worker_count;
+typedef struct glas_gc_wp {
+    pthread_t* workers; 
+    size_t count;
+    _Atomic(size_t) done;
     sem_t wakeup; // shared semaphore
-    _Atomic(glas_gc_op) op;
-    _Atomic(size_t) workers_done;
-} glas_gc_worker_pool;
+} glas_gc_wp;
 
+typedef struct glas_gc_dq {
+    pthread_t thread;
+    pthread_mutex_t mutex;
+    sem_t wakeup;
+    size_t head;
+    size_t tail;
+    glas_refct* items;
+    size_t capacity; 
+    // note: actual capacity is one less; 
+    // tail location is always empty.
+} glas_gc_dq;
 
 typedef struct glas_alloc_l {
     glas_page* list;
     size_t count;
 } glas_alloc_l;
-
-typedef struct glas_alloc {
-    // separate heaps per generation
-    glas_heap*   heap;
-    glas_alloc_l free;
-    glas_alloc_l live;
-} glas_alloc;
 
 static struct glas_rt {
     pthread_mutex_t mutex; // use sparingly!
@@ -732,22 +707,18 @@ static struct glas_rt {
     } tls;
 
     struct glas_rt_alloc {
-        glas_alloc ofgen[GLAS_PAGE_GEN_COUNT];
+        /**
+         * Linked list of heaps, sized for 64 pages each. The main use
+         * is to ensure page alignment has low address-space overhead.
+         */
+        glas_heap*   heap;
 
         /**
-         * Allocation from most recent nursery page.
-         * 
-         * OS threads will allocate in blocks, e.g. of ~16kB, until end
-         * of page is reached. Then we allocate another nursery. Thus, a
-         * 2MB page effectively serves a list of 128 smaller nurseries.
+         * Pages divided into two lists:
+         * - avail: estimated low utilization, not necessarily empty
+         * - await: pages not available at least until next GC cycle
          */
-        _Atomic(glas_cell*) freecells;
-
-        /**
-         * Locking down allocation of large objects (pages and heaps) to
-         * eliminate risk allocation races, i.e. where the losing thread
-         * must free the resulting memory. 
-         */
+        glas_alloc_l avail, await;
         pthread_mutex_t mutex;
     } alloc;
 
@@ -764,14 +735,15 @@ static struct glas_rt {
     // e.g. compared to a configuration; configured number vs. actual.
 
     struct glas_rt_gc {
+        _Atomic(uint64_t) cycle; // how many GC cycles, also a sync var
+
         /**
          * Support for concurrent marking.
          * 
          * Workers will be initialized by the main GC thread.
          */
-        glas_gc_worker_pool pool;
-        glas_roots* roots_snapshot; // roots when mark phase started
-        glas_page*  evac_pages;
+        glas_gc_wp pool;
+        glas_roots* roots_snapshot;
 
         /**
          * During concurrent mark phase, put overflow scan buffers here. 
@@ -779,12 +751,10 @@ static struct glas_rt {
          */
         _Atomic(glas_gc_mb*) mb;
         pthread_mutex_t gc_mb_pop_mutex; // guard against ABA issues
+        _Atomic(glas_cell*) wb; // from write-barriers
 
-        /**
-         * Track registered finalizers.
-         */
-        _Atomic(glas_gc_fl*) fl;
-
+        _Atomic(glas_gc_fl*) fl;    // registered finalizers
+        glas_gc_dq dq;              // decref queue for foreign pointers
 
         /**
          * GC waits after entering 'stop' until busy_threads_count is
@@ -805,13 +775,19 @@ static struct glas_rt {
          * updates to cooperate with GC.
          */
         bool marking;
-        glas_page_gen mark_gen; 
 
         /** 
          * For snapshot-at-the-beginning semantics, all new cells are
          * allocated in the scanned state by setting initial gcbits.
          */
         uint8_t gcbits;
+
+
+        /**
+         * Stats at start of prior GC
+         */
+        uint64_t prior_page_ct; 
+        uint64_t prior_root_ct; 
 
         /**
          * API guidance of GC
@@ -831,38 +807,22 @@ static struct glas_rt {
         _Atomic(uint64_t) tls_alloc;    // per OS thread
         _Atomic(uint64_t) tls_free;
         _Atomic(uint64_t) page_alloc;   // allocator and GC
-        _Atomic(uint64_t) page_accept;  
-        _Atomic(uint64_t) page_free;
+        _Atomic(uint64_t) page_release;
         _Atomic(uint64_t) heap_alloc;   // mmaps
         _Atomic(uint64_t) heap_free;
-        _Atomic(uint64_t) gc_wb_marks; 
-        _Atomic(uint64_t) gc_cycles_nursery;
-        _Atomic(uint64_t) gc_cycles_survivor;
-        _Atomic(uint64_t) gc_cycles_full;
-
+        _Atomic(uint64_t) gc_wb_mark;   // how many write-barriers activated
+        _Atomic(uint64_t) gc_wb_stop;   // marked write-barriers when stopped
     } stat;
 
 } glas_rt;
 static pthread_once_t glas_rt_init_once = PTHREAD_ONCE_INIT;
 
 LOCAL void glas_rt_init_slowpath();
-LOCAL inline void glas_rt_init() {
-    pthread_once(&glas_rt_init_once, &glas_rt_init_slowpath);
-}
-LOCAL inline void glas_rt_lock() {
-    glas_rt_init(); // ensure we have a mutex!
-    pthread_mutex_lock(&glas_rt.mutex); 
-}
-LOCAL inline void glas_rt_unlock() {
-    pthread_mutex_unlock(&glas_rt.mutex); 
-}
-LOCAL inline void glas_rt_alloc_lock() {
-    glas_rt_init();
-    pthread_mutex_lock(&glas_rt.alloc.mutex);
-}
-LOCAL inline void glas_rt_alloc_unlock() {
-    pthread_mutex_unlock(&glas_rt.alloc.mutex);
-}
+LOCAL inline void glas_rt_init() { pthread_once(&glas_rt_init_once, &glas_rt_init_slowpath); }
+LOCAL inline void glas_rt_lock() { pthread_mutex_lock(&glas_rt.mutex); }
+LOCAL inline void glas_rt_unlock() { pthread_mutex_unlock(&glas_rt.mutex); }
+LOCAL inline void glas_rt_alloc_lock() { pthread_mutex_lock(&glas_rt.alloc.mutex); }
+LOCAL inline void glas_rt_alloc_unlock() { pthread_mutex_unlock(&glas_rt.alloc.mutex); }
 LOCAL inline uint64_t glas_rt_genid() {
     return atomic_fetch_add_explicit(&glas_rt.idgen, 1, memory_order_relaxed);
 }
@@ -888,7 +848,7 @@ LOCAL glas_os_thread* glas_os_thread_create() {
 LOCAL void glas_os_thread_destroy(glas_os_thread* t) {
     atomic_fetch_add_explicit(&glas_rt.stat.tls_free, 1, memory_order_relaxed);
     sem_destroy(&(t->wakeup));
-    assert(likely((NULL == t->mb) && (NULL == t->fl)));
+    assert(likely((NULL == t->fl) && (NULL == t->alloc.page)));
     free(t);
 }
 LOCAL glas_os_thread* glas_os_thread_get_slowpath() {
@@ -911,6 +871,8 @@ LOCAL void glas_rt_init_slowpath() {
     sem_init(&(glas_rt.gc.wakeup), 0, 0);
     atomic_init(&glas_rt.root.conf, GLAS_VAL_UNIT);
     atomic_init(&glas_rt.root.globals, GLAS_VOID);
+    atomic_init(&glas_rt.gc.wb, GLAS_VOID);
+    atomic_init(&glas_rt.gc.cycle, 1);
     glas_gc_thread_init();
     // TBD: proper init of globals as lazy dict of reg.
     // TBD: Worker threads for on_commit.
@@ -1024,39 +986,23 @@ LOCAL void glas_heap_free_page(glas_heap* heap, void* page) {
         // not a halting error, but may waste some memory
     }
 }
-
-/** 
- * In the GC mark bitmaps, pre-mark bits addressing page headers. 
- */
-LOCAL void glas_page_mark_hdr_bits(glas_page* page) {
-    static size_t const page_header_mark_bits = sizeof(glas_page) / GLAS_CELL_SIZE; 
-    static size_t const full_mark_u64s = page_header_mark_bits / 64;
-    static uint64_t const partial_mark = (((uint64_t)1)<<(page_header_mark_bits % 64))-1;
-    size_t ix = 0;
-    for(; ix < full_mark_u64s; ++ix) {
-        atomic_store_explicit(page->gc_mark + ix, ~((uint64_t)0), memory_order_relaxed);
-    }
-    atomic_fetch_or_explicit(page->gc_mark + ix, partial_mark, memory_order_relaxed);
-}
 LOCAL inline uint64_t glas_page_magic_word_by_addr(void* addr) {
     static uint64_t const prime = (uint64_t)12233355555333221ULL;
     return prime * (uint64_t)(((uintptr_t)addr)>>(GLAS_HEAP_PAGE_SIZE_LG2));
 }
-LOCAL void glas_page_init(glas_page* page) {
-    assert(glas_mem_page_ceil(page) == page);
+LOCAL void glas_page_init(glas_heap* heap, glas_page* page) {
+    assert(likely((glas_mem_page_ceil(page) == page) && 
+                   glas_heap_includes_addr(heap, page)));
     memset(page, 0, sizeof(glas_page));
-    glas_page_mark_hdr_bits(page);
+    page->marking = page->marks[0];
+    page->marked = page->marks[1];
+    page->heap = heap;
     page->magic_word = glas_page_magic_word_by_addr(page);
 }
 LOCAL inline glas_page* glas_page_from_internal_addr(void* addr) {
     glas_page* const page = (glas_page*) glas_mem_page_floor(addr);
     assert(likely(glas_page_magic_word_by_addr(page) == page->magic_word));
     return page;
-}
-LOCAL inline void glas_page_card_mark_old_to_young(glas_page* page, size_t card) {
-    _Atomic(uint64_t)* const pbitmap = page->gc_card[GLAS_CARD_OLD_TO_YOUNG] + (card/64);
-    uint64_t const bit = ((uint64_t)1)<<(card%64);
-    atomic_fetch_or_explicit(pbitmap, bit, memory_order_relaxed);
 }
 LOCAL inline glas_page* glas_allocl_try_pop(glas_alloc_l* l) {
     if(NULL == l->list) { return NULL; }
@@ -1066,41 +1012,32 @@ LOCAL inline glas_page* glas_allocl_try_pop(glas_alloc_l* l) {
     (l->count)--;
     return page;
 }
-LOCAL inline glas_page* glas_allocl_takeall(glas_alloc_l* l) {
-    glas_page* const page = l->list;
-    l->list = NULL;
-    l->count = 0;
-    return page;
-}
 LOCAL inline void glas_allocl_push(glas_alloc_l* l, glas_page* page) {
+    assert(likely(NULL == page->next));
     page->next = l->list;
     l->list = page;
     (l->count)++;
 }
-LOCAL glas_page* glas_rt_page_prep(glas_heap* heap, glas_page* page, glas_page_gen gen) {
-    assert(glas_heap_includes_addr(heap, page));
-    glas_page_init(page);
-    page->heap = heap;
-    page->gen = gen;
-    glas_allocl_push(&(glas_rt.alloc.ofgen[gen].live), page);
-    return page;
-}
-LOCAL glas_page* glas_rt_page_alloc(glas_page_gen gen) {
-    // assume single-threaded (e.g. via page lock)
-    assert(likely((GLAS_PAGE_GEN_COUNT > gen) && (gen >= 0)));
+LOCAL glas_page* glas_rt_page_alloc_locked() {
     atomic_fetch_add_explicit(&glas_rt.stat.page_alloc, 1, memory_order_relaxed);
-    glas_alloc* const alloc = glas_rt.alloc.ofgen + gen;
-    glas_page* page = glas_allocl_try_pop(&(alloc->free));
-    if(NULL != page) { return glas_rt_page_prep(page->heap, page, gen); }
-    page = (NULL != alloc->heap) ? glas_heap_try_alloc_page(alloc->heap) : NULL;
-    if(NULL != page) { return glas_rt_page_prep(alloc->heap, page, gen); }
-    glas_heap* heap = glas_heap_try_create();
+    glas_page* page = glas_allocl_try_pop(&glas_rt.alloc.avail);
+    if(NULL != page) { 
+        return page; 
+    }
+    glas_heap* heap = glas_rt.alloc.heap;
+    page = (NULL == heap) ? NULL : glas_heap_try_alloc_page(heap);
+    if(NULL != page) {
+        glas_page_init(heap, page);
+        return page;
+    }
+    heap = glas_heap_try_create();
     if(NULL != heap) {
-        heap->next = alloc->heap;
-        alloc->heap = heap;
+        heap->next = glas_rt.alloc.heap;
+        glas_rt.alloc.heap = heap;
         page = glas_heap_try_alloc_page(heap);
-        assert(NULL != page);
-        return glas_rt_page_prep(heap, page, gen);
+        assert(likely(NULL != page));
+        glas_page_init(heap, page);
+        return page;
     }
     debug("runtime is out of memory!");
     abort();
@@ -1110,51 +1047,100 @@ LOCAL inline bool glas_os_thread_is_busy() {
     debug("t: %p", t);
     return ((NULL != t) && (GLAS_OS_THREAD_BUSY == t->state));
 }
+
+LOCAL inline size_t glas_page_run_of(glas_page* page, uint8_t thresh) {
+    for(size_t ix = 0; ix < GLAS_GC_STAT_SIZE; ++ix) {
+        if(thresh > page->utilization[ix]) { return ix; }
+    }
+    return GLAS_GC_STAT_SIZE;
+}
+
+LOCAL void glas_page_swept(glas_page* page, size_t amt_freed) {
+    assert(likely((NULL != page) && (amt_freed < GLAS_PAGE_CELL_COUNT)));
+    // track relative utilization for the last few cycles.
+    for(size_t ix = 1; ix < GLAS_GC_STAT_SIZE; ++ix) {
+        page->utilization[ix] = page->utilization[ix-1];
+    }
+    static_assert(0 == (GLAS_PAGE_CELL_COUNT % 256));
+    page->utilization[0] = 0xFF & ((GLAS_PAGE_CELL_COUNT - amt_freed) / 
+        (GLAS_PAGE_CELL_COUNT/256));
+
+    // Heuristically defer reuse of page based on a run of poor sweeps.
+    size_t const r66 = glas_page_run_of(page, (2 * (UINT8_MAX/3)));
+    size_t const r80 = glas_page_run_of(page, (4 * (UINT8_MAX/5)));
+    page->defer_reuse = (uint8_t)(r66/2 + r80);
+
+    // Also, if we fully allocate a page within a single GC cycle, we
+    // cannot reuse it until next cycle due to recent allocations.
+    if(page->cycle_acquired == page->cycle_released) {
+        ++(page->defer_reuse);
+    } 
+}
+LOCAL void glas_os_thread_release_page(glas_os_thread* t) {
+    atomic_fetch_add_explicit(&glas_rt.stat.page_release, 1, memory_order_relaxed);
+    if(NULL != t->alloc.page) { 
+        t->alloc.page->cycle_released = atomic_load_explicit(&glas_rt.gc.cycle, memory_order_relaxed);
+        glas_page_swept(t->alloc.page, t->alloc.free_count);
+    }
+    t->alloc.page = NULL;
+    t->alloc.mark_word = 0;
+    t->alloc.free_bits = 0;
+    t->alloc.free_count = 0;
+}
+
 LOCAL void glas_os_thread_alloc_reserve(glas_os_thread* t) {
-    assert(likely((GLAS_OS_THREAD_BUSY == t->state)));
-    static size_t const batch = GLAS_CELL_BATCH_ALLOC; 
-    static_assert(0 == ((batch * GLAS_CELL_SIZE) % GLAS_HEAP_CARD_SIZE));
-    t->alloc_next = atomic_load_explicit(&glas_rt.alloc.freecells, memory_order_relaxed);
+    // return with t->free_bits or bust!
+    // This will sweep pages as part of finding allocations.
+    assert(likely((GLAS_OS_THREAD_BUSY == t->state) && (0 == t->alloc.free_bits)));
+    static_assert(0 == (GLAS_PAGE_CELL_COUNT % 64));
+    static size_t const MARK_WORD_MAX = (GLAS_PAGE_CELL_COUNT/64) - 1; // one bit per cell
     do {
-        glas_cell* const page_ceil = glas_mem_page_ceil(t->alloc_next);
-        if(likely(t->alloc_next < page_ceil)) {
-            // space remains in shared nursery page; allocate some
-            t->alloc_end = t->alloc_next + batch;
-            if(unlikely(t->alloc_end > page_ceil)) { t->alloc_end = page_ceil; }
-            if(likely(atomic_compare_exchange_weak_explicit(&glas_rt.alloc.freecells, 
-                    &(t->alloc_next), t->alloc_end, memory_order_relaxed, memory_order_relaxed))) 
-            {
-                return; // successfully claimed some space
-            } // else retry with updated t->alloc_next
-        } else {
-            // nursery is fully allocated
-            glas_rt_alloc_lock(); 
-            glas_cell* const freecells = atomic_load_explicit(&glas_rt.alloc.freecells, memory_order_relaxed);
-            if(freecells == t->alloc_next) {
-                // allocate and install new nursery, then retry via loop
-                glas_page* const new_nursery = glas_rt_page_alloc(GLAS_PAGE_NURSERY);
-                t->alloc_next = (glas_cell*)(((uintptr_t)new_nursery) + sizeof(glas_page));
-                atomic_store_explicit(&glas_rt.alloc.freecells, t->alloc_next, memory_order_relaxed);
-            } else {
-                // new nursery allocated by another thread, use it via loop
-                t->alloc_next = freecells;
-            }
+        if(unlikely((NULL == t->alloc.page) || (MARK_WORD_MAX == t->alloc.mark_word))) {
+            glas_os_thread_release_page(t);
+            // obtain an available page, or allocate a new one if needed
+            glas_rt_alloc_lock();
+            t->alloc.page = glas_rt_page_alloc_locked();
+            glas_allocl_push(&glas_rt.alloc.await, t->alloc.page);
             glas_rt_alloc_unlock();
+            t->alloc.page->cycle_acquired = atomic_load_explicit(&glas_rt.gc.cycle, memory_order_relaxed);
+            assert(likely(t->alloc.page->cycle_acquired > t->alloc.page->cycle_released));
+            // begin allocation immediately after `glas_page` header
+            static_assert(0 == (sizeof(glas_page)%sizeof(glas_cell)));
+            static size_t const PAGE_HDR_BITS = sizeof(glas_page)/sizeof(glas_cell);
+            static size_t const ALLOC_START = PAGE_HDR_BITS/64;
+            static uint64_t const CELLS_IN_HDR = (((uint64_t)1)<<(PAGE_HDR_BITS%64))-1;
+            uint64_t const marked = atomic_load_explicit((t->alloc.page->marked + ALLOC_START), memory_order_relaxed);
+            t->alloc.mark_word = ALLOC_START;
+            t->alloc.free_bits = ~(CELLS_IN_HDR | marked);
+        } else {
+            ++(t->alloc.mark_word);
+            uint64_t const marked = atomic_load_explicit((t->alloc.page->marked + t->alloc.mark_word), memory_order_relaxed);
+            t->alloc.free_bits = ~marked;
         }
-    } while(1);
+    } while(0 == t->alloc.free_bits);
+    t->alloc.free_count += popcount64(t->alloc.free_bits);
+    if(glas_rt.gc.marking) {
+        // Mark all new allocations during concurrent mark phase. This ensures
+        // they aren't reallocated immediately when we swap marked and marking.
+        atomic_fetch_or_explicit((t->alloc.page->marking + t->alloc.mark_word), 
+            t->alloc.free_bits, memory_order_relaxed);
+    }
 }
 
 LOCAL inline bool glas_gc_b0scan() {
     // return true iff a 0 bit means 'scanned'
     return (0 == (1 & glas_rt.gc.gcbits));
 }
-LOCAL inline glas_cell* glas_cell_alloc() {
+LOCAL glas_cell* glas_cell_alloc() {
     glas_os_thread* const t = glas_os_thread_get();
-    if(unlikely(t->alloc_end == t->alloc_next)) {
+    if(unlikely(0 == t->alloc.free_bits)) {
         glas_os_thread_alloc_reserve(t);
     }
-    atomic_init(&(t->alloc_next->hdr.gcbits), glas_rt.gc.gcbits);
-    return (t->alloc_next)++;
+    size_t ix = ctz64(t->alloc.free_bits);
+    t->alloc.free_bits &= (t->alloc.free_bits - 1);
+    glas_cell* const cell = ((glas_cell*)(t->alloc.page)) + ((t->alloc.mark_word) * 64) + ix;
+    cell->hdr.gcbits = glas_rt.gc.gcbits; 
+    return cell;
 }
 LOCAL glas_gc_fl* glas_gc_fl_new() {
     glas_gc_fl* fl = malloc(sizeof(glas_gc_fl));
@@ -1163,9 +1149,6 @@ LOCAL glas_gc_fl* glas_gc_fl_new() {
     return fl;
 }
 LOCAL void glas_gc_fl_compact(glas_gc_fl* fl) {
-    // after compaction, every two adjacent finalizer lists will average
-    // more than half full in the asymptotic worst case, i.e. ~16 bytes 
-    // per finalizer, similar to a linked list. 
     if(NULL == fl) { return; }
     while(NULL != fl->next) {
         if(GLAS_GC_CELL_BUFFSZ >= (fl->fill + fl->next->fill)) {
@@ -1180,12 +1163,7 @@ LOCAL void glas_gc_fl_compact(glas_gc_fl* fl) {
     }
 }
 LOCAL void glas_gc_register_finalizer(glas_cell* cell) {
-    assert(likely(GLAS_DATA_IS_PTR(cell)));
-    uint8_t const prior = atomic_fetch_or_explicit(&(cell->hdr.gcbits), GLAS_GCBIT_FIN, memory_order_relaxed);
-    if(0 != (GLAS_GCBIT_FIN & prior)) {
-        debug("cell with finalizer was registered twice; unexpected");
-        return; // already registered as a finalizer
-    }
+    assert(likely(GLAS_DATA_IS_PTR(cell) && glas_os_thread_is_busy()));
     // record into thread-local list of new finalizers
     glas_os_thread* t = glas_os_thread_get();
     if(NULL == t->fl) {
@@ -1201,7 +1179,7 @@ LOCAL void glas_gc_register_finalizer(glas_cell* cell) {
 LOCAL inline glas_cell* glas_cell_fptr(void* ptr, glas_refct pin, bool linear) {
     glas_cell* cell = glas_cell_alloc();
     cell->hdr.type_id = GLAS_TYPE_FOREIGN_PTR;
-    cell->hdr.type_aggr = linear ? 0b1011 : 0b1010;
+    cell->hdr.type_aggr = 0b1010 | (linear ? 0b0001 : 0);
     cell->hdr.type_arg = 0;
     cell->stemHd = GLAS_CELL_STEM_EMPTY;
     cell->foreign_ptr.ptr = ptr;
@@ -1302,7 +1280,6 @@ LOCAL glas_cell* glas_cell_array_slice(glas_cell** data, size_t len, uint8_t typ
     slice->big_arr.fptr = fptr;
     return slice;
 }
-
 LOCAL glas_cell* glas_cell_array_alloc(glas_cell** data, size_t len) {
     // array as a list
     if(len < 4) {
@@ -1398,18 +1375,19 @@ LOCAL inline void glas_os_thread_gc_safepoint() {
         glas_os_thread_gc_safepoint_slowpath();
     }
 }
-
 LOCAL void glas_os_thread_set_done(glas_os_thread* const t) {
     if(GLAS_OS_THREAD_BUSY == t->state) {
-        debug("glas thread canceled while busy");
+        debug("OS thread canceled while busy");
         glas_os_thread_force_exit_busy(t);
     }
     assert(GLAS_OS_THREAD_IDLE == t->state);
+    if(NULL != t->alloc.page) {
+        t->alloc.page->cycle_released = atomic_load_explicit(&glas_rt.gc.cycle, memory_order_relaxed);
+        t->alloc.page = NULL;
+    }
     t->state = GLAS_OS_THREAD_DONE;
-    // what else to do here?
-    // - release any thunks claimed by this thread?
 }
-LOCAL inline bool glas_gc_is_stopped() {
+LOCAL inline bool glas_gc_has_stopped_the_world() {
     bool const stopping = atomic_load_explicit(&glas_rt.gc.stopping, memory_order_relaxed);
     size_t const busy_threads = atomic_load_explicit(&glas_rt.gc.busy_threads_count, memory_order_relaxed);
     return (stopping && (0 == busy_threads));
@@ -1422,7 +1400,7 @@ LOCAL void glas_gc_stop_the_world() {
     }
 }
 LOCAL void glas_gc_resume_the_world() {
-    assert(glas_gc_is_stopped());
+    assert(likely(glas_gc_has_stopped_the_world()));
     atomic_store_explicit(&glas_rt.gc.stopping, false, memory_order_release);
     for(glas_os_thread* t = atomic_load_explicit(&glas_rt.tls.list, memory_order_acquire);
         (NULL != t); t = t->next) 
@@ -1432,8 +1410,6 @@ LOCAL void glas_gc_resume_the_world() {
         }
     }
 }
-
-
 LOCAL glas_gc_mb* glas_gc_mb_new() {
     glas_gc_mb* mb = malloc(sizeof(glas_gc_mb));
     mb->fill = 0;
@@ -1480,33 +1456,8 @@ LOCAL inline void glas_gc_mb_push(glas_gc_mb** mb, glas_cell* data) {
     }
     (*mb)->buffer[((*mb)->fill)++] = data;
 }
-
-LOCAL void glas_gc_collect_wb_marks() {
-    assert(glas_gc_is_stopped());
-    for(glas_os_thread* t = atomic_load_explicit(&glas_rt.tls.list, memory_order_acquire);
-        (NULL != t); t = t->next)
-    {
-        if(NULL != t->mb) {
-            assert(likely(NULL == t->mb->next));
-            atomic_pushlist(&glas_rt.gc.mb, &(t->mb->next), t->mb);
-            t->mb = NULL;
-        }
-    }
-}
-LOCAL void glas_gc_gather_finalizers() {
-    assert(glas_gc_is_stopped());
-    for(glas_os_thread* t = atomic_load_explicit(&glas_rt.tls.list, memory_order_acquire);
-        (NULL != t); t = t->next)
-    {
-        if(NULL != t->fl) {
-            assert(likely(NULL == t->fl->next));
-            atomic_pushlist(&glas_rt.gc.fl, &(t->fl->next), t->fl);
-            t->fl = NULL;
-        }
-    }
-}
 LOCAL glas_os_thread* glas_gc_extract_done_threads() {
-    assert(glas_gc_is_stopped());
+    assert(likely(glas_gc_has_stopped_the_world()));
     glas_os_thread* tdone = NULL;
     glas_os_thread* tkeep = atomic_exchange_explicit(&glas_rt.tls.list, NULL, memory_order_acquire);
     glas_os_thread** cursor = &tkeep;
@@ -1524,7 +1475,7 @@ LOCAL glas_os_thread* glas_gc_extract_done_threads() {
     return tdone;
 }
 LOCAL glas_roots* glas_gc_extract_detached_roots() {
-    assert(glas_gc_is_stopped());
+    assert(likely(glas_gc_has_stopped_the_world()));
     glas_roots* rdetached = NULL;
     glas_roots* rkeep = atomic_exchange_explicit(&glas_rt.root.list, NULL, memory_order_acquire);
     glas_roots** cursor = &rkeep;
@@ -1555,6 +1506,7 @@ LOCAL void glas_roots_init(glas_roots* r, void* self, void (*finalizer)(void*), 
     r->finalizer = finalizer;
     r->roots = roots;
     atomic_init(&(r->refct), 1);
+    atomic_init(&(r->trace_cycle), 0);
     r->root_count = 0;
     r->max_offset = 0;
     for( ; (GLAS_ROOTS_END != (*roots)); ++roots ) {
@@ -1563,9 +1515,10 @@ LOCAL void glas_roots_init(glas_roots* r, void* self, void (*finalizer)(void*), 
             r->max_offset = (*roots);
         }
         (r->root_count)++;
-        assert((UINT16_MAX >= r->root_count) && "missing a sentinel");
+        assert((UINT16_MAX >= r->root_count) && "seem to be missing a sentinel");
     }
     atomic_fetch_add_explicit(&glas_rt.stat.roots_init, r->root_count, memory_order_relaxed);
+    assert(likely((0 < r->root_count) && "why roots with no roots?"));
 
     // bitmap covers from 'self' to 'max_offset' inclusive
     size_t const bitmap_len = 8 * (1 + ((r->max_offset)/64));
@@ -1594,11 +1547,11 @@ LOCAL inline void glas_roots_decref(glas_roots* r) {
     atomic_fetch_sub_explicit(&(r->refct), 1, memory_order_relaxed);
     // if refct is 0, finalize later during GC stop 
 }
-LOCAL bool glas_gc_claim_roots_slot(glas_roots* roots, glas_cell** slot) {
-    glas_cell** const base = (glas_cell**) roots->self;
+LOCAL bool glas_wb_claim_roots_slot(glas_roots* r, glas_cell** slot) {
+    glas_cell** const base = (glas_cell**) r->self;
     size_t const slot_ix = (size_t) (slot - base);
     uint64_t const bit = ((uint64_t)1) << (slot_ix % 64);
-    _Atomic(uint64_t)* const pbitmap = roots->slot_bitmap + (slot_ix / 64);
+    _Atomic(uint64_t)* const pbitmap = r->slot_bitmap + (slot_ix / 64);
     if(glas_gc_b0scan()) {
         uint64_t const prior = atomic_fetch_and_explicit(pbitmap, ~bit, memory_order_release);
         return (0 != (prior & bit));
@@ -1607,7 +1560,7 @@ LOCAL bool glas_gc_claim_roots_slot(glas_roots* roots, glas_cell** slot) {
         return (0 == (prior & bit));
     }
 }
-LOCAL bool glas_gc_claim_cell_slot(glas_cell* reg, glas_cell** slot) {
+LOCAL bool glas_wb_claim_cell_slot(glas_cell* reg, glas_cell** slot) {
     glas_cell** const base = reg->small_arr;
     size_t const ix = (size_t)(slot - base);
     uint8_t const bit = ((uint8_t)1)<<ix;
@@ -1621,38 +1574,30 @@ LOCAL bool glas_gc_claim_cell_slot(glas_cell* reg, glas_cell** slot) {
 }
 LOCAL bool glas_gc_try_cell_mark(glas_cell* cell) {
     glas_page* const page = glas_page_from_internal_addr(cell);
-    if(page->gen > glas_rt.gc.mark_gen) {
-        return false;
-    }
-    size_t const ix = cell - ((glas_cell*)page);
-    _Atomic(uint64_t)* const pbitmap = page->gc_mark + (ix / 64);
-    uint64_t const bit = ((uint64_t)1) << (ix % 64);
-    uint64_t const prior_bitmap = atomic_fetch_or_explicit(pbitmap, bit, memory_order_relaxed);
-    return (0 == (bit & prior_bitmap));
+    size_t const coff = cell - ((glas_cell*)page);
+    _Atomic(uint64_t)* const pbitmap = page->marking + (coff / 64);
+    uint64_t const bit = ((uint64_t)1) << (coff % 64);
+    uint64_t const prior = atomic_fetch_or_explicit(pbitmap, bit, memory_order_relaxed);
+    return (0 == (prior & bit));
 }
-LOCAL void glas_wb_scan_push(glas_cell* cell) {
-    // push to a thread-local buffer, will handle on stop-the-world
-    atomic_fetch_add_explicit(&glas_rt.stat.gc_wb_marks, 1, memory_order_relaxed);
-    glas_os_thread* const t = glas_os_thread_get();
-    if(NULL == t->mb) {
-        t->mb = glas_gc_mb_new();
-    } else if(GLAS_GC_CELL_BUFFSZ == t->mb->fill) {
-        assert(likely(NULL == t->mb->next));
-        atomic_pushlist(&glas_rt.gc.mb, &(t->mb->next), t->mb);
-        t->mb = glas_gc_mb_new();
-    }
-    t->mb->buffer[(t->mb->fill)++] = cell;
+LOCAL inline void glas_wb_snapshot_push(glas_cell* cell) {
+    // allocating a cell for every write-barrier snapshot; should be rare!
+    // keep some stats on how often this happens
+    atomic_fetch_add_explicit(&glas_rt.stat.gc_wb_mark, 1, memory_order_relaxed);
+    glas_cell* const wb = glas_cell_alloc(); // just using as memory
+    wb->small_arr[1] = cell;
+    atomic_pushlist(&glas_rt.gc.wb, wb->small_arr, wb);
 }
-LOCAL inline void glas_wb_scan_sched(glas_cell* cell) {
+LOCAL inline void glas_wb_snapshot_sched(glas_cell* cell) {
     if(GLAS_DATA_IS_PTR(cell) && glas_gc_try_cell_mark(cell)) {
-        glas_wb_scan_push(cell);
+        glas_wb_snapshot_push(cell);
     }
 }
 LOCAL void glas_roots_slot_write(glas_roots* roots, glas_cell** slot, glas_cell* new_val) {
     if(glas_rt.gc.marking) {
         glas_cell* const prior_val = (*slot);
-        if(glas_gc_claim_roots_slot(roots, slot)) {
-            glas_wb_scan_sched(prior_val);
+        if(glas_wb_claim_roots_slot(roots, slot)) {
+            glas_wb_snapshot_sched(prior_val);
         }
     }
     (*slot) = new_val;
@@ -1660,24 +1605,18 @@ LOCAL void glas_roots_slot_write(glas_roots* roots, glas_cell** slot, glas_cell*
 LOCAL void glas_cell_slot_write(glas_cell* dst, glas_cell** slot, glas_cell* new_val) {
     if(glas_rt.gc.marking) {
         glas_cell* const prior_val = (*slot);
-        if(glas_gc_claim_cell_slot(dst, slot)) {
-            glas_wb_scan_sched(prior_val);
+        if(glas_wb_claim_cell_slot(dst, slot)) {
+            glas_wb_snapshot_sched(prior_val);
         }
     }
     (*slot) = new_val;
-    if(GLAS_DATA_IS_PTR(new_val)) { // track old-to-young refs 
-        glas_page* const dst_page = glas_page_from_internal_addr(dst);
-        glas_page* const val_page = glas_page_from_internal_addr(new_val);
-        if(dst_page->gen > val_page->gen) {
-            glas_page_card_mark_old_to_young(dst_page, glas_mem_card_index(dst));
-        }
-    }
 }
+LOCAL void glas_gc_dq_push(glas_gc_dq*, glas_refct);
 LOCAL void glas_cell_finalize(glas_cell* cell) {
-    assert(likely(0 != (GLAS_GCBIT_FIN & atomic_load_explicit(&(cell->hdr.gcbits), memory_order_relaxed))));
     glas_type_id const ty = cell->hdr.type_id;
     if(GLAS_TYPE_FOREIGN_PTR == ty) {
-        glas_decref(cell->foreign_ptr.pin);
+        glas_gc_dq_push(&glas_rt.gc.dq, cell->foreign_ptr.pin);
+        cell->foreign_ptr.pin.refct_upd = NULL;
     } else if(GLAS_TYPE_REGISTER == ty) {
         cell->reg.regid->tombstone.target = GLAS_VOID;
     } else {
@@ -1689,17 +1628,6 @@ LOCAL void glas_cell_finalize(glas_cell* cell) {
 /***************************
  * GARBAGE COLLECTOR
  ***************************/
-LOCAL bool glas_gc_decide_level() {
-    // this op will heuristically set GC options, or return false to skip
-
-    if(atomic_exchange_explicit(&glas_rt.gc.force_fullgc, false, memory_order_relaxed)) {
-        // API request for full GC
-        glas_rt.gc.mark_gen = GLAS_PAGE_OLD;
-    }
-
-    glas_rt.gc.mark_gen = GLAS_PAGE_OLD;
-    return true;
-}
 LOCAL inline void glas_gc_mark_cell(glas_gc_mb** mb, glas_cell* cell) {
     if(GLAS_DATA_IS_PTR(cell) && glas_gc_try_cell_mark(cell)) {
         glas_gc_mb_push(mb, cell);
@@ -1716,7 +1644,7 @@ LOCAL bool glas_gc_trace_find_work(glas_gc_mb** mbhead) {
             glas_gc_mb_free(mb);
             mb = NULL;
         } else {
-            // rotate to local full buffer
+            // rotate to full buffer
             assert(likely(GLAS_GC_CELL_BUFFSZ == mb->fill));
             mb->next = (*mbhead);
             (*mbhead) = mb;
@@ -1725,18 +1653,28 @@ LOCAL bool glas_gc_trace_find_work(glas_gc_mb** mbhead) {
     }
 
     // load from shared worklists if possible.
-    pthread_mutex_lock(&glas_rt.gc.gc_mb_pop_mutex); // lock to avoid ABA problem
+    pthread_mutex_lock(&glas_rt.gc.gc_mb_pop_mutex); // lock to resist ABA problem
     mb = atomic_load_explicit(&glas_rt.gc.mb, memory_order_acquire);
     do {} while((NULL != mb) && !atomic_compare_exchange_weak_explicit(&glas_rt.gc.mb, 
             &mb, mb->next, memory_order_acquire, memory_order_acquire));
     pthread_mutex_unlock(&glas_rt.gc.gc_mb_pop_mutex);
-
-    if(NULL == mb) {
-        return false;
+    if(NULL != mb) {
+        mb->next = (*mbhead);
+        (*mbhead) = mb;
+        return true;
     }
-    mb->next = (*mbhead);
-    (*mbhead) = mb;
-    return true;
+
+    // fill from write barrier (cf glas_wb_snapshot_push)
+    static size_t const fill_goal = GLAS_GC_CELL_BUFFSZ/2;
+    glas_cell* wb = atomic_load_explicit(&glas_rt.gc.wb, memory_order_acquire);
+    while((GLAS_VOID != wb) && (fill_goal > (*mbhead)->fill)) {
+        if(atomic_compare_exchange_weak_explicit(&glas_rt.gc.wb, &wb, 
+            wb->small_arr[0], memory_order_acquire, memory_order_acquire))
+        {
+            (*mbhead)->buffer[((*mbhead)->fill)++] = wb->small_arr[1];
+        }
+    }
+    return (0 < (*mbhead)->fill);
 }
 LOCAL void glas_gc_trace_array(glas_gc_mb** mb, glas_cell** data, size_t len) {
     // Use dedicated slot for lazy processing of data arrays. But there
@@ -1769,31 +1707,17 @@ LOCAL void glas_gc_trace_array(glas_gc_mb** mb, glas_cell** data, size_t len) {
 }
 
 LOCAL void glas_gc_trace_cell(glas_gc_mb** mb, glas_cell* cell) {
+    
     (void)cell; (void)mb;
     debug("todo: GC traces a cell");
     
-}
-LOCAL void glas_gc_trace_cell_oty(glas_gc_mb** mb, glas_cell* cell) {
-    // Old-to-young tracing treats cells in older generations as roots 
-    // for the younger generations. Only mutable slots need be traced.
-    if(GLAS_TYPE_REGISTER == cell->hdr.type_id) {
-        glas_gc_mark_cell(mb, atomic_load_explicit(&(cell->reg.version), memory_order_acquire));
-        glas_gc_mark_cell(mb, atomic_load_explicit(&(cell->reg.regid), memory_order_acquire));
-        glas_gc_mark_cell(mb, atomic_load_explicit(&(cell->reg.assoc_lhs), memory_order_acquire));
-    } else if(GLAS_TYPE_THUNK == cell->hdr.type_id) {
-        glas_gc_mark_cell(mb, atomic_load_explicit(&(cell->thunk.claim), memory_order_acquire));
-        glas_gc_mark_cell(mb, atomic_load_explicit(&(cell->thunk.result), memory_order_acquire));
-        // closure shouldn't update except to delete
-    } else {
-        // no-op
-    }
 }
 LOCAL inline void glas_gc_trace_marked_cells(glas_gc_mb** mb) {
     do {
         if(0 < (*mb)->fill) {
             glas_gc_trace_cell(mb, (*mb)->buffer[--((*mb)->fill)]);
         } else if(0 < (*mb)->arr.len) {
-            // lazy tracing for arrays
+            // lazy tracing for arrays            
             glas_gc_mark_cell(mb, (*mb)->arr.data[--((*mb)->arr.len)]);
         } else if(!glas_gc_trace_find_work(mb)) {
             break;
@@ -1804,9 +1728,9 @@ LOCAL void glas_gc_trace_roots(glas_gc_mb** mb, glas_roots* r) {
     glas_cell** const base = (glas_cell**) r->self;
     size_t root_ix = 0;
     while(root_ix < r->root_count) {
-        // We'll claim many roots at once that share a bitmap.
+        // batch clusters of roots that share a bitmap.
         size_t const bitmap_ix = (r->roots[root_ix]) / 64;
-        glas_cell* snapshot[64]; // up to 64 roots
+        glas_cell* snapshot[64]; // max 64 roots, usually fewer
         uint64_t bitmask = 0;
         size_t count = 0;
         while((root_ix + count) < r->root_count) {
@@ -1818,7 +1742,8 @@ LOCAL void glas_gc_trace_roots(glas_gc_mb** mb, glas_roots* r) {
             bitmask |= (((uint64_t)1) << (offset % 64));
             count++;
         }
-        // atomic claim for bitmap 
+        assert(likely(count > 0));
+        // atomic claim for bitmap (racing with write barriers)
         uint64_t claimed;
         if(glas_gc_b0scan()) { // 0 bit means 'scanned' this phase.
             uint64_t const prior = atomic_fetch_and_explicit((r->slot_bitmap + bitmap_ix), ~bitmask, memory_order_release);
@@ -1836,91 +1761,25 @@ LOCAL void glas_gc_trace_roots(glas_gc_mb** mb, glas_roots* r) {
         }
         root_ix += count;
         glas_gc_trace_marked_cells(mb);
-        assert(likely((count > 0) && (0 == (*mb)->fill)));
     }
 }
-LOCAL void glas_gc_trace_page_oty(glas_gc_mb** mb, glas_page* page) {
-    assert(likely(page->gen > glas_rt.gc.mark_gen)); // old-to-young!
-
-    static_assert(0 == (GLAS_HEAP_CARD_SIZE % sizeof(glas_cell)));
-    static size_t const CELLS_PER_CARD = GLAS_HEAP_CARD_SIZE / sizeof(glas_cell);
-    static_assert(0 == (64 % CELLS_PER_CARD));
-    static size_t const CARDS_PER_MARK_WORD = 64 / CELLS_PER_CARD;
-    static_assert(0 == (GLAS_PAGE_CARD_COUNT % 64));
-    static size_t const CARD_WORDS = GLAS_PAGE_CARD_COUNT / 64;
-    static size_t const MARK_GROUPS = CELLS_PER_CARD; // same ratio for full bitmaps
-    static uint64_t const CARD_MARK_GROUP_MASK = (((uint64_t)1)<<CARDS_PER_MARK_WORD) - 1;
-    static uint64_t const CARD_MARKS_MASK = (((uint64_t)1)<<CELLS_PER_CARD) - 1;
-
-    for(size_t card_word = 0; card_word < CARD_WORDS; ++card_word) {
-        uint64_t const oty_cards = atomic_load_explicit(
-                &(page->gc_card[GLAS_CARD_OLD_TO_YOUNG][card_word]),
-                memory_order_relaxed);
-        if(0 == oty_cards) { continue; }
-        for(size_t mark_group = 0; mark_group < MARK_GROUPS; ++mark_group) {
-            uint64_t card_group = (oty_cards >> (CARDS_PER_MARK_WORD * mark_group)) & CARD_MARK_GROUP_MASK;
-            if(0 == card_group) { continue; }
-            size_t const mark_word = (card_word * CELLS_PER_CARD) + mark_group; 
-            uint64_t const marks = atomic_load_explicit(&(page->gc_mark[mark_word]), memory_order_relaxed);
-            while(0 != card_group) {
-                size_t const card_offset = ctz64(card_group);
-                card_group &= (card_group - 1);
-                size_t const mark_shift = card_offset * CELLS_PER_CARD;
-                uint64_t card_marks = (marks >> mark_shift) & CARD_MARKS_MASK;
-                while(0 != card_marks) {
-                    size_t const cell_in_card = ctz64(card_marks);
-                    card_marks &= (card_marks - 1);
-                    glas_cell* const cell = ((glas_cell*)page) + (64 * mark_word) + mark_shift + cell_in_card;
-                    glas_gc_trace_cell_oty(mb, cell);
-                } // loop over cells in one old-to-young card
-            } // loop over oty cards in one mark bitmap
-        } // loop over mark words associated with one card word 
-    } // loop over all old-to-young card
-}
-
-LOCAL void glas_gc_thread_stripe_roots(glas_gc_mb** mb, size_t const skip_start) {
-    // partitions roots across worker threads (based on initial skip)
-    size_t const stride = 1 + glas_rt.gc.pool.worker_count;
-    assert(likely(stride > skip_start));
-    size_t skip = skip_start;
-    glas_roots* r = glas_rt.gc.roots_snapshot;
-    do {
-        while((NULL != r) && (skip > 0)) { 
-            r = r->next; 
-            --skip;
+LOCAL void glas_gc_thread_stripe_trace(glas_gc_mb** mb) {
+    // all threads scan same list, but race to claim roots and begin tracing.
+    uint64_t const cycle = atomic_load_explicit(&glas_rt.gc.cycle, memory_order_acquire);
+    for(glas_roots* r = glas_rt.gc.roots_snapshot; (NULL != r); r = r->next) 
+    {
+        uint64_t const prior_trace_cycle = 
+            atomic_exchange_explicit(&(r->trace_cycle), cycle, memory_order_relaxed);
+        assert(likely(cycle >= prior_trace_cycle));
+        if(cycle != prior_trace_cycle) {
+            glas_gc_trace_roots(mb, r);
         }
-        if(NULL == r) { 
-            break; 
-        }
-        glas_gc_trace_roots(mb, r);
-        skip = stride; // for next cycle
-    } while(1);
-
-    // older generation pages are also treated as roots
-    for(glas_page_gen gen = (GLAS_PAGE_GEN_COUNT-1); gen > glas_rt.gc.mark_gen; --gen) {
-        glas_page* page = glas_rt.alloc.ofgen[gen].live.list;
-        skip = skip_start;
-        do {
-            while((NULL != page) && (skip > 0)) {
-                page = page->next;
-                --skip;
-            }
-            if(NULL == page) {
-                break;
-            }
-            glas_gc_trace_page_oty(mb, page);
-            skip = stride;
-        } while(1);
     }
 }
-
-LOCAL bool glas_gc_thread_finalize_cell(glas_cell* cell) {
+LOCAL bool glas_gc_thread_try_finalize_cell(glas_cell* cell) {
     glas_page* const page = glas_page_from_internal_addr(cell);
-    if(page->gen > glas_rt.gc.mark_gen) {
-        return false; 
-    }
     size_t const coff = cell - ((glas_cell*)page);
-    uint64_t const bitmap = atomic_load_explicit(page->gc_mark + (coff/64), memory_order_relaxed);
+    uint64_t const bitmap = atomic_load_explicit(page->marked + (coff/64), memory_order_relaxed);
     uint64_t bit = ((uint64_t)1) << (coff%64);
     if(0 != (bit & bitmap)) {
         return false; // marked
@@ -1928,13 +1787,13 @@ LOCAL bool glas_gc_thread_finalize_cell(glas_cell* cell) {
     glas_cell_finalize(cell);
     return true;
 }
-
 LOCAL void glas_gc_thread_run_finalizers(glas_gc_fl* const fl_start) {
     glas_gc_fl* fl = fl_start;
     while(NULL != fl) {
         size_t ix = 0;
         while(ix < fl->fill) {
-            if(glas_gc_thread_finalize_cell(fl->buffer[ix])) {
+            bool const finalized = glas_gc_thread_try_finalize_cell(fl->buffer[ix]);
+            if(finalized) {
                 fl->buffer[ix] = fl->buffer[--(fl->fill)];
             } else {
                 ++ix;
@@ -1946,49 +1805,43 @@ LOCAL void glas_gc_thread_run_finalizers(glas_gc_fl* const fl_start) {
 }
 
 LOCAL void* glas_gc_worker_thread(void* arg) {
-    glas_gc_worker* const w = arg;
-    glas_gc_mb* scan = glas_gc_mb_new();
+    (void)arg;
+    glas_gc_mb* mb = glas_gc_mb_new();
     do {
-        assert(likely((0 == scan->fill) && (NULL == scan->next)));
-        atomic_fetch_add_explicit(&glas_rt.gc.pool.workers_done, 1, memory_order_release);
+        assert(likely(glas_gc_mb_is_empty(mb) && (NULL == mb->next)));
+        atomic_fetch_add_explicit(&glas_rt.gc.pool.done, 1, memory_order_release);
         sem_wait(&glas_rt.gc.pool.wakeup);
-        glas_gc_op const op = atomic_load_explicit(&glas_rt.gc.pool.op, memory_order_acquire);
-        if(GLAS_GC_OP_MARK == op) {
-            assert(likely(glas_rt.gc.marking));
-            glas_gc_thread_stripe_roots(&scan, w->index);
-            glas_gc_trace_marked_cells(&scan);
-            size_t idle = GLAS_GC_THREAD_IDLE_CYCLES;
-            do {
-                sched_yield();
-                if(glas_gc_trace_find_work(&scan)) {
-                    glas_gc_trace_marked_cells(&scan);
-                } else {
-                    --idle;
-                }
-            } while(0 != idle);
-        } else if(GLAS_GC_OP_EVAC == op) {
-            assert(likely(glas_gc_is_stopped()));
-            debug("todo: support parallel evac");
-        }
+        assert(likely(glas_rt.gc.marking));
+        glas_gc_thread_stripe_trace(&mb);
+        size_t idle = 0; 
+        do {
+            sched_yield();
+            if(glas_gc_trace_find_work(&mb)) {
+                glas_gc_trace_marked_cells(&mb);
+            } else {
+                ++idle;
+            }
+        } while(idle < GLAS_GC_THREAD_IDLE_CYCLES);
+        assert(likely(glas_rt.gc.marking));
     } while(1);
-    glas_gc_mb_free(scan);
-    return NULL;
+    __builtin_unreachable();
 }
 
 static inline size_t num_cpus() {
     return sysconf(_SC_NPROCESSORS_ONLN);
 }
 LOCAL size_t glas_gc_decide_worker_count() {
+    // includes main GC thread
     size_t const ncpus = num_cpus();
-    size_t gc_thread_count = 1 + (ncpus/2); // includes main GC thread
-    if(gc_thread_count > GLAS_GC_THREAD_MAX) {
-        gc_thread_count = GLAS_GC_THREAD_MAX;
+    size_t gc_thread_count = 1 + (ncpus/2); 
+    if(gc_thread_count > GLAS_GC_THREADS_MAX) {
+        gc_thread_count = GLAS_GC_THREADS_MAX;
     }
     char const* const env_glas_gc_threads = getenv("GLAS_GC_THREADS");
     if(NULL != env_glas_gc_threads) {
         int const n = atoi(env_glas_gc_threads);
         if(n < 1) {
-            debug("invalid value: GLAS_ENV_THREADS=%s", env_glas_gc_threads);
+            debug("invalid value: GLAS_GC_THREADS=%s", env_glas_gc_threads);
         } else if(n > (int) ncpus) {
             debug("GLAS_GC_THREADS=%d > %lu CPUs; reducing", n, ncpus);
             gc_thread_count = ncpus;
@@ -2001,36 +1854,33 @@ LOCAL size_t glas_gc_decide_worker_count() {
     return (gc_thread_count - 1); // not counting main GC thread
 }
 LOCAL inline bool glas_gc_workers_are_done() {
-    return (glas_rt.gc.pool.worker_count ==
-            atomic_load_explicit(&glas_rt.gc.pool.workers_done, memory_order_acquire));
+    return (glas_rt.gc.pool.count == 
+                atomic_load_explicit(&glas_rt.gc.pool.done, memory_order_acquire));
 }
-LOCAL inline void glas_gc_workers_signal(glas_gc_op op) {
+LOCAL inline void glas_gc_workers_signal() {
     assert(likely(glas_gc_workers_are_done()));
-    atomic_store_explicit(&glas_rt.gc.pool.workers_done, 0, memory_order_relaxed);
-    atomic_store_explicit(&glas_rt.gc.pool.op, op, memory_order_release);
-    for(size_t ix = 0; ix < glas_rt.gc.pool.worker_count; ++ix) {
+    atomic_store_explicit(&glas_rt.gc.pool.done, 0, memory_order_relaxed);
+    for(size_t ix = 0; ix < glas_rt.gc.pool.count; ++ix) {
         sem_post(&glas_rt.gc.pool.wakeup);
     }
 }
 LOCAL void glas_gc_workers_init() {
-    atomic_init(&glas_rt.gc.pool.op, GLAS_GC_OP_NONE);
-    atomic_init(&glas_rt.gc.pool.workers_done, 0);
+    atomic_init(&glas_rt.gc.pool.done, 0);
     sem_init(&glas_rt.gc.pool.wakeup,0,0);
-    glas_rt.gc.pool.worker_count = glas_gc_decide_worker_count();
-    if(0 == glas_rt.gc.pool.worker_count) {
+    glas_rt.gc.pool.count = glas_gc_decide_worker_count();
+    if(0 == glas_rt.gc.pool.count) {
         return;
     }
-    glas_rt.gc.pool.workers = calloc(glas_rt.gc.pool.worker_count, sizeof(glas_gc_worker));
+    glas_rt.gc.pool.workers = calloc(glas_rt.gc.pool.count, sizeof(pthread_t));
     pthread_attr_t gc_worker_attr;
     pthread_attr_init(&gc_worker_attr);
     pthread_attr_setscope(&gc_worker_attr, PTHREAD_SCOPE_PROCESS);
     pthread_attr_setdetachstate(&gc_worker_attr, PTHREAD_CREATE_DETACHED);
-    pthread_attr_setstacksize(&gc_worker_attr, (7 * 4096)); 
+    pthread_attr_setstacksize(&gc_worker_attr, (7 * 4096)); // small stack 
     pthread_attr_setguardsize(&gc_worker_attr, (1 * 4096));
-    for(size_t ix = 0; ix < glas_rt.gc.pool.worker_count; ++ix) {
-        glas_rt.gc.pool.workers[ix].index = ix;
-        pthread_create(&(glas_rt.gc.pool.workers[ix].thread_id), &gc_worker_attr,
-            &glas_gc_worker_thread, glas_rt.gc.pool.workers + ix);
+    for(size_t ix = 0; ix < glas_rt.gc.pool.count; ++ix) {
+        pthread_create((glas_rt.gc.pool.workers + ix), &gc_worker_attr,
+            &glas_gc_worker_thread, NULL);
     }
     pthread_attr_destroy(&gc_worker_attr);
 
@@ -2040,8 +1890,161 @@ LOCAL void glas_gc_workers_init() {
     }
 }
 
+
+LOCAL inline bool glas_gc_dq_is_full(glas_gc_dq const* dq) {
+    return ((dq->tail + 1) % dq->capacity) == dq->head;
+}
+LOCAL inline bool glas_gc_dq_is_empty(glas_gc_dq const* dq) {
+    return (dq->tail == dq->head);
+}
+LOCAL inline size_t glas_gc_dq_size(glas_gc_dq const* dq) {
+    return (dq->tail >= dq->head) ? (dq->tail - dq->head) :
+            (dq->capacity - (dq->head - dq->tail));
+}
+LOCAL void glas_gc_dq_grow(glas_gc_dq* dq, size_t new_cap) {
+    assert(likely(new_cap > glas_gc_dq_size(dq)));
+    glas_refct* const new_items = malloc(new_cap * sizeof(glas_refct));
+    size_t new_tail = 0;
+    while(dq->head != dq->tail) {
+        new_items[new_tail++] = dq->items[dq->head];
+        dq->head = (dq->head + 1) % dq->capacity;
+    }
+    free(dq->items);
+    dq->items = new_items;
+    dq->capacity = new_cap;
+    dq->tail = new_tail;
+    dq->head = 0;
+}
+LOCAL void glas_gc_dq_push(glas_gc_dq* dq, glas_refct refct) {
+    pthread_mutex_lock(&dq->mutex);
+    bool const send_wakeup = glas_gc_dq_is_empty(dq);
+    if(glas_gc_dq_is_full(dq)) {
+        glas_gc_dq_grow(dq, 2 * dq->capacity);
+    }
+    dq->items[dq->tail] = refct;
+    dq->tail = (dq->tail + 1) % dq->capacity;
+    pthread_mutex_unlock(&glas_rt.gc.dq.mutex);
+    if(send_wakeup) {
+        sem_post(&dq->wakeup);
+    }
+}
+LOCAL inline bool glas_gc_dq_pop(glas_gc_dq* dq, glas_refct* refct) {
+    pthread_mutex_lock(&dq->mutex);
+    bool const item_found = !glas_gc_dq_is_empty(dq);
+    if(item_found) {
+        (*refct) = dq->items[dq->head];
+        dq->head = (dq->head + 1) % dq->capacity;
+    } else {
+        refct->refct_upd = NULL;
+    }
+    pthread_mutex_unlock(&dq->mutex);
+    return item_found;
+}
+LOCAL void* glas_gc_dq_worker(void* addr) {
+    glas_gc_dq* const dq = addr;
+    glas_refct refct;
+    do {
+        sem_wait(&dq->wakeup);
+        do {} while(0 == sem_trywait(&dq->wakeup)); // drain extra wakeups
+        while(glas_gc_dq_pop(dq, &refct)) {
+            glas_decref(refct);
+        }
+    } while(1);
+    __builtin_unreachable();
+}
+LOCAL void glas_gc_dq_init(glas_gc_dq* dq) {
+    pthread_mutex_init(&dq->mutex, NULL);
+    sem_init(&dq->wakeup, 0, 0);
+    #if DEBUG
+    dq->capacity = 1; // force growth
+    #else
+    dq->capacity = 512; // unlikely to grow
+    #endif
+    dq->items = malloc(sizeof(glas_refct) * dq->capacity);
+    dq->head = 0;
+    dq->tail = 0;
+    pthread_create(&dq->thread, NULL, &glas_gc_dq_worker, dq);
+}
+
+LOCAL bool glas_gc_heuristic_level() {
+    bool const fullgc = atomic_exchange_explicit(&glas_rt.gc.force_fullgc, false, memory_order_relaxed);
+    if(fullgc) { 
+        //
+        return true; 
+    }
+    size_t const curr_roots = atomic_load_explicit(&glas_rt.stat.roots_init, memory_order_relaxed);
+    size_t const curr_pages = atomic_load_explicit(&glas_rt.stat.page_release, memory_order_relaxed);
+
+    if((curr_roots - glas_rt.gc.prior_root_ct) > 1000) {
+        return true; // need to handle some external garbage
+    }
+    if((curr_pages - glas_rt.gc.prior_page_ct) < 8) {
+        return false; // mutators are more or less idle
+    }
+
+    glas_rt_alloc_lock();
+    size_t const avail_count = glas_rt.alloc.avail.count;
+    size_t const await_count = glas_rt.alloc.await.count;
+    glas_rt_alloc_unlock();
+
+    if(avail_count > (await_count/4)) {
+        return false; // still have a lot of available pages
+    }
+
+    return true;
+}
+
+LOCAL inline void glas_page_swap_marked_marking(glas_page* page) {
+    _Atomic(uint64_t)* const tmp = page->marking;
+    page->marking = page->marked;
+    page->marked = tmp;
+}
+LOCAL inline void glas_page_clear_marking(glas_page* page) {
+    memset(page->marking, 0, GLAS_PAGE_CELL_COUNT/8);
+}
+
+LOCAL glas_page* glas_gc_build_pages_list() {
+    glas_page* result = NULL;
+    glas_page** cursor = &result;
+    glas_rt_alloc_lock();
+    for(glas_page* page = glas_rt.alloc.avail.list; NULL != page; page = page->next) {
+        (*cursor) = page;
+        cursor = &(page->gc_next);
+    }
+    for(glas_page* page = glas_rt.alloc.await.list; NULL != page; page = page->next) {
+        (*cursor) = page;
+        cursor = &(page->gc_next);
+    }
+    glas_rt_alloc_unlock();
+    (*cursor) = NULL;
+    return result;
+}
+
+LOCAL void glas_gc_recycle_pages() {
+    glas_rt_alloc_lock();
+    glas_page** cursor = &glas_rt.alloc.await.list;
+    while(NULL != (*cursor)) {
+        glas_page* const page = (*cursor);
+        if(page->cycle_acquired > page->cycle_released) {
+            // page still in use, don't touch
+            cursor = &((*cursor)->next);
+        } else if(0 == page->defer_reuse) {
+            // page ready, move to available list
+            (*cursor) = (*cursor)->next;
+            glas_rt.alloc.await.count--;
+            glas_allocl_push(&glas_rt.alloc.avail, page);
+        } else {
+            // reuse of page deferred heuristically
+            (page->defer_reuse)--; 
+            cursor = &((*cursor)->next);
+        }
+    }
+    glas_rt_alloc_unlock();
+}
+
 LOCAL void* glas_gc_main_thread(void* arg) {
     (void)arg; // unused
+    glas_gc_dq_init(&glas_rt.gc.dq);
     glas_gc_workers_init();
     glas_gc_mb* mb = glas_gc_mb_new();
     do {
@@ -2050,71 +2053,67 @@ LOCAL void* glas_gc_main_thread(void* arg) {
             !atomic_load_explicit(&glas_rt.gc.stopping, memory_order_relaxed) &&
             !glas_rt.gc.marking && glas_gc_mb_is_empty(mb) &&
             (NULL == atomic_load_explicit(&glas_rt.gc.mb, memory_order_relaxed)) &&
+            (GLAS_VOID == atomic_load_explicit(&glas_rt.gc.wb, memory_order_relaxed)) &&
+            (NULL == glas_rt.gc.roots_snapshot) &&
             glas_gc_workers_are_done());
 
-        // periodic loop, can trigger early via wakeup; skip sleep if request is pending
+        // skip sleep if GC request is pending, otherwise wait for timer or wakeup
         if(!atomic_exchange_explicit(&glas_rt.gc.signal_gc, false, memory_order_relaxed)) {
             static struct timespec const gc_poll_period = { .tv_nsec = (GLAS_GC_POLL_USEC * 1000) };
             sem_timedwait(&glas_rt.gc.wakeup, &gc_poll_period);
         }
         do {} while(0 == sem_trywait(&glas_rt.gc.wakeup)); // drain extra wakeups
 
-        if(!glas_gc_decide_level()) { 
-            // not enough to GC; try again later
+        if(!glas_gc_heuristic_level()) { 
             continue; 
         }
 
-        // clear marks and oty cards in target range; we'll rebuild them
-        for(glas_page_gen gen = GLAS_PAGE_SURVIVOR; glas_rt.gc.mark_gen >= gen; ++gen) {
-            glas_page* page = glas_rt.alloc.ofgen[gen].live.list;
-            while(NULL != page) {
-                memset(page->gc_mark, 0, GLAS_PAGE_CELL_COUNT/8);
-                memset(page->gc_card, 0, GLAS_PAGE_CARD_COUNT/8);
-                page = page->next;
-            }
-        }
+        // clear old marks? We'll handle that after swap, before returning pages to avail pool
 
-        glas_gc_stop_the_world(); // Block mutations briefly.
+        glas_gc_stop_the_world();
         // flip scan bits and activate write barrier
         glas_rt.gc.gcbits = glas_gc_b0scan() ? 0b111 : 0; 
         glas_rt.gc.marking = true;
 
-        // gather recently registered finalizers, then snapshot
-        glas_gc_gather_finalizers();
-        glas_gc_fl* const fl = atomic_load_explicit(&glas_rt.gc.fl, memory_order_acquire);
+        // gather some stats to help with heuristic decisions
+        glas_rt.gc.prior_page_ct = atomic_load_explicit(&glas_rt.stat.page_release, memory_order_relaxed);
+        glas_rt.gc.prior_root_ct = atomic_load_explicit(&glas_rt.stat.roots_init, memory_order_relaxed);
 
+        // touch mutator threads, grab finalizers
+        for(glas_os_thread* t = atomic_load_explicit(&glas_rt.tls.list, memory_order_acquire); 
+            (NULL != t); t = t->next) 
+        {
+            assert(likely((GLAS_OS_THREAD_BUSY != t->state)));
+            if(NULL != t->fl) { // grab recently registered finalizers
+                assert(likely(NULL == t->fl->next));
+                atomic_pushlist(&glas_rt.gc.fl, &(t->fl->next), t->fl);
+                t->fl = NULL;
+            }
+        }
+        
         // garbage outside the heaps
         glas_os_thread* tdone = glas_gc_extract_done_threads();
         glas_roots* rdetached = glas_gc_extract_detached_roots();
 
-        // snapshot of special roots 
+        // snapshot
         glas_rt.gc.roots_snapshot = atomic_load_explicit(&glas_rt.root.list, memory_order_relaxed);
         glas_cell* const conf = atomic_load_explicit(&glas_rt.root.conf, memory_order_relaxed);
         glas_cell* const globals = atomic_load_explicit(&glas_rt.root.globals, memory_order_relaxed);
+        glas_gc_fl* const fl = atomic_load_explicit(&glas_rt.gc.fl, memory_order_acquire);
 
-        // grab nurseries immediately
-        glas_rt.gc.evac_pages = glas_allocl_takeall(&glas_rt.alloc.ofgen[GLAS_PAGE_NURSERY].live);
+        // update GC cycle
+        atomic_fetch_add_explicit(&glas_rt.gc.cycle, 1, memory_order_release);
 
-        // force threads to switch to fresh nurseries
-        atomic_store_explicit(&glas_rt.alloc.freecells, NULL, memory_order_relaxed);
-        for(glas_os_thread* t = atomic_load_explicit(&glas_rt.tls.list, memory_order_acquire); 
-            (NULL != t); t = t->next) 
-        {
-            t->alloc_next = t->alloc_end;
-            // check some assumptions
-            assert(likely((NULL == t->mb) && (NULL == t->fl)));
-        }
-        glas_gc_resume_the_world(); // GC thread is no longer blocking mutators.
-
+        glas_gc_resume_the_world();
 
         // initiate parallel marking
-        glas_gc_workers_signal(GLAS_GC_OP_MARK); 
+        glas_gc_workers_signal(); 
 
-        // handle GC main thread's share of marking
+        // handle main thread's share of marking
         glas_gc_mark_cell(&mb, conf);
         glas_gc_mark_cell(&mb, globals);
-        glas_gc_thread_stripe_roots(&mb, glas_rt.gc.pool.worker_count);
         glas_gc_trace_marked_cells(&mb);
+        glas_gc_thread_stripe_trace(&mb);
 
         // clear C heap garbage
         while(NULL != tdone) {
@@ -2127,49 +2126,52 @@ LOCAL void* glas_gc_main_thread(void* arg) {
             rdetached = rdetached->next;
             glas_roots_finalize(tmp);
         }
+
+        // if workers are still busy, help them. I also want a final
+        // trace near stop to better win races with write barriers
+        glas_gc_trace_marked_cells(&mb);
         while(!glas_gc_workers_are_done()) {
-            // if workers are still busy, help them
             sched_yield();
             glas_gc_trace_marked_cells(&mb);
         }
 
         glas_gc_stop_the_world();
-        do {
-            glas_gc_collect_wb_marks(); // from mutators
-            if(!glas_gc_trace_find_work(&mb)) {
-                break;
-            }
-            glas_gc_resume_the_world();            
+        if(glas_gc_trace_find_work(&mb)) {
+            // handle last-second marks from mutator write-barriers
+            glas_gc_resume_the_world(&mb);
+            atomic_fetch_add_explicit(&glas_rt.stat.gc_wb_mark, 1, memory_order_relaxed);
             glas_gc_trace_marked_cells(&mb);
-            glas_gc_stop_the_world();
-        } while(1);
+            glas_gc_stop_the_world(&mb);
+            if(glas_gc_trace_find_work(&mb)) {
+                // it happened again, this time just finish tracing while stopped
+                atomic_fetch_add_explicit(&glas_rt.stat.gc_wb_stop, 1, memory_order_relaxed);
+                glas_gc_trace_marked_cells(&mb);
+            }
+        }
 
         // marking completed!
         glas_rt.gc.marking = false;
         glas_rt.gc.roots_snapshot = NULL;
 
-        // consider adding higher-gen pages to evac_pages.
-        // but low priority for now
-
-        // evac begin!
-        glas_gc_workers_signal(GLAS_GC_OP_EVAC);
-        debug("todo: evac!");
-        glas_gc_resume_the_world();
-
-        // run finalizers before recycling memory
-        glas_gc_thread_run_finalizers(fl);
-
-        // recycle memory, no need to stop-the-world, but we do need a lock.
-        glas_rt_alloc_lock();
-        while(NULL != glas_rt.gc.evac_pages) {
-            glas_page* const page = glas_rt.gc.evac_pages;
-            glas_rt.gc.evac_pages = glas_rt.gc.evac_pages->next;
-            glas_allocl_push(&(glas_rt.alloc.ofgen[page->gen].free), page);
+        // build pages list for lock-free clear of old marks later. This
+        // is after mark completion in case of new pages from heap.
+        glas_page* const pages = glas_gc_build_pages_list();
+        for(glas_page* page = pages; (NULL != page); page = page->gc_next) {
+            glas_page_swap_marked_marking(page);
         }
-        glas_rt_alloc_unlock();
+        glas_gc_resume_the_world();
+        
+        // must run finalizers before recycling memory
+        glas_gc_thread_run_finalizers(fl);
+        glas_gc_recycle_pages();
+
+        // prepare for next GC cycle by clearing the marking bitmaps.
+        for(glas_page* page = pages; (NULL != page); page = page->gc_next) {
+            glas_page_clear_marking(page);
+        }
 
     } while(1);
-    return NULL;
+    __builtin_unreachable();
 }
 LOCAL void glas_gc_thread_init() {
     // Create main GC thread here. It may create workers internally.
@@ -2180,6 +2182,11 @@ LOCAL void glas_gc_thread_init() {
     pthread_create(&glas_rt.gc.gc_main_thread, &gc_thread_attr, &glas_gc_main_thread, NULL);
     pthread_attr_destroy(&gc_thread_attr);
 }
+
+/*************************
+ * Main API Ops?
+ */
+
 
 LOCAL void glas_thread_state_free(void* addr) {
     atomic_fetch_add_explicit(&glas_rt.stat.g_ts_free, 1, memory_order_relaxed);
@@ -2324,7 +2331,6 @@ API void glas_thread_set_debug_name(glas* g, char const* debug_name) {
     glas_roots_slot_write(&(ts->gcbase), &(ts->debug_name), cell);
     glas_os_thread_exit_busy();
 }
-
 
 LOCAL glas_stemcell glas_data_u64(uint64_t const n) {
     glas_stemcell sc;
@@ -2589,6 +2595,10 @@ API bool glas_rt_run_builtin_tests() {
     debug("popcount test: %s", popcount_test ? "pass" : "fail");
     bool const ctz_test = glas_rt_bit_ctz();
     debug("ctz test: %s", ctz_test ? "pass" : "fail");
+
+    // number round trips
+    // shrub list lengths
+    // etc..
 
     //glas_rt_page_free(page);
     glas* g = glas_thread_new();

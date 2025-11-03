@@ -147,7 +147,7 @@ void glas_choice(glas* origin, size_t N, void* client_arg,
  * The `refct_upd` function may be NULL if an object does not need to be
  * managed. When reading data from the runtime, `glas_refct*` arguments
  * may be NULL assuming the client maintains a reference to the resource
- * on stack or in stash to guard against garbage collection. 
+ * on stack or in stash to guard against garbage collection.
  */
 typedef struct {
     void (*refct_upd)(void* refct_obj, bool incref);
