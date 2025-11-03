@@ -50,7 +50,7 @@
 #endif
 
 #ifdef DEBUG
-  #define debug(fmt, ...) do { fprintf(stderr, "%s:%s(%u): " fmt "\n", __FILE__, __PRETTY_FUNCTION__, __LINE__,  ##__VA_ARGS__); } while(0)
+  #define debug(fmt, ...) do { fprintf(stderr, "%s:%u:%s: " fmt "\n", __FILE__, __LINE__, __PRETTY_FUNCTION__, ##__VA_ARGS__); } while(0)
 #else
   #define debug(fmt, ...) 
 #endif
@@ -294,9 +294,9 @@ static_assert(32 > GLAS_TYPEID_COUNT,
  *      special constants
  *    l: linear
  *      forbid copy and drop
- * gcbits: yyyyysss
- *    y: GC survival counter, roughly 'age' of object 
+ * gcbits: xxxxxsss
  *    s: once-per-slot write barrier, also update on scan
+ *    x: unused, tentatively could track cell age
  */
 struct glas_cell_hdr {
     uint8_t type_id;   // logical structure of this node
@@ -305,7 +305,6 @@ struct glas_cell_hdr {
     _Atomic(uint8_t) gcbits;  // reserved for use by GC
 };
 #define GLAS_GCBITS_SCAN    0b00000111
-#define GLAS_GCBITS_AGE     0b11111000
 
 struct glas_cell {
     glas_cell_hdr hdr;
@@ -370,9 +369,9 @@ struct glas_cell {
         } seal;
 
         struct {
-            _Atomic(glas_cell*) version;   // tentative!
-            _Atomic(glas_cell*) assoc_lhs; // associated volumes (r,_)
-            _Atomic(glas_cell*) regid; // weakref + stable ID; reg is finalizer
+            _Atomic(glas_cell*) version;    // tentative!
+            _Atomic(glas_cell*) assoc_lhs;  // associated volumes (r,_)
+            _Atomic(glas_cell*) ts;         // weakref + stable ID; reg is finalizer
             // Sketch:
             // - tombstone and assoc_lhs are allocated only when needed
             // - basic volume of registers as a lazy dict (load via thunks)
@@ -384,15 +383,16 @@ struct glas_cell {
         } reg;
         
         struct {
-            glas_cell* target;  // GLAS_VOID if collected
-            uint64_t   id;      // for hashmaps, debugging, etc.
+            // tombstone, provides a weak ref and a stable ID
+            _Atomic(glas_cell*) wk;     // GLAS_VOID if collected
+            uint64_t            id;     // for hashmaps, debugging, etc.
             // id is global atomic incref; I assume 64 bits is adequate.
-        } tombstone;
+        } ts;
 
         struct {
             // data held externally, e.g. content-addressed storage
-            glas_cell* ref;         // runtime-recognized reference
-            glas_cell* regid;   // stable ID and weakref for caching
+            glas_cell* ref;     // runtime-recognized reference
+            glas_cell* ts;    // stable ID and weakref for caching
         } extref;
 
         struct {
@@ -404,6 +404,9 @@ struct glas_cell {
             _Atomic(glas_cell*) closure;    // what to evaluate
             _Atomic(glas_cell*) result;     // final result (or GLAS_VOID)
             _Atomic(glas_cell*) claim;      // evaluating thread and waitlist
+
+            // Note: At the moment, thunks aren't erased by GC and may be
+            // explicit in the glas types. I must consider what I want here.
         } thunk;
 
         // TBD: I may want specialized foreign pointers for glas_link_cb
@@ -744,6 +747,7 @@ static struct glas_rt {
          */
         glas_gc_wp pool;
         glas_roots* roots_snapshot;
+        glas_page* pages; // via gc_next
 
         /**
          * During concurrent mark phase, put overflow scan buffers here. 
@@ -1044,7 +1048,6 @@ LOCAL glas_page* glas_rt_page_alloc_locked() {
 }
 LOCAL inline bool glas_os_thread_is_busy() {
     glas_os_thread* const t = pthread_getspecific(glas_rt.tls.key);
-    debug("t: %p", t);
     return ((NULL != t) && (GLAS_OS_THREAD_BUSY == t->state));
 }
 
@@ -1618,7 +1621,7 @@ LOCAL void glas_cell_finalize(glas_cell* cell) {
         glas_gc_dq_push(&glas_rt.gc.dq, cell->foreign_ptr.pin);
         cell->foreign_ptr.pin.refct_upd = NULL;
     } else if(GLAS_TYPE_REGISTER == ty) {
-        cell->reg.regid->tombstone.target = GLAS_VOID;
+        atomic_store_explicit(&(cell->reg.ts->ts.wk), GLAS_VOID, memory_order_relaxed);
     } else {
         debug("unrecognized finalizer type: %d", (int)ty);
     }
@@ -1705,12 +1708,92 @@ LOCAL void glas_gc_trace_array(glas_gc_mb** mb, glas_cell** data, size_t len) {
         (*mb)->arr.data = spread_data;
     }
 }
-
 LOCAL void glas_gc_trace_cell(glas_gc_mb** mb, glas_cell* cell) {
+    static_assert(sizeof(glas_cell*) == sizeof(_Atomic(glas_cell*)));
+    static_assert(8 == sizeof(glas_cell*));
+    glas_cell const cpy = (*cell); // claim snapshot
+    uint8_t claim; // slots not already claimed by write barrier
+    if(glas_gc_b0scan()) {
+        uint8_t const prior = atomic_fetch_and_explicit(&(cell->hdr.gcbits), 
+            ~(GLAS_GCBITS_SCAN), memory_order_release);
+        claim = GLAS_GCBITS_SCAN & prior; // prior 1 bit is claimed
+    } else {
+        uint8_t const prior = atomic_fetch_or_explicit(&(cell->hdr.gcbits), 
+            GLAS_GCBITS_SCAN, memory_order_release);
+        claim = GLAS_GCBITS_SCAN & ~prior; // prior 0 bit is claimed
+    }
+    #define GLAS_CELL_SLOT_INDEX(Field)     ((offsetof(glas_cell, Field)/sizeof(glas_cell*))-1)
+    #define GLAS_CELL_SLOT_CLAIMED(Field)   (0 != (claim & (1 << GLAS_CELL_SLOT_INDEX(Field))))
+    #define GLAS_CELL_SLOT_MARK(Field)\
+        if(GLAS_CELL_SLOT_CLAIMED(Field)) {\
+            glas_gc_mark_cell(mb, cpy.Field);\
+        }
+    #define GLAS_CELL_SLOT_MARK_ATOMIC(Field)\
+        if(GLAS_CELL_SLOT_CLAIMED(Field)) {\
+            glas_gc_mark_cell(mb, atomic_load_explicit(&(cpy.Field), memory_order_relaxed));\
+        }
     
-    (void)cell; (void)mb;
-    debug("todo: GC traces a cell");
-    
+    switch(cell->hdr.type_id) {
+        case GLAS_TYPE_BRANCH:
+            GLAS_CELL_SLOT_MARK(branch.L);
+            GLAS_CELL_SLOT_MARK(branch.R);
+            return;
+        case GLAS_TYPE_STEM:
+            GLAS_CELL_SLOT_MARK(stem.fby);
+            return;
+        case GLAS_TYPE_SMALL_ARR:
+            GLAS_CELL_SLOT_MARK(small_arr[0]);
+            GLAS_CELL_SLOT_MARK(small_arr[1]);
+            GLAS_CELL_SLOT_MARK(small_arr[2]);
+            return;
+        case GLAS_TYPE_BIG_ARR:
+            GLAS_CELL_SLOT_MARK(big_arr.fptr);
+            glas_gc_trace_array(mb, cell->big_arr.data, cell->big_arr.len);
+            return;
+        case GLAS_TYPE_BIG_BIN:
+            GLAS_CELL_SLOT_MARK(big_bin.fptr);
+            return;
+        case GLAS_TYPE_EXTREF:
+            GLAS_CELL_SLOT_MARK(extref.ref);
+            GLAS_CELL_SLOT_MARK(extref.ts);
+            return;
+        case GLAS_TYPE_THUNK:
+            // Note: GC doesn't erase thunks
+            GLAS_CELL_SLOT_MARK_ATOMIC(thunk.claim);
+            GLAS_CELL_SLOT_MARK_ATOMIC(thunk.closure);
+            GLAS_CELL_SLOT_MARK_ATOMIC(thunk.result);
+            return;
+        case GLAS_TYPE_SEAL:
+            if(GLAS_VOID == cell->seal.key->ts.wk) {
+                // special case: seal as ephemeron
+                cell->seal.data = GLAS_VOID;
+            } else {
+                GLAS_CELL_SLOT_MARK(seal.data);
+            }
+            GLAS_CELL_SLOT_MARK(seal.key);
+            GLAS_CELL_SLOT_MARK(seal.meta);
+            return;
+        case GLAS_TYPE_REGISTER:
+            GLAS_CELL_SLOT_MARK_ATOMIC(reg.version);
+            GLAS_CELL_SLOT_MARK_ATOMIC(reg.assoc_lhs);
+            GLAS_CELL_SLOT_MARK_ATOMIC(reg.ts);
+            return;
+        case GLAS_TYPE_TAKE_CONCAT:
+            GLAS_CELL_SLOT_MARK(take_concat.left);
+            GLAS_CELL_SLOT_MARK(take_concat.right);
+            return;
+        case GLAS_TYPE_SMALL_BIN:
+        case GLAS_TYPE_FOREIGN_PTR:
+        case GLAS_TYPE_TOMBSTONE:
+            // no-op
+            return;
+    }
+    #undef GLAS_CELL_SLOT_MARK_ATOMIC
+    #undef GLAS_CELL_SLOT_MARK
+    #undef GLAS_CELL_SLOT_CLAIMED
+    #undef GLAS_CELL_SLOT_INDEX
+    debug("unhandled cell type: %d", (int) cell->hdr.type_id);
+    abort();
 }
 LOCAL inline void glas_gc_trace_marked_cells(glas_gc_mb** mb) {
     do {
@@ -1728,11 +1811,13 @@ LOCAL void glas_gc_trace_roots(glas_gc_mb** mb, glas_roots* r) {
     glas_cell** const base = (glas_cell**) r->self;
     size_t root_ix = 0;
     while(root_ix < r->root_count) {
+        size_t const start_offset = r->roots[root_ix];
         // batch clusters of roots that share a bitmap.
-        size_t const bitmap_ix = (r->roots[root_ix]) / 64;
+        size_t const bitmap_ix = start_offset / 64;
         glas_cell* snapshot[64]; // max 64 roots, usually fewer
-        uint64_t bitmask = 0;
-        size_t count = 0;
+        snapshot[0] = base[start_offset];
+        uint64_t bitmask = (((uint64_t)1)<<(start_offset % 64));
+        size_t count = 1;
         while((root_ix + count) < r->root_count) {
             uint16_t const offset = r->roots[root_ix + count];
             if(bitmap_ix != (offset/64)) {
@@ -2029,8 +2114,9 @@ LOCAL void glas_gc_recycle_pages() {
             // page still in use, don't touch
             cursor = &((*cursor)->next);
         } else if(0 == page->defer_reuse) {
-            // page ready, move to available list
+            // page ready, move to available list.
             (*cursor) = (*cursor)->next;
+            page->next = NULL;
             glas_rt.alloc.await.count--;
             glas_allocl_push(&glas_rt.alloc.avail, page);
         } else {
@@ -2069,7 +2155,6 @@ LOCAL void* glas_gc_main_thread(void* arg) {
         }
 
         // clear old marks? We'll handle that after swap, before returning pages to avail pool
-
         glas_gc_stop_the_world();
         // flip scan bits and activate write barrier
         glas_rt.gc.gcbits = glas_gc_b0scan() ? 0b111 : 0; 
@@ -2155,8 +2240,8 @@ LOCAL void* glas_gc_main_thread(void* arg) {
 
         // build pages list for lock-free clear of old marks later. This
         // is after mark completion in case of new pages from heap.
-        glas_page* const pages = glas_gc_build_pages_list();
-        for(glas_page* page = pages; (NULL != page); page = page->gc_next) {
+        glas_rt.gc.pages = glas_gc_build_pages_list();
+        for(glas_page* page = glas_rt.gc.pages; (NULL != page); page = page->gc_next) {
             glas_page_swap_marked_marking(page);
         }
         glas_gc_resume_the_world();
@@ -2165,8 +2250,9 @@ LOCAL void* glas_gc_main_thread(void* arg) {
         glas_gc_thread_run_finalizers(fl);
         glas_gc_recycle_pages();
 
-        // prepare for next GC cycle by clearing the marking bitmaps.
-        for(glas_page* page = pages; (NULL != page); page = page->gc_next) {
+        // prepare for next GC cycle by clearing the marking bitmaps. The 'marked'
+        // bitmap remains for lazy allocation on sweep
+        for(glas_page* page = glas_rt.gc.pages; (NULL != page); page = page->gc_next) {
             glas_page_clear_marking(page);
         }
 
@@ -2591,17 +2677,31 @@ LOCAL bool glas_rt_bit_ctz() {
 }
 
 API bool glas_rt_run_builtin_tests() {
+    glas* g = glas_thread_new();
     bool const popcount_test = glas_rt_bit_popcount();
     debug("popcount test: %s", popcount_test ? "pass" : "fail");
     bool const ctz_test = glas_rt_bit_ctz();
     debug("ctz test: %s", ctz_test ? "pass" : "fail");
+
+
+    for(int ix = 0; ix < 10; ++ix) {
+        size_t tgt = 10 * GLAS_PAGE_CELL_COUNT;
+        glas_os_thread_enter_busy();
+        for(size_t cc = 0; cc < tgt; ++cc) {
+            glas_cell_alloc();
+        }
+        glas_os_thread_exit_busy();
+        debug("allocated %lu cells", tgt);
+        glas_rt_gc_trigger(true);
+        struct timespec dur = { .tv_sec = 1 };
+        nanosleep(&dur,NULL);
+    } 
 
     // number round trips
     // shrub list lengths
     // etc..
 
     //glas_rt_page_free(page);
-    glas* g = glas_thread_new();
     glas_u64_push(g,GLAS_PTR_MAX_INT);
     glas_i64_push(g,GLAS_PTR_MIN_INT);
     glas_i64_push(g,INT64_MAX);
