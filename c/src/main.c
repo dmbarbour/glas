@@ -159,7 +159,6 @@ int main(int argc, char const* const* argv)
     glas_cli_options* pOpt = glas_cli_parse_args(argc, argv);
     //glas_cli_print_options(pOpt);
 
-
     if((GLAS_ACT_HELP == pOpt->action) || 
        (GLAS_ACT_UNRECOGNIZED == pOpt->action)) 
     {
@@ -198,17 +197,6 @@ int main(int argc, char const* const* argv)
     return result;
 }
 
-int glas_cli_bit(int argc, char const* const* argv) {
-    (void) argc; (void) argv;
-    int tests_failed = 0;
-    if(!glas_rt_run_builtin_tests()) {
-        ++tests_failed;
-        fprintf(stdout, "glas runtime built-in tests failed\n");
-    }
-    glas* g = glas_thread_new();
-    glas_thread_exit(g);
-    return tests_failed;
-}
 
 int glas_cli_extract(char const* src) {
     (void) src;
@@ -218,3 +206,16 @@ int glas_cli_extract(char const* src) {
     glas_thread_exit(g);
     return -1;
 }
+
+
+
+int glas_cli_bit(int argc, char const* const* argv) {
+    (void) argc; (void) argv;
+    int tests_failed = 0;
+    if(!glas_rt_run_builtin_tests()) {
+        ++tests_failed;
+        fprintf(stdout, "glas runtime built-in tests failed\n");
+    }
+    return tests_failed;
+}
+

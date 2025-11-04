@@ -125,8 +125,8 @@ Based on configuration, a glas runtime may open a TCP/UDP port for RPC, HTTP, an
 
 ## Annotations
 
-        (%an Annotation Operation)  - annotated subprograms
-        (%an.ctor Args)             - Annotation AST nodes
+        a:(Annotation, Op)      - annotated AST structure
+        (%an.ctor Args)         - Annotation nodes in AST
 
 As a general rule, annotations must not influence the formal behavior or 'meaning' of a program, but they may guide tooling and influence non-functional properties. Annotations are very useful for instrumentation, optimization, and validation of programs.
 
@@ -140,15 +140,9 @@ Annotations should support users in logging, profiling, and tracing (for replay)
         profile (Chan, Index) { Operation }
         trace (Chan, Cond) { Operation }
 
-        (%an (%an.log Chan Message) Operation)
-        (%an (%an.profile Chan) Operation)
-        (%an (%an.trace Chan Cond) Operation)
-
 This structure expresses logging 'over' an operation, in contrast to a one-off message event. This allows a runtime to maintain a log message periodically as state changes, or capture the most recent version of a message into a stack trace. The continuous nature allows us to contemplate opportunities such as 'animation' of a log.
 
-The Chan argument may be a simple string to support configuration. We could add `(%an.scope TL)` to translate channel names in scope of Operation, and perhaps extend this further with dynamic scopes for precise profiling.
-
-Beyond these, it might be interesting to integrate projectional editor utilities directly into code, e.g. editable views for local registers when debugging a coroutine.
+The Chan argument is intended to support configuration. This includes both providing configuration options (like verbosity) to the Message and to support disabling, routing, or translating entire volumes of logs. 
 
 ## Optimization
 
@@ -158,42 +152,37 @@ Annotations guide performance features - acceleration, caching, laziness, parall
 
 There are many functions that are difficult to implement efficiently within the glas program model due to lack of static types or suitable 'primitive' operations. In these cases, we can provide a slower reference implementation, then use an annotation to ask a runtime to replace the reference implementation with a high-performance built-in. Example:
 
-        (%an (%accel.matrix.mul "double") ReferenceImpl)
+        a:((%an.accel (%accel.matrix.mul "double")), ReferenceImpl)
 
-In practice, the reference implementation will alias a separate definition. This allows for users to define automatic tests that compare the reference implementation with the accelerated version and verify consistency. A runtime may also integrate built-in verification, but it will often be limited due to concerns of performance or bloat.
+A runtime may have limited built-in verification of ReferenceImpl behavior, but it isn't guaranteed. In practice, it is convenient to perform unit tests on the ReferenceImpl alongside the accelerated version, e.g. by having ReferenceImpl name a separate definition. 
 
-As needed, the runtime shall leverage specialized under-the-hood representations to support accelerated functions. For example, a matrix of floating point numbers might be represented as one large binary together with some metadata for dimensions. An accelerated list might be represented using finger-tree ropes. We could also accelerate structs, arrays of structs, and virtual machine states.
+The runtime is expected to use specialized data representations to support accelerated functions. For example, finger-tree ropes for accelerated list slice and append, or representing a matrix of floats as a binary with some dimension info.
+ 
+It is best to accelerate widely useful types - matrices, graphs, sets, relational databases, etc.. An intriguing possibility is to accelerate 'eval' of a reasonably 'safe' virtual-machine code that is accelerated via JIT compilation to run directly on CPU or GPGPU. This is much more flexible than accelerating specific functions.
 
-Acceleration adds a fair bit of implementation and verification overhead. It is best to accelerate widely useful types - matrices, graphs, sets, relational databases, etc.. We can accelerate a few specialized functions (e.g. "sha512") to support bootstrap. But ideally we eventually replace any specialized functions with widely useful accelerated 'eval' of memory-safe operations on an abstract CPU or GPGPU.
+A relevant concern with acceleration is that not all hardware-supported operations are portable. This is especially the case for floating point computations, e.g. with variations in internal precision. Either our ReferenceImpl must account for the target processor, trade performance for portability, or be non-deterministic to cover all possible valid hardware.
 
-A relevant concern with acceleration is that not all hardware-supported operations are portable. This is especially the case for floating point computations, e.g. some processors use 80-bit internal representations. In this case, either our ReferenceImpl must account for the target processor (perhaps configured via '%env.arch.\*') or the accelerated implementation must trade some performance for portability.
+### Thunks and Sparks
 
-*Aside:* We may need logical [graph canonization](https://en.wikipedia.org/wiki/Graph_canonization) to accelerate unlabeled graph structures. The under-the-hood representation would not be canonical.
+A 'thunk' is an abstract representation of a deferred computation. A 'spark' is a thunk enqueued for evaluation by a pool of worker threads. Thunks and sparks can both simplify expression and supplement performance, i.e. express expensive computations where it's natural but perhaps drop the thunk before computing it, or use sparks to trigger expensive computations whose results will be necessary later without delaying the current transaction.
 
-### Laziness and Parallelism
+A significant language design decision is whether thunks are implicit or explicit. Explicit thunks are more difficult to use, but easier to control, reason about, and efficiently implement - especially in context of divergence, error, orthogonal persistence, and remote procedure calls. For glas systems, I propose to model thunks explicitly.
 
-A subset of expressions are purely functional or read their environment without modifying it. In these cases, we can capture a snapshot of the relevant environment, then defer the computation until it is needed, or evaluate in parallel between transactions. Of course, the snapshot and indirection does introduce some overhead, so this is most suitable for relatively expensive computations.
+* `lazy { Expr }` - capture a computation into a thunk
+* `lazy.force(Thunk) : Result` - force a thunk to evaluate, or diverge
+* `lazy.spark(Thunk) : Thunk` - schedules thunk to evaluate in separate thread (returns Thunk)
 
-        (%an (%an.lazy.thunk) Expr)     # defer eval of type of Expr, returns abstract thunk
-        (%an (%an.lazy.force) Thunk)    # force evaluation of a thunk, returning the data
-        (%an (%an.lazy.spark) Thunk)    # adds thunk to a thread pool, force in background
-
-This API makes thunks explicit. Alternatively, we could support thunks that are implicitly forced when we attempt to observe a value. However, for my vision of glas systems, it's more convenient if laziness is explicit and well-integrated with the type system. Thunks can be runtime-scoped, and it's an error to thunk an Expr that has observable effects.
-
-*Note:* This may require extensive adaptation to a procedural model.
+To keep implementation simple, I propose to initially restrict thunks to pure, atomic computations. In theory, we can eventually extend thunks to take a snapshot of registers read, or even generate output thunks for registers written. But users get 80% benefits for 20% implementation effort by restricting scope.
 
 ### Content-Addressed Storage
 
-To support larger-than-memory data, glas systems may leverage content-addressed storage to offload subtrees to higher-latency storage (e.g. disk or network). 
+To support larger-than-memory data, glas systems may leverage content-addressed storage to offload subtrees to higher-latency storage (e.g. disk or network). Like thunks, we benefit from modeling content-addressed data as explicit, abstract data. A viable API:
 
-        (%an (%an.cas.stow OptionalHints) BigDataExpr)
-        (%an (%an.cas.load) StowedData)
+* `cas.stow(Data) : StowedData` - wraps data for eventual transfer to high-latency storage. May be deferred, e.g. based on memory pressure 
+* `cas.load(StowedData) : Data` - loads and unwraps stowed data. Load may be lazy after the runtime is confident lazy load will succeed (e.g. no concerns with network disruption or data validation)
+* `cas.need(StowedData) : StowedData` - advises runtime to have stowed data ready for a near-future 'load'.
 
-Use of 'stow' doesn't immediately write the value to disk. It may wrap or associate the data with a little runtime metadata and cache, deferring actual storage guided by hints and heuristics. For example, we could wait for actual memory pressure, letting the garbage collector decide when to store the data and remove it from memory. Data below a size threshold may be kept in local memory regardless.
-
-Use of 'load' is provides access previously stowed data. It is feasible to support transparent stowage with implicit 'load', but it's inefficient to check for content-addressed representations on every arithmetic operation. That said, we could support specialized variants for implicit load of finger-tree ropes and such, integrating with accelerated representations.
-
-Content-addressed data interacts very nicely with memoization, orthogonal persistence, and distributed programs where large but infrequently-updated data structures are passed around (e.g. audio or video media, context dictionaries). This also integrates very easily with content delivery networks. 
+Content-addressed data interacts very nicely with memoization, persistent or read-mostly data structures, and persistent data storage. It also integrates easily with content delivery networks. 
 
 ### Caching
 
@@ -222,7 +211,6 @@ Annotations can express assertions, type annotations, even proofs. I'll explore 
 Assertions are by far the simplest form of validation.
 
         assert(Chan, Cond, Message) { Operation }
-        (%an (%an.dbg.assert Chan Cond Message) Operation)
 
 We might interpret an assertion over an operation as expressing an invariant. Based on configuration for Chan, Cond can be randomly sampled, automatically tested upon stack trace, or tested continuously for every relevant change in state. To avoid influencing observable behavior, Cond can be a read-only function or evaluated within a hierarchical transaction. When an assertion fails, we log the message and halt the transaction.
 
@@ -238,9 +226,9 @@ Annotations can express that data should be abstract within a computation. Howev
             | ... # other Node types
             | Abstract of Key * Tree
 
-Based on type annotations, a runtime can wrap and unwrap data with this 'Abstract' node. Any attempt to observe abstract data without unwrapping, or an attempt to unwrap with the wrong key, will will raise a runtime type error. This would be treated similar to an assertion failure.
+Based on annotations, a runtime can wrap and unwrap data with this 'Abstract' node, diverging on error. For robust security, we can use unforgeable things as keys, e.g. registers or abstract '%src' values. An intriguing opportunity: support keys with identity via weakrefs, then garbage-collect the sealed data when Key becomes unreachable.
 
-Based on static analysis, an optimizer can eliminate many of these wrap/unwrap actions, or at least skip some key comparisons. Based on further annotations, we could insist that some abstract types are fully eliminated within some scope, raising a compile-time error if this is not true. This provides a lightweight basis for gradual typing.
+Based on static analysis, an optimizer can eliminate many wrap/unwrap actions, providing a robust basis for gradual typing. Reflection APIs may provide limited means to bypass abstractions.
 
 ### Scope Control Types
 

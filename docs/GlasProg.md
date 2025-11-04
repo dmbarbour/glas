@@ -77,13 +77,13 @@ Instrumentation:
 * `(%an.chan.scope TL)` - apply a prefix-to-prefix translation to Chan names in Operation.
 
 Validation:
-* `(%an.arity In Out)` - express expected data stack arity for Operation. In and Out must be non-negative integers. Serves as an extremely simplistic type description. 
+* `(%an.arity In Out)` - express expected data stack arity for Op. In and Out must be non-negative integers. Serves as an extremely simplistic type description. 
 * `%an.atomic.reject` - error if running Operation from within an atomic scope, including %atomic and %br conditions. Useful to detect errors early for code that diverges when run within a hierarchical transaction, e.g. waiting forever on a network response.
   * `%an.atomic.accept` - to support simulation of code containing %an.atomic.reject, e.g. with a simulated network, we can pretend that Operation is running outside a hierarchical transaction, albeit only up to external method calls.
-* `(%an.data.seal Key)` - operational support for abstract data types. The sealed data cannot be observed until unsealed with the same Key. The data may be copied or dropped normally. Registers are the most robust keys, but an abstract Src (via %src) or plain old data (e.g. URL or GUID) is also acceptable. A compiler may optimize, tracking seals statically to avoid allocation.
-  * `(%an.data.unseal Key)` - removes matching seal, otherwise error 
-  * `(%an.data.seal.linear Key)` - a variant of seal that also marks the data linear, i.e. no copy or drop, until unsealed. The restriction includes implicit drops, e.g. local registers and the data stack when a coroutine terminates. However, linear data may still be copied or dropped in non-semantic cases such as incremental computing, backtracking, and reflection.
-  * `(%an.data.unseal.linear Key)` - counterpart to a linear seal. If data is sealed linear, it must be unsealed linear.
+* `(%an.data.seal Key)` - operational support for abstract data types. For robust data sealing, Key should name a Register, Src (like '%src'), or other unforgeable identity. Sealed data cannot be observed until unsealed with a matching Key, usually symmetric. If the Key becomes unreachable (e.g. Register out of scope), the sealed data may be garbage collected, and this may be detectable via reflection APIs. Actual implementation is flexible, e.g. compile-time static analysis at one extreme, encryption at another, but simple wrappers is common.
+  * `(%an.data.unseal Key)` - removes matching seal, or diverges
+  * `(%an.data.seal.linear Key)` - a variant of seal that also marks sealed data as linear, i.e. no copy or drop until unsealed. Note: This does not fully guard against implicit drops, e.g. storing data into a register that falls out of scope. But a best and warnings are expected.
+    * `(%an.data.unseal.linear Key)` - counterpart to a linear seal. If data is sealed linear, it must be unsealed linear.
 * `%an.data.static` - Indicates that top stack element should be statically computable. This may propagate requirements for static inputs back through a call graph. In context of conditionals, choice, coroutines, etc. the compiler can feasibly attempt to verify that all possible paths (up to a quota) share this result.
 * `%an.eval.static` - Indicates that all '%eval' steps in Operation must receive their AST argument at compile-time. This is the default for glas systems, but it can make intentions clearer to reiterate the constraint locally.
 * `(%an.type TypeDesc)` - Describes a partial type of Operation. Not limited to programs, so namespace-layer and higher-kinded types are also relevant. Can also support type inference in the context surrounding Operation. TypeDesc will have its own abstract data constructors in '%type.\*'.
@@ -92,6 +92,17 @@ Validation:
   * Ideally, we can also recognize simple confluence patterns, e.g. Kahn Process Networks, where coroutines communicate through queues with clear ownership (no races between two readers or between two writers). 
   * Eventually, proof-of-confluence annotations may be viable. Not sure how feasible this is.
 
+Laziness:
+* `%an.lazy.thunk` - The simplest integration for lazy evaluation for laziness. Op must be pure, atomic, 1--1 arity, terminating - anything else is a type error, though perhaps only detected upon 'force'. Instead of computing immediately, we return a thunk representing the future result. 
+  * Non-deterministic Op is accepted, i.e. commit to a non-deterministic choice without observing the result. An intriguing opportunity is to only choose the value for a non-deterministic thunk after an observing transaction commits. This is formally valid with non-determinism.
+* `%an.lazy.force` - Op (usually %pass) must return a thunk at top of data stack. We force evaluation of the thunk before returning, placing the data result of evaluating that thunk on the stack. 
+  * Force diverges if computation represented by a thunk fails or diverges. This is considered a type error.
+* `%an.lazy.spark` - Op (usually %pass) must return a thunk at top of data stack. If the thunk has not already been computed or scheduled, we'll schedule that thunk for background computation by runtime worker threads. 
+
+Content-addressed storage:
+* `%an.cas.stow` - Op (usually %pass) must return data of persistent or global ephemerality at top of stack. We wrap that data then lazily move it to external storage based on size, usage, and memory pressure.
+* `%an.cas.load` - Op (usually %pass) must return stowed data at top of stack. Loads and substitutes the actual data. Loading may be lazy, but only when the runtime is confident it can fully load the data (accounting for risks of network disruption and invalid representation). Diverges if the data cannot be loaded. Reflection APIs may offer a detailed view of errors.
+* `%an.cas.need` - Op (usually %pass) must return stowed data at top of stack. Tells runtime that this data will be needed in the near future. This enables the runtime to heuristically download, validate, etc. the data ahead of time so it's more available when needed.
 
 Incremental computing:
 * `(%an.memo MemoHint)` - memoize a computation. Useful memoization hints may include persistent vs. ephemeral, cache-invalidation heuristics, or refinement of a 'stable name' for persistence. TBD. 
@@ -107,7 +118,6 @@ Future development:
 * type declarations. I'd like to get bidirectional type checking working in many cases relatively early on.
 * tail-call declarations. Perhaps not per call but rather an indicator that a subroutine can be optimized for static stack usage, optionally up to method calls. 
 * stowage. Work with larger-than-memory values via content-addressed storage.
-* lazy computation. thunk, force, spark. Requires some analysis of registers written.
 * debug trace. Probably should wait until we have a clear idea of what a trace should look like. 
 * debug views. Specialized projectional editors within debuggers.
 
@@ -243,18 +253,13 @@ We can improve memoization by making the traces more widely applicable, abstract
 
 However, even the simplest of traces can be useful if users are careful about where they apply memoization. We can memoize a subset of procedures that represent "pure" expressions or functions to support incremental compilation, monoidal indexing of structure, and similar use cases.
 
-### Lazy Computation? Defer.
+### Lazy Computation
 
-        %an.lazy.thunk
-        %an.lazy.force 
-        %an.lazy.spark 
+To keep implementation simple, I propose explicit thunks of 1--1 arity, pure, atomic computations. Not necessarily deterministic, though we cannot observe the result. Computation may fail or diverge, in which case forcing the thunk will diverge. 
 
-In the general case, we could 'thunkify' an operation by capturing each input and immediately replacing each output (whether stack or register) with a thunk. However, this requires implicit thunks. If we want explicit thunks, where 'force' is required to extract a value, we may need to explicitly list outputs and restrict the type of Op.
+Eventually, we might extend laziness to multiple stack inputs or read-only snapshots of registers. Further, it is technically feasible - especially with implicit thunks - to support both stack and register outputs, though it will likely require static analysis of types, termination, linearity, and data flow. To support these extensions may rely on distinct annotations.
 
-There are also many restrictions on Op: Op must not '%fail' or '%yield' (outside of '%atomic'). It may diverge, in which case 'force' will also diverge. Checking these conditions implies some static analysis.
-
-I think it might be best to defer laziness until static analysis is more mature. But if there is demand, e.g. for parallel evaluation of sparks, we could get started with laziness of pure 1--1 computations. 
-
+*Note:* Because lazy annotations influence observation of divergence, I'm tempted to move from annotations to primitives. 
 
 ### Accelerators
 

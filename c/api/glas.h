@@ -412,7 +412,6 @@ void glas_thread_detach(glas*);
  */
 void glas_thread_fork_detached(glas*);
 
-
 /*********************************
  * BULK DEFINITION AND MODULARITY
  *********************************/
@@ -830,9 +829,9 @@ bool glas_u8_peek(glas*, uint8_t*);
  * It is permitted to peek at a linear pointer, i.e. it does not count 
  * as a copy. But a linear pointer may be dropped only via pop.
  */
-void glas_ptr_push(void*, glas_refct, bool linear);
-bool glas_ptr_peek(void**, glas_refct*);
-bool glas_ptr_pop(void**, glas_refct*);
+void glas_ptr_push(glas*, void*, glas_refct, bool linear);
+bool glas_ptr_peek(glas*, void**, glas_refct*);
+bool glas_ptr_pop(glas*, void**, glas_refct*);
 
 
 /****************

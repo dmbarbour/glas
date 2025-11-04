@@ -347,7 +347,9 @@ struct glas_cell {
 
         struct {
             // Foreign pointers are used in big arrays, big binaries, 
-            // and abstract client data.
+            // and abstract client data. 
+            //
+            // Always abstract + runtime ephemeral. Optionally linear.
             void* ptr;
             glas_refct pin; 
         } foreign_ptr;
@@ -361,11 +363,11 @@ struct glas_cell {
         } take_concat;
 
         struct {
-            // linearity is recorded into header
-            glas_cell* key;     // weakref to register
+            glas_cell* key;     // usually a weakref to register
             glas_cell* data;    // sealed data
             glas_cell* meta;    // metadata for debug, e.g. timestamp, provenance
             // data may be collected when key becomes unreachable
+            // optionally linear.
         } seal;
 
         struct {
@@ -788,7 +790,7 @@ static struct glas_rt {
 
 
         /**
-         * Stats at start of prior GC
+         * Stats at start of prior GC to guide heuristics
          */
         uint64_t prior_page_ct; 
         uint64_t prior_root_ct; 
@@ -814,7 +816,7 @@ static struct glas_rt {
         _Atomic(uint64_t) page_release;
         _Atomic(uint64_t) heap_alloc;   // mmaps
         _Atomic(uint64_t) heap_free;
-        _Atomic(uint64_t) gc_wb_mark;   // how many write-barriers activated
+        _Atomic(uint64_t) gc_wb_resume;   // how many write-barriers activated
         _Atomic(uint64_t) gc_wb_stop;   // marked write-barriers when stopped
     } stat;
 
@@ -898,11 +900,9 @@ API void glas_rt_gc_trigger(bool fullgc) {
 static_assert(sizeof(unsigned long long) == sizeof(uint64_t));
 static_assert(sizeof(unsigned int) == sizeof(uint32_t));
 static inline size_t popcount64(uint64_t n) { return (size_t) __builtin_popcountll(n); }
-static inline size_t popcount32(uint32_t n) { return (size_t) __builtin_popcount(n); }
 static inline size_t ctz64(uint64_t n) { return (size_t) __builtin_ctzll(n); }
 static inline size_t ctz32(uint32_t n) { return (size_t) __builtin_ctz(n); }
 static inline size_t clz64(uint64_t n) { return (size_t) __builtin_clzll(n); }
-static inline size_t clz32(uint32_t n) { return (size_t) __builtin_clz(n); }
 
 LOCAL inline void* glas_mem_page_floor(void* addr) {
     return (void*)((uintptr_t)addr & ~(GLAS_HEAP_PAGE_SIZE - 1));
@@ -1269,6 +1269,7 @@ LOCAL uint8_t glas_cell_array_type_aggr(glas_cell** data, size_t len) {
 LOCAL void glas_cell_array_free(void* base_ptr, bool incref) {
     // we encode as refct, but we never incref a cell array
     assert(!incref); // check that assumption
+    (void)incref;
     free(base_ptr);
 }
 LOCAL glas_cell* glas_cell_array_slice(glas_cell** data, size_t len, uint8_t type_aggr, glas_cell* fptr) {
@@ -1306,7 +1307,6 @@ LOCAL glas_cell* glas_cell_array_alloc(glas_cell** data, size_t len) {
                     glas_cell_fptr(data_copy, pin, false));
     }
 }
-
 LOCAL void glas_os_thread_force_enter_busy(glas_os_thread* t) {
     t->state = GLAS_OS_THREAD_WAIT; // note: GC may immediately signal wakeup.
     do {
@@ -1586,7 +1586,7 @@ LOCAL bool glas_gc_try_cell_mark(glas_cell* cell) {
 LOCAL inline void glas_wb_snapshot_push(glas_cell* cell) {
     // allocating a cell for every write-barrier snapshot; should be rare!
     // keep some stats on how often this happens
-    atomic_fetch_add_explicit(&glas_rt.stat.gc_wb_mark, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&glas_rt.stat.gc_wb_resume, 1, memory_order_relaxed);
     glas_cell* const wb = glas_cell_alloc(); // just using as memory
     wb->small_arr[1] = cell;
     atomic_pushlist(&glas_rt.gc.wb, wb->small_arr, wb);
@@ -1708,6 +1708,11 @@ LOCAL void glas_gc_trace_array(glas_gc_mb** mb, glas_cell** data, size_t len) {
         (*mb)->arr.data = spread_data;
     }
 }
+LOCAL inline bool glas_gc_seal(glas_cell* key) {
+    return (GLAS_DATA_IS_PTR(key) && 
+            (GLAS_TYPE_TOMBSTONE == key->hdr.type_id) && 
+            (GLAS_VOID == key->ts.wk));
+}
 LOCAL void glas_gc_trace_cell(glas_gc_mb** mb, glas_cell* cell) {
     static_assert(sizeof(glas_cell*) == sizeof(_Atomic(glas_cell*)));
     static_assert(8 == sizeof(glas_cell*));
@@ -1764,14 +1769,14 @@ LOCAL void glas_gc_trace_cell(glas_gc_mb** mb, glas_cell* cell) {
             GLAS_CELL_SLOT_MARK_ATOMIC(thunk.result);
             return;
         case GLAS_TYPE_SEAL:
-            if(GLAS_VOID == cell->seal.key->ts.wk) {
+            GLAS_CELL_SLOT_MARK(seal.key);
+            GLAS_CELL_SLOT_MARK(seal.meta);
+            if(glas_gc_seal(cell->seal.key)) {
                 // special case: seal as ephemeron
                 cell->seal.data = GLAS_VOID;
             } else {
                 GLAS_CELL_SLOT_MARK(seal.data);
             }
-            GLAS_CELL_SLOT_MARK(seal.key);
-            GLAS_CELL_SLOT_MARK(seal.meta);
             return;
         case GLAS_TYPE_REGISTER:
             GLAS_CELL_SLOT_MARK_ATOMIC(reg.version);
@@ -2060,10 +2065,10 @@ LOCAL bool glas_gc_heuristic_level() {
     size_t const curr_roots = atomic_load_explicit(&glas_rt.stat.roots_init, memory_order_relaxed);
     size_t const curr_pages = atomic_load_explicit(&glas_rt.stat.page_release, memory_order_relaxed);
 
-    if((curr_roots - glas_rt.gc.prior_root_ct) > 1000) {
-        return true; // need to handle some external garbage
+    if((curr_roots - glas_rt.gc.prior_root_ct) > 100) {
+        return true; // need handle some external garbage
     }
-    if((curr_pages - glas_rt.gc.prior_page_ct) < 8) {
+    if((curr_pages - glas_rt.gc.prior_page_ct) < 1) {
         return false; // mutators are more or less idle
     }
 
@@ -2072,7 +2077,7 @@ LOCAL bool glas_gc_heuristic_level() {
     size_t const await_count = glas_rt.alloc.await.count;
     glas_rt_alloc_unlock();
 
-    if(avail_count > (await_count/4)) {
+    if(avail_count > (await_count/3)) {
         return false; // still have a lot of available pages
     }
 
@@ -2224,7 +2229,7 @@ LOCAL void* glas_gc_main_thread(void* arg) {
         if(glas_gc_trace_find_work(&mb)) {
             // handle last-second marks from mutator write-barriers
             glas_gc_resume_the_world(&mb);
-            atomic_fetch_add_explicit(&glas_rt.stat.gc_wb_mark, 1, memory_order_relaxed);
+            atomic_fetch_add_explicit(&glas_rt.stat.gc_wb_resume, 1, memory_order_relaxed);
             glas_gc_trace_marked_cells(&mb);
             glas_gc_stop_the_world(&mb);
             if(glas_gc_trace_find_work(&mb)) {
@@ -2284,6 +2289,8 @@ LOCAL inline glas_thread_state* glas_thread_state_new() {
     glas_roots_init(&(ts->gcbase), ts, glas_thread_state_free, glas_thread_state_offsets);
     ts->debug_name = GLAS_VAL_UNIT;
     ts->ns = GLAS_VAL_UNIT;
+    ts->stack.overflow = GLAS_VAL_UNIT;
+    ts->stash.overflow = GLAS_VAL_UNIT;
     return ts;
 }
 LOCAL void glas_stack_copy(glas_stack* dst, glas_stack* src) {
@@ -2371,6 +2378,9 @@ API void glas_thread_exit(glas* g) {
 API void glas_errors_write(glas* g, GLAS_ERROR_FLAGS err) {
     g->err = err | g->err;
 }
+API GLAS_ERROR_FLAGS glas_errors_read(glas* g) {
+    return g->err;
+}
 
 LOCAL glas_cell* glas_data_list_append(glas_cell* lhs, glas_cell* rhs) {
     if(GLAS_VAL_UNIT == lhs) { return rhs; }
@@ -2399,7 +2409,7 @@ LOCAL inline void glas_thread_stack_prep(glas* g, uint8_t read, uint8_t reserve)
         glas_thread_stack_prep_slowpath(g, read, reserve);
     }
 }
-LOCAL void glas_thread_stack_data_push(glas* g, glas_stemcell sc) {
+LOCAL void glas_thread_stack_sc_push(glas* g, glas_stemcell sc) {
     glas_thread_stack_prep(g, 0, 1);
     glas_thread_state* const ts = g->state;
     glas_stemcell* const dst = ts->stack.data + ts->stack.count;
@@ -2407,7 +2417,13 @@ LOCAL void glas_thread_stack_data_push(glas* g, glas_stemcell sc) {
     glas_roots_slot_write(&(ts->gcbase), &(dst->cell), sc.cell);
     ts->stack.count++;
 }
-
+LOCAL inline void glas_thread_stack_cell_push(glas* g, glas_cell* cell, bool as_unique) {
+    uint64_t const stem = 
+        GLAS_STEMCELL_STEM_EMPTY |
+        ((as_unique && GLAS_DATA_IS_PTR(cell)) ? GLAS_STEMCELL_UNIQUE_FLAG : 0);
+    glas_stemcell const sc = { .stem = stem, .cell = cell };
+    glas_thread_stack_sc_push(g, sc);
+}
 API void glas_thread_set_debug_name(glas* g, char const* debug_name) {
     if(NULL == debug_name) { debug_name = ""; }
     size_t const len = strlen(debug_name);
@@ -2417,6 +2433,36 @@ API void glas_thread_set_debug_name(glas* g, char const* debug_name) {
     glas_roots_slot_write(&(ts->gcbase), &(ts->debug_name), cell);
     glas_os_thread_exit_busy();
 }
+
+API void glas_binary_push(glas* g, uint8_t const* buf, size_t len) {
+    assert(likely((NULL != g) && (NULL != buf)));
+    glas_os_thread_enter_busy();
+    glas_thread_stack_cell_push(g, 
+        glas_cell_binary_alloc(buf, len), true);
+    glas_os_thread_exit_busy();
+}
+API void glas_binary_push_zc(glas* g, uint8_t const* buf, size_t len, glas_refct pin) {
+    assert(likely((NULL != g) && (NULL != buf)));
+    glas_os_thread_enter_busy();
+    glas_thread_stack_cell_push(g, 
+        glas_cell_binary_slice(buf, len, 
+            glas_cell_fptr((void*)buf, pin, false)), true);
+    glas_os_thread_exit_busy();
+}
+
+API bool glas_binary_peek(glas*, size_t start_offset, size_t max_read, 
+    uint8_t* buf, size_t* amt_read);
+API bool glas_binary_peek_zc(glas*, size_t start_offset, size_t max_read,
+    uint8_t const** ppBuf, size_t* amt_read, glas_refct*);
+
+API void glas_ptr_push(glas* g, void* ptr, glas_refct pin, bool linear) {
+    assert(likely(NULL != g));
+    glas_os_thread_enter_busy();
+    glas_thread_stack_cell_push(g, glas_cell_fptr(ptr, pin, linear), true);
+    glas_os_thread_exit_busy();
+}
+API bool glas_ptr_peek(glas* g, void** ptr, glas_refct* pin);
+API bool glas_ptr_pop(glas* g, void** ptr, glas_refct* pin);
 
 LOCAL glas_stemcell glas_data_u64(uint64_t const n) {
     glas_stemcell sc;
@@ -2458,7 +2504,7 @@ LOCAL glas_stemcell glas_data_i64(int64_t const n) {
 }
 API void glas_i64_push(glas* g, int64_t n) {
     glas_os_thread_enter_busy();
-    glas_thread_stack_data_push(g, glas_data_i64(n));
+    glas_thread_stack_sc_push(g, glas_data_i64(n));
     glas_os_thread_exit_busy();
 }
 API void glas_i32_push(glas* g, int32_t n) { glas_i64_push(g, (int64_t) n); }
@@ -2466,7 +2512,7 @@ API void glas_i16_push(glas* g, int16_t n) { glas_i64_push(g, (int64_t) n); }
 API void glas_i8_push(glas* g, int8_t n) { glas_i64_push(g, (int64_t) n); }
 API void glas_u64_push(glas* g, uint64_t n) {
     glas_os_thread_enter_busy();
-    glas_thread_stack_data_push(g, glas_data_u64(n));
+    glas_thread_stack_sc_push(g, glas_data_u64(n));
     glas_os_thread_exit_busy();
 }
 API void glas_u32_push(glas* g, uint32_t n) { glas_u64_push(g, (uint64_t) n); }
@@ -2660,58 +2706,57 @@ API bool glas_u8_peek(glas* g, uint8_t* n) {
     return ok;
 }
 
-LOCAL bool glas_rt_bit_popcount() {
-    return (64 == popcount64(~0))
-        && (32 == popcount32(~0))
-        && ( 3 == popcount64(7))
-        && ( 3 == popcount32(7 << 29))
-        && ( 3 == popcount64(7ULL << 61));
-}
 
-LOCAL bool glas_rt_bit_ctz() {
-    return (64 == ctz64(0))
-        && (32 == ctz32(0))
-        && ( 3 == ctz32(8))
-        && (21 == ctz32(1<<21))
-        && (63 == ctz64(8ULL << 60));
-}
+/*******************************************
+ * UNIT TESTS FOR GLAS RUNTIME INTERNALS
+ ******************************************/
 
+#include "minunit.h"
+
+// stuff that might need cleanup
+static struct test_state {
+    glas* g;
+} test;
+LOCAL void test_setup() { 
+    // no-op
+}
+LOCAL void test_teardown() {
+    if(NULL != test.g) {
+        glas_thread_exit(test.g);
+    }
+    memset(&test, 0, sizeof(struct test_state));
+}
+MU_TEST(test_thread_create) {
+    test.g = glas_thread_new();
+    mu_assert((NULL != test.g), "thread created");
+}
+MU_TEST(test_bitmanip) {
+    mu_assert_int_eq(21, (int) popcount64(UINT64_C(0x707070707077)));
+    mu_assert_int_eq(14, (int) popcount64(UINT64_C(0x09606606609)));
+    uint32_t const test_a = UINT64_C(0xa)<<17;
+    mu_assert_int_eq(43, (int) clz64((uint64_t)test_a));
+    mu_assert_int_eq(18, (int) ctz64((uint64_t)test_a));
+    mu_assert_int_eq(18, (int) ctz32(test_a));
+}
+MU_TEST(test_int_push) {
+    test.g = glas_thread_new();
+    glas_u64_push(test.g,GLAS_PTR_MAX_INT);
+    glas_i64_push(test.g,GLAS_PTR_MIN_INT);
+    glas_i64_push(test.g,INT64_MAX);
+    glas_i64_push(test.g,INT64_MIN);
+    glas_i64_push(test.g,INT64_MIN + 1);
+    glas_u64_push(test.g,UINT64_MAX);
+    mu_assert_int_eq(6, (int) test.g->state->stack.count);
+}
+MU_TEST_SUITE(test_glas) {
+    MU_SUITE_CONFIGURE(&test_setup, &test_teardown);
+    MU_RUN_TEST(test_bitmanip);
+    MU_RUN_TEST(test_thread_create);
+    MU_RUN_TEST(test_int_push);
+}
 API bool glas_rt_run_builtin_tests() {
-    glas* g = glas_thread_new();
-    bool const popcount_test = glas_rt_bit_popcount();
-    debug("popcount test: %s", popcount_test ? "pass" : "fail");
-    bool const ctz_test = glas_rt_bit_ctz();
-    debug("ctz test: %s", ctz_test ? "pass" : "fail");
-
-
-    for(int ix = 0; ix < 10; ++ix) {
-        size_t tgt = 10 * GLAS_PAGE_CELL_COUNT;
-        glas_os_thread_enter_busy();
-        for(size_t cc = 0; cc < tgt; ++cc) {
-            glas_cell_alloc();
-        }
-        glas_os_thread_exit_busy();
-        debug("allocated %lu cells", tgt);
-        glas_rt_gc_trigger(true);
-        struct timespec dur = { .tv_sec = 1 };
-        nanosleep(&dur,NULL);
-    } 
-
-    // number round trips
-    // shrub list lengths
-    // etc..
-
-    //glas_rt_page_free(page);
-    glas_u64_push(g,GLAS_PTR_MAX_INT);
-    glas_i64_push(g,GLAS_PTR_MIN_INT);
-    glas_i64_push(g,INT64_MAX);
-    glas_i64_push(g,INT64_MIN);
-    glas_i64_push(g,INT64_MIN + 1);
-    glas_u64_push(g,UINT64_MAX);
-
-    glas_thread_exit(g);
-    return popcount_test 
-        && ctz_test
-        ;
+    MU_RUN_SUITE(test_glas);
+    MU_REPORT();
+    return (0 == MU_EXIT_CODE);
 }
 
