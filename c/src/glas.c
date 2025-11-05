@@ -164,7 +164,7 @@ typedef struct glas_stack glas_stack;
  * Aside: Still have some space for expansions
  */
 static_assert(sizeof(void*)==sizeof(uint64_t));
-#define GLAS_VAL_UNIT ((glas_cell*)(((uint64_t)1)<<63 | 0b01))
+#define GLAS_VAL_UNIT ((glas_cell*)(UINT64_C(1)<<63 | 0b01))
 
 #define GLAS_PTR_MAX_INT ((((int64_t)1)<<61) - 1)
 #define GLAS_PTR_MIN_INT (-GLAS_PTR_MAX_INT)
@@ -213,11 +213,11 @@ static_assert(sizeof(void*)==sizeof(uint64_t));
  * shrub efficiently, we'll want to first scan the data to determine the
  * number of shrub bits needed, short circuiting above a threshold.
  */
-#define GLAS_DATA_SHRUB_BITS(P) (((uint64_t)P) & ~((uint64_t)0b11))
-#define GLAS_SHRUB_STEP_MASK (((uint64_t)0b11)<<62)
-#define GLAS_SHRUB_LBITS (((uint64_t)0b10)<<62)
-#define GLAS_SHRUB_RBITS (((uint64_t)0b11)<<62)
-#define GLAS_SHRUB_PBITS (((uint64_t)0b01)<<62)
+#define GLAS_DATA_SHRUB_BITS(P) (((uint64_t)P) & ~UINT64_C(0b11))
+#define GLAS_SHRUB_STEP_MASK (UINT64_C(0b11)<<62)
+#define GLAS_SHRUB_LBITS (UINT64_C(0b10)<<62)
+#define GLAS_SHRUB_RBITS (UINT64_C(0b11)<<62)
+#define GLAS_SHRUB_PBITS (UINT64_C(0b01)<<62)
 #define GLAS_SHRUB_IS_EDGE(N) (0 != (N & GLAS_SHRUB_LBITS))
 #define GLAS_SHRUB_IS_INL(N) (GLAS_SHRUB_LBITS == (N & GLAS_SHRUB_STEP_MASK))
 #define GLAS_SHRUB_IS_INR(N) (GLAS_SHRUB_RBITS == (N & GLAS_SHRUB_STEP_MASK))
@@ -372,16 +372,19 @@ struct glas_cell {
 
         struct {
             _Atomic(glas_cell*) version;    // tentative!
-            _Atomic(glas_cell*) assoc_lhs;  // associated volumes (r,_)
+            _Atomic(glas_cell*) assoc_lhs;  // associated volumes (reg,_)
             _Atomic(glas_cell*) ts;         // weakref + stable ID; reg is finalizer
             // Sketch:
-            // - tombstone and assoc_lhs are allocated only when needed
             // - basic volume of registers as a lazy dict (load via thunks)
             // - associated volume as radix tree mapping rhs register stable
             //   IDs to rhs-sealed basic volumes, i.e. mutate assoc_lhs.
             // - GC can eliminate unreachable branches of radix tree 
             // - version may be more sophisticated than raw content, e.g. to
             //   support snapshot views of data.
+
+            // Alt design:
+            // - externalize state via identity
+            // 
         } reg;
         
         struct {
@@ -456,7 +459,7 @@ struct glas_heap {
     // each 'heap' tracks 63-64 'pages', depending on alignment
     glas_heap* next;
     void* mem_start;
-    uint64_t page_bitmap;
+    _Atomic(uint64_t) page_bitmap;
 };
 
 /**
@@ -570,16 +573,17 @@ struct glas_roots {
  * - mark singleton list wrappers, useful for optional args or returns
  * 
  * This leaves room for 0..61 stem bits via the `abc1000..0` encoding.
+ * Note: If both optval and stembits are set, optval applies first.
  */
 typedef struct glas_stemcell {
     uint64_t stem;      // 0..61 stem bits, 2 flag bits
     glas_cell* cell;
 } glas_stemcell;
 static_assert(sizeof(glas_stemcell) == 16);
-#define GLAS_STEMCELL_STEMBITS  (~((uint64_t)0b11))
-#define GLAS_STEMCELL_UNIQUE_FLAG ((uint64_t)0b01)
-#define GLAS_STEMCELL_OPTVAL_FLAG ((uint64_t)0b10)
-#define GLAS_STEMCELL_STEM_EMPTY  (((uint64_t)1)<<63)
+#define GLAS_STEMCELL_STEMBITS  (~UINT64_C(0b11))
+#define GLAS_STEMCELL_UNIQUE_FLAG UINT64_C(0b01)
+#define GLAS_STEMCELL_OPTVAL_FLAG UINT64_C(0b10)
+#define GLAS_STEMCELL_STEM_EMPTY  (UINT64_C(1)<<63)
 
 /**
  * Stack and stash structure.
@@ -698,8 +702,8 @@ typedef struct glas_gc_dq {
 } glas_gc_dq;
 
 typedef struct glas_alloc_l {
-    glas_page* list;
-    size_t count;
+    _Atomic(glas_page*) page_list;
+    _Atomic(size_t) page_count;
 } glas_alloc_l;
 
 static struct glas_rt {
@@ -716,12 +720,12 @@ static struct glas_rt {
          * Linked list of heaps, sized for 64 pages each. The main use
          * is to ensure page alignment has low address-space overhead.
          */
-        glas_heap*   heap;
+        _Atomic(glas_heap*) heaps;
 
         /**
          * Pages divided into two lists:
          * - avail: estimated low utilization, not necessarily empty
-         * - await: pages not available at least until next GC cycle
+         * - await: pages full or usage deferred to a later GC cycle
          */
         glas_alloc_l avail, await;
         pthread_mutex_t mutex;
@@ -927,13 +931,14 @@ LOCAL inline uint64_t glas_heap_initial_bitmap(glas_heap* heap) {
     // We can lose the last page per mmap due to alignment. This is
     // only a 1.6% loss of address space (not RAM) thus not an issue.
     bool const is_aligned = (glas_heap_pages_start(heap) == (heap->mem_start));
-    return is_aligned ? 0 : (((uint64_t)1)<<63);
+    return is_aligned ? 0 : (UINT64_C(1)<<63);
 }
 LOCAL inline bool glas_heap_is_empty(glas_heap* heap) {
-    return (glas_heap_initial_bitmap(heap) == heap->page_bitmap);
+    return (glas_heap_initial_bitmap(heap) == 
+            atomic_load_explicit(&(heap->page_bitmap), memory_order_relaxed));
 }
 LOCAL inline bool glas_heap_is_full(glas_heap* heap) {
-    return (0 == ~(heap->page_bitmap));
+    return (0 == ~(atomic_load_explicit(&(heap->page_bitmap), memory_order_relaxed)));
 }
 LOCAL glas_heap* glas_heap_try_create() {
     atomic_fetch_add_explicit(&glas_rt.stat.heap_alloc, 1, memory_order_relaxed);
@@ -962,25 +967,31 @@ LOCAL void glas_heap_destroy(glas_heap* heap) {
     free(heap);
 }
 LOCAL void* glas_heap_try_alloc_page(glas_heap* heap) {
-    if(glas_heap_is_full(heap)) 
-        return NULL;
-    size_t const ix = ctz64(~(heap->page_bitmap));
-    heap->page_bitmap |= ((uint64_t)1) << ix;
-    void* const page = (void*)(((uintptr_t)glas_heap_pages_start(heap)) + (ix * GLAS_HEAP_PAGE_SIZE));
-    if(unlikely(0 != mprotect(page, GLAS_HEAP_PAGE_SIZE, PROT_READ | PROT_WRITE))) {
-        debug("could not mark page for read+write, error %d: %s", errno, strerror(errno));
-        abort();
+    uint64_t bitmap = atomic_load_explicit(&(heap->page_bitmap), memory_order_relaxed);
+    while(0 != ~bitmap) {
+        size_t const ix = ctz64(~bitmap);
+        uint64_t const bit = (UINT64_C(1)<<ix);
+        bitmap = atomic_fetch_or_explicit(&(heap->page_bitmap), bit, memory_order_relaxed);
+        if(0 == (bitmap & bit)) {
+            // race to claim was successful
+            void* const page = (void*)(((uintptr_t)glas_heap_pages_start(heap)) + (ix * GLAS_HEAP_PAGE_SIZE));
+            if(unlikely(0 != mprotect(page, GLAS_HEAP_PAGE_SIZE, PROT_READ | PROT_WRITE))) {
+                debug("could not mark page for read+write, error %d: %s", errno, strerror(errno));
+                abort();
+            }
+            return page;
+        }
     }
-    return page;
+    return NULL;
 }
 LOCAL void glas_heap_free_page(glas_heap* heap, void* page) {
     assert(glas_mem_page_ceil(page) == page);
     assert(glas_heap_includes_addr(heap, page));
     size_t const ix = (size_t)((uintptr_t)page - (uintptr_t)glas_heap_pages_start(heap)) 
                 >> GLAS_HEAP_PAGE_SIZE_LG2;
-    uint64_t const bit = ((uint64_t)1)<<ix;
-    assert(0 != (bit & heap->page_bitmap));
-    heap->page_bitmap &= ~bit;
+    uint64_t const bit = UINT64_C(1)<<ix;
+    uint64_t const prior = atomic_fetch_and_explicit(&(heap->page_bitmap), ~bit, memory_order_relaxed);
+    assert(0 != (prior & bit));
     if(unlikely(0 != mprotect(page, GLAS_HEAP_PAGE_SIZE, PROT_NONE))) {
         debug("error protecting page %p from read-write, %d: %s", page, errno, strerror(errno));
         // not a halting error
@@ -991,7 +1002,7 @@ LOCAL void glas_heap_free_page(glas_heap* heap, void* page) {
     }
 }
 LOCAL inline uint64_t glas_page_magic_word_by_addr(void* addr) {
-    static uint64_t const prime = (uint64_t)12233355555333221ULL;
+    static uint64_t const prime = UINT64_C(12233355555333221);
     return prime * (uint64_t)(((uintptr_t)addr)>>(GLAS_HEAP_PAGE_SIZE_LG2));
 }
 LOCAL void glas_page_init(glas_heap* heap, glas_page* page) {
@@ -1008,41 +1019,53 @@ LOCAL inline glas_page* glas_page_from_internal_addr(void* addr) {
     assert(likely(glas_page_magic_word_by_addr(page) == page->magic_word));
     return page;
 }
-LOCAL inline glas_page* glas_allocl_try_pop(glas_alloc_l* l) {
-    if(NULL == l->list) { return NULL; }
-    glas_page* const page = l->list;
-    l->list = page->next;
-    page->next = NULL;
-    (l->count)--;
+LOCAL glas_page* glas_allocl_try_pop(glas_alloc_l* l) {
+    glas_page* page = atomic_load_explicit(&(l->page_list), memory_order_acquire);
+    do {} while((NULL != page) && atomic_compare_exchange_weak_explicit(&(l->page_list), 
+        &page, page->next, memory_order_acquire, memory_order_acquire));
+    if(NULL != page) {
+        atomic_fetch_sub_explicit(&(l->page_count), 1, memory_order_relaxed);
+    }
     return page;
 }
-LOCAL inline void glas_allocl_push(glas_alloc_l* l, glas_page* page) {
-    assert(likely(NULL == page->next));
-    page->next = l->list;
-    l->list = page;
-    (l->count)++;
+LOCAL void glas_allocl_push(glas_alloc_l* l, glas_page* page) {
+    assert(likely((NULL != page) && (NULL == page->next)));
+    atomic_pushlist(&(l->page_list), &(page->next), page);
+    atomic_fetch_add_explicit(&(l->page_count), 1, memory_order_relaxed);
 }
-LOCAL glas_page* glas_rt_page_alloc_locked() {
+LOCAL bool glas_rt_grow_full_heap() {
+    bool ok = false;
+    // goal here is to have a non-full heap. Locking this to avoid
+    // race where a thread must immediately return a heap to the OS.
+    glas_rt_alloc_lock();
+    glas_heap* const curr_heap = atomic_load_explicit(&glas_rt.alloc.heaps, memory_order_acquire);
+    if((NULL == curr_heap) || glas_heap_is_full(curr_heap)) {
+        glas_heap* const new_heap = glas_heap_try_create();
+        if(NULL != new_heap) {
+            atomic_pushlist(&glas_rt.alloc.heaps, &(new_heap->next), new_heap);
+            ok = true;
+        }
+    } else {
+        // heap is not full, perhaps another thread allocated while awaiting lock 
+        ok = true; 
+    }
+    glas_rt_alloc_lock();
+    return ok;
+}
+LOCAL glas_page* glas_rt_page_alloc() {
     atomic_fetch_add_explicit(&glas_rt.stat.page_alloc, 1, memory_order_relaxed);
-    glas_page* page = glas_allocl_try_pop(&glas_rt.alloc.avail);
-    if(NULL != page) { 
-        return page; 
-    }
-    glas_heap* heap = glas_rt.alloc.heap;
-    page = (NULL == heap) ? NULL : glas_heap_try_alloc_page(heap);
-    if(NULL != page) {
-        glas_page_init(heap, page);
-        return page;
-    }
-    heap = glas_heap_try_create();
-    if(NULL != heap) {
-        heap->next = glas_rt.alloc.heap;
-        glas_rt.alloc.heap = heap;
-        page = glas_heap_try_alloc_page(heap);
-        assert(likely(NULL != page));
-        glas_page_init(heap, page);
-        return page;
-    }
+    do {
+        glas_page* page = glas_allocl_try_pop(&glas_rt.alloc.avail);
+        if(NULL != page) { 
+            return page; 
+        }
+        glas_heap* heap = atomic_load_explicit(&glas_rt.alloc.heaps, memory_order_relaxed);
+        page = (NULL == heap) ? NULL : glas_heap_try_alloc_page(heap);
+        if(NULL != page) {
+            glas_page_init(heap, page);
+            return page;
+        }
+    } while(glas_rt_grow_full_heap());
     debug("runtime is out of memory!");
     abort();
 }
@@ -1061,7 +1084,7 @@ LOCAL inline size_t glas_page_run_of(glas_page* page, uint8_t thresh) {
 LOCAL void glas_page_swept(glas_page* page, size_t amt_freed) {
     assert(likely((NULL != page) && (amt_freed < GLAS_PAGE_CELL_COUNT)));
     // track relative utilization for the last few cycles.
-    for(size_t ix = 1; ix < GLAS_GC_STAT_SIZE; ++ix) {
+    for(size_t ix = (GLAS_GC_STAT_SIZE-1); ix > 0; --ix) {
         page->utilization[ix] = page->utilization[ix-1];
     }
     static_assert(0 == (GLAS_PAGE_CELL_COUNT % 256));
@@ -1072,12 +1095,6 @@ LOCAL void glas_page_swept(glas_page* page, size_t amt_freed) {
     size_t const r66 = glas_page_run_of(page, (2 * (UINT8_MAX/3)));
     size_t const r80 = glas_page_run_of(page, (4 * (UINT8_MAX/5)));
     page->defer_reuse = (uint8_t)(r66/2 + r80);
-
-    // Also, if we fully allocate a page within a single GC cycle, we
-    // cannot reuse it until next cycle due to recent allocations.
-    if(page->cycle_acquired == page->cycle_released) {
-        ++(page->defer_reuse);
-    } 
 }
 LOCAL void glas_os_thread_release_page(glas_os_thread* t) {
     atomic_fetch_add_explicit(&glas_rt.stat.page_release, 1, memory_order_relaxed);
@@ -1100,18 +1117,15 @@ LOCAL void glas_os_thread_alloc_reserve(glas_os_thread* t) {
     do {
         if(unlikely((NULL == t->alloc.page) || (MARK_WORD_MAX == t->alloc.mark_word))) {
             glas_os_thread_release_page(t);
-            // obtain an available page, or allocate a new one if needed
-            glas_rt_alloc_lock();
-            t->alloc.page = glas_rt_page_alloc_locked();
+            t->alloc.page = glas_rt_page_alloc();
             glas_allocl_push(&glas_rt.alloc.await, t->alloc.page);
-            glas_rt_alloc_unlock();
             t->alloc.page->cycle_acquired = atomic_load_explicit(&glas_rt.gc.cycle, memory_order_relaxed);
             assert(likely(t->alloc.page->cycle_acquired > t->alloc.page->cycle_released));
             // begin allocation immediately after `glas_page` header
             static_assert(0 == (sizeof(glas_page)%sizeof(glas_cell)));
             static size_t const PAGE_HDR_BITS = sizeof(glas_page)/sizeof(glas_cell);
             static size_t const ALLOC_START = PAGE_HDR_BITS/64;
-            static uint64_t const CELLS_IN_HDR = (((uint64_t)1)<<(PAGE_HDR_BITS%64))-1;
+            static uint64_t const CELLS_IN_HDR = (UINT64_C(1)<<(PAGE_HDR_BITS%64))-1;
             uint64_t const marked = atomic_load_explicit((t->alloc.page->marked + ALLOC_START), memory_order_relaxed);
             t->alloc.mark_word = ALLOC_START;
             t->alloc.free_bits = ~(CELLS_IN_HDR | marked);
@@ -1142,8 +1156,15 @@ LOCAL glas_cell* glas_cell_alloc() {
     size_t ix = ctz64(t->alloc.free_bits);
     t->alloc.free_bits &= (t->alloc.free_bits - 1);
     glas_cell* const cell = ((glas_cell*)(t->alloc.page)) + ((t->alloc.mark_word) * 64) + ix;
-    cell->hdr.gcbits = glas_rt.gc.gcbits; 
+    atomic_init(&(cell->hdr.gcbits), glas_rt.gc.gcbits); 
     return cell;
+}
+LOCAL glas_cell* glas_cell_clone(glas_cell* cell) {
+    assert(likely(GLAS_DATA_IS_PTR(cell)));
+    glas_cell* result = glas_cell_alloc();
+    (*result) = (*cell); // copy everything
+    atomic_init(&(result->hdr.gcbits), glas_rt.gc.gcbits); 
+    return result;
 }
 LOCAL glas_gc_fl* glas_gc_fl_new() {
     glas_gc_fl* fl = malloc(sizeof(glas_gc_fl));
@@ -1553,7 +1574,7 @@ LOCAL inline void glas_roots_decref(glas_roots* r) {
 LOCAL bool glas_wb_claim_roots_slot(glas_roots* r, glas_cell** slot) {
     glas_cell** const base = (glas_cell**) r->self;
     size_t const slot_ix = (size_t) (slot - base);
-    uint64_t const bit = ((uint64_t)1) << (slot_ix % 64);
+    uint64_t const bit = UINT64_C(1) << (slot_ix % 64);
     _Atomic(uint64_t)* const pbitmap = r->slot_bitmap + (slot_ix / 64);
     if(glas_gc_b0scan()) {
         uint64_t const prior = atomic_fetch_and_explicit(pbitmap, ~bit, memory_order_release);
@@ -1579,7 +1600,7 @@ LOCAL bool glas_gc_try_cell_mark(glas_cell* cell) {
     glas_page* const page = glas_page_from_internal_addr(cell);
     size_t const coff = cell - ((glas_cell*)page);
     _Atomic(uint64_t)* const pbitmap = page->marking + (coff / 64);
-    uint64_t const bit = ((uint64_t)1) << (coff % 64);
+    uint64_t const bit = UINT64_C(1) << (coff % 64);
     uint64_t const prior = atomic_fetch_or_explicit(pbitmap, bit, memory_order_relaxed);
     return (0 == (prior & bit));
 }
@@ -1708,10 +1729,10 @@ LOCAL void glas_gc_trace_array(glas_gc_mb** mb, glas_cell** data, size_t len) {
         (*mb)->arr.data = spread_data;
     }
 }
-LOCAL inline bool glas_gc_seal(glas_cell* key) {
-    return (GLAS_DATA_IS_PTR(key) && 
-            (GLAS_TYPE_TOMBSTONE == key->hdr.type_id) && 
-            (GLAS_VOID == key->ts.wk));
+LOCAL inline bool glas_cell_is_dead_tombstone(glas_cell* cell) {
+    return (GLAS_DATA_IS_PTR(cell) && 
+            (GLAS_TYPE_TOMBSTONE == cell->hdr.type_id) && 
+            (GLAS_VOID == cell->ts.wk));
 }
 LOCAL void glas_gc_trace_cell(glas_gc_mb** mb, glas_cell* cell) {
     static_assert(sizeof(glas_cell*) == sizeof(_Atomic(glas_cell*)));
@@ -1771,7 +1792,7 @@ LOCAL void glas_gc_trace_cell(glas_gc_mb** mb, glas_cell* cell) {
         case GLAS_TYPE_SEAL:
             GLAS_CELL_SLOT_MARK(seal.key);
             GLAS_CELL_SLOT_MARK(seal.meta);
-            if(glas_gc_seal(cell->seal.key)) {
+            if(glas_cell_is_dead_tombstone(cell->seal.key)) {
                 // special case: seal as ephemeron
                 cell->seal.data = GLAS_VOID;
             } else {
@@ -1821,7 +1842,7 @@ LOCAL void glas_gc_trace_roots(glas_gc_mb** mb, glas_roots* r) {
         size_t const bitmap_ix = start_offset / 64;
         glas_cell* snapshot[64]; // max 64 roots, usually fewer
         snapshot[0] = base[start_offset];
-        uint64_t bitmask = (((uint64_t)1)<<(start_offset % 64));
+        uint64_t bitmask = (UINT64_C(1)<<(start_offset % 64));
         size_t count = 1;
         while((root_ix + count) < r->root_count) {
             uint16_t const offset = r->roots[root_ix + count];
@@ -1829,7 +1850,7 @@ LOCAL void glas_gc_trace_roots(glas_gc_mb** mb, glas_roots* r) {
                 break;
             }
             snapshot[count] = base[offset]; 
-            bitmask |= (((uint64_t)1) << (offset % 64));
+            bitmask |= (UINT64_C(1) << (offset % 64));
             count++;
         }
         assert(likely(count > 0));
@@ -1845,7 +1866,7 @@ LOCAL void glas_gc_trace_roots(glas_gc_mb** mb, glas_roots* r) {
         // mark our claim
         for(size_t j = 0; j < count; ++j) {
             uint16_t offset = r->roots[root_ix + j];
-            if(0 != (claimed & (((uint64_t)1) << (offset % 64)))) {
+            if(0 != (claimed & (UINT64_C(1) << (offset % 64)))) {
                 glas_gc_mark_cell(mb, snapshot[j]);
             }
         }
@@ -1870,7 +1891,7 @@ LOCAL bool glas_gc_thread_try_finalize_cell(glas_cell* cell) {
     glas_page* const page = glas_page_from_internal_addr(cell);
     size_t const coff = cell - ((glas_cell*)page);
     uint64_t const bitmap = atomic_load_explicit(page->marked + (coff/64), memory_order_relaxed);
-    uint64_t bit = ((uint64_t)1) << (coff%64);
+    uint64_t bit = UINT64_C(1) << (coff%64);
     if(0 != (bit & bitmap)) {
         return false; // marked
     }
@@ -2047,43 +2068,40 @@ LOCAL void glas_gc_dq_init(glas_gc_dq* dq) {
     sem_init(&dq->wakeup, 0, 0);
     #if DEBUG
     dq->capacity = 1; // force growth
+    dq->items = NULL;
     #else
     dq->capacity = 512; // unlikely to grow
-    #endif
     dq->items = malloc(sizeof(glas_refct) * dq->capacity);
+    #endif
     dq->head = 0;
     dq->tail = 0;
+
+    // note: I don't want a small stack in this case because I don't
+    // know what insane things the API client will do upon decref.
     pthread_create(&dq->thread, NULL, &glas_gc_dq_worker, dq);
 }
 
 LOCAL bool glas_gc_heuristic_level() {
-    bool const fullgc = atomic_exchange_explicit(&glas_rt.gc.force_fullgc, false, memory_order_relaxed);
-    if(fullgc) { 
-        //
+    if(atomic_exchange_explicit(&glas_rt.gc.force_fullgc, false, memory_order_relaxed)) {
         return true; 
     }
     size_t const curr_roots = atomic_load_explicit(&glas_rt.stat.roots_init, memory_order_relaxed);
     size_t const curr_pages = atomic_load_explicit(&glas_rt.stat.page_release, memory_order_relaxed);
-
-    if((curr_roots - glas_rt.gc.prior_root_ct) > 100) {
+    static size_t const roots_gc_thresh = 1024;
+    static size_t const pages_gc_thresh = 32;
+    if(curr_roots > (roots_gc_thresh + glas_rt.gc.prior_root_ct)) {
         return true; // need handle some external garbage
     }
-    if((curr_pages - glas_rt.gc.prior_page_ct) < 1) {
+    if(curr_pages < (pages_gc_thresh + glas_rt.gc.prior_page_ct)) {
         return false; // mutators are more or less idle
     }
-
-    glas_rt_alloc_lock();
-    size_t const avail_count = glas_rt.alloc.avail.count;
-    size_t const await_count = glas_rt.alloc.await.count;
-    glas_rt_alloc_unlock();
-
+    size_t const avail_count = atomic_load_explicit(&glas_rt.alloc.avail.page_count, memory_order_relaxed);
+    size_t const await_count = atomic_load_explicit(&glas_rt.alloc.await.page_count, memory_order_relaxed);
     if(avail_count > (await_count/3)) {
         return false; // still have a lot of available pages
     }
-
     return true;
 }
-
 LOCAL inline void glas_page_swap_marked_marking(glas_page* page) {
     _Atomic(uint64_t)* const tmp = page->marking;
     page->marking = page->marked;
@@ -2092,51 +2110,26 @@ LOCAL inline void glas_page_swap_marked_marking(glas_page* page) {
 LOCAL inline void glas_page_clear_marking(glas_page* page) {
     memset(page->marking, 0, GLAS_PAGE_CELL_COUNT/8);
 }
-
-LOCAL glas_page* glas_gc_build_pages_list() {
-    glas_page* result = NULL;
-    glas_page** cursor = &result;
-    glas_rt_alloc_lock();
-    for(glas_page* page = glas_rt.alloc.avail.list; NULL != page; page = page->next) {
-        (*cursor) = page;
-        cursor = &(page->gc_next);
+LOCAL inline bool glas_gc_heuristic_decide_page_recycle(glas_page* page) {
+    if(page->cycle_acquired > page->cycle_released) { return false; }
+    if(page->defer_reuse > 0) {
+        --(page->defer_reuse);
+        return false;
     }
-    for(glas_page* page = glas_rt.alloc.await.list; NULL != page; page = page->next) {
-        (*cursor) = page;
-        cursor = &(page->gc_next);
-    }
-    glas_rt_alloc_unlock();
-    (*cursor) = NULL;
-    return result;
+    return true;
 }
-
-LOCAL void glas_gc_recycle_pages() {
-    glas_rt_alloc_lock();
-    glas_page** cursor = &glas_rt.alloc.await.list;
-    while(NULL != (*cursor)) {
-        glas_page* const page = (*cursor);
-        if(page->cycle_acquired > page->cycle_released) {
-            // page still in use, don't touch
-            cursor = &((*cursor)->next);
-        } else if(0 == page->defer_reuse) {
-            // page ready, move to available list.
-            (*cursor) = (*cursor)->next;
-            page->next = NULL;
-            glas_rt.alloc.await.count--;
-            glas_allocl_push(&glas_rt.alloc.avail, page);
-        } else {
-            // reuse of page deferred heuristically
-            (page->defer_reuse)--; 
-            cursor = &((*cursor)->next);
-        }
+LOCAL void glas_gc_pages_include(glas_page* page) {
+    // rebuild a 'gc_next' list of pages
+    while(NULL != page) {
+        page->gc_next = glas_rt.gc.pages;
+        glas_rt.gc.pages = page;
+        page = page->next;
     }
-    glas_rt_alloc_unlock();
 }
-
 LOCAL void* glas_gc_main_thread(void* arg) {
     (void)arg; // unused
-    glas_gc_dq_init(&glas_rt.gc.dq);
     glas_gc_workers_init();
+    glas_gc_dq_init(&glas_rt.gc.dq);
     glas_gc_mb* mb = glas_gc_mb_new();
     do {
         // check some assumptions
@@ -2191,9 +2184,15 @@ LOCAL void* glas_gc_main_thread(void* arg) {
         glas_cell* const globals = atomic_load_explicit(&glas_rt.root.globals, memory_order_relaxed);
         glas_gc_fl* const fl = atomic_load_explicit(&glas_rt.gc.fl, memory_order_acquire);
 
+        // we'll only recycle pages in the 'await' list BEFORE concurrent marking;
+        // pages added during concurrent mark are filled with new allocations
+
+        // just grab them all, we'll process this list after marking completes
+        glas_page* recycle_pages = atomic_exchange_explicit(&glas_rt.alloc.await.page_list, NULL, memory_order_relaxed);
+        atomic_store_explicit(&glas_rt.alloc.await.page_count, 0, memory_order_relaxed);
+
         // update GC cycle
         atomic_fetch_add_explicit(&glas_rt.gc.cycle, 1, memory_order_release);
-
         glas_gc_resume_the_world();
 
         // initiate parallel marking
@@ -2238,29 +2237,38 @@ LOCAL void* glas_gc_main_thread(void* arg) {
                 glas_gc_trace_marked_cells(&mb);
             }
         }
-
-        // marking completed!
-        glas_rt.gc.marking = false;
-        glas_rt.gc.roots_snapshot = NULL;
-
-        // build pages list for lock-free clear of old marks later. This
-        // is after mark completion in case of new pages from heap.
-        glas_rt.gc.pages = glas_gc_build_pages_list();
+        // build complete list of pages
+        glas_rt.gc.pages = NULL;
+        glas_gc_pages_include(atomic_load_explicit(&glas_rt.alloc.avail.page_list, memory_order_acquire));
+        glas_gc_pages_include(atomic_load_explicit(&glas_rt.alloc.await.page_list, memory_order_acquire));
+        glas_gc_pages_include(recycle_pages);
+        // swap the marked and marking buffers
         for(glas_page* page = glas_rt.gc.pages; (NULL != page); page = page->gc_next) {
             glas_page_swap_marked_marking(page);
         }
+        // marking completed!
+        glas_rt.gc.roots_snapshot = NULL;
+        glas_rt.gc.marking = false;
         glas_gc_resume_the_world();
         
-        // must run finalizers before recycling memory
+        // must run finalizers before recycling pages
         glas_gc_thread_run_finalizers(fl);
-        glas_gc_recycle_pages();
+
+        // recycle pages
+        while(NULL != recycle_pages) {
+            glas_page* const page = recycle_pages;
+            recycle_pages = page->next;
+            page->next = NULL;
+            bool const recycle = glas_gc_heuristic_decide_page_recycle(page);
+            glas_alloc_l* const dst = recycle ? &glas_rt.alloc.avail : &glas_rt.alloc.await;
+            glas_allocl_push(dst, page);
+        }
 
         // prepare for next GC cycle by clearing the marking bitmaps. The 'marked'
         // bitmap remains for lazy allocation on sweep
         for(glas_page* page = glas_rt.gc.pages; (NULL != page); page = page->gc_next) {
             glas_page_clear_marking(page);
         }
-
     } while(1);
     __builtin_unreachable();
 }
@@ -2270,9 +2278,85 @@ LOCAL void glas_gc_thread_init() {
     pthread_attr_init(&gc_thread_attr);
     pthread_attr_setscope(&gc_thread_attr, PTHREAD_SCOPE_PROCESS);
     pthread_attr_setdetachstate(&gc_thread_attr, PTHREAD_CREATE_DETACHED);
+    pthread_attr_setstacksize(&gc_thread_attr, (4096 * 7));
+    pthread_attr_setguardsize(&gc_thread_attr, (4096 * 1));
     pthread_create(&glas_rt.gc.gc_main_thread, &gc_thread_attr, &glas_gc_main_thread, NULL);
     pthread_attr_destroy(&gc_thread_attr);
 }
+
+
+
+
+
+
+
+LOCAL uint64_t glas_shrub_skip_elem(uint64_t shrub) {
+    size_t pairs_rem = 0;
+    do {
+        if(GLAS_SHRUB_IS_PSEP(shrub)) {
+            if(0 == pairs_rem) { 
+                return (shrub << 2); 
+            }
+            pairs_rem--;
+        } else if(GLAS_SHRUB_IS_PAIR(shrub)) {
+            pairs_rem++;
+        }
+        shrub = shrub << 2;
+    } while(1);
+}
+LOCAL uint64_t glas_cell_shrub_cons(glas_cell* cell, uint64_t shrub) {
+    static_assert(sizeof(glas_cell*) == sizeof(uint64_t));
+    shrub = GLAS_SHRUB_MKP_SEP(shrub);
+    if(GLAS_DATA_IS_BITS(cell)) {
+        uint64_t stem = ((uint64_t)cell) & ~UINT64_C(0b11);
+        assert(likely(0 != stem));
+        size_t const shift = ctz64(stem) + 1;
+        size_t const len = 64 - shift;
+        stem = stem >> shift;
+        for(size_t ix = 0; ix < len; ++ix) {
+            if(0 == (stem & 0b1)) {
+                shrub = GLAS_SHRUB_MKL(shrub);
+            } else {
+                shrub = GLAS_SHRUB_MKR(shrub);
+            }
+            stem = stem >> 1;
+            assert(likely((0b00 == (0b11 & shrub)) && "shrub overflow"));
+        }
+    } else if(GLAS_DATA_IS_SHRUB(cell)) {
+        uint64_t lhs = GLAS_DATA_SHRUB_BITS(cell);
+        size_t const shift = ctz64(lhs) & ~1; // mask for `10` edge
+        lhs = lhs >> shift;
+        while(0 != lhs) {
+            shrub = (shrub >> 2) | ((0b11 & lhs)<<62);
+            lhs = lhs >> 2;
+            assert(likely((0b00 == (0b11 & shrub)) && "shrub overflow"));
+        }
+    } else {
+        debug("unhandled cell type for shrub cons");
+        abort();
+    }
+    shrub = GLAS_SHRUB_MKP_HD(shrub);
+    return shrub;
+}
+LOCAL bool glas_cell_shrub_fits(glas_cell* cell, size_t nbits) {
+    if(GLAS_DATA_IS_BITS(cell)) {
+        uint64_t const bits = ((uint64_t)cell) & ~UINT64_C(0b11);
+        assert(likely(0 != bits));
+        size_t const len = 63 - ctz64(bits);
+        return (nbits >= (2 * len));
+    } else if(GLAS_DATA_IS_SHRUB(cell)) {
+        uint64_t const bits = GLAS_DATA_SHRUB_BITS(cell);
+        size_t const size = 64 - (ctz64(bits) & ~1);
+        return (nbits >= size);
+    } else {
+        // I could probably squeeze some small ratios or binaries into 
+        // a shrub. But it probably isn't worthwhile.
+        return false;
+    }
+}
+
+
+
 
 /*************************
  * Main API Ops?
@@ -2293,15 +2377,16 @@ LOCAL inline glas_thread_state* glas_thread_state_new() {
     ts->stash.overflow = GLAS_VAL_UNIT;
     return ts;
 }
-LOCAL void glas_stack_copy(glas_stack* dst, glas_stack* src) {
+LOCAL inline void glas_stack_copy(glas_stack* dst, glas_stack* src) {
     // in most cases, stack or stash will be near-empty, so only copy
     // what is needed. Also need to clear 'unique' flags in src because
-    // now we have a copy. (Thus 'src' cannot be const.)
-    dst->count = src->count;
+    // now we have a copy.
     for(size_t ix = 0; ix < src->count; ++ix) {
         src->data[ix].stem &= ~(GLAS_STEMCELL_UNIQUE_FLAG);
         dst->data[ix] = src->data[ix];
     }
+    dst->count = src->count;
+    dst->overflow = src->overflow;
 }
 LOCAL glas_thread_state* glas_thread_state_clone(glas_thread_state* ts) {
     glas_os_thread_enter_busy();
@@ -2424,31 +2509,178 @@ LOCAL inline void glas_thread_stack_cell_push(glas* g, glas_cell* cell, bool as_
     glas_stemcell const sc = { .stem = stem, .cell = cell };
     glas_thread_stack_sc_push(g, sc);
 }
-API void glas_thread_set_debug_name(glas* g, char const* debug_name) {
-    if(NULL == debug_name) { debug_name = ""; }
-    size_t const len = strlen(debug_name);
-    glas_os_thread_enter_busy();
-    glas_cell* const cell = glas_cell_binary_alloc((uint8_t*)debug_name, len);
+LOCAL glas_stemcell glas_thread_stack_pop_sc(glas* g) {
+    glas_thread_stack_prep(g, 1, 0);
     glas_thread_state* const ts = g->state;
-    glas_roots_slot_write(&(ts->gcbase), &(ts->debug_name), cell);
-    glas_os_thread_exit_busy();
+    glas_stack* const s = &(ts->stack);
+    glas_stemcell* const psc = &(s->data[--(s->count)]);
+    glas_stemcell const sc = *psc;
+    glas_roots_slot_write(&(g->state->gcbase), &(psc->cell), GLAS_VOID);
+    return sc;
 }
+LOCAL glas_cell* glas_cell_stem_alloc(glas_cell* fby) {
+    glas_cell* const stem = glas_cell_alloc();
+    stem->hdr.type_id = GLAS_TYPE_STEM;
+    stem->hdr.type_aggr = glas_cell_type_aggr(fby);
+    stem->hdr.type_arg = 0; // no used stem32 buffers
+    stem->stemHd = GLAS_CELL_STEM_EMPTY;
+    stem->stem.fby = fby;
+    return stem;
+}
+LOCAL glas_cell* glas_cell_stem_push(glas_cell* cell, uint64_t stem, bool cell_editable) {
+    // stem encodes 0..63 bits. Our goal is to get them into cell,
+    // or to return a new cell that wraps the existing one.
+    static_assert(sizeof(glas_cell*) == sizeof(uint64_t));
+    assert(likely(0 != stem));
 
+    size_t const shift = ctz64(stem) + 1;
+    if(64 == shift) { return cell; }
+    size_t len = 64 - shift;
+    stem = stem >> shift;
+
+    if(GLAS_DATA_IS_BITS(cell)) {
+        // pack a few more bits if possible
+        uint64_t bits = ((uint64_t)cell) & ~UINT64_C(0b11);
+        assert(likely(0 != bits));
+        size_t const spacerem = ctz64(bits) - 2;
+        size_t const split = (spacerem > len) ? len : spacerem;
+        cell = (glas_cell*)((bits >> split) | (stem << (64 - split)) | UINT64_C(0b01));
+        len -= split;
+        stem = stem >> split;
+    } else if(GLAS_DATA_IS_PTR(cell) && cell_editable) {
+        // fill stemHd, possibly fill stem32 slots
+        do {
+            size_t const headspace = ctz32(cell->stemHd);
+            size_t const split = (headspace > len) ? len : headspace;
+            cell->stemHd = (cell->stemHd >> split) | (uint32_t)(stem << (32 - split)); 
+            len -= split;
+            stem = stem >> split;
+            if((0 < len) && (GLAS_TYPE_STEM == cell->hdr.type_id) && (4 > cell->hdr.type_arg)) {
+                // special case: fill a stem32 slot in GLAS_TYPE_STEM
+                cell->stem.stem32[cell->hdr.type_arg++] = (cell->stemHd >> 1) | (uint32_t)(stem << 31);
+                cell->stemHd = GLAS_CELL_STEM_EMPTY;
+                --len;
+                stem = stem >> 1;
+            } else { 
+                break; 
+            }
+        } while(1);
+    } else if(GLAS_DATA_IS_SHRUB(cell)) {
+        uint64_t shrub = GLAS_DATA_SHRUB_BITS(cell);
+        while((len > 0) && (0 == (0b1111 & shrub))) {
+            if(0 == (0b1 & stem)) {
+                shrub = GLAS_SHRUB_MKL(shrub);
+            } else {
+                shrub = GLAS_SHRUB_MKR(shrub);
+            }
+            len--;
+        }
+        cell = (glas_cell*)(shrub | 0b10);
+    }
+    if(0 == len) { return cell; }
+    // allocate a new cell of GLAS_TYPE_STEM then add bits.
+    cell = glas_cell_stem_alloc(cell); // wraps prior cell
+    if(len >= 32) {
+        cell->hdr.type_arg = 1;
+        cell->stem.stem32[0] = (uint32_t)stem; 
+        stem = stem >> 32;
+        len -= 32;
+    }
+    cell->stemHd = (uint32_t)((stem << (32 - len)) | (cell->stemHd >> len));
+    return cell;
+}
+LOCAL glas_cell* glas_sc_to_cell(glas_stemcell sc) {
+    if(GLAS_STEMCELL_STEM_EMPTY == (~GLAS_STEMCELL_UNIQUE_FLAG & sc.stem)) {
+        return sc.cell; // no changes needed
+    }
+    bool cell_editable = (0 != (GLAS_STEMCELL_UNIQUE_FLAG & sc.stem));
+    bool optval = (0 != (GLAS_STEMCELL_OPTVAL_FLAG & sc.stem));
+    uint64_t stembits = (GLAS_STEMCELL_STEMBITS & sc.stem);
+    if(optval) {
+        sc.cell = glas_cell_array_alloc(&(sc.cell), 1);
+        if(GLAS_STEMCELL_STEM_EMPTY == stembits) {
+            return sc.cell;
+        }
+        cell_editable = true;
+    }
+    return glas_cell_stem_push(sc.cell, stembits, cell_editable);
+}
+LOCAL glas_cell* glas_thread_stack_pop_cell(glas* g) {
+    glas_stemcell sc = glas_thread_stack_pop_sc(g);
+    return glas_sc_to_cell(sc);
+}
+LOCAL bool glas_sc_bits_load(glas_stemcell* sc) {
+    // opportunistically load bits into stemcell's "stem" header.
+    if(GLAS_STEMCELL_STEM_EMPTY != (GLAS_STEMCELL_STEMBITS & sc->stem)) {
+        return true; // already have bits
+    } else if(0 != (GLAS_STEMCELL_OPTVAL_FLAG & sc->stem)) {
+        return false; // optval no more bits
+    }
+
+    if(GLAS_DATA_IS_BITS(sc->cell)) {
+        sc->stem = ((uint64_t)sc->cell) & ~UINT64_C(0b11);
+        sc->cell = GLAS_VAL_UNIT;
+    } else if(GLAS_DATA_IS_PTR(sc->cell)) {
+        bool const has_bits = (GLAS_CELL_STEM_EMPTY != sc->cell->stemHd) 
+            || ((GLAS_TYPE_STEM == sc->cell->hdr.type_id) && 
+                (sc->cell->hdr.type_arg > 0));
+        if(!has_bits) { return false; }
+
+        if(0 == (GLAS_STEMCELL_UNIQUE_FLAG & sc->stem)) {
+            sc->cell = glas_cell_clone(sc->cell);
+        }
+
+        if(GLAS_CELL_STEM_EMPTY != sc->cell->stemHd) {
+            sc->stem = (((uint64_t)sc->cell->stemHd) << 32);
+            sc->cell->stemHd = GLAS_CELL_STEM_EMPTY;
+        } else {
+            sc->stem = (((uint64_t)sc->cell->stem.stem32[--(sc->cell->hdr.type_arg)]) << 32)
+                     | (UINT64_C(1)<<31);
+        }
+        sc->stem |= GLAS_STEMCELL_UNIQUE_FLAG;
+    } else if(GLAS_DATA_IS_SHRUB(sc->cell)) {
+        uint32_t bits = 0;
+        size_t len = 0;
+        uint64_t shrub = GLAS_DATA_SHRUB_BITS(sc->cell);
+        while(GLAS_SHRUB_IS_EDGE(shrub)) {
+            len++;
+            bits = bits << 1;
+            if(GLAS_SHRUB_IS_INR(shrub)) {
+                bits |= 0b1;
+            } 
+            shrub = shrub << 2;
+        }
+        sc->cell = (glas_cell*)(shrub | 0b10);
+        sc->stem = (((((uint64_t)bits)<<1)|1)<<(63-len));
+    }
+    return (GLAS_STEMCELL_STEM_EMPTY != (GLAS_STEMCELL_STEMBITS & sc->stem));
+}
 API void glas_binary_push(glas* g, uint8_t const* buf, size_t len) {
-    assert(likely((NULL != g) && (NULL != buf)));
+    assert(likely((NULL != buf)));
     glas_os_thread_enter_busy();
     glas_thread_stack_cell_push(g, 
         glas_cell_binary_alloc(buf, len), true);
     glas_os_thread_exit_busy();
 }
 API void glas_binary_push_zc(glas* g, uint8_t const* buf, size_t len, glas_refct pin) {
-    assert(likely((NULL != g) && (NULL != buf)));
+    assert(likely((NULL != buf)));
     glas_os_thread_enter_busy();
     glas_thread_stack_cell_push(g, 
         glas_cell_binary_slice(buf, len, 
             glas_cell_fptr((void*)buf, pin, false)), true);
     glas_os_thread_exit_busy();
 }
+API void glas_thread_set_debug_name(glas* g, char const* debug_name) {
+    if(NULL == debug_name) { debug_name = ""; }
+    size_t const len = strlen(debug_name);
+    glas_os_thread_enter_busy();
+    glas_binary_push(g, (uint8_t const*) debug_name, len);
+    glas_roots_slot_write(&(g->state->gcbase), &(g->state->debug_name),
+        glas_thread_stack_pop_cell(g)); 
+    glas_os_thread_exit_busy();
+}
+
+
 
 API bool glas_binary_peek(glas*, size_t start_offset, size_t max_read, 
     uint8_t* buf, size_t* amt_read);
@@ -2456,7 +2688,6 @@ API bool glas_binary_peek_zc(glas*, size_t start_offset, size_t max_read,
     uint8_t const** ppBuf, size_t* amt_read, glas_refct*);
 
 API void glas_ptr_push(glas* g, void* ptr, glas_refct pin, bool linear) {
-    assert(likely(NULL != g));
     glas_os_thread_enter_busy();
     glas_thread_stack_cell_push(g, glas_cell_fptr(ptr, pin, linear), true);
     glas_os_thread_exit_busy();
@@ -2475,8 +2706,8 @@ LOCAL glas_stemcell glas_data_u64(uint64_t const n) {
             sc.stem = GLAS_STEMCELL_STEM_EMPTY;
             sc.cell = (glas_cell*) ((((n<<1)|1)<<(shift-1))|0b01);
         } else { // full packed pointer + overflow into sc.stem
-            static uint64_t const maskLo = (((uint64_t)1)<<61)-1;
-            sc.stem = ((n & ~maskLo)|(((uint64_t)1)<<60))<<shift;
+            static uint64_t const maskLo = (UINT64_C(1)<<61)-1;
+            sc.stem = ((n & ~maskLo)|(UINT64_C(1)<<60))<<shift;
             sc.cell = (glas_cell*)(((n & maskLo)<<3)|0b101);
         }
     }
@@ -2488,14 +2719,14 @@ LOCAL glas_stemcell glas_data_i64(int64_t const n) {
     if(n >= 0) {
         sc = glas_data_u64((uint64_t) n);
     } else {
-        uint64_t const n1c = (INT64_MIN == n) ? ((((uint64_t)1)<<63)-1) : ((uint64_t)(n-1));
+        uint64_t const n1c = (INT64_MIN == n) ? ((UINT64_C(1)<<63)-1) : ((uint64_t)(n-1));
         size_t const shift = clz64(~n1c); // number of '1111...' in prefix
         if(shift >= 3) { // use packed pointer
             sc.stem = GLAS_STEMCELL_STEM_EMPTY;
             sc.cell = (glas_cell*) ((((n1c<<1)|1)<<(shift-1))|0b01);
         } else { // full packed pointer + overflow into sc.stem
-            static uint64_t const maskLo = (((uint64_t)1)<<61)-1;
-            sc.stem = ((n1c & ~maskLo)|(((uint64_t)1)<<60))<<shift;
+            static uint64_t const maskLo = (UINT64_C(1)<<61)-1;
+            sc.stem = ((n1c & ~maskLo)|(UINT64_C(1)<<60))<<shift;
             sc.cell = (glas_cell*)(((n1c & maskLo)<<3)|0b101);
         }
     }
@@ -2518,21 +2749,6 @@ API void glas_u64_push(glas* g, uint64_t n) {
 API void glas_u32_push(glas* g, uint32_t n) { glas_u64_push(g, (uint64_t) n); }
 API void glas_u16_push(glas* g, uint16_t n) { glas_u64_push(g, (uint64_t) n); }
 API void glas_u8_push(glas* g, uint8_t n) { glas_u64_push(g, (uint64_t) n); }
-
-LOCAL inline uint64_t glas_shrub_skip_elem(uint64_t shrub) {
-    size_t pairs_rem = 0;
-    do {
-        if(GLAS_SHRUB_IS_PSEP(shrub)) {
-            if(0 == pairs_rem) { 
-                return (shrub << 2); 
-            }
-            pairs_rem--;
-        } else if(GLAS_SHRUB_IS_PAIR(shrub)) {
-            pairs_rem++;
-        }
-        shrub = shrub << 2;
-    } while(1);
-}
 
 #if 0
 LOCAL bool glas_list_len_peek_cell(glas_cell* cell, size_t* aggrlen) {
@@ -2657,12 +2873,79 @@ LOCAL bool glas_bits_len_peek_sc(glas_stemcell* sc, size_t* aggrlen) {
     return ok;
 }
 #endif
-
-API bool glas_i64_peek(glas* g, int64_t* n) {
-    // TBD: too many possible representations (e.g. thunks, extrefs). 
-    // might be better to keep it simple, extract bits opportunistically
-    (void)g; (void)n;
+LOCAL inline uint64_t glas_sc_stembits_pop(glas_stemcell* sc) {
+    // opportunistic pop of bits
+    uint64_t const stem = GLAS_STEMCELL_STEMBITS & sc->stem;
+    sc->stem = (~GLAS_STEMCELL_STEMBITS & sc->stem) | GLAS_STEMCELL_STEM_EMPTY;
+    return stem;
+}
+LOCAL inline bool glas_sc_stembits_pop64(glas_stemcell* sc, uint64_t* bits, size_t* len) {
+    // extract a bitstring of up to length 64 bits, fails if not a bitstring
+    // or if overly large. Can extend an existing bitstring.
+    if(0 != (GLAS_STEMCELL_OPTVAL_FLAG & sc->stem)) { return false; }
+    do {
+        uint64_t const stem = glas_sc_stembits_pop(sc);
+        size_t const shift = 1 + ctz64(stem);
+        size_t const stemlen = 64 - shift;
+        if((*len) > shift) { 
+            return false; // overflow
+        }
+        (*bits) = ((*bits) << stemlen) | (stem >> shift);
+        (*len) += stemlen;
+    } while(glas_sc_bits_load(sc));
+    return (GLAS_VAL_UNIT == sc->cell); // fully read bitstring
+}
+LOCAL bool glas_u64_peek_sc(glas_stemcell* osc, uint64_t* n) {
+    glas_sc_bits_load(osc);
+    if(0 == ((UINT64_C(1)<<63) & osc->stem)) {
+        return false; // negative number
+    }
+    glas_stemcell sc = (*osc);
+    sc.stem &= ~GLAS_STEMCELL_UNIQUE_FLAG;
+    uint64_t bits = 0;
+    size_t len = 0;
+    if(!glas_sc_stembits_pop64(&sc, &bits, &len)) {
+        return false;
+    }
+    (*n) = bits;
+    return true;
+}
+LOCAL bool glas_i64_peek_sc(glas_stemcell* osc, int64_t* n) {
+    glas_sc_bits_load(osc);
+    if(0 != ((UINT64_C(1)<<63) & osc->stem)) {
+        // handle positive numbers via u64 peek
+        uint64_t u = 0;
+        bool ok = glas_u64_peek_sc(osc, &u);
+        if(ok && ((uint64_t)INT64_MAX >= u)) {
+            (*n) = (int64_t) u;
+        }
+        return ok;
+    }
+    glas_stemcell sc = (*osc);
+    sc.stem &= ~GLAS_STEMCELL_UNIQUE_FLAG;
+    uint64_t bits = 0;
+    size_t len = 0;
+    if(!glas_sc_stembits_pop64(&sc, &bits, &len)) {
+        return false;
+    }
+    if(64 > len) {
+        uint64_t const ones_prefix = (~UINT64_C(0) << len);
+        (*n) = 1 + (int64_t)(ones_prefix|bits);
+        return true;
+    } 
+    if((64 == len) && (~(UINT64_C(1)<<63) == bits)) {
+        (*n) = INT64_MIN;
+        return true;
+    }
     return false;
+}
+API bool glas_i64_peek(glas* g, int64_t* n) {
+    glas_os_thread_enter_busy();
+    glas_thread_stack_prep(g, 1, 0);
+    glas_stack* const s = &(g->state->stack);
+    bool const ok = glas_i64_peek_sc((s->data + s->count - 1), n);
+    glas_os_thread_exit_busy();
+    return ok;
 }
 API bool glas_i32_peek(glas* g, int32_t* n) {
     int64_t x = (*n);
@@ -2682,10 +2965,14 @@ API bool glas_i8_peek(glas* g, int8_t* n) {
     (*n) = (int8_t)x;
     return ok;
 }
+
 API bool glas_u64_peek(glas* g, uint64_t* n) {
-    (void)g; (void) n;
-    debug("u64 peek");
-    return false;
+    glas_os_thread_enter_busy();
+    glas_thread_stack_prep(g, 1, 0);
+    glas_stack* const s = &(g->state->stack);
+    bool const ok = glas_u64_peek_sc((s->data + s->count - 1), n);
+    glas_os_thread_exit_busy();
+    return ok;
 }
 API bool glas_u32_peek(glas* g, uint32_t* n) {
     uint64_t x = (*n);
@@ -2718,17 +3005,11 @@ static struct test_state {
     glas* g;
 } test;
 LOCAL void test_setup() { 
-    // no-op
+    test.g = glas_thread_new();
 }
 LOCAL void test_teardown() {
-    if(NULL != test.g) {
-        glas_thread_exit(test.g);
-    }
+    glas_thread_exit(test.g);
     memset(&test, 0, sizeof(struct test_state));
-}
-MU_TEST(test_thread_create) {
-    test.g = glas_thread_new();
-    mu_assert((NULL != test.g), "thread created");
 }
 MU_TEST(test_bitmanip) {
     mu_assert_int_eq(21, (int) popcount64(UINT64_C(0x707070707077)));
@@ -2738,21 +3019,58 @@ MU_TEST(test_bitmanip) {
     mu_assert_int_eq(18, (int) ctz64((uint64_t)test_a));
     mu_assert_int_eq(18, (int) ctz32(test_a));
 }
-MU_TEST(test_int_push) {
-    test.g = glas_thread_new();
+MU_TEST(test_uint) {
+    uint64_t n;
     glas_u64_push(test.g,GLAS_PTR_MAX_INT);
-    glas_i64_push(test.g,GLAS_PTR_MIN_INT);
-    glas_i64_push(test.g,INT64_MAX);
-    glas_i64_push(test.g,INT64_MIN);
-    glas_i64_push(test.g,INT64_MIN + 1);
-    glas_u64_push(test.g,UINT64_MAX);
-    mu_assert_int_eq(6, (int) test.g->state->stack.count);
+    glas_u64_peek(test.g, &n);
+    mu_assert(n == GLAS_PTR_MAX_INT, "max ptr int");
+    glas_u64_push(test.g, GLAS_PTR_MAX_INT + 1);
+    glas_u64_peek(test.g, &n);
+    mu_assert(n == (GLAS_PTR_MAX_INT + 1), "max ptr int + 1");
+    glas_u64_push(test.g, 0);
+    uint8_t n8;
+    glas_u8_peek(test.g, &n8);
+    mu_assert_int_eq(0, (int)n8);
+
+    glas_u64_push(test.g, UINT64_MAX);
+    glas_u64_peek(test.g, &n);
+    mu_assert(n == UINT64_MAX, "max int");
+
+    glas_i8_push(test.g, -1);
+    bool not_ok = glas_u64_peek(test.g, &n);
+    mu_assert(n == UINT64_MAX, "no update on fail");
+    mu_assert(false == not_ok, "expect failure to read negative number");
+}
+MU_TEST(test_int) {
+    int64_t n;
+    glas_i64_push(test.g, GLAS_PTR_MAX_INT);
+    glas_i64_peek(test.g, &n);
+    mu_assert(n == GLAS_PTR_MAX_INT, "ptr max int");
+    glas_i64_push(test.g, GLAS_PTR_MAX_INT+1);
+    glas_i64_peek(test.g, &n);
+    mu_assert(n == (GLAS_PTR_MAX_INT+1), "ptr max int +1");
+    glas_i64_push(test.g, -1);
+    glas_i64_peek(test.g, &n);
+    mu_assert(n == -1, "-1");
+    glas_i64_push(test.g, GLAS_PTR_MIN_INT);
+    glas_i64_peek(test.g, &n);
+    mu_assert(n == (GLAS_PTR_MIN_INT), "ptr min int");
+    glas_i64_push(test.g, GLAS_PTR_MIN_INT-1);
+    glas_i64_peek(test.g, &n);
+    mu_assert(n == (GLAS_PTR_MIN_INT-1), "ptr min int -1");
+    glas_i64_push(test.g, INT64_MAX);
+    glas_i64_peek(test.g, &n);
+    mu_assert(n == INT64_MAX, "i64 max");
+    glas_i64_push(test.g, INT64_MIN);
+    glas_i64_peek(test.g, &n);
+    mu_assert(n == INT64_MIN, "i64 min");
 }
 MU_TEST_SUITE(test_glas) {
     MU_SUITE_CONFIGURE(&test_setup, &test_teardown);
     MU_RUN_TEST(test_bitmanip);
-    MU_RUN_TEST(test_thread_create);
-    MU_RUN_TEST(test_int_push);
+    MU_RUN_TEST(test_uint);
+    MU_RUN_TEST(test_int);
+
 }
 API bool glas_rt_run_builtin_tests() {
     MU_RUN_SUITE(test_glas);
