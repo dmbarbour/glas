@@ -207,6 +207,7 @@ int glas_cli_extract(char const* src) {
     return -1;
 }
 
+//#include "minunit.h"
 
 
 int glas_cli_bit(int argc, char const* const* argv) {
