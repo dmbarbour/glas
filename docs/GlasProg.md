@@ -6,7 +6,7 @@ The [namespace](GlasNamespaces.md) supports modules and user-defined front-end s
 
 These primitives are constructors for an abstract data time, i.e. constructing a program does not execute it. The %macro and %load primitives are special exceptions, lazily evaluating at the namespace layer to support metaprogramming and modularity.
 
-*Notation:* `(F X Y Z)` desugars to `(((F,X),Y),Z)`, i.e. curried forms. 
+*Notation:* `(F X Y Z)` desugars to `(((F,X),Y),Z)`, i.e. curried application.
 
 Control Flow:
 
@@ -239,7 +239,7 @@ Meanwhile, we'll still support decent persistent data structures by default, e.g
 
 ### Tail Call Optimization
 
-Instead of TCO moving stuff on the stack, I'd suggest unrolling a recursive loop a few frames then deciding whether we can 'recycle' all the stack locations.
+I'd suggest unrolling a recursive loop a few frames then determining whether we can 'recycle' the stack locations. Ideally, TCO can be enforced via annotations, e.g. by specifying that a subprogram has a finite stack, or that an `Env -> Prog` is finite-up-to Env.
 
 ### Unit Types
 
@@ -255,11 +255,19 @@ However, even the simplest of traces can be useful if users are careful about wh
 
 ### Lazy Computation
 
-To keep implementation simple, I propose explicit thunks of 1--1 arity, pure, atomic computations. Not necessarily deterministic, though we cannot observe the result. Computation may fail or diverge, in which case forcing the thunk will diverge. 
+To get started with a simple implementation, I propose explicit thunks of 1--1 arity, pure (but optionally non-deterministic), atomic computations. Computation may fail or diverge, in which case forcing the thunk will diverge. 
 
-Eventually, we might extend laziness to multiple stack inputs or read-only snapshots of registers. Further, it is technically feasible - especially with implicit thunks - to support both stack and register outputs, though it will likely require static analysis of types, termination, linearity, and data flow. To support these extensions may rely on distinct annotations.
+In case of non-deterministic lazy computations, the outcome remains non-deterministic until a thread commits AFTER force. This allows for expression of lazy choice, lazy entanglement, and searching outcomes.
 
-*Note:* Because lazy annotations influence observation of divergence, I'm tempted to move from annotations to primitives. 
+Eventually, we might extend laziness to multiple stack inputs or read-only snapshots of registers. But doing so is difficult with explicit thunks. And I don't feel comfortable with a move to implicit thunks without proofs of timely (e.g. polynomial) termination, static analysis of linear type dataflow, and similar features.
+
+*Note:* Because lazy annotations influence observation of divergence, I'm tempted to move from annotations to primitives.
+
+### Futures, Promises, Channels
+
+It isn't difficult to extend laziness with explicit 'holes', i.e. such that a program can allocate a `(future, promise)` pair. We'll need some integration with linear and non-linear data, i.e. allowing for linear and non-linear futures. This extends very naturally to channels, e.g. via including another future in the result, or by assigning a sequence of values to a promise.
+
+It isn't difficult to present holes as a program primitive. But holes are fundamentally impure: they introduce identity. I think it's probably better to model them as part of a runtime-provided effects API.
 
 ### Accelerators
 
@@ -301,4 +309,12 @@ Some thoughts:
 - Instead of hard-coding types like 'i64', consider an `(%type.int.range 0 255)` or similar. This would allow for more flexible intermediate type representations when computing things.
 - we could feasibly use 'int range' types as parameters to list length types, for example.
 - obviously need a const type that supports only a single value, too.
+
+
+
+### Reflection and Transpilation
+
+The program model provides a foundation for glas systems, but I'm interested in exploring alternative foundations and support for compilation between them. 
+
+We can view a program AST as an abstract data type that is computed in the namespace layer then executed in a separate layer. Support for 'eval' 
 

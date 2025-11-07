@@ -178,21 +178,20 @@ Proposed API:
 
         sys.refl.bgcall(Argument) : [op] Result
           op(Argument) : [canceled] Result
-          canceled() # monotonic pass/fail
+          canceled() # pass/fail
           # constraint: Argument and Result are non-linear
 
 In this case, the caller provides an 'op' to evaluate in a separate coroutine. That coroutine will run just within scope of op, processing Argument and returning Result. The op does not need to be atomic: it may freely yield, e.g. to await an HTTP response. After completion, Result is then returned to the caller.
 
-If a bgcall is interrupted, the runtime does not immediately cancel the operation. There is a heuristic grace period, an opportunity to reattach via by repeating the call with a matching op and Argument. The runtime may share Result even between independent bgcalls. However, at some point op may test 'canceled' and pass. After this decision, any Result will be discarded, but op may continue to perform cleanup. OTOH, if op never queries 'canceled', the opportunity to attach remains open.
+In context of interruption, the runtime does not forcibly cancel the operation. Instead, the background operation tests for 'canceled' at its own discretion. This is a simple pass/fail, passing if there is no demand on Result. Cancellation is weakly monotonic: if observed *and* the observing transaction commits, all future 'canceled' tests will pass, and the final Result is treated as garbage and dropped.
 
-Known Limitations:
-* A bgcall will wait indefinitely for Result. If op diverges, so does bgcall.
-* Result is not held by the runtime longer than it takes to complete the transfer. However, op may explicitly maintain a cache.
-* Potential for thrashing when op conflicts with the calling transaction. No mitigation, but easy to diagnose and debug. Not always a problem if it resolves in a few cycles.
+However, while cancellation is not observed - or if the observer does not commit (enabling developers to model timeouts) - a runtime may opportunistically bind multiple requests to the same Result based on matching 'op' and Argument. This supports re-attach after rollback, but it also enables stable 'bgcall' ops to serve as a publish/subscribe query of sorts.
 
-Other than safe queries, bgcall is useful to trigger safe background tasks, such as lazy processing of a task queue. This is arguably 'safe' because we had previously committed to perform that work 'later'.
-
-*Note:* In context of a transaction loop, bgcalls can support the incremental computing and non-deterministic choice optimizations. Logically, we're repeatedly executing the bgcall.
+Some notes:
+- It is possible the background operation itself has a read-write conflict with the caller. There is risk of thrashing. Fortunately, this is relatively easy to detect and debug.
+- The runtime Result cache is ephemeral, short-lived. Anything more stable must be maintained by the background operation, either manually or via memo annotations.
+- In context of stable, non-deterministic bgcalls, a runtime may freely evaluate every non-deterministic path and return non-deterministic Results. This integrates nicely with transaction loops.
+- Aside from 'safe' read-only queries, bgcall is useful for demand-driven triggering of background tasks. Operations need only be 'safe' in the limited sense that side-effects are acceptable after caller aborts.
 
 ## Foreign Function Interface (FFI)
 
@@ -272,6 +271,29 @@ In theory, APIs could use linear objects for everything. But I imagine the commo
 ## Regarding Filesystem, Network, Native GUI, Etc.
 
 I'm hoping to build most APIs above FFI and bgcall, reducing the development burden on the runtime. We should stick with the 'unpacked linear object' concept instead of references in each case.
+
+## Heaps and Pointers? Avoid. Defer.
+
+It isn't difficult to model heaps, e.g. via registers containing huge arrays or dictionaries. We can feasibly make heaps reasonably efficient if we accelerate indexed register operations. But this is an idiom that I'm hoping to avoid. Let's see how far we can go without.
+
+## Futures, Promises, Channels? Tentative.
+
+A relatively useful API is to construct abstract `(Future, Promise)` pairs, such that we can defer assignment to the Promise, observe the assigned value through the Future, and also integrate nicely with GC. It is feasible to model channels in this manner, e.g. write a `(Data, Future)` pair into a promise.
+
+Unlike heaps, monotonic update gives futures a relatively simple behavior that is very amenable to parallelism and distribution. However, they're rather awkward across application boundaries - it becomes difficult to track distribution of futures, and a denial-of-service risk to assume promises are kept. Thus, I propose to restrict this API to within a runtime.
+
+A viable API:
+* `sys.promise.*` - 
+  * `new : (Promise of T, Future of T)` - returns an associated promise and a non-linear future pair, both runtime-ephemeral. The promise is always linear, i.e. it may only be written once. Writing linear data to the promise will diverge.
+  * `new.linear : (Promise of T, Future of T)` - As `new` but returns a linear future and the promise accepts linear data when written.
+  * `read(Future of T) : T` - await a future. This diverges until the associated promise is assigned. This operation may be treated as 'pure' for purpose of type safety analysis or lazy evaluation.
+  * `write(Promise of T, T)` - assign a promise. This data becomes immediately available within the current transaction (e.g. in case the associated future is read later or within a coroutine). It only becomes visible beyond the current transaction when committed.
+* `sys.refl.promise.*` -
+  * `called(Promise) : Promise | FAIL` - a pass/fail test on a Promise. Passes if a reader is diverging on the associated future, or after a 'call' operation. Otherwise fails. In context of backtracking, 'called' is weakly monotonic: it becomes 'pass' permanently only if observed to pass *and* the observing transaction commits.
+  * `call(Future) : Future` - This marks a Future as in-demand for purpose of a `called` check, even if the Future is subsequently forgotten. Idempotent and monotonic. Once committed, 'called' will always pass, and 'forgotten' will always fail.
+  * `forgotten(Promise) : () | FAIL` - If a Future is garbage-collected and was never explicitly called, the associated promise is considered forgotten. Programs can drop forgotten promises as an explicit form of lazy evaluation.
+
+The use of linear types ensures promises aren't written more than once, and that future linear data isn't copied or dropped implicitly. Separation of promise and future provides capability security for reasoning about futures. The reflection APIs support laziness, cancelation, integration with the garbage collector.
 
 ## Time
 

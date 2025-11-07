@@ -427,9 +427,11 @@ struct glas_cell {
         } extref;
 
         struct {
-            // (TBD)
-            //  
-            // the computation 'language' is indicated in type_arg.
+            // computation language (e.g. prog or ns) captured in closure.
+            // non-deterministic computations may be captured: 
+            //   - defer choice until observer thread forces AND commits
+            //   - sparks can precompute multiple choices
+            //   - requires some careful attention to thunk state
             // the computation captures function and inputs, perhaps a
             // frozen view of relevant registers in the general case. 
             _Atomic(glas_cell*) closure;    // what to evaluate
