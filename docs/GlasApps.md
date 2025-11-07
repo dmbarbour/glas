@@ -286,14 +286,17 @@ A viable API:
 * `sys.promise.*` - 
   * `new : (Promise of T, Future of T)` - returns an associated promise and a non-linear future pair, both runtime-ephemeral. The promise is always linear, i.e. it may only be written once. Writing linear data to the promise will diverge.
   * `new.linear : (Promise of T, Future of T)` - As `new` but returns a linear future and the promise accepts linear data when written.
-  * `read(Future of T) : T` - await a future. This diverges until the associated promise is assigned. This operation may be treated as 'pure' for purpose of type safety analysis or lazy evaluation.
+  * `read(Future of T) : T` - await a future. This diverges until the associated promise is assigned. 
   * `write(Promise of T, T)` - assign a promise. This data becomes immediately available within the current transaction (e.g. in case the associated future is read later or within a coroutine). It only becomes visible beyond the current transaction when committed.
 * `sys.refl.promise.*` -
   * `called(Promise) : Promise | FAIL` - a pass/fail test on a Promise. Passes if a reader is diverging on the associated future, or after a 'call' operation. Otherwise fails. In context of backtracking, 'called' is weakly monotonic: it becomes 'pass' permanently only if observed to pass *and* the observing transaction commits.
-  * `call(Future) : Future` - This marks a Future as in-demand for purpose of a `called` check, even if the Future is subsequently forgotten. Idempotent and monotonic. Once committed, 'called' will always pass, and 'forgotten' will always fail.
+  * `call(Future) : Future` - This marks a Future as in-demand for purpose of a `called` check, even if the Future is subsequently forgotten. Idempotent and monotonic: once committed, 'called' will always pass, and 'forgotten' will always fail.
   * `forgotten(Promise) : () | FAIL` - If a Future is garbage-collected and was never explicitly called, the associated promise is considered forgotten. Programs can drop forgotten promises as an explicit form of lazy evaluation.
+  * `fulfilled(Future) : Future | FAIL` - a pass/fail test on a Future for non-blocking reads. Passes if reading the Future will return immediately, fails otherwise. Does not otherwise observe the future.
 
-The use of linear types ensures promises aren't written more than once, and that future linear data isn't copied or dropped implicitly. Separation of promise and future provides capability security for reasoning about futures. The reflection APIs support laziness, cancelation, integration with the garbage collector.
+The use of linear types ensures promises aren't written more than once, and that future linear data isn't copied or dropped implicitly. Separation of promise and future provides capability security for reasoning about futures. The reflection APIs support non-blocking reads, laziness, cancellation, and integration with the garbage collector.
+
+*Note:* The 'read' and 'call' operations are pure enough for use in context of lazy evaluation, memoization, etc.. Read cannot observe the state change, and 'call' can be understood as an annotation. But everything else is stateful.
 
 ## Time
 
