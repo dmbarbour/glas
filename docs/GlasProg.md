@@ -306,15 +306,18 @@ Modeling this in names is too awkward. However, it is feasible to introduce a co
 We can just invent some primitive type descriptions like '%type.int' or whatever, things a typechecker is expected to understand without saying, and build up from there. It isn't a big deal if we want to experiment with alternatives later.
 
 Some thoughts:
-- Instead of hard-coding types like 'i64', consider an `(%type.int.range 0 255)` or similar. This would allow for more flexible intermediate type representations when computing things.
-- we could feasibly use 'int range' types as parameters to list length types, for example.
+- Instead of hard-coding a few types like 'i64' or 'u8', consider an `(%type.int.range 0 255)` or similar. This would allow for more flexible packed representations and precise tracking of precision across arithmetic steps, e.g. adding u8 and u8 has range 0 to 510 (not quite a u9), and we can require explicit modulus or conditionals to store result back into a u8
+- we could feasibly use 'int range' types as parameters to list length types, to support vectors of exactly one size (range 32 to 32) or more sizes.
 - obviously need a const type that supports only a single value, too.
 
+### Reflection, Transpilation, Alternative Models
 
+The program model provides a foundation for glas systems, but I'm interested in exploring alternative foundations and support for compilation between them. As I see it, there are a few opportunities here:
 
-### Reflection and Transpilation
+- Reflection APIs: a runtime or compile-time could provide some APIs to inspect definitions.
+  - However, this solution seems semantically troublesome because we'd either be observing recursive definitions *after* substitution of names for definitions is applied, or be observing some runtime-specific internal representation.
+- Quotation APIs: a front-end language can support quoting of definitions or expressions into an embedded data representation of an AST. Further, it could support quoted imports, i.e. load binary source code or compile to the AST representation of `Env->Env` without evaluating it.
+  - This solution is logistically troublesome. We'll need some way to efficiently cache definitions for macro evaluation when building a larger namespace.
 
-The program model provides a foundation for glas systems, but I'm interested in exploring alternative foundations and support for compilation between them. 
-
-We can view a program AST as an abstract data type that is computed in the namespace layer then executed in a separate layer. Support for 'eval' 
+Of these options, I think a foundation of quotation APIs offers the more robust solution. We can tackle logistical challenges by essentially integrating a compiler as a shared library and some clever use of caching and acceleration. 
 

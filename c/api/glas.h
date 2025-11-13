@@ -159,7 +159,6 @@ inline void glas_decref(glas_refct c) {
         c.refct_upd(c.refct_obj, false);
     }
 }
-
 inline void glas_incref(glas_refct c) {
     if(NULL != c.refct_upd) {
         c.refct_upd(c.refct_obj, true);
@@ -623,7 +622,6 @@ void glas_step_on_commit(glas*, void (*op)(void* arg), void* arg,
  * Order is reversed: last inserted is first executed.
  */
 void glas_step_on_abort(glas*, void (*op)(void* arg), void* arg);
-void glas_step_on_abort_decref(glas*, glas_refct);
 
 /**
  * Checkpoints.
