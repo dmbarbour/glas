@@ -3100,63 +3100,69 @@ API void glas_data_drop(glas* g, uint8_t amt) {
         g->err |= GLAS_E_LINEARITY;
     }
 }
-LOCAL inline bool glas_is_moves_var(uint8_t c) {
-    return (((uint8_t)'a' <= c) && (c <= (uint8_t)'z')) ||
-           (((uint8_t)'A' <= c) && (c <= (uint8_t)'Z'));
-}
 
+LOCAL bool glas_moves_var_index(uint8_t c, size_t* index) {
+    if(((uint8_t)'z' >= c) && (c >= (uint8_t)'a')) {
+        (*index) = 26 + (size_t)(c - (uint8_t)'a');
+        return true;
+    } else if(((uint8_t)'Z' >= c) && (c >= (uint8_t)'A')) {
+        (*index) = (size_t)(c - (uint8_t)'A');
+        return true;
+    } else {
+        (*index) = 63;
+        return false;
+    }
+}
 LOCAL size_t glas_data_move_lin_ngc(glas* g, uint8_t const* const moves) {
-    // determine how many vars I need
-    static uint8_t const NOINDEX = 255;
-    uint8_t var_indices[128];
-    memset(var_indices, NOINDEX, sizeof(var_indices));
-    size_t next_index = 0;
+    uint64_t defined = 0; // bitfield
+    uint8_t copies[64];
+    glas_sc data[64];
+
     uint8_t const* scan = moves;
-    while('-' != (*scan)) {
-        if(glas_is_moves_var(*scan) && (NOINDEX == var_indices[*scan])) {
-            var_indices[*scan] = (uint8_t) next_index++;
+    while('-' != *scan) {
+        // scan to '-', record defined vars, verify structure of LHS
+        size_t ix;
+        if(glas_moves_var_index(*scan, &ix) && (0 == (defined & (UINT64_C(1)<<ix)))) {
+            defined |= (UINT64_C(1)<<ix);
+        } else {
+            debug("invalid moves string: %s", moves);
+            abort();
         }
-        ++scan;
     }
     uint8_t const* const center = scan; // at '-'
-
-    // prepare space for vars on stack
-    size_t const var_count = next_index;
-    assert(likely(var_count > 0));
-    glas_sc data[var_count];
-    uint8_t copies[var_count];
-    glas_roots* const r = &(g->state->gcbase);
-    glas_stack* const s = &(g->state->stack);
-
-    // pop stack into vars
     while(moves != scan) {
+        // scan backwards, popping stack into vars
         --scan;
-        if(glas_is_moves_var(*scan)) {
-            uint8_t const ix = var_indices[*scan];
-            glas_thread_stack_prep(g, 1, 0);
-            glas_sc* const sc = &(s->data[--(s->count)]);
-            data[ix] = *sc;
-            copies[ix] = 0;
-            glas_roots_slot_write(r, &(sc->cell), GLAS_VOID);
-        }
+        size_t ix;
+        glas_moves_var_index(*scan, &ix);
+        assert(likely((52 > ix) && (0 != (UINT64_C(1)<<ix))));
+        copies[ix] = 0;
+        data[ix] = glas_thread_stack_sc_pop(g);
     }
-    // push vars into stack
-    scan = center+1;
+    scan = center + 1;
     while(0 != *scan) {
-        if(glas_is_moves_var(*scan) && (NOINDEX != var_indices[*scan])) {
-            uint8_t const ix = var_indices[*scan];
+        // scan forwards, pushing vars onto stack, verify structure of RHS
+        size_t ix;
+        if(glas_moves_var_index(*scan, &ix) && (0 != (defined & (UINT64_C(1)<<ix)))) {
             glas_thread_stack_sc_push(g, data[ix]);
-            ++(copies[ix]);
+            copies[ix] = likely(UINT8_MAX > copies[ix]) ? (1 + copies[ix]) : UINT8_MAX;
+        } else {
+            debug("invalid moves string: %s", moves);
+            abort();
         }
         ++scan;
     }
 
     // check for linearity violations
     size_t linearity_violations = 0;
-    for(size_t ix = 0; ix < var_count; ++ix) {
-        if((1 != copies[ix]) && glas_cell_is_linear(data[ix].cell)) { 
-            ++linearity_violations; 
-        }
+    while(0 != defined) {
+        size_t const ix = ctz64(defined);
+        defined &= (defined - 1);
+        #pragma GCC diagnostic push
+        #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+        bool const ok = (1 == copies[ix]) || !glas_cell_is_linear(data[ix].cell);
+        #pragma GCC diagnostic pop
+        linearity_violations += likely(ok) ? 0 : 1;
     }
     return linearity_violations;
 }
@@ -3167,6 +3173,7 @@ API void glas_data_move(glas* g, char const* moves) {
         glas_data_move_lin_ngc(g, (uint8_t const*) moves);
     glas_os_thread_exit_busy();
     if(0 != linearity_violations) {
+        debug("moves %s violated linearity of %lu vars", moves, linearity_violations);
         g->err |= GLAS_E_LINEARITY;
     }
 }
@@ -3216,6 +3223,26 @@ LOCAL bool glas_cell_is_pair(glas_cell* cell) {
     }
 }
 LOCAL void glas_cell_split_pair(glas_cell* cell, glas_sc* outl, glas_sc* outr) {
+    // assume valid pair
+    if(GLAS_DATA_IS_PTR(cell)) {
+        assert(likely(GLAS_STEM31_EMPTY == cell->stemHd));
+        switch(cell->hdr.type_id) {
+            case GLAS_TYPE_BRANCH:
+
+            case GLAS_TYPE_SMALL_ARR:
+            case GLAS_TYPE_BIG_ARR:
+            case GLAS_TYPE_SMALL_BIN:
+            case GLAS_TYPE_BIG_BIN:
+            case GLAS_TYPE_TAKE_CONCAT:
+        }
+        debug("unsupported pair type: %d", (int) cell->hdr.type_id);
+        abort();
+    } else if(GLAS_DATA_IS_BINARY(cell)) {
+
+    } else if(GLAS_DATA_IS_SHRUB(cell)) {
+        
+    }
+
     (void)cell; (void)outl; (void)outr;
     debug("todo: split pair");
     abort();
