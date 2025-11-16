@@ -43,29 +43,33 @@ Namespaces encoded as structured glas data. This serves as an intermediate repre
             | a:(AST, AST)          # annotation in lhs, target in rhs 
             | d:Data                # embedded glas data, opaque to AST
             | c:(Name,(AST,AST))    # ifdef conditional expression
-            | y:AST                 # built-in fixpoint combinator 
+            | y:AST                 # built-in fixpoint combinator
         type Name = binary excluding NULL
         type Prefix = any binary prefix of Name
         type TL = Map of Prefix to (Optional Prefix) as radix-tree dict
 
-This representation does not include closures, thunks, reified environments, etc. necessary for evaluation. Those must be constructed indirectly through evaluation.
+The AST representation does not include closures, thunks, reified environments, etc. necessary for intermediate steps during evaluation. Those shall have ad hoc, abstract, runtime-specific representations.
 
 ## Evaluation
 
-Evaluation of an AST is a lazy, substutive reduction in context of an environment that maps a subset of names to definitions (i.e. `Name -> optional AST`). 
+Evaluation of an AST is a lazy, substitutive reduction in context of an environment that maps a subset of names to definitions (i.e. `type Env = Name -> optional AST` with caching). In most context, the initial environment is empty, thus insisting that AST terms are 'closed' or combinators, often of type `Env -> Env`. 
 
 * application, lambdas, and names: as lazy lambda calculus evaluation
 
-* reification `e:()` - returns an abstract dictionary containing all names in scope, i.e. `{ "x" = x, "y" = y, ...}`. Trick is to make this lazy. 
+* translation `t:(TL, Body)` - translates Body's view of names in the current environment through TL. Without reification, translation can serves a role for import aliases and access control. Translation becomes semantically significant insofar as it influences reification.
+* reification `e:()` - returns an abstract `Env` representing all names in scope, i.e. `{ "x" = x, "y" = y, ...}`, albeit lazily constructed.
   * Empty environment can be expressed as `t:({ "" => NULL }, e:())`. 
-  * Specified prefix can be selected by `t:({ "" => Prefix }, e:())`.
-* env binding - when applied `(b:(Prefix,Body), Arg)`, binds Arg to Prefix context of evaluating Body. All external names matching Prefix are shadowed in Body, much as lambdas shadow a single name.
-* translation `t:(TL, Body)` - translates Body's view of the current environment through TL. Of semantic relevance, TL controls dictionary keys if the environment is reified in Body.
+  * Specified prefix can be selected by `t:({ "" => Prefix }, e:())`. 
+* env binding - when applied `(b:(Prefix,Body), Env)`, binds Env to Prefix context of evaluating Body. That is, PrefixName now refers to Name in Env if defined.
+  * Patch-based semantics: if Name is not defined in Env, fall back to prior definition.
+  * Consider `t:({ Prefix => NULL }, b:(Prefix, Body))` to clear prefix before binding.
+  * Record-selector pattern is `t:({""=>NULL}, b:("", Name))`, Env as first-class dict.
 
 * annotations `a:(Anno, Target)` - Semantically inert: logically evaluates as Target. In practice, we evaluate Anno to an abstract Annotation using compiler-provided Annotation constructors - by convention `%an.name` or `(%an.ctor Args)`. We then use this Annotation to guide instrumentation, optimization, or verification of Target.
-* data `d:Data` - evaluates to itself 
-* ifdef `c:(Name, (Then, Else))` - evaluates to Then if Name is defined in current environment, otherwise Else. 
+* data `d:Data` - evaluates to itself. Abstract to AST evaluation, but may be observed when applying primitive Names.
+* ifdef `c:(Name, (L, R))` - evaluates to L if Name is defined in current environment, otherwise R. 
 * fixpoint - built-in fixpoint for convenient expression and efficient evaluation
+
 
 ### Reference Implementation
 
@@ -88,21 +92,24 @@ Sequential translations can be composed into a single map. Rough sketch: to comp
 
 ## Loading Files
 
-Modularity is supported through several system-provided definitions:
+Files can be made accessible through an initial namespace. The design goal here is to ensure loading is staged, cleanly separated from execution of the runtime program unless we explicitly support full namespace eval at runtime. 
 
-* `(%macro Program) : AST` - evaluates a deterministic, 0--1 arity program that returns a closed-term AST representation. This AST is validated then can be 'linked' in context by applying to an environment.
-* `(%load Src) : d:Data` - loads external resources at compile-time. The Src type is abstract. If Src is malformed or unreachable, this diverges with error. Otherwise, returns embedded data that can be further processed via %macro. 
-* `%src.*` - constructors for abstract Src data. All constructors are relative. 
+* `(%load Src) : d:Data` - loads external resources at compile-time, returning opaque data. This operation may diverge, e.g. if Src is malformed or unreachable. 
+* `%src : Src` - by convention, abstract data representing a source being linked.
+* `%src.*` - constructors for abstract Src data. All constructors are relative to another Src. 
   * `(%src.file FilePath Src) : Src` - evaluates to an abstract Src representing a FilePath relative to another Src. When loaded, returns an optional binary, supporting 'file does not exist' as a valid state. For other errors - unreachable, permissions issues - the loader diverges with a compile-time error.
     * Note: glas systems forbids `"../"` relative paths and absolute paths relative to relative paths. See *Controlling Filesystem Entanglement* for motivations.
     * Note: absolute paths are still contextually relative, e.g. absolute paths within DVCS repository are relative to repository root.
   * `(%src.dir FileRegex Src) : Src` - search for files matching a pattern, relative to another Src. When loaded, returns a deterministically sorted list of FilePath.
   * `(%src.dvcs.git URI Ver Src) : Src` - returns a Src representing a DVCS git repository. If loaded, returns unit or diverges with error. Use '%src.file' to access files within a repository. 
   * `(%src.an Annotation Src) : Src` - here Annotation is represented by embedded data. It is not observed by the loader, but is available later in context of runtime reflection on sources, e.g. `sys.refl.src.*`.
-  * Note: Loading the same source twice may receive a warning even when acyclic. A linear dependency structure encourages shared libraries via '%env.\*' and simplifies live coding.
-* `%src : Src` - by convention, refers to the source being linked. Relies on support from front-end compilers to update %src in context of each load. 
+* `(%macro Program) : AST` - Program should be 0--1 arity, pure, deterministic, and return a closed-term AST representation. Any parameters to the macro program are provided through the namespace. This AST is validated and evaluated as a closed term (e.g. implicit `t:({"" => NULL}, AST)` wrapper), then substituted for the %macro node.
 
-We might eventually extend Src to stable HTTP queries or content-addressed data. However, the above is sufficient to get started.
+Loading a file twice may receive a warning even if acyclic. Instead, glas systems will favor 'linear' dependencies, i.e. each file is loaded at most once, encouraging shared libraries. Live coding and refactoring is greatly simplified in context of linear dependenies.
+
+We might eventually extend Src to stable HTTP queries or content-addressed data. However, the above is sufficient to get started. DVCS can roughly serve as content-addressed sources insofar as version hashes are transitively used.
+
+*Aside:* It is feasible to relax determinism, e.g. %load and %macro could return non-deterministic outcomes. It becomes difficult to efficiently evaluate the resulting volume of namespaces, but this can provide a basis for ambiguity and constraint systems.
 
 ### Controlling Filesystem Entanglement
 
@@ -120,16 +127,14 @@ Compilation and linking are stage separated, which has some advantages and disad
 
 ## Modules
 
-The proposed module type is `Env -> Env`, albeit tagged "m" for extensibility (see *Tags*). An Env is naturally very extensible, but we must reserve a few space to resist conflict. Prefix '%' is reserved for the system and front-end compilers.
-
-A few reserved names deserve special attention:
+The proposed module type is `Env -> Env`, albeit tagged for extensibility (see *Tags*). We further reserve prefix '%' for system use, e.g. primitive definitions and front-end compilers. A few reserved names deserve special attention:
 
 * '%env.\*' - implicit parameters or context. Should propagate implicitly across most imports, but definitions may be shadowed contextually. This serves as the foundation for shared libraries, e.g. '%env.libname.op'. Initially binds to 'env.\*' in the user configuration.
 * '%arg.\*' - explicit parameters. This allows a client to direct a module's behavior or specialize a module. It is feasible to import a module many times with different parameters.
 * '%self.\*' - open recursion. By externalizing fixpoint to the client, we can express modules in terms of inheritance, override, and mixin composition. 
   * '%fin' - (tentative) a special module *output*, applied just prior to fixpoint.
 * '%src.\*' - abstract location '%src' and constructors. When importing a module, the front-end compiler shall temporarily shadow '%src' to that module's location.
-* '%.\*' - reserved for the front-end compiler's private use; should start empty
+* '%.\*' - implicit 'private' space for the front-end compiler; starts empty
 
 The glas system provides the initial environment, including an initial '%env.\*', '%self.\*', '%src', and optionally providing runtime version info (or a method to query it) via '%arg.\*'. Front-end compilers must continue this pattern, though ideally the common functions (like wrapping an `Env -> Env` function to set '%src' and '%arg.\*', or common load steps) are shared between them.
 
@@ -139,7 +144,7 @@ Usefully, modules are first-class values within the glas namespace. We can defin
 
 A viable encoding for tags:
 
-        f:("Adap", ((b:("", "Tag"), "Adap"), Body))
+        f:("Adapter", ((b:("", "Tag"), "Adapter"), Body))
 
 This function receives an Env of adapters, extracts adapter for Tag, applies to Body. Alternatively, if there is no adapter for Tag, raises an obvious error.
 
@@ -149,19 +154,7 @@ The motivating use case for tags is similar to calling conventions. I would like
 
 ## Controlling Shadows
 
-Shadowing of names can be useful, especially in context of fixpoints. We can 'update' a name many times, yet clients bind the final definition via fixpoint. Shadow and update is a viable foundation for *Aggregation* patterns.
-
-However, when users shadow a name *by accident*, it very easily leads to errors. These errors are obvious in many cases, but the subtle ones are a source of unnecessary frustration. To mitigate this, I propose to report name shadowing as an error by default. Then, we provide a simple means to suppress the error. 
-
-The namespace AST has structures that can shadow names:
-
-* `f:("x", Body)` - shadows prior name `"x"` in Body (if any)
-* `b:("foo.", Body)` - shadows all prior names with prefix `"foo."` in Body (if any)
-* `t:({ "foo." => "bar.", "bar." => "baz." }, Body)` - shadows prior names with prefix `"foo."` in body. Whether it shadows `"bar."` is more confusing - it's now available via `"foo."`.
-
-We can support this with annotations to shadow (or no-shadow), keeping user intentions explicit. By default, we might report shadowing only for `f:` and `b:`, omitting `t:` where it's both difficult to compute and more likely to be intentional.
-
-AST representations are usually evaluated in an empty environment, stand-alone, implicitly `t:({ "" => NULL }, AST)`. Hence, we can evaluate AST for potential shadowing in a context-independent manner. However, I think we should raise errors only for *actual* shadowing.
+Shadowing of names can be useful, especially in context of *Aggregation* (see below). However, accidental shadowing can be a source of subtle errors. To mitigate this, I propose to report warnings or errors upon shadowing by default, then allow annotations to suppress warnings locally.
 
 ## Inheritance
 
@@ -173,34 +166,15 @@ To support this implicitly, a front-end compiler rewrites names based on usage c
 * keyword 'prior' name - use name directly
 * otherwise - instead use '%self.name'
 
-Beyond single inheritance, we can support mixins on modules. Mixins may introduce or override definitions, but generally cannot drop definitions without breaking things. 
+Aside:* I favor the term 'prior' instead of the more conventional 'super'. I believe it has better connotations for most use cases.
 
-*Aside:* I feel keyword 'prior' offers greater clarity than 'super' in most use cases, e.g. `x := 1 + prior x` makes contextual sense whether it's local shadowing, mixins, or inheritance and overrides.
+### Multiple Inheritance
 
-### Open Composition
+It is awkward to model multiple inheritance directly via `Env->Env` composition. 
 
-It is possible to compose hierarchically without first closing the fixpoint. This provides an opportunity for the composite to override component definitions while controlling risk of naming conflicts. To support open composition requires translating each component's view of %self and the user namespace.
+Instead, we'll want an intermediate representation of the inheritance graph, to which we apply a linearization algorithm such as C3 to eliminate shared ancestors and merge adjacents as priors. This is feasible, though we'll need a distinct 'tag' to discriminate from the basic `Env->Env` module type.
 
-        # To translate component to Prefix:
-        modifyInput = b:("", 
-            t:({ "%self." => "%self.Prefix", 
-                 "%" => "%", 
-                 "" => "Prefix"}, e:()))
-        moveOutput = b:("Dest.", b:("Output.",  
-            t:({ "Prefix" => "Output.",
-                 "" => Dest." }, e:())))
-        translateOp = f:("EnvOp", f:("InputEnv", 
-            ((moveOutput, "InputEnv"),("EnvOp", (modifyInput, "InputEnv")))))
-
-Due to the second-class nature of translations, this should be constructed either by the compiler or via macro. 
-
-### Multiple Inheritance? Defer.
-
-Effective support for multiple inheritance will require another level of indirection. Each module must represent its dependency structure without immediately applying it, and must support robust identification to recognize shared dependency structure. Then an algorithm such as C3 identifies incompatible inheritance structures and determines a merge order.
-
-This extension seems feasible: Generate module IDs based on a secure hash of generated module AST representations, prior to linking. Front-end compiler builds inheritance lists instead of directly applying dependencies. Introduce a new tag for modules where the `Env -> Env` mixin is only element.
-
-See also [Prototypes: Object-Orientation, Functionally](http://webyrd.net/scheme_workshop_2021/scheme2021-final91.pdf); section 4.3 discusses multiple inheritance.
+I do not make multiple inheritance a built-in because choice of linearization algorithm, how we recognize shared ancestors, etc. is ultimately heuristic in nature. Instead, users can develop a macro program to build the final AST from the inheritance graph as data, perhaps favoring a Church-encoded representation of the inheritance graph if fine-grained partial evaluation is anticipated.
 
 ## Incremental Compilation
 
