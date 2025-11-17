@@ -3158,10 +3158,10 @@ LOCAL size_t glas_data_move_lin_ngc(glas* g, uint8_t const* const moves) {
     while(0 != defined) {
         size_t const ix = ctz64(defined);
         defined &= (defined - 1);
-        #pragma GCC diagnostic push
-        #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+      #pragma GCC diagnostic push
+      #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
         bool const ok = (1 == copies[ix]) || !glas_cell_is_linear(data[ix].cell);
-        #pragma GCC diagnostic pop
+      #pragma GCC diagnostic pop
         linearity_violations += likely(ok) ? 0 : 1;
     }
     return linearity_violations;
@@ -3692,7 +3692,7 @@ MU_TEST(test_big_bits) {
     mu_assert((GLAS_STEM63_EMPTY == sc.stem) && (GLAS_VAL_UNIT == sc.cell), "all bits popped");
     mu_assert_int_eq(0, (int)unmatched);
 }
-void test_refct_upd(void* arg, bool incref) {
+void test_fin_refct_upd(void* arg, bool incref) {
     _Atomic(size_t)* const count = arg;
     if(incref) {
         atomic_fetch_add_explicit(count, 1, memory_order_relaxed);
@@ -3701,14 +3701,27 @@ void test_refct_upd(void* arg, bool incref) {
     }
 }
 MU_TEST(test_fin) {
-    static size_t const stripes = 4;
+    static size_t const stripe_count = 4;
     static size_t const stripe_len = 40000;
-    _Atomic(size_t) counts[stripes];
-    for(size_t ix = 0; ix < stripes; ++ix) {
-        atomic_init(counts+ix, 0);
+    _Atomic(size_t) counts[stripe_count];
+    for(size_t stripe = 0; stripe < stripe_count; ++stripe) {
+        atomic_init(counts+stripe, 0);
+        glas_integer_push(test.g, 0);
     }
     for(size_t ii = 0; ii < stripe_len; ++ii) {
-
+        for(size_t stripe = 0; stripe < stripe_count; ++stripe) {
+            glas_refct pin = { .refct_obj = counts + stripe, .refct_upd = test_fin_refct_upd };
+            glas_incref(pin);
+            glas_ptr_push(test.g, NULL, pin, false);
+            glas_data_swap(test.g);
+            glas_mkp(test.g);
+            glas_data_stash(test.g, 1);
+        }
+        glas_data_stash(test.g, -(int8_t)stripe_count);
+    }
+    mu_assert_int_eq(4, (int) test.g->state->stack.count);
+    for(size_t stripe = 0; stripe < stripe_count; ++stripe) {
+        mu_assert_int_eq((int)stripe_len, atomic_load_explicit(counts + stripe, ))
     }
 
     mu_assert(false, "todo: finish");

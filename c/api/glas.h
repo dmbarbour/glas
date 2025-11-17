@@ -188,6 +188,8 @@ bool glas_ns_has_def(glas*, char const* name);
  * The namespace is lexically scoped, thus definitions may be reachable
  * indirectly through other definitions. Unreachable definitions may be
  * garbage collected by the runtime.
+ * 
+ * Note: These are simple wrappers around glas_ns_tl_apply.
  */
 void glas_ns_hide_def(glas*, char const* name);
 void glas_ns_hide_prefix(glas*, char const* prefix);
