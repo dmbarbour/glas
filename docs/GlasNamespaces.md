@@ -27,7 +27,7 @@ Utility extensions:
 * *ifdef* - flexible expression of defaults, optional defs, merge-union, mixins
 * *fixpoint* - a built-in fixpoint for lazy, recursive defs
 
-The [program model](GlasProg.md) provides an initial collection of definitions. By convention, these are bound under prefix '%'. Front-end compilers further support conventions for %src, %self.\*, %env.\*, and %arg.\*.
+The runtime provides an initial environment of names, supporting a [program model](GlasProg.md) and various *Module* conventions (e.g. %src, %env.\*, %self.\*).
 
 ## Abstract Syntax Tree (AST)
 
@@ -123,13 +123,13 @@ In general, glas systems shall report a warning if a file is noticed to be loade
 
 As a supported convention, users may define front-end compilers per file extension in '%env.lang.FileExt'. To bootstrap this process, the glas executable initialy injects a built-in definition for '%env.lang.glas' for long enough to build and extract the configured 'env.lang.glas'. 
 
-The front-end compiler is a 1--1 arity Program implementing a pure function of type `Binary -> AST`, where AST generally represents a closed term of the *Module* type. Compilation is performed by %macro nodes, while fetching sources is handled separately, via %load.
+The front-end compiler is a 1--1 arity Program implementing a pure function of type `Binary -> Module`, where *Module* is described below. This compilation is performed via %macro nodes, while fetching sources is handled separately via %load.
 
-Compilation and linking are stage separated, which has some advantages and disadvantages. A compiler cannot express a closure, e.g. integrating definitions from its own environment. It can only arrange for the generated AST to later link shared libraries. OTOH, this ensures the client controls linking, and that we can share compilers without specializing them per link environment.
+Importantly, output of a front-end compiler is plain old data. This prevents the compiler from linking its own environment into the compiled module, forcing a stage separation between compilation and linking. Any shared definitions must either be integrated into the compiler output (per module) or provided through shared libraries in '%env.\*'.
 
 ## Modules
 
-The basic module type is `Env -> Env`, albeit tagged for future extensibility (see *Tags*). We further reserve prefix '%' for system use, e.g. primitive definitions and front-end compilers. A few reserved names deserve special attention:
+The basic module type is `Env -> Env`, albeit tagged for future extensibility (see *Tags*). The input environment should include primitive and conventional definitions under prefix '%', and may include a few user-defined names depending on how the module is integrated. A names deserve special attention:
 
 * '%env.\*' - implicit parameters or context. Should propagate implicitly across most imports, but definitions may be shadowed contextually. This serves as the foundation for shared libraries, e.g. '%env.libname.op'. Binds to 'env.\*' in the user configuration via fixpoint.
 * '%arg.\*' - explicit parameters. This allows a client to direct a module's behavior or specialize a module. It is feasible to import a module many times with different parameters.
@@ -141,7 +141,7 @@ The glas system provides the initial environment, including an initial '%env.\*'
 
 Usefully, modules are first-class within the namespace. We can define names to the result of loading a module, for example. 
 
-## Calling Conventions, Adapters, and Tags
+## Adapters and Tags
 
 It is useful to tag definitions, modules, etc. to support more flexible interpretation and integration. I propose to model tags as a Church-encoded variant, such as:
 
@@ -151,30 +151,20 @@ This receives an environment of Adapters, selects Tag, then applies to Body. Thi
 
 All definitions, modules, and other components should be tagged. Tags should roughly indicate integration, e.g. types and assumptions. A few proposed tags to get started:
 
-* "module" - `Env -> Env`. In this context, input Env is expected to have the '%\*' definitions described in *Modules*. 
+* "module" - `Env -> Env`. In this case, input Env is expected to have the '%\*' definitions described in *Modules*. 
 * "prog" - `Env -> Program`. Input Env is per call-site, representing access to caller-provided registers, algebraic effects handlers, etc.. Even with an empty Env, the Program type supports input-output via data stack. The caller does not provide program primitives: those are provided at the module layer. 
 * "data" - constant embedded data.
-* "app" - `Env -> Env`. In this case, the input Env provides system-level runtime effects APIs, e.g. 'sys.tty.\*' for console IO, 'g.\*' for global registers, 'app.\*' as a fixpoint. The returned Env has methods such as 'settings', 'main', and 'rpc'. See [Glas Applications](GlasApps.md).
+* "app" - `Env -> Env`. In this case, input Env includes 'sys.\*' effects APIs, access to registers, a fixpoint 'app.\*', etc.. The output defines 'settings', 'main', 'http' and 'rpc' methods, etc.. See [glas applications](GlasApps.md).
 
-Beyond these, we could tag Church-encoded lists for *Aggregation*, inheritance graphs for *Multiple Inheritance*, or support other patterns as they are developed. There is some risk of independent communities overloading the same tag, resulting in conflicts. Resolution in that case is left to convention, communication, and de facto standardization.
+Other ideas include tagging Church-encoded lists for *Aggregation*, inheritance graphs for *Multiple Inheritance*, or support other patterns as they are developed. There is some risk of independent communities overloading the same tag, resulting in conflicts. Resolution in that case is left to convention, communication, and de facto standardization.
 
-## Inheritance
+## Multiple Inheritance
 
-By externalizing module fixpoints to '%self', we can express one module as inheriting another, sharing the same self. The inheriting module can override definitions, integrating with any mutual recursion through self. 
+The `Env->Env` type together with fixpoint (%self.\* or app.\*) easily models single inheritance, and can somewhat awkwardly model mixins. However, for the more complicated cases, it requires manual linearization, i.e. deciding a consistent order in which `Env->Env` functions are composed while eliminating accidental redundancy.
 
-To support this implicitly, a front-end compiler rewrites names based on usage context:
+Support for multiple inheritance is feasible but requires an intermediate representation of the inheritance graph. This inheritance graph is processed to a linear sequence of `Env->Env` operations, then composed, ensuring shared ancestors appear only once and ensuring consistent or compatible order. The C3 linearization algorithm is relevant in this role.
 
-* defining name - use name directly
-* keyword 'prior' name - use name directly
-* otherwise - instead use '%self.name'
-
-Aside:* I favor the term 'prior' instead of the more conventional 'super'. I believe it has better connotations for most use cases.
-
-### Multiple Inheritance
-
-It is awkward to model multiple inheritance using `Env->Env`. Direct composition results in shared ancestors being invoked many times. Instead, we'll want an intermediate representation of an inheritance graph, to which we apply a linearization algorithm such as C3 to eliminate shared ancestors and merge adjacents as priors. This is feasible, though we'll need a tag to distinguish inheritance graphs from the basic module type.
-
-*Note:* The namespace does not provide multiple inheritance as a built-in because linearization algorithms are ultimately heuristic in nature. Instead, linearization is left to %macro nodes.
+After glas systems mature a little, we can introduce tags to indicate when a module or app is represented by an inheritance graph.
 
 ## Controlling Shadows
 
@@ -198,7 +188,7 @@ Aggregation across modules is hostile to lazy loading. But we could allow aggres
 
 ## Hierarchy
 
-The proposed convention in glas is to represent hierarchical structure in a 'flat' namespace. There may be dotted paths in names, such as "foo.bar", but it's ultimately just a bigger name. The main alternative is to define "foo" as an Env, then treat syntax "foo.bar" as extracting "bar" from that Env. However, the flat namespace greatly simplifies access control and aliasing via translations, or updating 'deep' definitions.
+The proposed convention in glas is to represent hierarchical structure in a 'flat' namespace. There may be dotted paths in names, such as "foo.bar", but it's just one big name. The main alternative is to define "foo" as an Env, then treat syntax "foo.bar" as extracting "bar" from that Env. However, the flat namespace greatly simplifies access control and aliasing via translations, or updating 'deep' definitions.
 
 ## Indexed Modularity
 

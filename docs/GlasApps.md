@@ -4,7 +4,7 @@ The [glas executable](GlasCLI.md) lets users run an application defined in the c
 
 ## Methods
 
-Applications are expressed as a collection of methods in the [program model](GlasProg.md). Useful methods include:
+Applications will provide a collection of methods to the runtime. Viable methods include:
 
 * 'settings' - guidance for runtime configuration. The runtime does not observe settings directly, instead providing access to settings when evaluating configuration options.
 * 'main' - a procedure representing the main application process. Is evaluated as a sequence of transactions, each using '%yield' to commit a step and '%fail' to abort a step.
