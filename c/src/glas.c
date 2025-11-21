@@ -87,6 +87,8 @@ static_assert((ATOMIC_POINTER_LOCK_FREE == 2) &&
 #define GLAS_PAGE_CELL_COUNT (GLAS_HEAP_PAGE_SIZE / GLAS_CELL_SIZE)
 #define GLAS_CELL_BATCH_ALLOC 400
 
+#define GLAS_TIMEOUT_RES_NSEC (100 * 1000)
+
 /**
  * GC design:
  * - non-moving GC, concurrent mark + lazy sweep on alloc
@@ -641,11 +643,13 @@ typedef struct glas_thread_state {
     glas_stack stash;
     glas_cell* ns;
     glas_cell* debug_name;
+    glas_roots gcbase;
     // also needed: 
     //   register reads and writes
-    //   pending on-commit ops
+    //   pending on-commit and on-abort ops
     //   integration with fork and detach (via on-commit?)
-    glas_roots gcbase;
+    struct glas_thread_state* checkpoint; // stack of checkpoints
+    GLAS_ERROR_FLAGS err;   // recoverable errors
 } glas_thread_state;
 
 static uint16_t const glas_thread_state_offsets[] = {
@@ -664,16 +668,13 @@ static uint16_t const glas_thread_state_offsets[] = {
  */
 struct glas {
     glas_thread_state* state;
-    GLAS_ERROR_FLAGS err;
+    glas_thread_state* committed_state; // per-step transactions
+    size_t step_count;
 
-    // support for transactions
-    glas_thread_state* step_start;
-    struct {
-        glas_thread_state* stack[GLAS_THREAD_CHECKPOINT_MAX];
-        size_t count;
-    } checkpoint;
-
+    GLAS_ERROR_FLAGS err; // unrecoverable errors
     bool has_abort_handlers; 
+    _Atomic(size_t) refct;
+
     //glas* next; // for linked list contexts
     // TBD:
     // - error signaling
@@ -2459,15 +2460,19 @@ LOCAL bool glas_cell_shrub_fits(glas_cell* cell, size_t nbits) {
 /*************************
  * Main API Ops?
  */
-
-
 LOCAL void glas_thread_state_free(void* addr) {
     atomic_fetch_add_explicit(&glas_rt.stat.g_ts_free, 1, memory_order_relaxed);
-    free(addr); 
+    glas_thread_state* const ts = addr;
+    assert(likely((NULL == ts->checkpoint)));
+    free(ts); 
 }
-LOCAL inline glas_thread_state* glas_thread_state_new() {
-    atomic_fetch_add_explicit(&glas_rt.stat.g_ts_alloc, 1, memory_order_relaxed);
-    glas_thread_state* const ts = malloc(sizeof(glas_thread_state));
+LOCAL inline void glas_thread_state_incref(glas_thread_state* ts) {
+    glas_roots_incref(&(ts->gcbase));
+}
+LOCAL inline void glas_thread_state_decref(glas_thread_state* ts) {
+    glas_roots_decref(&(ts->gcbase));
+}
+LOCAL void glas_thread_state_init(glas_thread_state* ts) {
     glas_roots_init(&(ts->gcbase), ts, glas_thread_state_free, glas_thread_state_offsets);
     ts->stack.count = 0;
     ts->stack.overflow = GLAS_VAL_UNIT;
@@ -2475,6 +2480,14 @@ LOCAL inline glas_thread_state* glas_thread_state_new() {
     ts->stash.overflow = GLAS_VAL_UNIT;
     ts->debug_name = GLAS_VAL_UNIT;
     ts->ns = GLAS_VAL_UNIT;
+    ts->checkpoint = NULL;
+    ts->err = GLAS_NO_ERRORS;
+}
+LOCAL inline glas_thread_state* glas_thread_state_new() {
+    atomic_fetch_add_explicit(&glas_rt.stat.g_ts_alloc, 1, memory_order_relaxed);
+    // TBD: Consider a flyweight pattern for recycling of glas_thread_state 
+    glas_thread_state* const ts = malloc(sizeof(glas_thread_state));
+    glas_thread_state_init(ts);
     return ts;
 }
 LOCAL inline void glas_stack_copy(glas_stack* dst, glas_stack* src) {
@@ -2484,7 +2497,7 @@ LOCAL inline void glas_stack_copy(glas_stack* dst, glas_stack* src) {
     dst->count = src->count;
     dst->overflow = src->overflow;
 }
-LOCAL glas_thread_state* glas_thread_state_clone(glas_thread_state* ts) {
+LOCAL glas_thread_state* glas_thread_state_clone_shallow(glas_thread_state* ts) {
     glas_os_thread_enter_busy();
     // allocate and build within GC cycle to avoid write barriers. 
     glas_thread_state* const clone = glas_thread_state_new();
@@ -2495,49 +2508,43 @@ LOCAL glas_thread_state* glas_thread_state_clone(glas_thread_state* ts) {
     glas_os_thread_exit_busy();
     return clone;
 }
-LOCAL inline void glas_thread_state_incref(glas_thread_state* ts) {
-    glas_roots_incref(&(ts->gcbase));
+LOCAL inline glas_thread_state* glas_thread_state_checkpoint_push(glas_thread_state* ts) {
+    glas_thread_state* clone = glas_thread_state_clone_shallow(ts);
+    clone->checkpoint = ts;
+    return clone;
 }
-LOCAL inline void glas_thread_state_decref(glas_thread_state* ts) {
-    glas_roots_decref(&(ts->gcbase));
-}
-LOCAL void glas_checkpoints_clear(glas* g) {
-    for(size_t ix = 0; ix < g->checkpoint.count; ++ix) {
-        glas_thread_state_decref(g->checkpoint.stack[ix]);
+LOCAL void glas_thread_state_checkpoints_clear(glas_thread_state* ts) {
+    while(NULL != ts->checkpoint) {
+        glas_thread_state* tmp = ts->checkpoint;
+        ts->checkpoint = tmp->checkpoint;
+        tmp->checkpoint = NULL;
+        glas_thread_state_decref(tmp);
     }
-    g->checkpoint.count = 0;
-}
-LOCAL void glas_checkpoints_reset(glas* const g) {
-    assert(likely(NULL != g->step_start));
-    glas_checkpoints_clear(g);
-    g->checkpoint.count = 1;
-    g->checkpoint.stack[0] = g->step_start;
-    glas_thread_state_incref(g->step_start);
 }
 API void glas_step_abort(glas* g) {
+    glas_thread_state_checkpoints_clear(g->state);
     glas_thread_state_decref(g->state);
-    g->state = glas_thread_state_clone(g->step_start);
-    glas_thread_state_incref(g->step_start);
-    glas_checkpoints_reset(g);
-    g->err = 0;
+    // committed states should have no checkpoints, no errors
+    assert(likely((GLAS_NO_ERRORS == g->committed_state->err) &&
+                  (NULL == g->committed_state->checkpoint)));
+    g->state = glas_thread_state_clone_shallow(g->committed_state);
     if(g->has_abort_handlers) {
         debug("TODO: run on_abort handlers");
     }
+    // TODO: also clear on_commit handlers
 }
 API bool glas_step_commit(glas* g) {
-    debug("TODO: commit register updates and on_commit writes");
-    // TODO: atomically detect conflicts; commit writes and on_commits
-    // Viable approaches:
-    //  - global commit mutex (easiest)
-    //  - global commit log, processed in order, with feedback
-    // In practice, the commit thread must wait on other commits either
-    // way, so I'm leaning towards a simple commit mutex.
-    if(0 != g->err) { 
-        return false; 
+    // first test for errors other than read-write conflicts.
+    if(GLAS_NO_ERRORS != glas_errors_read(g)) {
+        return false;
     }
-    glas_thread_state_decref(g->step_start);
-    g->step_start = glas_thread_state_clone(g->state);
-    glas_checkpoints_reset(g);
+    // TODO: detect conflicts
+    debug("TODO: commit register updates and on_commit writes");
+    // TBD: could just use a global mutex for this, perhaps prepare
+    //  first and optionally do a once-over without the lock.
+    glas_thread_state_checkpoints_clear(g->state);
+    glas_thread_state_decref(g->committed_state);
+    g->committed_state = glas_thread_state_clone(g->state);
     return true;
 }
 API glas* glas_thread_new() {
@@ -2545,9 +2552,9 @@ API glas* glas_thread_new() {
     atomic_fetch_add_explicit(&glas_rt.stat.g_alloc, 1, memory_order_relaxed);
     glas* const g = calloc(1,sizeof(glas));
     g->state = glas_thread_state_new();
-    g->step_start = glas_thread_state_clone(g->state);
+    g->committed_state = glas_thread_state_clone(g->state);
+    g->step_count = 0;
     g->has_abort_handlers = false; // stand-in for now
-    glas_checkpoints_reset(g);
     return g;
 }
 API void glas_thread_exit(glas* g) {
@@ -2555,15 +2562,18 @@ API void glas_thread_exit(glas* g) {
     glas_step_abort(g);
     glas_checkpoints_clear(g);
     glas_thread_state_decref(g->state);
-    glas_thread_state_decref(g->step_start);
+    glas_thread_state_decref(g->committed_state);
     free(g);
 }
-
 API void glas_errors_write(glas* g, GLAS_ERROR_FLAGS err) {
-    g->err = err | g->err;
+    if(unlikely(0 != (GLAS_E_UNRECOVERABLE & err))) {
+        g->err |= err;
+    } else {
+        g->state->err |= err;
+    }
 }
 API GLAS_ERROR_FLAGS glas_errors_read(glas* g) {
-    return g->err;
+    return (g->err | g->state->err);
 }
 
 LOCAL glas_cell* glas_data_list_append(glas_cell* lhs, glas_cell* rhs) {

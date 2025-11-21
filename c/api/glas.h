@@ -83,7 +83,7 @@ void glas_thread_exit(glas*);
  * only through shared registers, i.e. no further stack transfers. 
  * 
  * Fork is not fully stable after returning from `glas_thread_fork`. It
- * is possible origin aborts the step, in which case fork is 'uncreated' 
+ * is possible origin aborts the step, in which case fork is 'canceled' 
  * and will never commit. Best practice is to defer operations on fork
  * until after commit.
  */
@@ -114,7 +114,7 @@ void glas_thread_set_debug_name(glas*, char const* debug_name);
  * - any clone that is about to commit successfully
  * - any clone that has returned from the callback
  * 
- * After a candidate is chosen, all running clones are uncreated, which
+ * After a candidate is chosen, all running clones are canceled, which
  * serves as a signal to abandon efforts. All unchosen, returned clones
  * are aborted. And pending clones won't ever be created. After commit,
  * a chosen clone continues running until return from callback.
@@ -218,152 +218,145 @@ void glas_ns_data_def(glas*, char const* name);
  * 
  * During lookup, the runtime will find the longest matching lhs prefix
  * then rewrite to rhs. If rhs is NULL, name is undefined. Otherwise, we
- * rewrite the matched prefix to rhs then move on. The runtime speeds
- * this up via caching.
+ * rewrite the matched prefix to rhs then move on. Behavior is undefined
+ * if an lhs prefix appears more than once.
  * 
  * Prefix-to-prefix translations have an obvious weakness: translation
- * of 'bar' to 'foo' also converts 'bard' to 'food'. To mitigate, the
- * runtime implicitly adds a ".." suffix onto *every* name. Translations
- * may take advantage: "bar." applies to both "bar" and "bar.x", and
- * "bar.." is very unlikely to be a prefix of another name by accident.
+ * of 'bar' to 'foo' also converts 'bard' to 'food'. To mitigate, glas
+ * systems implicitly add a ".." suffix onto every name. This doesn't 
+ * guarantee prefix-uniqueness, but it resists accident. It also enables
+ * translation of "bar." to include "bar" and "bar.x".
+ * 
+ * Note: a NULL `glas_ns_tl const*` is equivalent to {{ NULL, NULL }},
+ * i.e. the no-op or identity translation.
  */
 typedef struct { char const *lhs, *rhs; } glas_ns_tl;
 
 /**
- * Apply translation to current namespace.
+ * Apply translation to thread namespace.
  * 
- * All future access to names is translated through this TL. Unreachable
- * definitions can be collected. This can flexibly copy or hide parts of
- * the namespace.
+ * This affects future operations on the glas thread. Definitions that
+ * become unreachable may be garbage collected after step commit.
  */
 void glas_ns_tl_apply(glas*, glas_ns_tl const*);
 
 /**
- * Push translation onto the stack as AST's TL type.
+ * Push a representation of a translation onto the data stack
  */
 void glas_ns_tl_push(glas*, glas_ns_tl const*); // -- TL
 
 /** 
  * Define by evaluation.
  * 
- * See GlasNamespaces.md for details on the AST representation. This
- * operation pops an AST off the stack, validates the AST structure,
- * then lazily evaluates in the thread namespace (or under an optional
- * translation), then assigns the given name.
+ * Pop an AST representation off the stack, validate the AST structure,
+ * lazily evaluate in context of a translated thread namespace. 
  * 
- * Note that any namespace AST can be evaluated and defined, but not all
- * are valid as callable programs. They can be useful for defining ever
- * larger constructs.
- * 
- * Note: Evaluates in thread namespace when translation is NULL.
+ * Note: ASTs become second-class in the program layer once evaluated.
  */
-void glas_ns_eval_def(glas*, char const* name, glas_ns_tl const*);
+void glas_ns_eval_def(glas*, char const* name, glas_ns_tl const* eval_env);
 
 /**
  * Define many names by evaluation.
  * 
- * Almost the same as eval_def, except the AST must evaluate to a 
- * reified environment. Glas namespaces reify environments with the
- * built-in 'e:()' AST node, lazily returning a structure like 
- * `{ "x" = def_of_x, "y" = def_of_y, ... }`.
- * 
- * In this case, we'll bind this reified environment to the prefix. For
- * example, use prefix "foo." to define "foo.x" and "foo.y" and so on.
- * Note: There is no implicit separator between prefix and name. 
- * 
- * All definitions previously reachable through the prefix are hidden.
- * That is, there is no merge of definitions.
+ * Like eval_def, except the AST must evaluate to an environment, and we
+ * bind this environment of definitions to a prefix. For example, if the
+ * prefix is "foo.", then "foo.x" will look for "x" in the environment,
+ * falling back to a prior definition of "foo.x".
  */
-void glas_ns_eval_bind(glas*, char const* prefix, glas_ns_tl const*);
+void glas_ns_eval_bind(glas*, char const* prefix, glas_ns_tl const* eval_env);
 
 /**
  * Rewrite thread namespace by evaluation.
  * 
- * Similar to eval_prefix, except the AST must evaluate to a namespace
- * function of type `Env -> Env`. We then apply this to a specified
- * prefix. 
- * 
- * This is a very flexible operation, capable of selectively merging,
- * overriding, and hiding definitions. Of course, it's also the hardest 
- * to control.
+ * Like eval_bind, except the AST must represent an `Env->Env` function.
+ * We then apply this to a specified prefix.
  */
 void glas_ns_eval_apply(glas*, char const* prefix, glas_ns_tl const*);
 
 /**
  * Utilities for namespace construction.
- * 
- * Namespace ASTs are ultimately plain old glas data on the stack.
  */
-void glas_ns_ast_name_push(glas*, char const*); // -- Name ; just a binary 
-void glas_ns_ast_apply(glas*);  // ArgAST OpAST -- AST = (OpAST, ArgAST)
-void glas_ns_ast_tl(glas*); // ScopedAST TL -- AST = t:(TL, ScopedAST)
-void glas_ns_ast_fn(glas*); // BodyAST Name -- AST = f:(Name, BodyAST)
-void glas_ns_ast_env(glas*); // -- AST = e:() ; refies current environment
-void glas_ns_ast_prefix_push(glas*, char const*); // -- Prefix ; just a binary
-void glas_ns_ast_bind(glas*); //  BodyAST Prefix -- AST = b:(Prefix, AST)
-void glas_ns_ast_anno(glas*); // BodyAST AnnoAST -- AST = a:(AnnoAST, BodyAST)
-void glas_ns_ast_ifdef(glas*); // ElseAST ThenAST Name -- AST = c:(Name,(ThenAST, ElseAST))
-void glas_ns_ast_fix(glas*); // OpAST -- AST = y:OpAST
-void glas_ns_ast_data(glas*); // Data -- AST = d:Data   ; must be non-linear
+void glas_ns_ast_mk_name(glas*, char const* Name); // -- Name ; just a binary 
+void glas_ns_ast_mk_apply(glas*);  // ArgAST OpAST -- AST = (OpAST, ArgAST)
+void glas_ns_ast_mk_tl(glas*, glas_ns_tl const*); // AST -- AST = t:(TL, ScopedAST)
+void glas_ns_ast_mk_fn(glas*, char const* Var); // BodyAST -- AST = f:(Var, BodyAST)
+void glas_ns_ast_mk_env(glas*); // -- AST = e:() ; refies current environment
+void glas_ns_ast_mk_bind(glas*, char const* Prefix); // AST -- b:(Prefix, AST)
+void glas_ns_ast_mk_anno(glas*); // BodyAST AnnoAST -- AST = a:(AnnoAST, BodyAST)
+void glas_ns_ast_mk_ifdef(glas*, char const* Name); // R L -- AST = c:(Name,(L, R))
+void glas_ns_ast_mk_fix(glas*); // OpAST -- AST = y:OpAST
+void glas_ns_ast_mk_data(glas*); // Data -- AST = d:Data   ; must be non-linear
 
 /**
  * Composite constructors for common combinators.
  * 
  * These constructors produce closed terms, i.e. the AST doesn't depend
- * on any names in the evaluation environment.
+ * on any names in the evaluation environment. In many cases, it's best
+ * to construct a tag combinator and apply it rather than wrap an AST
+ * directly because the former better resists accidental name shadowing. 
  */
-void glas_ns_ast_op_tag(glas*, char const* tag); // op to add tag to an AST
-void glas_ns_ast_op_untag(glas*, char const* tag); // op to remove tag from AST
-void glas_ns_ast_op_extract(glas*, char const* name); // op to extract name from Env
-void glas_ns_ast_op_tl(glas*, glas_ns_tl const*); // op to translate an Env
-void glas_ns_ast_op_seq(glas*); // op for function composition (first arg applies last)
+void glas_ns_ast_mkop_tag(glas*, char const* tag); // op to add tag to an AST
+void glas_ns_ast_mkop_untag(glas*, char const* tag); // op to remove tag from AST
+void glas_ns_ast_mkop_extract(glas*, char const* name); // op to extract name from Env
+void glas_ns_ast_mkop_tl(glas*, glas_ns_tl const*); // op to translate an Env
+void glas_ns_ast_mkop_seq(glas*); // op for function composition (first arg applies last)
 
 /**
  * Isolate AST from the evaluation environment.
  * 
  * Mechanically, wraps AST with `t:({ "" => NULL }, AST)`. This enforces
- * an assumption that an AST represents a closed term.  
+ * an assumption that an AST represents a closed term before evaluation.
  */
-void glas_ns_ast_close(glas*);
+void glas_ns_ast_mk_closed_term(glas*); // AST -- AST (closed)
+
+
 
 /**
  * Define programs using callbacks.
  * 
- * The callback function receives a dedicated `glas*` callback thread.
+ * The callback function receives a dedicated `glas*` callback thread to
+ * receive arguments and write results through data stack and namespace.
  * 
- * The callback receives access to two namespaces: closure and caller.
- * The closure binds to host definitions and registers, while caller 
- * supports pass-by-reference implicits, registers, effects handlers.
- * Both are subject to translation.
+ * The namespace has two components: closure of the host namespace where 
+ * the callback is defined, and a caller-provided namespace supporting 
+ * pass-by-ref registers and algebraic effects handler. Translations can
+ * restrict and route these namespaces. Updates to a callback namespace
+ * are localized to each callback. The glas program model does not have 
+ * first-class functions, but algebraic effects serve a similar role.
  * 
- * The caller's data stack is also received to a specified input arity.
- * The callback's specified output arity is verified at runtime.
+ * The specified arity (ar_in, ar_out) determines how many items are
+ * moved from the caller's data stack then back to the caller on return.
  * 
- * In general, the callback may commit multiple steps. However, there
- * are caveats and constraints: 
+ * In general, callbacks may commit multiple steps. Caveats: 
  * 
- * - If a callback commits any step, it must commit just before return.
- *   Pending actions are aborted, warning once per definition.
+ * - If a callback commits even once, it must commit just before return.
+ *   This is because we cannot robustly backtrack into C functions. To 
+ *   simplify, pending operations are aborted with a warning.
  * 
- * - Attempts to commit within an atomic section are atomicity errors.
- *   If a callback must commit to be useful, set the 'no_atomic' flag.
+ * - Callbacks cannot commit within an atomic context. Attempting to do
+ *   so always results in an atomicity error. If a callback must commit,
+ *   use the 'non_atomic' flag to detect errors early.
  * 
- * The callback may fork threads, but the caller namespace is valid only
+ * The tradeoff is that atomic callbacks are more widely usable but rely
+ * heavily on the on_commit and on_abort events, whereas non-atomic is a
+ * more convenient fit for C and synchronous request-response patterns.
+ * 
+ * A callback may fork threads, but the caller's namespace is valid only
  * for duration of the call. To support this, the caller waits for all
- * forks to either exit or or detach (see below).
+ * forks to either exit or detach then commit (see below).
  * 
- * Note: An uncreated error is possible prior to commit if the caller
- * was aborted. An unrecoverable arity error is possible if a callback
- * does not respect its declared stack arity after committing. Use of
- * a NULL callback will cause an error where called, not when defined.
+ * In general, a callback may be canceled because the caller has not yet
+ * committed to perform the call. For non-atomic callbacks, this will be
+ * resolved on first commit: an unrecoverable error, GLAS_E_CANCELED, or
+ * successfully commit to complete the callback.
  */
-typedef struct {
+typedef struct glas_prog_cb {
     bool (*prog)(glas*, void* client_arg);
     void* client_arg;           // opaque, passed to operation
     glas_refct refct;           // integrate GC for client_arg
     char const* caller_prefix;  // e.g. "$"; shadows host names
     uint8_t ar_in, ar_out;      // data stack arity (enforced!)
-    bool no_atomic;             // forbid calls in atomic sections
+    bool non_atomic;            // forbid use in atomic sections
     char const* debug_name;     // appears in stack traces, etc.
 } glas_prog_cb;
 void glas_ns_cb_def(glas*, char const* name, glas_prog_cb const*, glas_ns_tl const* host_ns);
@@ -376,31 +369,24 @@ void glas_ns_cb_def(glas*, char const* name, glas_prog_cb const*, glas_ns_tl con
  * at most once for each name, caching results. Link may fail, returning 
  * false, in which case the runtime treats the name as undefined.
  */
-typedef struct {
-    bool (*link)(char const* name, glas_prog_cb*, void* client_arg);
+typedef struct glas_link_cb {
+    bool (*link)(char const* name, glas_prog_cb* out, void* client_arg);
     void* client_arg;
     glas_refct refct;
 } glas_link_cb;
-void glas_ns_cb_prefix(glas*, char const* prefix, glas_link_cb const*, glas_ns_tl const*);
+void glas_ns_cb_link(glas*, char const* prefix, glas_link_cb const*, glas_ns_tl const*);
 
 /**
  * Detach a callback thread.
  * 
- * The `glas*` argument - the callback thread - starts with a special
- * 'attached' status bound to the caller namespace. Exception: when the
- * caller_prefix is NULL, a callback thread begins detached.
+ * This detaches the `glas*` thread from the caller's namespace. Access
+ * to callbacks or registers defined in the caller's namespace raises an
+ * error after detach.
  * 
- * Upon detaching, the callback thread loses access to its caller's 
- * environment. Names bound to the caller are treated as undefined. But
- * detach remains reversible until the current step is committed.
- * 
- * Detaching an initial callback thread is useless: it still exits after
- * returning from the callback. But detach allows a fork to commit a few
- * steps with the caller's environment then continue after the initial 
- * callback returns.
- * 
- * Note: Attempting to detach when not attached may receive a warning,
- * albeit at most once per callback definition. 
+ * This is most useful in context of forks. Normally, glas systems have
+ * fork-join semantics. The caller will wait for threads forked during a
+ * callback. But the caller may also continue after forks detach and
+ * commit.
  */
 void glas_thread_detach(glas*);
 
@@ -409,9 +395,9 @@ void glas_thread_detach(glas*);
  * 
  * This is useful in context of atomic operations. A detached fork still
  * cannot commit before its origin commits the fork operation. However,
- * this supports creation of threads for background tasks after commit.
+ * this supports creation of threads for background tasks upon commit.
  */
-void glas_thread_fork_detached(glas*);
+glas* glas_thread_fork_detached(glas*);
 
 /*********************************
  * BULK DEFINITION AND MODULARITY
@@ -431,64 +417,55 @@ void glas_thread_fork_detached(glas*);
 void glas_load_builtins(glas*, char const* prefix);
 
 
-typedef enum glas_loader_status {
-    GLAS_LOAD_FILE = 1,     // valid file read
-    GLAS_LOAD_DIR,          // distinguish when a directory is listed
+typedef enum glas_load_status {
+    GLAS_LOAD_OK = 0,       // valid file read
     GLAS_LOAD_NOENT,        // specified file or folder does not exist
-    GLAS_LOAD_ERROR,        // e.g. unreachable, permissions issues
-} glas_loader_status;
+    GLAS_LOAD_ERROR,        // e.g. unreachable or permissions issues
+} glas_load_status;
 
 /**
  * Logical overlay of local filesystem.
  * 
- * The %load primitive supports loading files from the local filesystem
- * or DVCS. There is also limited support for searching directories. But
- * it is frequently convenient for clients to control some dependencies.
+ * This allows the client to virtualize some dependencies, redirecting
+ * some source files to a local callback. Use cases include providing
+ * files through a network, database, scripting, or as built-ins. This 
+ * does not extend to DVCS resources, at the moment.
  * 
- * This is presented as overlaying the local filesystem. Currently, DVCS
- * resources cannot be overlayed. Overlays are aligned to absolute-path 
- * prefixes in the filesystem.
+ * An overlay applies to a specified prefix. Files matching this prefix
+ * are processed by the given loader function. Or, if loader is NULL, we
+ * return to the default loader. Multiple overlays may be stacked, last
+ * one wins, thus shorter prefixes should precede longer prefixes unless
+ * the goal is to replace prior overlays.
  * 
- * Multiple overlays are supported, later overlays shadowing earlier. If
- * an overlay becomes unreachable due to shadowing, it is released. NULL 
- * `glas_file_cb const*` indicates use of default loader for a prefix.
+ * In some cases, the runtime may search a folder. The load_dir callback
+ * is used in this case, and should callback via 'emit' for each relative 
+ * path, indicating whether it represents another folder.
  * 
- * FilePath is always a suffix to the overlayed prefix. There is no need
- * for prefixes to align with directory structure. Could specify half a 
- * file name in the prefix, for example:
- * 
- *     overlay prefix: "/foo/ba"
- *     "/foo/bar.txt" => callback receives path "r.txt"
- *     "/foo/baz/" => callback receives path "z/"
- * 
- * When asked to load a folder, the returned binary should list one path
- * per line, separated by '\n', then return GLAS_LOAD_DIR. This list is
- * split by lines, drops last line if empty, then provided to compiler.
- * Conventions: '/' suffix for subdirs, don't list recursively.
- * 
- * Note: A NOENT result is not a stopping error in glas systems. We can
- * usefully 'compile' this in context of projectional editor live code. 
- * An ERROR result is considered divergent and optionally returns an
- * error description in the buffer, e.g. for routing to error logs. 
+ * Errors distinguish NOENT (file does not exist) and everything else. A
+ * missing file can be 'compiled' by some front-end compilers, e.g. to
+ * support projectional editors and live coding.
  */
-typedef struct {
+typedef struct glas_file_loader {
     void* client_arg;
-    glas_refct refct; // callback to release client_arg
-    glas_loader_status (*load)(char const* Filepath, 
-        uint8_t const** ppBuf, size_t* len, glas_refct*, void* client_arg);
-} glas_file_cb;
-void glas_rt_file_loader(glas_file_cb const*, char const* filepath_prefix);
+    glas_refct refct; // decref after loader becomes unreachable
+    glas_load_status (*load_file)(char const* path, 
+        uint8_t const** ppBuf, size_t* len, glas_refct*, 
+        void* client_arg);
+    glas_load_status (*load_dir)(char const* dir,
+        void (*emit)(char const* path, bool isdir), 
+        void* client_arg);
+} glas_file_loader;
+void glas_rt_file_loader(glas_file_loader const*, char const* prefix);
 
 /**
  * Flexible 'file' references.
  * 
- * - src: usually a filepath. May be file text in some cases.
- * - lang: NULL, or a file extension (for override or embedded)
+ * - src: usually a filepath, but is file content if 'embedded'
+ * - lang: NULL, or a file extension (override or embedded)
  * - embedded: if true, treat src as file content, not file name
- * 
- * There is a limitation that embedded src cannot contain NULL bytes. If
- * greater flexibility is needed, use `glas_rt_file_loader` to overlay a
- * filesystem.
+ *
+ * This is mostly intended for naming user configurations and scripts.
+ * Anything more sophisticated should use glas_rt_file_loader.
  */
 typedef struct {
     char const* src;
@@ -531,25 +508,25 @@ void glas_load_script(glas*, char const* prefix, glas_file_ref const* src, glas_
  * CALLING FUNCTIONS
  **************************/
 /**
- * Run a defined program.
+ * Call a defined program.
  * 
- * The called program receives access to the caller's data stack and 
- * namespace, subject to translation. We may translate the namespace;
- * NULL for no translation.
+ * At present, only three kinds of definitions are callable:
  * 
- * The `_atomic` variant forces the call to be atomic, i.e. the call
- * cannot commit a real world step; attempting is an atomicity error.
+ * - tag "prog", AST type `Env -> Program`
+ * - tag "data", AST type is embedded data
+ * - callback definitions, see glas_prog_cb
  * 
- * Not every definition can be called as a program. Some definitions may
- * be useful only for namespace eval. But we can call:
+ * Eventually we may support user-defined adapters, but this is adequate
+ * for now. Data definitions, when called, simply push a copy of data to
+ * the data stack. Programs and callbacks receive a caller's data stack
+ * and environment for pass-by-ref registers and algebraic effects.
  * 
- * - programs, tagged "p", namespace type `Env -> Program`.
- * - data, tagged "d", namespace type is embedded data
- * - callback definitions act as programs
- *  
+ * The 'atomic' variation forbids the called program from committing a
+ * step. Otherwise, we'll we'll return an optional output indicating if 
+ * a call commits at least one step, which is relevant for backtracking.
  */
-void glas_call(glas*, char const* name, glas_ns_tl const*);
-void glas_call_atomic(glas*, char const* name, glas_ns_tl const*);
+void glas_call(glas*, char const* name, glas_ns_tl const* caller_env, bool* commits);
+void glas_call_atomic(glas*, char const* name, glas_ns_tl const* caller_env);
 
 /**
  * Ask runtime to prepare definitions.
@@ -560,9 +537,9 @@ void glas_call_atomic(glas*, char const* name, glas_ns_tl const*);
 void glas_call_prep(glas*, char const* name);
 
 
-/*************************
- * TRANSACTIONS
- ************************/
+/*********************************
+ * TRANSACTIONS AND BACKTRACKING
+ *********************************/
 
 /**
  * Commit current step.
@@ -588,6 +565,12 @@ void glas_call_prep(glas*, char const* name);
 bool glas_step_commit(glas*);
 
 /**
+ * TBD: It isn't completely impossible to support backtracking via
+ * setjmp, longjmp, saving a data stack, etc.. Probably not portable,
+ * though.
+ */
+
+/**
  * Abort the current step. 
  * 
  * This rewinds a thread's state to the last committed step. The client
@@ -609,9 +592,9 @@ void glas_step_abort(glas*);
  * NULL queue is an exception, processed before return from step_commit.
  * 
  * Operations queues are associated with registers: the client names a
- * register for unique identity, but that register is unmodified. Use of
- * global registers is recommended in this role.
- * 
+ * register as an identity source, but that register is not actually 
+ * modified. Global registers are useful in this role, serving as the
+ * best proxies for C resources.
  */
 void glas_step_on_commit(glas*, void (*op)(void* arg), void* arg, 
     char const* opqueue);
@@ -628,45 +611,41 @@ void glas_step_on_abort(glas*, void (*op)(void* arg), void* arg);
 /**
  * Checkpoints.
  * 
- * Each glas thread has a stack of checkpoints, ordered monotonically: 
- * top of stack is always the most recent checkpoint. At the start of
- * each step the stack contains one checkpoint, equivalent to abort.
+ * Checkpoints support backtracking without a full abort.
  * 
- * During the step, the program may save or push new checkpoints. Save
- * will replace the most recent checkpoint. Push will add a new one to
- * the checkpoint stack. Save and push may fail for the same reasons as
- * commit may fail: conflict and errors. 
+ * Checkpoints can be viewed as stack of hierarchical transactions. Push
+ * starts a new transaction, load aborts that transaction, drop commits.
  * 
- * Loading a checkpoint rewinds context state to the moment immediately
- * before that checkpoint was saved or pushed. Thus, in case of retry, a
- * client must again save or push the checkpoint and check for failure.
- * Load executes 'on_abort' operations created after the checkpoint to
- * support partial rollback.
+ * However, unlike committing a step, committing to a checkpoint is just
+ * dropping it, while pushing a checkpoint may fail if the current step
+ * is not in a viable state to commit, literally forcing a check. This 
+ * resists wasting effort in long-running transactions only to abort.
  * 
- * Checkpoints are relatively cheap, but they may encourage long-running
- * transactions that run greater risk of conflict. 
+ * Successfully committing a step will drop all pending checkpoints. We
+ * cannot backtrack committed steps.
  */
-bool glas_checkpoint_save(glas*); // overwrite last checkpoint on success
-bool glas_checkpoint_push(glas*); // push new checkpoint onto stack on success
-void glas_checkpoint_drop(glas*); // drop a pushed checkpoint
-void glas_checkpoint_load(glas*); // update state to recent checkpoint
+bool glas_checkpoint_push(glas*); // verify step is viable, add checkpoint
+void glas_checkpoint_load(glas*); // 'abort' to last checkpoint
+void glas_checkpoint_drop(glas*); // 'commit' to last checkpoint
 
 /**
- * Timeouts.
+ * Reactivity.
  * 
- * Timeouts add a quota error to the current thread when it fails to 
- * set the timeout again or commit in the allotted duration. A timeout 
- * is canceled by setting 0. 
+ * When deterministic transactions voluntarily abort for retry, they'll
+ * have the same outcome unless state changes. Long-running transactions
+ * also benefit from early notice of state changes that may result in a
+ * concurrency conflict. Both cases can benefit from setting a callback
+ * to execute after a relevant update.
  * 
- * Timeouts cannot be fully respected in the final commit phases, e.g.
- * for a shared database. They must be considered best effort.
+ * A glas thread will maintain only one update callback, and it will be
+ * called at most once. The callback may be replaced, and NULL cancels
+ * the callback. Abort or successful commit implicitly cancels. It is 
+ * possible to receive the prior callback until return from on_update.
  * 
- * Step timeouts do not carry between steps. Checkpoint timeouts are
- * similar, being automatically reset to 0 after commit or checkpoint.
+ * Note: C resources may be integrated via virtual registers. Otherwise, 
+ * this only reports changes to runtime registers, leaving C to client.
  */
-void glas_step_timeout(glas*, uint64_t usec);
-void glas_checkpoint_timeout(glas*, uint64_t usec);
-
+void glas_step_on_update(glas*, void(*op)(void* arg), void* arg);
 
 /***************************************
  * ERRORS 
@@ -675,9 +654,13 @@ void glas_checkpoint_timeout(glas*, uint64_t usec);
 /**
  * Error Summary. A bitwise `OR` of error flags.
  * 
- * Logically, errors are divergence. They cannot be committed. Error
- * handling is instead based on rewinding via `glas_step_abort` and
- * retrying, or trying something different. 
+ * Logically, all errors are divergent, like an infinite loop. That is, 
+ * glas threads with errors cannot be committed. In some cases, errors
+ * are detected only upon attempt to commit or push a checkpoint. Thus,
+ * reading errors is most reliable just after a failed attempt.
+ * 
+ * In some cases, errors can be resolved through retry, or trying another
+ * operation.
  * 
  * In context of state changes and non-deterministic choice, retrying
  * even assertion errors may succeed.
@@ -687,8 +670,8 @@ typedef enum GLAS_ERROR_FLAGS {
     GLAS_E_UNRECOVERABLE    = 0x000001, // abort won't fix unrecoverable errors
 
     GLAS_E_CONFLICT         = 0x000002, // concurrency conflicts; retry might avoid
-    GLAS_E_UNCREATED        = 0x000005, // an aborted fork or callback context
-    GLAS_E_QUOTA            = 0x000008, // client-requested quota or timeout
+    GLAS_E_CANCELED         = 0x000005, // glas thread creation (callback or fork) aborted
+    GLAS_E_QUOTA            = 0x000008, // configured quota or timeout
     GLAS_E_IMPL             = 0x000010, // incomplete implementation
 
     // OPERATION ERRORS
@@ -974,13 +957,18 @@ void glas_reg_bag_peek(glas*, char const*); // -- Data; as read copy write
  */
 
 /**
- * TBD: Virtual Registers
+ * Virtual Registers
  * 
- * We could feasibly use registers as proxies for client resources in 
- * read-write conflict analysis. But I lack a clear use-case. Later, if 
- * I introduce callbacks for precommit and commit, perhaps this feature
- * can be leveraged effectively?
+ * Virtual registers serve as proxies for client resources. A client can
+ * read or write the virtual register, but it's only recorded as metadata
+ * for purpose of conflict analysis and reactivity.
+ * 
+ * Much like on_commit opqueues, virtual registers are associated with
+ * normal registers as an identity source, and it is useful to bind to
+ * global registers as proxies to C resources.
  */
+void glas_vreg_read(glas*, char const*);
+void glas_vreg_write(glas*, char const*);
 
 /********************************
  * BASIC DATA MANIPULATION
