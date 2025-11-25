@@ -28,8 +28,9 @@
  * Reference to a glas thread.
  * 
  * The glas thread is the primary context for the glas runtime. It has
- * a stack, stash, and namespace, plus bookkeeping for transactions,
- * checkpoints, and errors. The thread awaits commands from the client.
+ * a stack, stash, and a lexically scoped namespace, plus bookkeeping 
+ * for transactions, checkpoints, and errors. The thread awaits commands
+ * from the client, and most commands are synchronous (awaiting result).
  * 
  * mt-safety: Each glas thread must be used in a single-threaded manner,
  * but may be shared via mutex. Separate glas threads are fully mt-safe.
@@ -168,6 +169,17 @@ inline void glas_incref(glas_refct c) {
 /************************
  * NAMESPACES
  ************************/
+/**
+ * Lexical Scope
+ * 
+ * The glas thread maintains a stack of namespace scopes. Push copies or
+ * backs up the current namespace, while pop restores to last push. This 
+ * enables clients to conveniently model call stacks.
+ * 
+ * Note: Scopes are not shared with forks or callbacks.
+ */
+void glas_ns_scope_push(glas*);
+void glas_ns_scope_pop(glas*);
 
 /**
  * Test for existence of definitions.
@@ -308,8 +320,6 @@ void glas_ns_ast_mkop_seq(glas*); // op for function composition (first arg appl
  * an assumption that an AST represents a closed term before evaluation.
  */
 void glas_ns_ast_mk_closed_term(glas*); // AST -- AST (closed)
-
-
 
 /**
  * Define programs using callbacks.
@@ -523,7 +533,7 @@ void glas_load_script(glas*, char const* prefix, glas_file_ref const* src, glas_
  * 
  * The 'atomic' variation forbids the called program from committing a
  * step. Otherwise, we'll we'll return an optional output indicating if 
- * a call commits at least one step, which is relevant for backtracking.
+ * a call commits at least one step, relevant for backtracking.
  */
 void glas_call(glas*, char const* name, glas_ns_tl const* caller_env, bool* commits);
 void glas_call_atomic(glas*, char const* name, glas_ns_tl const* caller_env);
@@ -555,7 +565,7 @@ void glas_call_prep(glas*, char const* name);
  * A step may fail to commit, typically due to error or conflict. The
  * glas system uses optimistic concurrency control: Resources are not
  * locked down. Instead, clients keep transactions small, avoid data
- * contention, and retry as needed. 
+ * contention, and retry as needed.
  * 
  * The C language does not make 'undo' easy. To mitigate, the runtime
  * provides 'on_commit' and 'on_abort' operations. Clients thus defer
@@ -563,12 +573,6 @@ void glas_call_prep(glas*, char const* name);
  * easy to undo.
  */
 bool glas_step_commit(glas*);
-
-/**
- * TBD: It isn't completely impossible to support backtracking via
- * setjmp, longjmp, saving a data stack, etc.. Probably not portable,
- * though.
- */
 
 /**
  * Abort the current step. 
@@ -583,87 +587,71 @@ void glas_step_abort(glas*);
  * Committed action.
  * 
  * For operations that are difficult to undo, clients may defer action 
- * until after commit. This prevents observation of results within the
- * step, but if that's acceptable it greatly simplifies integration.
+ * until after commit. Although asynchronous operations are awkward in
+ * their own ways, they're often easier than undo.
  * 
- * To maintain transactional ordering of operations, operations can be
- * organized into queues that are written within the transaction. These
- * queues are then processed sequentially by runtime worker threads. The
- * NULL queue is an exception, processed before return from step_commit.
- * 
- * Operations queues are associated with registers: the client names a
- * register as an identity source, but that register is not actually 
- * modified. Global registers are useful in this role, serving as the
- * best proxies for C resources.
+ * For transaction serializability, we write operations into queues. The
+ * queue is then processed by a runtime worker thread. Clients may await
+ * results indirectly, e.g. arrange an operation to signal a semaphore.
+ * Any register name may be used as a queue name, but the register isn't
+ * modified, used only for identity (cf reg_bind_assoc). A special case, 
+ * the NULL queue is processed locally before return from step_commit.
  */
-void glas_step_on_commit(glas*, void (*op)(void* arg), void* arg, 
-    char const* opqueue);
+void glas_step_on_commit(glas*, char const* queue, void (*op)(void* arg), void* arg);
 
 /**
  * Defer operations until abort.
  * 
  * This is mostly useful to clean up allocated memory, but it may find
  * other use cases. These are run before return from `glas_step_abort`.
- * Order is reversed: last inserted is first executed.
+ * In case of checkpoints, we'll also abort a suffix of operations on
+ * load.
+ * 
+ * Order is reversed: last operation inserted is first executed. This
+ * aligns with conventional stack unwind cleanup.
  */
 void glas_step_on_abort(glas*, void (*op)(void* arg), void* arg);
 
 /**
  * Checkpoints.
  * 
- * Checkpoints support backtracking without a full abort.
- * 
  * Checkpoints can be viewed as stack of hierarchical transactions. Push
  * starts a new transaction, load aborts that transaction, drop commits.
+ * It is good practice to literally check for conflicts or errors before
+ * pushing a checkpoint, but the responsibilities are decoupled.
  * 
- * However, unlike committing a step, committing to a checkpoint is just
- * dropping it, while pushing a checkpoint may fail if the current step
- * is not in a viable state to commit, literally forcing a check. This 
- * resists wasting effort in long-running transactions only to abort.
- * 
- * Successfully committing a step will drop all pending checkpoints. We
- * cannot backtrack committed steps.
+ * Loading a checkpoint will run the appropriate suffix of on_abort ops.
+ * Aborting or successfully committing the step drops all checkpoints.
  */
-bool glas_checkpoint_push(glas*); // verify step is viable, add checkpoint
+void glas_checkpoint_push(glas*); // verify step is viable, add checkpoint
 void glas_checkpoint_load(glas*); // 'abort' to last checkpoint
 void glas_checkpoint_drop(glas*); // 'commit' to last checkpoint
 
 /**
  * Reactivity.
  * 
- * When deterministic transactions voluntarily abort for retry, they'll
- * have the same outcome unless state changes. Long-running transactions
- * also benefit from early notice of state changes that may result in a
- * concurrency conflict. Both cases can benefit from setting a callback
- * to execute after a relevant update.
+ * Requests a runtime callback when state observed by a step is updated.
+ * One use case is awaiting changes before retrying a step. Rather than
+ * immediate abort and retry, await relevant state changes before abort.
  * 
- * A glas thread will maintain only one update callback, and it will be
- * called at most once. The callback may be replaced, and NULL cancels
- * the callback. Abort or successful commit implicitly cancels. It is 
- * possible to receive the prior callback until return from on_update.
+ * Unlike on_abort or on_commit, there is only one on_update callback.
+ * It may be updated or canceled (via NULL op), and is implicitly reset
+ * to NULL just before the callback, on successful commit, and on abort.
  * 
- * Note: C resources may be integrated via virtual registers. Otherwise, 
- * this only reports changes to runtime registers, leaving C to client.
+ * Note: Client state can be integrated via Virtual Registers.
  */
 void glas_step_on_update(glas*, void(*op)(void* arg), void* arg);
 
 /***************************************
  * ERRORS 
  **************************************/
-
 /**
  * Error Summary. A bitwise `OR` of error flags.
  * 
- * Logically, all errors are divergent, like an infinite loop. That is, 
- * glas threads with errors cannot be committed. In some cases, errors
- * are detected only upon attempt to commit or push a checkpoint. Thus,
- * reading errors is most reliable just after a failed attempt.
- * 
- * In some cases, errors can be resolved through retry, or trying another
- * operation.
- * 
- * In context of state changes and non-deterministic choice, retrying
- * even assertion errors may succeed.
+ * A glas thread cannot commit steps while in error state. Most errors
+ * can be recovered from via abort or loading a prior checkpoint. But a
+ * few are unrecoverable, e.g. canceled forks or callbacks remain so. An
+ * error will flag unrecoverable in this case.
  */
 typedef enum GLAS_ERROR_FLAGS { 
     GLAS_NO_ERRORS          = 0x000000,
@@ -689,9 +677,16 @@ typedef enum GLAS_ERROR_FLAGS {
     GLAS_E_ARITY            = 0x800000, // callback arity violation (unrecoverable if committed)
 } GLAS_ERROR_FLAGS;
 
-GLAS_ERROR_FLAGS glas_errors_read(glas*);           // read error flags
-void glas_errors_write(glas*, GLAS_ERROR_FLAGS);    // monotonic via bitwise 'or'
-
+/**
+ * Clients may read or write errors.
+ * 
+ * However, checking for conflict is expensive. To provide some control
+ * over expensive tests, read may mask which errors are tested. Writing
+ * errors applies to current checkpoint unless GLAS_E_UNRECOVERABLE is
+ * marked, in which case the error is unrecoverable.
+ */
+GLAS_ERROR_FLAGS glas_errors_read(glas*, GLAS_ERROR_FLAGS mask);
+void glas_errors_write(glas*, GLAS_ERROR_FLAGS);
 
 /*********************************************
  * DATA TRANSFER
@@ -848,39 +843,54 @@ void glas_data_unseal(glas*, char const* key);
  * REGISTERS
  ****************************************/
 /**
- * Bind new registers to a prefix.
+ * Bind volume of references to a prefix.
  * 
- * In future operations, prefix refers to a fresh volume of registers.
- * Every name in prefix is defined, i.e. we logically have an infinite
- * set of registers. But they are lazily allocated by the runtime and
- * initialized to zero on demand.
+ * Clients can allocate references or volumes thereof on the data stack.
+ * These references may be bound into the namespace, becoming registers.
+ * For extensibility, we favor volumes instead of individual references.
+ * Volumes are dense: every suffix of prefix is defined as a register.
  * 
- * A register that becomes unreachable, e.g. due to name shadowing, may
- * be garbage collected.
+ * Registers are essentially just references bound to the namespace. The
+ * glas program model mostly works with registers instead of references,
+ * discouraging heap-like state graphs and simplifying static analysis.
+ * The API reflects this: operations apply to named registers instead of
+ * references, excepting initial construction and binding.
  */
-void glas_reg_bind_new(glas*, char const* prefix);
+void glas_ns_ref_bind(glas*, char const* prefix);
+
+/** 
+ * Allocate a 'new' volume of references.
+ * 
+ * This is pushed as abstract data on the stack. Instead of a singular
+ * reference, this represents an entire volume of references, a mutable
+ * dictionary, even if clients use only one name.
+ * 
+ * The volume is allocated lazily, individual refs initialized to zero.
+ */
+void glas_ref_new(glas*);
 
 /**
- * Bind associated registers to a prefix.
+ * Discover an 'associated' volume.
  * 
- * Introduces a unique space of registers identified by an ordered pair 
- * of registers. The same registers always name the same space.
+ * Glas systems support an illusion that every directed edge between two
+ * registers refers to another volume of registers. This serves at least 
+ * two roles: ephemerons and abstractions. A runtime can garbage collect 
+ * an association when either key becomes unreachable. Associated state 
+ * supports many features of abstract data types.
  * 
- * A primary use case is abstract data environments: instead of sealing
- * data, we can seal entire volumes of registers. This avoids the wrap
- * and unwrap mechanic of sealed data, and enables fine-grained conflict
- * analysis for individual registers in the volume.
+ * This returns the referenced volume of registers on the data stack. On
+ * first lookup this is a new volume, but subsequent lookups rediscover
+ * the same associated state. 
  */
-void glas_reg_bind_assoc(glas*, char const* prefix, char const* r1, char const* r2);
+void glas_ref_reg_assoc(glas*, char const* r1, char const* r2);
 
 /**
- * Bind global registers to a prefix.
+ * A runtime-global volume of registers.
  * 
- * This provides access to shared state across all glas threads sharing
- * the runtime process. Global registers also serve as useful proxy for 
- * client resources, e.g. for `glas_step_on_commit` operations queues.
+ * The runtime provides one global volume of registers, initially new
+ * but accessible to all glas threads.
  */
-void glas_reg_bind_global(glas*, char const* prefix);
+void glas_ref_globals(glas*);
 
 /**
  * TBD: Persistent registers.
@@ -959,16 +969,18 @@ void glas_reg_bag_peek(glas*, char const*); // -- Data; as read copy write
 /**
  * Virtual Registers
  * 
- * Virtual registers serve as proxies for client resources. A client can
- * read or write the virtual register, but it's only recorded as metadata
- * for purpose of conflict analysis and reactivity.
+ * Virtual registers serve as proxies for client resources. Reads and 
+ * writes to virtual registers are recorded as metadata for conflict 
+ * analysis and reactivity but do not influence observable state.
  * 
- * Much like on_commit opqueues, virtual registers are associated with
- * normal registers as an identity source, and it is useful to bind to
- * global registers as proxies to C resources.
+ * Like on_commit queues, virtual registers take regular registers as an 
+ * identity source by association, but are distinct from them.
  */
-void glas_vreg_read(glas*, char const*);
-void glas_vreg_write(glas*, char const*);
+void glas_vreg_read(glas*, char const*); // logically read vreg
+void glas_vreg_write(glas*, char const*); // logically write vreg
+void glas_vreg_rw(glas*, char const*); // logically read and write
+
+
 
 /********************************
  * BASIC DATA MANIPULATION
@@ -982,16 +994,15 @@ void glas_data_drop(glas*, uint8_t amt); // A B C -- A ; drop 2
 void glas_data_swap(glas*);              // A B -- B A
 
 /**
- * Transfer data to or from auxilliary stack, called stash.
+ * Auxilliary stack for hiding data
  * 
- * If amt > 0, transfers amt items from stack to stash. If amt < 0, 
- * transfers |amt| items from stash to stack. Always equivalent to 
- * transferring one item at a time (modulo performance).
+ * The stash serves the role of program primitive %dip, scoping access
+ * to a few elements of the data stack. If amt >= 0, transfers amt items
+ * from stack to stash, otherwise |amt| is transferred in reverse. The
+ * stash is not shared with callbacks or forks.
  * 
- * The stash serves a similar role as the program primitive %dip, hiding
- * part of the stack from a subprogram. Callback threads do not receive 
- * access to a caller's stash, and items remaining in a callback thread
- * stash are orphaned upon return.
+ * Items are logically transferred one at a time, though may be batched
+ * by the implementation.
  */
 void glas_data_stash(glas*, int8_t amt);
 
@@ -1145,18 +1156,32 @@ bool glas_rt_run_builtin_tests();
  */
 void glas_rt_tls_reset();
 
+
 /**
- * Trigger garbage collection ASAP.
+ * Trigger garbage collection.
  * 
- * Garbage collection is performed by background threads. If collecting,
- * this schedules the GC to immediately begin another collection after
- * the current one finishes.
- * 
- * The glas runtime uses a generational collector, so heuristics usually
- * determine whether to collect just 'young' data or more. But this API
- * can force the triggered collection to be a full GC.
+ * This operation will trigger a GC to run ASAP. Flags further influence
+ * behavior, e.g. GC will heuristically go back to sleep if there isn't
+ * much work available unless flagged to perform a full GC.
  */
-void glas_rt_gc_trigger(bool fullgc);
+typedef enum glas_gc_flags {
+    // 0 or bitwise 'or' of the following
+    GLAS_GC_FULL = 0b1, // force full GC regardless of state 
+} glas_gc_flags;
+void glas_rt_gc_trigger(glas_gc_flags);
+
+/*******
+ * TBD: STATS
+ * 
+ * I'd like to provide flexible access to statistics for both a glas 
+ * thread and the full runtime. This could include step counts, memory
+ * reserved and allocated, allocations aborted, committed and aborted
+ * operations counts (perhaps only expensive ops), and many other ad 
+ * hoc statistics.
+ */
+
+
+
 
 #define GLAS_H
 #endif

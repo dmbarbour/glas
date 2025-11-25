@@ -302,7 +302,7 @@ typedef enum glas_type_id {
     GLAS_TYPE_BIG_ARR,
     GLAS_TYPE_TAKE_CONCAT, 
     GLAS_TYPE_FOREIGN_PTR,
-    GLAS_TYPE_REGISTER,
+    GLAS_TYPE_REFERENCE,
     GLAS_TYPE_TOMBSTONE,
     GLAS_TYPE_SEAL,
     // under development
@@ -428,7 +428,7 @@ struct glas_cell {
             // Alt design:
             // - externalize state via identity
             // 
-        } reg;
+        } ref;
         
         struct {
             // tombstone, provides a weak ref and a stable ID
@@ -833,8 +833,8 @@ static struct glas_rt {
         /**
          * API guidance of GC
          */
-        _Atomic(bool) signal_gc;
-        _Atomic(bool) force_fullgc;
+        _Atomic(glas_gc_flags) trigger_flags;
+        _Atomic(bool) trigger;
     } gc;
 
     struct glas_rt_stat {
@@ -872,6 +872,7 @@ LOCAL void glas_os_thread_detach(void* addr) {
     glas_os_thread_set_done((glas_os_thread*)addr);
 }
 API void glas_rt_tls_reset() {
+    glas_rt_init();
     void* addr = pthread_getspecific(glas_rt.tls.key);
     if(NULL != addr) {
         pthread_setspecific(glas_rt.tls.key, NULL);
@@ -915,16 +916,14 @@ LOCAL void glas_rt_init_slowpath() {
     atomic_init(&glas_rt.gc.wb, GLAS_VOID);
     atomic_init(&glas_rt.gc.cycle, 1);
     glas_gc_thread_init();
-    // TBD: proper init of globals as lazy dict of reg.
+    // TBD: proper init of globals as lazy dict of ref.
     // TBD: Worker threads for on_commit.
 }
 
-API void glas_rt_gc_trigger(bool fullgc) {
+API void glas_rt_gc_trigger(glas_gc_flags flags) {
     glas_rt_init();
-    if(fullgc) { 
-        atomic_store_explicit(&glas_rt.gc.force_fullgc, true, memory_order_relaxed); 
-    }
-    atomic_store_explicit(&glas_rt.gc.signal_gc, true, memory_order_release);
+    atomic_fetch_or_explicit(&glas_rt.gc.trigger_flags, flags, memory_order_relaxed);
+    atomic_store_explicit(&glas_rt.gc.trigger, true, memory_order_release);
     sem_post(&glas_rt.gc.wakeup);
 }
 
@@ -1738,8 +1737,8 @@ LOCAL void glas_cell_finalize(glas_cell* cell) {
     if(GLAS_TYPE_FOREIGN_PTR == ty) {
         glas_gc_dq_push(&glas_rt.gc.dq, cell->foreign_ptr.pin);
         cell->foreign_ptr.pin.refct_upd = NULL;
-    } else if(GLAS_TYPE_REGISTER == ty) {
-        atomic_store_explicit(&(cell->reg.ts->ts.wk), GLAS_VOID, memory_order_relaxed);
+    } else if(GLAS_TYPE_REFERENCE == ty) {
+        atomic_store_explicit(&(cell->ref.ts->ts.wk), GLAS_VOID, memory_order_relaxed);
     } else {
         debug("unrecognized finalizer type: %d", (int)ty);
     }
@@ -1900,10 +1899,10 @@ LOCAL void glas_gc_trace_cell(glas_gc_mb** mb, glas_cell* cell) {
                 GLAS_CELL_SLOT_MARK(seal.data);
             }
             return;
-        case GLAS_TYPE_REGISTER:
-            GLAS_CELL_SLOT_MARK_ATOMIC(reg.version);
-            GLAS_CELL_SLOT_MARK_ATOMIC(reg.assoc_lhs);
-            GLAS_CELL_SLOT_MARK_ATOMIC(reg.ts);
+        case GLAS_TYPE_REFERENCE:
+            GLAS_CELL_SLOT_MARK_ATOMIC(ref.version);
+            GLAS_CELL_SLOT_MARK_ATOMIC(ref.assoc_lhs);
+            GLAS_CELL_SLOT_MARK_ATOMIC(ref.ts);
             return;
         case GLAS_TYPE_TAKE_CONCAT:
             GLAS_CELL_SLOT_MARK(take_concat.left);
@@ -2181,7 +2180,10 @@ LOCAL void glas_gc_dq_init(glas_gc_dq* dq) {
 }
 
 LOCAL bool glas_gc_heuristic_level() {
-    if(atomic_exchange_explicit(&glas_rt.gc.force_fullgc, false, memory_order_relaxed)) {
+    // At the moment, this is not a generational GC. So our only levels
+    // are full GC or skip GC. This might change later, of course.
+    glas_gc_flags const flags = atomic_exchange_explicit(&glas_rt.gc.trigger_flags, 0, memory_order_relaxed);
+    if(0 != (GLAS_GC_FULL & flags)) {
         return true; 
     }
     size_t const curr_roots = atomic_load_explicit(&glas_rt.stat.roots_init, memory_order_relaxed);
@@ -2241,7 +2243,7 @@ LOCAL void* glas_gc_main_thread(void* arg) {
             glas_gc_workers_are_done());
 
         // skip sleep if GC request is pending, otherwise wait for timer or wakeup
-        if(!atomic_exchange_explicit(&glas_rt.gc.signal_gc, false, memory_order_relaxed)) {
+        if(!atomic_exchange_explicit(&glas_rt.gc.trigger, false, memory_order_relaxed)) {
             static struct timespec const gc_poll_period = { .tv_nsec = (GLAS_GC_POLL_USEC * 1000) };
             sem_timedwait(&glas_rt.gc.wakeup, &gc_poll_period);
         }
@@ -2572,10 +2574,16 @@ API void glas_errors_write(glas* g, GLAS_ERROR_FLAGS err) {
         g->state->err |= err;
     }
 }
-API GLAS_ERROR_FLAGS glas_errors_read(glas* g) {
-    return (g->err | g->state->err);
+LOCAL void glas_step_detect_conflict(glas* g) {
+    debug("todo: analyze for read-write conflicts");
 }
-
+API GLAS_ERROR_FLAGS glas_errors_read(glas* g, GLAS_ERROR_FLAGS mask) {
+    // conflict analysis is expensive, so perform only as needed
+    if(0 != (GLAS_E_CONFLICT & (mask & ~(g->state->err)))) {
+        glas_step_detect_conflict(g);
+    }
+    return (mask & (g->err | g->state->err));
+}
 LOCAL glas_cell* glas_data_list_append(glas_cell* lhs, glas_cell* rhs) {
     if(GLAS_VAL_UNIT == lhs) { return rhs; }
     if(GLAS_VAL_UNIT == rhs) { return lhs; }
@@ -3749,6 +3757,7 @@ MU_TEST_SUITE(test_glas) {
     MU_RUN_TEST(test_fin);
 }
 API bool glas_rt_run_builtin_tests() {
+    glas_rt_init();
     MU_RUN_SUITE(test_glas);
     MU_REPORT();
     return (0 == MU_EXIT_CODE);
