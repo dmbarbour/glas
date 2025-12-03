@@ -170,13 +170,14 @@ inline void glas_incref(glas_refct c) {
  * NAMESPACES
  ************************/
 /**
- * Lexical Scope
+ * Lexical Namespace Scope
  * 
- * The glas thread maintains a stack of namespace scopes. Push copies or
- * backs up the current namespace, while pop restores to last push. This 
- * enables clients to conveniently model call stacks.
+ * The glas thread maintains a stack of namespace scopes. Push creates a
+ * backup of the current namespace while pop restores to last push. This
+ * is a O(1) operation via logical copy.
  * 
- * Note: Scopes are not shared with forks or callbacks.
+ * Scopes are maintained across steps, but are not shared with forks or
+ * callbacks.
  */
 void glas_ns_scope_push(glas*);
 void glas_ns_scope_pop(glas*);
@@ -357,34 +358,63 @@ void glas_ns_ast_mk_closed_term(glas*); // AST -- AST (closed)
  * 
  * In general, a callback may be canceled because the caller has not yet
  * committed to perform the call. For non-atomic callbacks, this will be
- * resolved on first commit: an unrecoverable error, GLAS_E_CANCELED, or
- * successfully commit to complete the callback.
+ * resolved on first commit, which also commits to performing the call.
+ * 
+ * To integrate with partial evaluation, callbacks have a 'static_eval'
+ * option with states reject (default), accept, or require. If accepted,
+ * callbacks are opportunistically evaluated at link time if ar_in stack
+ * elements are available. If required, error unless evaluated at link 
+ * time. Link-time evaluation is lazy via logical background thread (see
+ * refl_bgcall). Note: reject unless commutative, idempotent, cacheable!
+ * 
+ * Notes: If cb is NULL, treats as `%error` definition. If caller_prefix
+ * is NULL, caller namespace is unavailable. If debug_name is NULL, uses 
+ * function pointer as opaque stand-in.
  */
 typedef struct glas_prog_cb {
-    bool (*prog)(glas*, void* client_arg);
+    bool (*cb)(glas*, void* client_arg);
     void* client_arg;           // opaque, passed to operation
     glas_refct refct;           // integrate GC for client_arg
-    char const* caller_prefix;  // e.g. "$"; shadows host names
+    char const* caller_prefix;  // e.g. "$"; hides host names
     uint8_t ar_in, ar_out;      // data stack arity (enforced!)
     bool non_atomic;            // forbid use in atomic sections
+    uint8_t static_eval;        // 0=avoid, 1=accept, 2=require
     char const* debug_name;     // appears in stack traces, etc.
-} glas_prog_cb;
+} glas_prog_cb; // note: for extensibility, zero-fill fields that are not set!
 void glas_ns_cb_def(glas*, char const* name, glas_prog_cb const*, glas_ns_tl const* host_ns);
 
 /**
  * Lazy linking for an entire namespace of callbacks.
  * 
- * A linker callback is invoked only if the name is referenced, and must
- * write the glas_prog_cb into a provided output parameter. It is called 
- * at most once for each name, caching results. Link may fail, returning 
- * false, in which case the runtime treats the name as undefined.
+ * A linker callback is invoked if the name is referenced from a program
+ * being prepared for call. It is called at most once per name, caching 
+ * results. It is not guaranteed that the function will be called.
+ * 
+ * Link may fail, returning false, in which case the runtime treats the
+ * name as undefined and may default to a prior definition under prefix.
+ * Alternatively, link may succeed but set callback function to NULL, in
+ * which case we treat as linking an invalid program.
  */
 typedef struct glas_link_cb {
     bool (*link)(char const* name, glas_prog_cb* out, void* client_arg);
     void* client_arg;
     glas_refct refct;
 } glas_link_cb;
-void glas_ns_cb_link(glas*, char const* prefix, glas_link_cb const*, glas_ns_tl const*);
+void glas_ns_cb_bind(glas*, char const* prefix, glas_link_cb const*, glas_ns_tl const* host_ns);
+
+/**
+ * TBD: staged linking? tentative
+ * 
+ * Can feasibly provide static parameters, e.g. generating glas_prog_cb*
+ * in context of a caller_prefix. This offers an alternative approach to
+ * static evaluation, albeit limited to the namespace layer.
+ * 
+ * But it requires a relatively sophisticated API, and benefits compared
+ * static_eval (in glas_prog_cb) together with foreign pointers are very
+ * limited. Essentially moves one pointer from data stack to client_arg!
+ * 
+ * For now, defer this feature. Reconsider later.
+ */
 
 /**
  * Detach a callback thread.
@@ -518,22 +548,37 @@ void glas_load_script(glas*, char const* prefix, glas_file_ref const* src, glas_
  * CALLING FUNCTIONS
  **************************/
 /**
- * Call a defined program.
+ * Call a defined program by name.
  * 
- * At present, only three kinds of definitions are callable:
+ * The runtime expects callable definitions to be tagged with a calling
+ * convention. Tags are a namespace-layer design pattern, i.e. functions
+ * that receive a record of adapters and select one or more to adapt the
+ * definition. Recognized tags:
  * 
- * - tag "prog", AST type `Env -> Program`
- * - tag "data", AST type is embedded data
- * - callback definitions, see glas_prog_cb
+ * - "prog" for a program definition (verify then run)
+ * - "data" for embedded data (push to top of stack)
+ * - "call" for Env -> callable tagged Def 
  * 
- * Eventually we may support user-defined adapters, but this is adequate
- * for now. Data definitions, when called, simply push a copy of data to
- * the data stack. Programs and callbacks receive a caller's data stack
- * and environment for pass-by-ref registers and algebraic effects.
+ * Program verification should ultimately be configurable. In my vision,
+ * the user configration will directly specify most verification code to
+ * support gradual types, proof-carrying code, user-defined annotations.
+ * But built-in support, e.g. arity checks and static assertions, may be
+ * implemented by default.
  * 
- * The 'atomic' variation forbids the called program from committing a
- * step. Otherwise, we'll we'll return an optional output indicating if 
- * a call commits at least one step, relevant for backtracking.
+ * Calls provide the thread's namespace translated through caller_env as
+ * additional context. This supports higher-order programs, pass-by-ref
+ * registers, algebraic effects. Within programs, call context is static 
+ * while data stack is dynamic. But this API expresses dynamic context.
+ * 
+ * For non-atomic calls, there is feedback on whether the step commits.
+ * This is important for backtracking: if a call commits, abort rewinds
+ * and replays a program suffix to just after the call, and checkpoints 
+ * are cleared. But clients may receive this feedback via step_on_commit
+ * and set 'commits' to NULL.
+ * 
+ * Clients may request 'atomic' calls, equivalent to wrapping a program
+ * with `%atomic`. This guarantees a call can be fully backtracked, but
+ * may instead diverge with atomicity errors.
  */
 void glas_call(glas*, char const* name, glas_ns_tl const* caller_env, bool* commits);
 void glas_call_atomic(glas*, char const* name, glas_ns_tl const* caller_env);
@@ -577,9 +622,8 @@ bool glas_step_commit(glas*);
 /**
  * Abort the current step. 
  * 
- * This rewinds a thread's state to the last committed step. The client
- * will often wish to rewind their own state, especially allocations. 
- * This can be supported via `glas_step_on_abort`. 
+ * Rewind a glas thread's state to start of the current step. To support 
+ * client state rewind, try the `glas_step_on_abort` API.
  */
 void glas_step_abort(glas*);
 
@@ -616,16 +660,14 @@ void glas_step_on_abort(glas*, void (*op)(void* arg), void* arg);
  * Checkpoints.
  * 
  * Checkpoints can be viewed as stack of hierarchical transactions. Push
- * starts a new transaction, load aborts that transaction, drop commits.
- * It is good practice to literally check for conflicts or errors before
- * pushing a checkpoint, but the responsibilities are decoupled.
- * 
- * Loading a checkpoint will run the appropriate suffix of on_abort ops.
- * Aborting or successfully committing the step drops all checkpoints.
+ * starts a new transaction, load aborts that transaction, drop commits
+ * to the checkpoint but not to the step. Load immediately runs on_abort 
+ * ops since the checkpoint. (Note: drop does not run on_commit ops.)
  */
-void glas_checkpoint_push(glas*); // verify step is viable, add checkpoint
-void glas_checkpoint_load(glas*); // 'abort' to last checkpoint
-void glas_checkpoint_drop(glas*); // 'commit' to last checkpoint
+void glas_checkpoint_push(glas*); // copy context for the checkpoint
+void glas_checkpoint_load(glas*); // 'abort', rewind to prior checkpoint
+void glas_checkpoint_drop(glas*); // 'commit' to updates since checkpoint
+void glas_checkpoint_clear(glas*); // drop all checkpoints
 
 /**
  * Reactivity.
@@ -654,27 +696,26 @@ void glas_step_on_update(glas*, void(*op)(void* arg), void* arg);
  * error will flag unrecoverable in this case.
  */
 typedef enum GLAS_ERROR_FLAGS { 
-    GLAS_NO_ERRORS          = 0x000000,
-    GLAS_E_UNRECOVERABLE    = 0x000001, // abort won't fix unrecoverable errors
+    GLAS_NO_ERRORS          = 0x0000000,
+    GLAS_E_UNRECOVERABLE    = 0x0000001, // abort won't fix unrecoverable errors
 
-    GLAS_E_CONFLICT         = 0x000002, // concurrency conflicts; retry might avoid
-    GLAS_E_CANCELED         = 0x000005, // glas thread creation (callback or fork) aborted
-    GLAS_E_QUOTA            = 0x000008, // configured quota or timeout
-    GLAS_E_IMPL             = 0x000010, // incomplete implementation
+    // EXTERNAL ERRORS
+    GLAS_E_CONFLICT         = 0x0000002, // concurrency conflicts; retry might avoid
+    GLAS_E_CANCELED         = 0x0000004, // glas thread creation (callback or fork) aborted
+    GLAS_E_QUOTA            = 0x0000008, // configured quota or timeout
+    GLAS_E_IMPL             = 0x0000010, // incomplete implementation
+    GLAS_E_CLIENT           = 0x0000080, // generic client-inserted error
 
     // OPERATION ERRORS
-    GLAS_E_ERROR_OP         = 0x001000, // explicit divergence in program
-    GLAS_E_LINEARITY        = 0x002000, // copy or drop of linear data
-    GLAS_E_DATA_SEALED      = 0x004000, // failed to unseal data before use
-    GLAS_E_NAME_UNDEF       = 0x008000, // attempt to use an undefined name
-    GLAS_E_EPHEMERALITY     = 0x010000, // ephemeral data in persistent register
-    GLAS_E_ATOMICITY        = 0x020000, // attempted commit in atomic callback
-    GLAS_E_ASSERT           = 0x040000, // runtime assertion failures
-    GLAS_E_DATA_TYPE        = 0x080000, // runtime type errors
-    GLAS_E_DATA_QTY         = 0x100000, // mostly for queue reads
-    GLAS_E_UNDERFLOW        = 0x200000, // stack underflow
-    GLAS_E_OVERFLOW         = 0x400000, // stack overflow
-    GLAS_E_ARITY            = 0x800000, // callback arity violation (unrecoverable if committed)
+    GLAS_E_LINEARITY        = 0x0000100, // copy or drop of linear data
+    GLAS_E_EPHEMERALITY     = 0x0000200, // ephemeral data shared beyond scope
+    GLAS_E_ABSTRACTION      = 0x0000400, // direct observation forbidden
+    GLAS_E_ATOMICITY        = 0x0000800, // e.g. commit in atomic context
+    GLAS_E_ASSERT           = 0x0001000, // a check failed
+    GLAS_E_UNDERFLOW        = 0x0002000, // stack underflow
+    GLAS_E_OVERFLOW         = 0x0004000, // stack overflow
+    GLAS_E_ARITY            = 0x0008000, // arity violation
+    GLAS_E_TYPE             = 0x0010000, // runtime type errors
 } GLAS_ERROR_FLAGS;
 
 /**
@@ -683,7 +724,7 @@ typedef enum GLAS_ERROR_FLAGS {
  * However, checking for conflict is expensive. To provide some control
  * over expensive tests, read may mask which errors are tested. Writing
  * errors applies to current checkpoint unless GLAS_E_UNRECOVERABLE is
- * marked, in which case the error is unrecoverable.
+ * indicated, in which case the flags add to unrecoverable error state.
  */
 GLAS_ERROR_FLAGS glas_errors_read(glas*, GLAS_ERROR_FLAGS mask);
 void glas_errors_write(glas*, GLAS_ERROR_FLAGS);
@@ -842,55 +883,31 @@ void glas_data_unseal(glas*, char const* key);
 /*****************************************
  * REGISTERS
  ****************************************/
-/**
- * Bind volume of references to a prefix.
- * 
- * Clients can allocate references or volumes thereof on the data stack.
- * These references may be bound into the namespace, becoming registers.
- * For extensibility, we favor volumes instead of individual references.
- * Volumes are dense: every suffix of prefix is defined as a register.
- * 
- * Registers are essentially just references bound to the namespace. The
- * glas program model mostly works with registers instead of references,
- * discouraging heap-like state graphs and simplifying static analysis.
- * The API reflects this: operations apply to named registers instead of
- * references, excepting initial construction and binding.
- */
-void glas_ns_ref_bind(glas*, char const* prefix);
-
 /** 
- * Allocate a 'new' volume of references.
+ * New, local registers.
  * 
- * This is pushed as abstract data on the stack. Instead of a singular
- * reference, this represents an entire volume of references, a mutable
- * dictionary, even if clients use only one name.
- * 
- * The volume is allocated lazily, individual refs initialized to zero.
+ * This lazily constructs a dense namespace of registers, every suffix
+ * of the bound prefix is defined. Registers are initialized to zero.
  */
-void glas_ref_new(glas*);
+void glas_ns_reg_locals_bind(glas*, char const* prefix);
 
 /**
- * Discover an 'associated' volume.
+ * Runtime-global registers.
  * 
- * Glas systems support an illusion that every directed edge between two
- * registers refers to another volume of registers. This serves at least 
- * two roles: ephemerons and abstractions. A runtime can garbage collect 
- * an association when either key becomes unreachable. Associated state 
- * supports many features of abstract data types.
- * 
- * This returns the referenced volume of registers on the data stack. On
- * first lookup this is a new volume, but subsequent lookups rediscover
- * the same associated state. 
+ * The runtime provides one collection of registers shared by all glas
+ * threads in the runtime. This serves a similar role as global state.
  */
-void glas_ref_reg_assoc(glas*, char const* r1, char const* r2);
+void glas_ns_reg_globals_bind(glas*, char const* prefix);
 
 /**
- * A runtime-global volume of registers.
+ * Associated dictionary of registers.
  * 
- * The runtime provides one global volume of registers, initially new
- * but accessible to all glas threads.
+ * The glas program model supports a notion of associated state. Between
+ * every ordered pair of registers, we can discover more registers. This
+ * serves useful roles in abstract and ephemeral state, i.e. essentially
+ * we 'unseal' a volume of registers using two registers as keys.
  */
-void glas_ref_globals(glas*);
+void glas_ns_reg_assoc_bind(glas*, char const* r1, char const* r2, char const* prefix);
 
 /**
  * TBD: Persistent registers.
@@ -914,12 +931,12 @@ void glas_reg_get(glas*, char const*); // -- A
 void glas_reg_set(glas*, char const*); // A --
 
 /**
- * Linear exchange (read-write) of data between stack and register.
+ * Linear exchange of data between stack and register.
  * 
  * This is the only primitive operation on registers in the glas program
  * model. Everything else is considered an accelerator.
  */
-void glas_reg_rw(glas*, char const*); // A -- A'
+void glas_reg_xch(glas*, char const*); // A -- A'
 
 /**
  * Register as a queue.
@@ -980,7 +997,41 @@ void glas_vreg_read(glas*, char const*); // logically read vreg
 void glas_vreg_write(glas*, char const*); // logically write vreg
 void glas_vreg_rw(glas*, char const*); // logically read and write
 
+/**
+ * First-class registers, aka references.
+ * 
+ * Although glas program model discourages first-class mutable state, it
+ * remains convenient for some use cases, and especially for integration
+ * of C callback APIs.
+ */
+void glas_ref_new(glas*); // -- Ref
 
+/**
+ * Present reference as a register.
+ * 
+ * We can use a reference as a register, but this is unidirectional. The
+ * glas program model conflicts with references to registers in general.
+ */
+void glas_ns_reg_ref_def(glas*, char const* name); // Ref --
+
+/**
+ * Direct reference access.
+ * 
+ * Get and set a reference without binding to a name first. This offers
+ * small convenience and performance benefits.
+ */
+void glas_ref_get(glas*); // Ref -- Data
+void glas_ref_set(glas*); // Data Ref --
+void glas_ref_xch(glas*); // Data Ref -- Data  
+
+
+/**
+ * TBD: Futures and promises.
+ * 
+ * These can be modeled via references, treating promises as write-once,
+ * linear, and futures as read-only, possibly-linear if data is linear.
+ * 
+ */
 
 /********************************
  * BASIC DATA MANIPULATION
