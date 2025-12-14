@@ -6,9 +6,9 @@ The [namespace](GlasNamespaces.md) supports modules and user-defined front-end s
 
 These primitives are constructors for an abstract data time, i.e. constructing a program does not execute it. The %macro and %load primitives are special exceptions, lazily evaluating at the namespace layer to support metaprogramming and modularity.
 
-*Notation:* `(F X Y Z)` desugars to `(((F,X),Y),Z)`, i.e. curried application.
+*Notation:* `(F X Y Z)` desugars to `(((F,X),Y),Z)`, i.e. curried application. 
 
-Control Flow:
+### Control Flow
 
 * `(%do P1 P2)` - execute P1 then P2 in order. Associative.
 * `%pass` - the no-op. Does nothing.
@@ -29,7 +29,10 @@ Control Flow:
   * Special case: in context of transaction loops, e.g. `while (Cond) { atomic Action; yield }`, repeated choice can optimize into a reactive form of concurrency. 
 * `%error` - explicit divergence. Logically equivalent to an infinite no-yield loop, but much easier to optimize. Please compose with `%an.error.log` to attach a message!
 
-Data Stack:
+*Note:* For %do, %co, and %ch, it is *very tempting* to support a variable number of arguments, but directly doing so complicates semantics. A viable approach to variable arguments involves a front-end language Church-encoding lists of ASTs into an argument.
+
+### Data Stack
+
 * `d:Data` - push data to top of data stack
 * `(%dip P)` - run P while hiding top element of data stack
 * `%swap` - exchange top two stack elements. i.e. "ab-ba"
@@ -42,22 +45,42 @@ Data Stack:
 * `%unl` - undoes mkl, fails if not a left branch
 * `%unr` - undoes mkr, fails if not a right branch
 
-Registers:
-* `(%rw Register)` - swap value of register and top of data stack.
+### Registers
+
+* `(%xch Register)` - exchange value of register and top item of data stack.
   * *Static analysis*: you can model this as also swapping *types* (or logical locations) between the register slot and the stack. That lets checkers propagate stack‑effect typing and enforce invariants.  
   * *Optimization hint*: unconditional, atomic patterns such as `(%rw x; ... ; %rw x)` can be heavily optimized because logical locations are restored.
-  * *Concurrency semantics*: fine‑grained read-write conflict analysis relies on accelerated composite ops, e.g. read-only get and set, queue read and write, bag, dict, array, CRDTs, etc.
-* `(%local RegOps)` - allocates a fresh register environment, initially zeroes. Passes it to `RegOp : Env -> Program`, runs Program, then clears the environment. The Env logically defines every Name, but Program must use only a static, finite subset.
+  * *Concurrency semantics*: For fine-grained conflict analysis, compiler built-in accelerators can define common patterns such as get and set, queue or bag reads and writes, indexed operations on arrays or dicts, or even support a few CRDTs. However, these interactions are not modeled as primitives.
+* `(%local RegOps)` - allocates a fresh register environment, passes it to `RegOp : Env -> Program`, runs Program, then clears the environment. The Env logically defines every Name to a unique register, but Program must use only a static, finite subset of these names.
 * `(%assoc R1 R2 RegOps)` - this binds an implicit environment of registers named by an ordered pair of registers `(R1, R2)`. The primary use case is abstract data environments: an API can use per-client space between client-provided registers and hidden API registers.
 
-Metaprogramming:
-* `(%macro Builder)` - Builder shall represent a deterministic program of 0--1 arity. This program must return a closed-term AST representation on the data stack. This returned AST is validated then replaces the macro node. Any further linking is handled by macro context. (See `%an.det` regarding determinism.)
-* `(%eval Adapter)` - pop a closed-term AST representation from the data stack, evaluate in an empty environment, validates, then passes to an Adapter of type `AST -> Program`. The resulting program may further be verified, instrumented, and optimized in context, then runs. In most cases, the AST argument must be static, i.e. `%an.eval.static` is default for glas systems.
-* *Note:* These primitives enable Programs to participate in metaprogramming. However, we can also support a lot of metaprogramming purely in the namespace layer without involving the Program type.
+### Metaprogramming
 
-Modularity:
-* `(%load Src)` - Load external resources at compile time. The result is embedded data, which may be processed further via %macro. Errors are possible, e.g. if Src is malformed or unreachable, in which case the operation logically diverges.
-* `%src.*` - The Src type is abstract, but we'll provide a few constructors. See [namespaces](GlasNamespaces.md) for details.
+* `(%macro Builder)` - Builder represents a program of 0--1 arity, and is expected to return a closed-term AST representation on the data stack. This returned AST is validated, lazily evaluated in an empty environment, then substituted in place of the macro node. Because AST is closed term, external linking must be provided in context. 
+* `(%eval Adapter)` - pop arbitrary Data from the stack, pass to Adapter - a namespace-layer function of type `d:Data -> Program`. Adapter typically includes %macro nodes for staged compilation of Data. The Program is subject to validation in context (e.g. verify type). Although dynamic eval is feasible, glas systems frequently forbid dynamic eval, requiring static Data argument (`%an.eval.static` by default).
+
+Non-deterministic metaprogramming is not *necessarily* an error, but it complicates reasoning and caching, requires expensive backtracking and heuristic search. Glas systems shall reject non-determinism in metaprogramming until they're mature enough to properly tackle these challenges.
+
+Both %macro and %eval serve at the boundary between namespace and program layers. There is also some metaprogramming possible purely in the namespace layer, e.g. we could build and process Church-encoded lists of ASTs.
+
+### Modularity Extensions
+
+* `(%load Src)` - Load external resources at compile time. The result is embedded data that may be processed further via %macro. Errors are possible, e.g. if Src is malformed or unreachable, in which case this operation logically diverges.
+* `%src.*` - abstract Src constructors, e.g. to read local files, load from DVCS, search folders, possibly even look into a database.
+
+See [namespaces](GlasNamespaces.md) for details.
+
+## Calling Conventions
+
+Definitions in the namespace should be tagged to indicate integration. A carefully designed set of tags can significantly simplify extension and metaprogramming. Proposed:
+
+* "data" - `Data` - embedded data, can integrate as program
+* "prog" - `Program` - abstract program, can integrate as program
+* "call" - `Env -> Def` - receives caller context (algebraic effects, pass-by-ref registers, etc.), returns another tagged definition. 
+  * We can develop further conventions around Env, e.g. supporting keyword or variable arguments.
+* "list" - Church-encoded list of tagged ASTs, useful for aggregations or variable arguments. Not necessarily homogeneous.
+
+In my vision, most definitions are tagged "call" and return "prog", except near the edges where we might have a lot of "prog" and "data" definitions. Use of "list" would be rare outside of aggregators and var-args, and requires specialized processing by an adapter. Eventually, we'll also have many non-callable tags, such as "type". We might also support multiple inheritance graphs in a generic way, and develop specialized tags for grammars, process networks, etc.. 
 
 ## Annotations
 
@@ -224,6 +247,7 @@ Register Ops:
 * KVDB, implicit 'register' per key but dynamic
 
 ## TBD
+
 
 ### In-Place Update? Defer.
 

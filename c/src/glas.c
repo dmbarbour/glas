@@ -214,18 +214,17 @@ static_assert(sizeof(void*)==sizeof(uint64_t));
 /**
  * Shrub encoding.
  * 
+ * 2 bits per edge:
+ * - left edge: 10 (Shrub)
+ * - right edge: 11 (Shrub)
+ * - pair: 01 (Shrub Left) 00 (Shrub Right)
+ * 
+ * We'll zero-fill remaining buffer space after the shrub is complete.
+ * 
  * Shrubs are simple in concept. But heuristics to use them are awkward.
  * The motive is to avoid allocations, trading immediate CPU for space,
- * writes, and GC overheads later.
- * 
- * 2 bits per edge. 
- * - left edge: 10(Shrub)
- * - right edge: 11(Shrub)
- * - pair: 01(Shrub)00(Shrub)
- * 
- * We zero-fill a suffix, or truncate a zeroes suffix. To construct the
- * shrub efficiently, we'll want to first scan the data to determine the
- * number of shrub bits needed, short circuiting above a threshold.
+ * writes, and GC overhead later. It is feasible to encode large shrubs
+ * into binaries, but at some point lack of indexing becomes a problem.
  */
 #define GLAS_DATA_SHRUB_BITS(P) (((uint64_t)P) & ~UINT64_C(0b11))
 #define GLAS_SHRUB_STEP_MASK (UINT64_C(0b11)<<62)
@@ -246,22 +245,27 @@ static_assert(sizeof(void*)==sizeof(uint64_t));
 /**
  * Packed Rational (PACKRAT)
  * 
+ * There are valid roles for floating-point numbers, but glas systems 
+ * favor precise rational numbers in most layers, e.g. metaprogramming.
+ * 
  * Rationals of up to 30 bit numerator and denominator can be stored in
  * the 64-bit packed pointer.
  * 
  *    numerator denominator tag
  *     31 bits    30 bits   011
  * 
- * Denominator stores numbers of 1..30 bits with an implicit '1' prefix.
- * The numerator stores 0..30 bits, positive or negative. There are many
- * redundant encodings, e.g. 1/3 vs. 2/6. The PACKRAT encoding does not
- * require normalization, only packs the encoding for dicts looking like
- * rational numbers.
+ * Denominator stores numbers of 1..30 bits via implicit '1' prefix then
+ * using stem encoding e.g. `abc1000..0` for three more bits. Numerator
+ * is directly 0..30 bit stem encoding. Aside from these, the 'n:' and 
+ * 'd:' dict labels are implicit.
+ * 
+ * The PACKRAT encoding does not insist on normalized encodings. It is 
+ * truly just a packed representation for some `(n:Bits, d:Bits)` pairs.
  */
 #define GLAS_PACKRAT_NUM_MASK ~((UINT64_C(1)<<33)-1)
 #define GLAS_PACKRAT_DEN_MASK (((UINT64_C(1)<<33)-1) & ~UINT64_C(0b111))
 #define GLAS_PACKRAT_NUM_STEM(P)   (((uint64_t)P) & GLAS_PACKRAT_NUM_MASK)
-#define GLAS_PACKRAT_DEN_STEM(P) (((((uint64_t)P) & GLAS_PACKRAT_DEN_MASK)<<31)|GLAS_STEM63_HIBIT)
+#define GLAS_PACKRAT_DEN_STEM(P) (((((uint64_t)P) & GLAS_PACKRAT_DEN_MASK)<<30)|GLAS_STEM63_HIBIT)
 #define GLAS_PACKRAT_NUM_CELL(P) ((glas_cell*)(GLAS_PACKRAT_NUM_STEM(P) | GLAS_DATA_TAG_BITS))
 #define GLAS_PACKRAT_DEN_CELL(P) ((glas_cell*)(GLAS_PACKRAT_DEN_STEM(P) | GLAS_DATA_TAG_BITS))
 #define GLAS_PACKRAT_NUM_MAX INT32_C(0x3fffffff)
@@ -414,14 +418,17 @@ struct glas_cell {
         } seal;
 
         struct {
-            _Atomic(glas_cell*) version;    // tentative!
+            _Atomic(glas_cell*) value;      // tentative!
             _Atomic(glas_cell*) assoc_lhs;  // associated volumes (reg,_)
             _Atomic(glas_cell*) ts;         // weakref + stable ID; reg is finalizer
             // Sketch:
-            // - basic volume of registers as a lazy dict (load via thunks)
-            // - associated volume as radix tree mapping rhs register stable
-            //   IDs to rhs-sealed basic volumes, i.e. mutate assoc_lhs.
-            // - GC can eliminate unreachable branches of radix tree 
+            // - named references are called registers
+            // - volumes of registers via mutable dictionary
+            //   - allocate and insert on demand (not 'lazy' to reduce branching)
+            //   - specialized/optimized integration with Env type
+            // - associated volume as radix tree mapping rhs stable IDs 
+            //   to rhs-sealed volumes of registers
+            // - can eliminate unreachable branches opportunistically
             // - version may be more sophisticated than raw content, e.g. to
             //   support snapshot views of data.
 
@@ -1900,7 +1907,7 @@ LOCAL void glas_gc_trace_cell(glas_gc_mb** mb, glas_cell* cell) {
             }
             return;
         case GLAS_TYPE_REFERENCE:
-            GLAS_CELL_SLOT_MARK_ATOMIC(ref.version);
+            GLAS_CELL_SLOT_MARK_ATOMIC(ref.value);
             GLAS_CELL_SLOT_MARK_ATOMIC(ref.assoc_lhs);
             GLAS_CELL_SLOT_MARK_ATOMIC(ref.ts);
             return;
@@ -2537,7 +2544,7 @@ API void glas_step_abort(glas* g) {
 }
 API bool glas_step_commit(glas* g) {
     // first test for errors other than read-write conflicts.
-    if(GLAS_NO_ERRORS != glas_errors_read(g)) {
+    if(GLAS_NO_ERRORS != glas_errors_read(g, ~0)) {
         return false;
     }
     // TODO: detect conflicts

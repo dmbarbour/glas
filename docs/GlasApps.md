@@ -36,9 +36,9 @@ The runtime will set things up, fork a few coroutines to call 'app.main', loop '
 
 ## State
 
-Registers in 'g.\*' or 'db.\*' are the primary locations for application state. Each register contains a value, glas data of arbitrary size. Though, if compiling with verified type annotations, a compiler can theoretically optimize for conventional i64, u32, or even struct representations.
+Registers in 'g.\*' or 'db.\*' are the primary locations for application state. Each register contains a value, glas data of arbitrary size. Though, if compiling with verified type annotations, a compiler can theoretically optimize representations.
 
-Database registers are bound to a configured database. This can support asynchronous interactions between applications. It is feasible to share register type annotations with the database to better detect risk of inconsistency upon application start or between apps. We can abort transactions that would commit invalid states, modulo use of reflection APIs to debug a database.
+Database registers are bound to a configured database. This supports persistence and asynchronous, shared-memory interaction between applications. Many issues with shared memory are mitigated by transactions, and a few more can be mitigated by integrating type annotations into the database.
 
 ## Concurrency
 
@@ -272,11 +272,19 @@ In theory, APIs could use linear objects for everything. But I imagine the commo
 
 I'm hoping to build most APIs above FFI and bgcall, reducing the development burden on the runtime. We should stick with the 'unpacked linear object' concept instead of references in each case.
 
-## Heaps and Pointers? Avoid. Defer.
+## First-Class Mutable State? Defer.
 
-It isn't difficult to model heaps, e.g. via registers containing huge arrays or dictionaries. We can feasibly make heaps reasonably efficient if we accelerate indexed register operations. But this is an idiom that I'm hoping to avoid. Let's see how far we can go without.
+Although the glas program model discourages first-class state and does not support it directly, it isn't difficult to implement an API for refs, heaps, arenas, or similar. A viable API:
 
-## Futures, Promises, Channels? Tentative.
+* `sys.ref.*` -
+  * `new() : Ref` - returns an abstract, runtime-ephemeral mutable reference or volume thereof, initially zero.
+  * `with(Ref, S) : [op(S) : [ref, ...] S', ...] S'` - apply operation after binding Ref to register 'ref', and perhaps also binding 'ref.\*' for ease of extensibility.
+
+This API binds static register names, but we could easily develop an API with dynamic keys.
+
+First-class state is convenient, but it does complicate static analysis. I'm hoping to discourage this feature until the glas system is more mature.
+
+## Futures, Promises? Tentative.
 
 A relatively useful API is to construct abstract `(Future, Promise)` pairs, such that we can defer assignment to the Promise, observe the assigned value through the Future, and also integrate nicely with GC. It is feasible to model channels in this manner, e.g. write a `(Data, Future)` pair into a promise.
 

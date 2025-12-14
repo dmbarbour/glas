@@ -100,8 +100,7 @@ Files are accessible through a few provided names. Loading files is staged, sepa
   * `(%src.file FilePath Src) : Src` - evaluates to an abstract Src representing a FilePath relative to another Src. When loaded, returns an *optional binary*, treating 'does not exist' as a valid state. For other errors (e.g. unreachable, permissions issues) the loader diverges and logs a compile-time error.
     * Note: glas systems forbid `"../"` relative paths and absolute paths relative to relative paths. See *Controlling Filesystem Entanglement* for motivations.
     * Note: absolute paths are still contextually relative, e.g. absolute paths within DVCS repository are relative to repository root. However, initial 
-  * `(%src.dir FileRegex Src) : Src` - search for files matching a pattern, relative to another Src. When loaded, returns a lexicographically sorted list of FilePath.
-  * `(%src.dvcs.git URI Ver Src) : Src` - returns a Src representing a DVCS git repository. If loaded, returns unit. Use '%src.file' to access files within the repository.
+  * `(%src.dvcs.git URI Ver Src) : Src` - returns a Src representing a DVCS git repository. If loaded, returns unit. Use '%src.file' to access files starting at repo root.
   * `(%src.an Annotation Src) : Src` - here Annotation is represented by embedded data. It is not observed by the loader, but is available later in context of runtime reflection on sources, e.g. `sys.refl.src.*`.
 * `(%macro Program) : AST` - evaluate a pure, 0--1 arity program that returns an AST representation. The latter is validated, evaluated in an empty namespace (i.e. implicit `t:({ "" => NULL }, AST)` wrapper), then substituted for the macro node. Linking is stage-separated from macro eval, e.g. the returned AST typically has a type such as `Env -> Env` and expects a parameter for linking.
 
@@ -111,13 +110,21 @@ It is feasible to relax determinism, e.g. %load and %macro can have non-determin
 
 ### Controlling Filesystem Entanglement
 
-In my vision for glas systems, users can easily share code by copying folders between workspaces. Although DVCS bindings are preferred for stable dependencies, copying is suitable for notebook-style applications where live coding and projectional editing are integrated with the experience.
+Many programming languages allow messy, ad hoc relationships between module system and filesystem, e.g. with "../" paths, absolute file paths, etc.. Glas systems restrict these relationships in order to simplify refactoring, extension, and sharing of code.
 
-To support this vision, we forbid parent-relative (`"../"`) paths in Src constructors, and absolute file paths may only be constructed relative to other absolute file paths or a DVCS source.
+First, we forbid parent-relative (`"../"`) paths in Src constructors, and absolute file paths may only be constructed relative to other absolute file paths (or DVCS repo root). This ensures folders can generally be treated as independent packages, easily shared by copying, excepting very few 'toplevel' folders (e.g. for the user configuration) which may reference other absolute paths within the local filesystem.
 
-### Linear File Dependencies
+Second, we hide files and subfolders whose names start with `"."`. For example, if a front-end compiler requests `".git/config"` the result is treated as a non-existent file regardless of whether that file exists. These files and folders are instead reserved for filesystem-layer annotations, metadata, caching, etc.. For example, we might include signed manifests and certificates, proof hints for efficient verification of proof-carrying code, cached precompiled code to support immediate use or incremental compilation, etc..
 
-In general, glas systems shall report a warning if a file is noticed to be loaded twice, even if acyclic or via independent paths. The motive is to favor the *shared library* design pattern (via '%env.\*') in case of shared files, and to structurally simplify live coding.
+Third, there is no direct mechanism to browse folders. Although it isn't difficult to implement, the ability to browse folders easily hinders refactoring and non-invasive extension, requiring some code structure to align closely with folder structure. That said, it is no problem to use tools to build or maintain an index of files; we simply won't use the built-in filesystem indexing of folders.
+
+### Affine File Dependencies
+
+In general, glas systems shall report a warning when a given file is loaded twice. That is, glas systems shall favor a fully acyclic tree of dependencies instead of a directed acyclic graph, much less a full dependency cycle. This restriction simplifies interaction with projectional editing and live coding, important facets of my vision for glas systems. It also simplifies local reasoning about compilation, staging, and integration.
+
+This applies only to the file layer. We model *shared libraries* in terms of sharing definitions. The user configuration 'installs' global shared libaries by defining 'env.\*', and these definitions are available via fixpoint through '%env.\*'. Local shared libraries are expressed in terms of extending, adapting, or overriding '%env.\*' in context of loading a subprogram. Namespaces are expressive, enabling macros, templates, etc. to be defined and shared same as program functions.
+
+Annotations may suppress these warnings to accept shared files on a case-by-case basis. In context of lazy loading, even full dependency cycles aren't necessarily divergent, and any divergence would be realized as a compile-time quota failure.
 
 ## User-Defined Syntax
 
@@ -143,24 +150,24 @@ Usefully, modules are first-class within the namespace. We can define names to t
 
 ## Adapters and Tags
 
-It is useful to tag definitions, modules, etc. to support more flexible interpretation and integration. I propose to model tags as a Church-encoded variant, such as:
+It is useful to tag definitions, modules, etc. to support more flexible interpretation and integration. I propose to model tags as a Church-encoded variant, albeit leveraging first-class environments:
 
-        f:("Adapters", ((b:("", "Tag"), "Adapters"), Body))
+        template tag<"Tag"> = 
+            f:("Body", (f:("Adapters", 
+                ((b:("", "Tag"), "Adapters"), "Body"))))
 
-This receives an environment of Adapters, selects Tag, then applies to Body. This generalizes to inspecting adapters and picking one, or selecting multiple adapters non-deterministically. It is not difficult to inverse this structure, i.e. such that adapter inspects component, and some tags may compose that pattern. This design seems convenient for most use cases.
+This receives an environment of Adapters, selects Tag, then applies to Body. This generalizes to inspecting adapters and picking one, or selecting multiple adapters non-deterministically. All definitions, modules, and other components should be tagged. Tags should roughly indicate integration, e.g. types and assumptions. A viable set of tags:
 
-All definitions, modules, and other components should be tagged. Tags should roughly indicate integration, e.g. types and assumptions. A few proposed tags to get started:
+* "data" - embedded data
+* "prog" - abstract program
+* "call" - `Env -> Def` - take caller's environment, reapply adapter to result
+* "module" - `Env -> Env` modules
 
-* "module" - `Env -> Env`. In this case, input Env is expected to have the '%\*' definitions described in *Modules*. 
-* "prog" - `Env -> Program`. Input Env is per call-site, representing access to caller-provided registers, algebraic effects handlers, etc.. Even with an empty Env, the Program type supports input-output via data stack. The caller does not provide program primitives: those are provided at the module layer. 
-* "data" - constant embedded data.
-* "app" - `Env -> Env`. In this case, input Env includes 'sys.\*' effects APIs, access to registers, a fixpoint 'app.\*', etc.. The output defines 'settings', 'main', 'http' and 'rpc' methods, etc.. See [glas applications](GlasApps.md).
-
-Other ideas include tagging Church-encoded lists for *Aggregation*, inheritance graphs for *Multiple Inheritance*, or support other patterns as they are developed. There is some risk of independent communities overloading the same tag, resulting in conflicts. Resolution in that case is left to convention, communication, and de facto standardization.
+We might further support Church-encoded lists for *Aggregation*, inheritance graphs for *Multiple Inheritance*, and other patterns. There is some risk of independent communities overloading a tag, resulting in conflicts. Resolution in that case is left to convention, communication, de facto standardization.
 
 ## Multiple Inheritance
 
-The `Env->Env` type together with fixpoint (%self.\* or app.\*) easily models single inheritance, and can somewhat awkwardly model mixins. However, for the more complicated cases, it requires manual linearization, i.e. deciding a consistent order in which `Env->Env` functions are composed while eliminating accidental redundancy.
+The `Env->Env` type together with fixpoint (%self.\* or app.\*) easily models single inheritance, and can somewhat awkwardly model mixins. However, for more complicated cases, it requires manual linearization, i.e. deciding a consistent order in which `Env->Env` functions are composed while eliminating accidental redundancy.
 
 Support for multiple inheritance is feasible but requires an intermediate representation of the inheritance graph. This inheritance graph is processed to a linear sequence of `Env->Env` operations, then composed, ensuring shared ancestors appear only once and ensuring consistent or compatible order. The C3 linearization algorithm is relevant in this role.
 

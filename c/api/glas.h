@@ -184,14 +184,6 @@ void glas_ns_scope_pop(glas*);
 
 /**
  * Test for existence of definitions.
- * 
- * The has_def variant returns true if the specified name is defined.
- * The has_prefix variant returns true if at least one name with the
- * prefix is definied. Namespaces are lazily loaded, so testing for
- * definitions unnecessarily may consume a lot of resources.
- * 
- * Consider use of `glas_call_prepare` instead, using runtime worker
- * threads to load definitions in the background.
  */
 bool glas_ns_has_def(glas*, char const* name);
 
@@ -380,7 +372,8 @@ typedef struct glas_prog_cb {
     bool non_atomic;            // forbid use in atomic sections
     uint8_t static_eval;        // 0=avoid, 1=accept, 2=require
     char const* debug_name;     // appears in stack traces, etc.
-} glas_prog_cb; // note: for extensibility, zero-fill fields that are not set!
+    // for extensibility, please init unset fields to zero
+} glas_prog_cb; 
 void glas_ns_cb_def(glas*, char const* name, glas_prog_cb const*, glas_ns_tl const* host_ns);
 
 /**
@@ -399,7 +392,8 @@ typedef struct glas_link_cb {
     bool (*link)(char const* name, glas_prog_cb* out, void* client_arg);
     void* client_arg;
     glas_refct refct;
-} glas_link_cb;
+    // for extensibility, please init unset fields to zero
+} glas_link_cb; 
 void glas_ns_cb_bind(glas*, char const* prefix, glas_link_cb const*, glas_ns_tl const* host_ns);
 
 /**
@@ -414,6 +408,14 @@ void glas_ns_cb_bind(glas*, char const* prefix, glas_link_cb const*, glas_ns_tl 
  * limited. Essentially moves one pointer from data stack to client_arg!
  * 
  * For now, defer this feature. Reconsider later.
+ */
+
+/**
+ * TBD: browsing namespaces
+ * 
+ * We can introduce a has_prefix feature for browsing of namespaces. 
+ * This requires extending glas_link_cb to support this, too. But I'm
+ * not convinced this is a great idea!
  */
 
 /**
@@ -457,42 +459,41 @@ glas* glas_thread_fork_detached(glas*);
 void glas_load_builtins(glas*, char const* prefix);
 
 
+/**
+ * Glas generally views a filesystem as a binary key-value database. In
+ * practice, filesystems may have permissions, special files, network
+ * integration, and other features, but glas does not observe them. Any
+ * access error other than does-not-exist is modeled as divergent. But a
+ * compiler may handle does-not-exist specially.
+ */
 typedef enum glas_load_status {
-    GLAS_LOAD_OK = 0,       // valid file read
+    GLAS_LOAD_OK = 0,       // valid file or folder read
     GLAS_LOAD_NOENT,        // specified file or folder does not exist
-    GLAS_LOAD_ERROR,        // e.g. unreachable or permissions issues
+    GLAS_LOAD_ERROR,        // permissions issues, unreachable, etc.
 } glas_load_status;
 
 /**
  * Logical overlay of local filesystem.
  * 
  * This allows the client to virtualize some dependencies, redirecting
- * some source files to a local callback. Use cases include providing
- * files through a network, database, scripting, or as built-ins. This 
- * does not extend to DVCS resources, at the moment.
+ * a subset of source files to local callbacks. Uses include providing
+ * files as built-ins, embeddings, or through a database. This does not
+ * overlay DVCS resources, only the local host filesystem.
  * 
  * An overlay applies to a specified prefix. Files matching this prefix
- * are processed by the given loader function. Or, if loader is NULL, we
- * return to the default loader. Multiple overlays may be stacked, last
- * one wins, thus shorter prefixes should precede longer prefixes unless
- * the goal is to replace prior overlays.
+ * are processed by a given loader function. Overlays may be stacked and
+ * the last one wins. Best start by overlaying shorter prefixes. A NULL
+ * load function implicitly selects the default loader.
  * 
- * In some cases, the runtime may search a folder. The load_dir callback
- * is used in this case, and should callback via 'emit' for each relative 
- * path, indicating whether it represents another folder.
- * 
- * Errors distinguish NOENT (file does not exist) and everything else. A
- * missing file can be 'compiled' by some front-end compilers, e.g. to
- * support projectional editors and live coding.
+ * The 'path' argument is a strict suffix of the given 'prefix'. E.g. if
+ * you overlay 'foo/ba' then the runtime requests 'z.txt', this matches
+ * 'foo/baz.txt'. 
  */
 typedef struct glas_file_loader {
     void* client_arg;
     glas_refct refct; // decref after loader becomes unreachable
     glas_load_status (*load_file)(char const* path, 
-        uint8_t const** ppBuf, size_t* len, glas_refct*, 
-        void* client_arg);
-    glas_load_status (*load_dir)(char const* dir,
-        void (*emit)(char const* path, bool isdir), 
+        uint8_t const** ppBuf, size_t* len, glas_refct*, // supports zero-copy
         void* client_arg);
 } glas_file_loader;
 void glas_rt_file_loader(glas_file_loader const*, char const* prefix);
