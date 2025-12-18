@@ -6,44 +6,48 @@ The [glas executable](GlasCLI.md) lets users run an application defined in the c
 
 Basic applications are initially modeled as  `Env -> Env` functions, tagged "app". The input Env represents the runtime-provided effects API (e.g. 'sys.\*' and state), while the returned Env represents a collection of application methods. Most basic applications should implement 'settings', 'main', and 'http'. Sample methods:
 
-* 'settings' - queried to support ad hoc, application-specific runtime configuration options.
-* 'main' - standard entry point. A procedure representing the main application process. Evaluated as a sequence of transactions, each using '%yield' to commit a step and '%fail' to abort a step. Upon return, the application halts.
+* 'main' - a program, the standard entry point. Upon return, the application halts.
+* 'settings' - queried to guide integration and configuration prior to running 'main'
 * 'http' - a flexible interface with many use cases (services, signaling, browser-based gui, etc.). The runtime opens a configurable port multiplexed with remote procedure calls. A configurable HTTP path (e.g. `"/sys/"`) is reserved for runtime use such as built-in debug views and APIs. 
 * 'rpc' - (tentative) receive remote procedure calls, more advanced protocol than HTTP (e.g. to integrate with distributed transactions, algebraic effects, and content-distribution networks).
 * 'gui' - see [Glas GUI](GlasGUI.md), i.e. GUIs integrated with transaction model
-* 'switch' - in context of live coding, runs as the first transaction when updating code. If this transaction fails, we'll retry but continue with the old code until it succeeds.
+* 'switch' - in context of live coding, runs as the first transaction when transitioning code.
 
-Basic applications are not very composable. It is possible to model static 'has-a' components if we're careful to partition state resources, but features such as console IO ('sys.tty.\*') are troublesome to partition or share. Application methods such as 'http' and 'rpc' also require tend to require ad hoc overrides for routing and composite pages.
+Use of the 'main' procedure is an old convention for defining applications in procedural paradigms. Separation of 'http', 'rpc', and 'gui' methods simplifies TCP multiplexing, composition, and orthogonal persistence compared to manually opening TCP listeners. The method 'switch' supports live coding, and I'm contemplating support for orthogonal persistence.
 
-Basic applications are modestly extensible. To support extension in the form of single inheritance and mixins, applications have an open fixpoint: 'app.\*' in the input Env is linked to an application's extended definitions. This is most useful where applications explicitly introduce methods in anticipation of overrides.
+Basic applications share many known weaknesses:
+
+Basic applications are not robustly composable. It is possible to model static 'has-a' components or widgets if we're careful to partition state resources, but some features such as console IO ('sys.tty.\*') are awkward to partition, and application methods such as 'http' may require ad hoc composite pages.
+
+Basic applications are merely modestly extensible. Without modifying application source, we can wrap an app to add URL paths in 'http' or add a thread to 'main'. To enhance extensibility, applications do receive open fixpoint 'app.\*' via input Env, but to effectively leverage this users must explicitly define some methods in anticipation of overrides.
+
+Use of 'main' interacts awkwardly with live coding and projectional editing. Long-lived control flow and local variables become an implicit form of application state. We can atomically transition to new code at %yield boundaries, but we cannot easily update control flow state such as continuations.
 
 ## Alternative Application Models
 
-It is feasible to extend basic applications with new runtime-recognized toplevel methods, perhaps enabled via 'settings'. But the greater source of extensibility is introducing tags beyond "app", e.g. to support multiple-inheritance, hardware emulation, actors model or Kahn Process Networks or flow-based programming. Alternative application models could trade flexibility for greater composability, portability, or extensibility.
+Alternative application models may favor composability, live coding, static allocation, or other features over the familiarity and flexibility of basic applications. As needed, we can introduce tags other than "app" for suitable models, e.g. Kahn process networks, Lafont interaction nets, VHDL-like hardware emulation, or constraint-logic programming. 
 
-Runtimes should support a user-configurable adapter with access to runtime version info (e.g. query runtime features). A runtime may directly support some additional options, while the adapter greatly improves portability, e.g. compile an unsupported model to the closest supported model.
+A runtime may support some new tags directly, but other tags might be supported indirectly via user-configured adapters, e.g. compiling a Kahn process network to a basic application. Such adapters also enhance portability.
 
-## Basic Effects
+## Effects and State
 
 The runtime provides an initial namespace of registers and methods to a basic application:
 
-* 'app.\*' - Fixpoint definition of application. Useful for expressing inheritance and override when composing applications. Similar to 'self' in OOP.
-* 'g.\*' - ephemeral, 'global' registers bound to runtime instance; initially zero.
 * 'sys.\*' - system APIs, e.g. network, filesystem, clock, FFI, reflection
 * 'db.\*' - shared, persistent registers, bound to a configured database
+* 'g.\*' - ephemeral, 'global' registers bound to runtime instance; initially zero.
 
+These are provided in the input Env together with 'app.\*' for the open fixpoint. The input Env does not include program primitives such as '%\*' names.
 
-## State
+Database registers in 'db.\*' are bound to a configured database. This supports persistence and asynchronous, shared-memory interaction between applications. Attempting to store runtime-ephemeral data (such as open file handles) into 'db.\*' registers results in an ephemerality error, a form of type error.
 
-Registers in 'g.\*' or 'db.\*' are the primary locations for application state. Each register contains a value, glas data of arbitrary size. Though, if compiling with verified type annotations, a compiler can theoretically optimize representations.
-
-Database registers are bound to a configured database. This supports persistence and asynchronous, shared-memory interaction between applications. Many issues with shared memory are mitigated by transactions, and a few more can be mitigated by integrating type annotations into the database.
+The 'g.\*' registers are local to the runtime instance. This could be distributed state in context of a distributed runtime, or persistent state in context of a persistent runtime. But it won't survive the application.
 
 ## Concurrency
 
 The program model supports fork-join coroutines where each yield-to-yield step is a transaction, and scheduling is non-deterministic. This gives us a form of preemption at the cost of rework. As a variant of [optimistic concurrency control](https://en.wikipedia.org/wiki/Optimistic_concurrency_control), avoiding rework and starvation are relevant concerns.
 
-Although the schedule is non-deterministic, it isn't random. The scheduler may analyze program code and its dynamic behavior, attempting to develop an optimal schedule with high utilization, low rework, and acceptable fairness. Programmers are also expected to debug performance issues, e.g. introducing intermediate steps or checkpoints, queues for high-contention resources, etc..
+Although the schedule is non-deterministic, it isn't random. The scheduler may analyze program code and its dynamic behavior, attempting to develop a predictable schedule with high utilization, low rework, acceptable fairness, perhaps even a few step fusion optimizations. Programmers are also expected to debug performance issues, e.g. introducing intermediate steps or checkpoints, queues for high-contention resources, etc..
 
 Other than yielding, a coroutine may voluntarily fail or diverge with an error (such as an assertion failure). In these cases, we logically abort the transaction and retry. A retry may explore alternative non-deterministic choices or observe updated state. But if it's obvious that retry is unproductive, the runtime could arrange to wait for relevant changes.
 
@@ -194,7 +198,7 @@ Some notes:
 
 ## Foreign Function Interface (FFI)
 
-I propose a pipelined FFI model. A transaction builds a stream of commands to be handled by a non-transactional FFI thread. The FFI thread interprets this stream, loading libraries, calling functions, reading memory, perhaps even JIT-compiling C code (via TinyCC). Results are observed in a future transaction through a queue.
+I propose a pipelined FFI model. A transaction builds a stream of commands to be handled by a non-transactional FFI thread. The FFI thread interprets this stream, loading libraries, calling functions, reading memory, perhaps JIT-compiling C code so we can directly express composite operations. Results are observed in a future transaction through a queue.
 
 A viable API:
 
@@ -220,7 +224,7 @@ A viable API:
     * *future* - FFI thread doesn't fully exist yet, newly created.
     * *ready* - FFI thread is awaiting commands, all prior commands complete.
     * *busy* - ongoing activity, still processing prior commands.
-    * *error:(text:Message, ...)* - FFI thread is halted in a bad state. Unrecoverable without reflection APIs.
+    * *error:(text:Message, code:Integer, ...)* - FFI thread is halted in a bad state. Unrecoverable without reflection APIs.
   * `link.lib(SharedObject) : [ffi] ()` - load a ".dll" or ".so" file. When looking up a symbol, last linked is first searched.
   * `link.hdr(Name, Text) : [ffi] ()` - redirects `#include<Name>` to `Text` in context of C JIT.  
   * `link.src(Text) : [ffi] ()` - JIT-compile C source and link (e.g. via Tiny C Compiler).
@@ -249,7 +253,7 @@ A viable API:
 * `sys.ffi.unpack(FFI) : [ffi] ()` - rebind a previously packaged FFI thread.
 * `sys.refl.ffi.*` - *TBD* perhaps debugging, browsing, CPU usage, force kill
 
-This API is designed assuming use of [libffi](https://en.wikipedia.org/wiki/Libffi) and TinyCC. We'll also need a [version of TinyCC](https://github.com/frida/tinycc/tree/main) that supports callbacks for includes and linking.
+This API is designed assuming use of [libffi](https://en.wikipedia.org/wiki/Libffi) and TinyCC. We'll need the [version of TinyCC](https://github.com/frida/tinycc/tree/main) that supports callbacks for includes and linking.
 
 This kind of API can be adapted to other targets, e.g. JVM, .NET, or JavaScript.
 
@@ -257,15 +261,11 @@ Potential extensions:
 * support for structs, e.g. `"{ysw}"`
   * or just use JIT for this.
 
+*Note:* Interaction between FFI and orthogonal persistence is awkward in general, but modeling FFI as a pipe to a separate thread or process at least provides an opportunity to clearly indicate when FFI is detached due to transitioning to a new process. We can design FFI APIs to effectively recover from a disconnect.
+
 ## API Design Policy: Avoid Abstract References
 
-References complicate static conflict analysis for transactions, garbage collection, and schema changes. The latter is mostly relevant to live coding, but it isn't trivial. 
-
-I propose to build most APIs that require 'objects' to build on the notion of abstract data environments. For example, to open a file, the caller provides a register to serve as the abstract location. But the actual data is stored based on association between caller register and a hidden filesystem API register.
-
-To support dynamic numbers of open files and flexible migration, we can supply APIs to 'pack' the open file into a linear object, then 'unpack' before use. 
-
-In theory, APIs could use linear objects for everything. But I imagine the common use case is to operate on stable, unpacked objects across many transactional steps. Unpacking for multiple transactions simplifies fine-grained read-write conflict analysis of individual registers. The stability is also convenient for user comprehension and debug views.
+Shared or aliased references complicate conflict analysis, garbage collection, and schema changes. This can be mitigated with linear types, but those awkwardly require a lot of packing and unpacking. I propose to build most APIs instead on the notion of abstract data environments. For example, the use of `[ffi]` above represents operating on data 'unpacked' into abstract, associated registers. Data may remain unpacked across multiple transactions, but must be packed for migration.
 
 ## Regarding Filesystem, Network, Native GUI, Etc.
 
