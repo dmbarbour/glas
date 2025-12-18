@@ -6,7 +6,6 @@ The glas executable generally takes the first command line argument as a switch 
         glas --script SourceRef Args To App
         glas --script.FileExt FilePath Args To App
         glas --cmd.FileExt "Source Text" Args To App 
-        glas --shell Args To App
         glas --cache CacheOp
         glas --conf ConfigOp
         ... etc. ...
@@ -29,75 +28,51 @@ To mitigate risk of naming conflict, the runtime will recognize configuration op
 
 ## Running Applications
 
-An application may be defined within the configuration namespace, usually 'env.AppName.app', or a separate script file that, when compiled, defines 'app'. To run an application, use an application selector:
+Applications are typically defined within the user configuration. But we'll also support scripting, where we generate applications in context of a configured environment. See [glas applications](GlasApps.md) for details on how an application is defined.
 
-* **--run AppName**: Using 'env.AppName.app' in the configuration namespace. 
-  * **--run .AppName**: Elides the 'env.' prefix, running 'AppName.app' instead. As a special case, '--run .' runs the toplevel 'app'.
-* **--script Location**: Compile the indicated file or package folder. The generated namespace should define 'app'.
+* **--run AppName**: Usually refers to 'env.AppName.app' defined in the configuration namespace. As a special case, '--run .' refers to the toplevel configuration 'app'. 
+* **--script FilePath**: Process indicated file in context of configured front-end compiler (based on file extension). The expected result is a module that defines 'app'. Link this module in context of the configured environment.
   * **--script.FileExt FilePath**: as '--script' except we select a front-end compiler based on a given file extension, ignoring the actual extension. Useful in context of Linux shebang lines.
 * **--cmd.FileExt SourceText**: as '--script.FileExt' except we also provide the script text as a command-line argument. We might present this as a read-only virtual file.
 
-The definition should be a set of handlers, typically including 'settings' and 'main', not a program directly. But see [glas applications](GlasApps.md) for details.
-
-*Note:* There are no command-line arguments to configure the runtime. However, 'settings' may read command-line arguments and environment variables when guiding integration.
-
-*Note:* A runtime may make even these features configurable, e.g. providing the AppName or Location to a configured function that returns an application. But the above suggests the default behavior.
+*Note:* There are no command-line arguments for tuning runtime features such as verbose modes or garbage collection. Instead, we favor application 'settings' or `GLAS_*` environment variables in these roles to mitigate command-line clutter.
 
 ## Installing Applications
 
-Installing applications is convenient for offline use or startup latency, and can be viewed as pinning a cache. This might be supported through configuration referencing an 'installs.txt' file or similar, and a few commands to update this file or update the cache.
+In context of lazy loading and DVCS sources, we must generally be 'online' to run glas applications. Further, even if sources are local, there is latency on first run due to compilation. To mitigate, we can support 'installing' applications ahead of time, maintaining a local cache of compiled code.
 
-It is feasible to configure a proxy cache to support work sharing within a community, or even a proxy compiler to offload compilation work, such that we're only downloading the final executable binary.
+This might be expressed with a few command-line options to maintain a `".config/glas/installs"` file or folder, listing installs and checking for updates, much like apt and similar tools.
 
-## Initial Namespace
+Relatedly, compilation should eventually be separated and shared, e.g. by configuring proxy compilers and trusted PKI signatures.
 
-The '%' prefix is reserved for system use. This includes [program primitives](GlasProg.md) and linking '%env.\* to the configuration 'env.\*'. Scripts and staged applications can share a larger namespace with the configuration if we're careful about managing prefixes:
+## Trusting Application
 
-        # user configuration
-        move: { "%" => WARN, "" => "u." }
-        link: { "%" => "%", "%env." => "u.env.", "" => "u." }
+I propose to assign trust to providers of source code, leveraging PKI infrastructure. User, company, or community configurations may trust individual developers or certificate authorities with access to security-sensitive features such as FFI. Source folders shall include signed manifests and certificates within `".pki/"` subfolders.
 
-        # script or staged app at addr
-        move: { "%" => WARN, "" => "addr." }
-        link: { "%" => "%", "%env." => "u.env.", "" => "addr." }
+In theory, trust can be scoped. For example, when signing a manifest or certificate, a developer might indicate they trust code with GUI but not full FFI or network access. Unfortunately, I cannot imagine developers precisely scoping trust to individual sources. It seems more feasible, in practice, to trust providers, e.g. a given developer is trusted with GUI.
 
-At this layer, the initial namespace is empty except for primitives. However, a front-end syntax might implicitly import definitions.
+Attenuation of trust is achieved through annotation of trusted libraries or frameworks. For example, a user trusts the provider of library X with FFI access, but annotations for some definitions within library X may relax the requirement that the caller is trusted with FFI, optionally introducing a requirement that the caller is instead trusted with GUI. Leveraging abstract data types, we might distinguish trust requirements for *opening* a file from further operations on the abstract file.
 
-## Security
-
-Not every application should be trusted with full access to FFI, shared state, and other sensitive resources. This is true within a curated community configuration, and even more so for external scripts of ambiguous provenance. What can be done?
-
-Trust can be tracked for individual definitions based on contributing sources. This can be supported via public key infrastructure, with trusted developers signing manifests and having their own public keys signed in turn. The user configuration can specify the 'root' trust, or how to look it up. The glas executable can heuristically search `".pki/"` subfolders when loading sources for signed manifests and derived certificates. In context of DVCS, those certificates might propagate trust across DVCS repos.
-
-Trust can be scoped. For example, when signing a manifest, a developer can indicate they trust code with GUI but not full FFI or network access. Unfortunately, we cannot count upon developers precisely scoping trust, nor will regular end-users be security savvy. Instead, communities scope trust of developers or public signatures by serving as certificate authorities. A developer might be trusted with GUI and 'public domain' network access, and this extends to code signed by that developer.
-
-Trust can be attenuated via annotations. For example, a trusted shared library might implement a GUI using FFI. FFI requires a very high level of trust, but GUI does not. Based on annotations, the library could indicate that a subset of public methods only require the client is trusted with GUI access. A developer can voluntarily sandbox an application by interacting with the system only through such libraries, or by expecting 'open' files as parameters in some cases.
-
-In many cases, we can take advantage of unforgeable abstract data types as tokens of authority. For example, if we have abstract data representing an open file handle, we can freely operate on that open file, but actually opening the file to obtain the handler may be restricted and attenuated under a security policy.
-
-Before running an application, the glas executable can analyze the call graph for trust violations. If there are any concerns, we might warn users and let them abort the application, extend trust, or run in a degraded mode where a subset of transactions is blocked for security reasons. Of course, exactly how this is handled should be configurable.
-
-*Note:* This trust-based security model can be conveniently combined with security based on abstract data types and access control to definitions or effects handlers. However, the latter techniques are useful only insofar as we trust the toplevel application.
+A compiler can validate trust annotations and attenuations much like type annotations. Trusted providers can develop trusted sandboxes for untrusted applications. Applications can be developed with various trust assumptions, e.g. building upon code from popularly trusted providers versus using 'sys.ffi.\*' directly. Trust is relatively fine-grained compared to trusting full applications.
 
 ## Built-in Tooling
 
 The glas executable may be extended with useful built-in tools. Some tools that might prove useful:
 
 * **--conf** - inspect and debug the configuration, perhaps initialize one
-* **--cache** - manage installed applications and resources, clean up
+* **--apt** - install, uninstall, update defined applications and libraries
+* **--cache** - inspect cached resources, manual management options
 * **--db** - query, browse, watch, or edit persistent data in the shared heap
-* **--rpc** - inspect RPC registries or issue RPC calls from command line
-* **--dbg** - debug or manipulate running apps from the command line
 
-Heuristics to guide tooling: First, where feasible, every function available via built-in CLI tools should be accessible through applications. This might involve introducing 'sys.refl.conf.\*', 'sys.refl.cache.\*', and similar methods. Even 'sys.refl.cli.help' and 'sys.refl.cli.version' can be included. Second, we should ultimately aim to keep the glas executable small, assigning code bloat a significant weight.
+Functions available via built-in CLI tools should be accessible through applications, even if only through 'sys.refl.\*' reflection APIs. Also, I hope to keep the glas executable relatively small, enough to bootstrap but pushing most logic into the module system and cached compiled code.
 
 ## Glas Shell
 
-A user configuration may define 'app' at the toplevel namespace. In context of [notebook applications](GlasNotebooks.md) this should represent a live-coding projectional editor for the configuration file and its transitive dependencies. Users can run this as a normal application via `"glas --run . Args To App"`. 
+In context of live coding and projectional editing, applications may provide their own IDE. See [glas notebooks](GlasNotebooks.md). The user configuration is no exception, it could provide 'app' for self editing. 
 
-A community can feasibly extend this notebook application to serve as a [shell](https://en.wikipedia.org/wiki/Shell_(computing)) for a glas system. Instead of running individual glas applications within the OS, and occasionally managing OS configuration files, users can treat the glas system as one big live-coded environment composed of applications and configurations. This 'shell' application may support multiple user interfaces via CLI, HTTP, and GUI.
+We could feasibly leverage this as a basis for a [shell](https://en.wikipedia.org/wiki/Shell_(computing)) in glas systems. Instead of running individual glas applications from the command line, run the shell and modify it. To 'run' an application would then be to integrate it with the shell. 
 
-In practice, we'll often favor instanced shells. Instancing might be implemented by copying or logically overlaying the configuration folder. A glas executable could have built-in support for instancing with `"glas --shell ..."`.
+In practice, we'll often want instanced shells, such that common edits like running the application are local to an instance. We could feasibly introduce command-line tools to run instances, or rely on conventions for instancing internally within the shell.
 
 ## Implementation Roadmap
 

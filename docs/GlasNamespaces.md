@@ -114,17 +114,15 @@ Many programming languages allow messy, ad hoc relationships between module syst
 
 First, we forbid parent-relative (`"../"`) paths in Src constructors, and absolute file paths may only be constructed relative to other absolute file paths (or DVCS repo root). This ensures folders can generally be treated as independent packages, easily shared by copying, excepting very few 'toplevel' folders (e.g. for the user configuration) which may reference other absolute paths within the local filesystem.
 
-Second, we hide files and subfolders whose names start with `"."`. For example, if a front-end compiler requests `".git/config"` the result is treated as a non-existent file regardless of whether that file exists. These files and folders are instead reserved for filesystem-layer annotations, metadata, caching, etc.. For example, we might include signed manifests and certificates, proof hints for efficient verification of proof-carrying code, cached precompiled code to support immediate use or incremental compilation, etc..
+Second, we hide files and subfolders whose names start with `"."`. For example, if a front-end compiler requests file `".git/config"` from a DVCS repo, this file is treated as non-existent regardless of whether it exists. This matches conventions for hidden or associated structure in the filesystem. Although front-end compilers cannot see these files and folders, a runtime may recognize and utilize `".glas/"` and `".pki/"` and so on for incremental compilation, signed manifests and certificates, etc..
 
-Third, there is no direct mechanism to browse folders. Although it isn't difficult to implement, the ability to browse folders easily hinders refactoring and non-invasive extension, requiring some code structure to align closely with folder structure. That said, it is no problem to use tools to build or maintain an index of files; we simply won't use the built-in filesystem indexing of folders.
+Third, a front-end compiler cannot browse folders, cannot query folder contents. Although ability to browse is convenient for several use cases, alignment of code to folder structure eventually becomes a source of entanglement and embrittlement that hinders refactoring and non-invasive extension. Instead, users may construct indices within files.
 
 ### Affine File Dependencies
 
-In general, glas systems shall report a warning when a given file is loaded twice. That is, glas systems shall favor a fully acyclic tree of dependencies instead of a directed acyclic graph, much less a full dependency cycle. This restriction simplifies interaction with projectional editing and live coding, important facets of my vision for glas systems. It also simplifies local reasoning about compilation, staging, and integration.
+In context of lazy loading, a dependency cycle isn't *necessarily* an error. But accidental cycles very easily become a source of errors. In context of live coding or projectional editing, merely sharing a file, loading it into multiple contexts, also has non-intuitive interactions. To mitigate these concerns, glas systems shall raise warnings or errors when a file is shared. These warnings may then be suppressed via explicit annotations.
 
-This applies only to the file layer. We model *shared libraries* in terms of sharing definitions. The user configuration 'installs' global shared libaries by defining 'env.\*', and these definitions are available via fixpoint through '%env.\*'. Local shared libraries are expressed in terms of extending, adapting, or overriding '%env.\*' in context of loading a subprogram. Namespaces are expressive, enabling macros, templates, etc. to be defined and shared same as program functions.
-
-Annotations may suppress these warnings to accept shared files on a case-by-case basis. In context of lazy loading, even full dependency cycles aren't necessarily divergent, and any divergence would be realized as a compile-time quota failure.
+Because we discourage shared files, shared libraries, macros, templates, etc.. are fully modeled within the namespace. By convention, '%env.\*' serves the role of implicit parameters or pseudo-global namespace, propagated across modules. By default, this ultimately links to 'env.\*' in the user configuration, but user programs or projects may translate '%env.\*' to other targets within a scope.
 
 ## User-Defined Syntax
 
@@ -156,14 +154,16 @@ It is useful to tag definitions, modules, etc. to support more flexible interpre
             f:("Body", (f:("Adapters", 
                 ((b:("", "Tag"), "Adapters"), "Body"))))
 
-This receives an environment of Adapters, selects Tag, then applies to Body. This generalizes to inspecting adapters and picking one, or selecting multiple adapters non-deterministically. All definitions, modules, and other components should be tagged. Tags should roughly indicate integration, e.g. types and assumptions. A viable set of tags:
+This receives an environment of Adapters, selects Tag, then applies to Body. This generalizes to inspecting adapters and picking one, or selecting multiple adapters non-deterministically. All definitions, modules, and other components should be tagged. Tags should roughly indicate integration, e.g. types and assumptions. A useful set of tags:
 
 * "data" - embedded data
 * "prog" - abstract program
-* "call" - `Env -> Def` - take caller's environment, reapply adapter to result
-* "module" - `Env -> Env` modules
+* "case" - conditional AST, e.g. body of '%cond' or '%loop'
+* "call" - `Env -> Def` - receive caller's environment, return another tagged definition
+* "module" - `Env -> Env` basic modules
+* "app" - `Env -> Env` basic applications
 
-We might further support Church-encoded lists for *Aggregation*, inheritance graphs for *Multiple Inheritance*, and other patterns. There is some risk of independent communities overloading a tag, resulting in conflicts. Resolution in that case is left to convention, communication, de facto standardization.
+I'll eventually want tags to support *Aggregation* patterns via Church-encoded lists, *Multiple Inheritance* via linearization and deduplication of inheritance graphs, and other useful features. Tags make it easy to introduce and integrate new types as needed, subject to de facto standardization.
 
 ## Multiple Inheritance
 

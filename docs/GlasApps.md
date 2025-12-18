@@ -1,38 +1,37 @@
 # Glas Applications
 
-The [glas executable](GlasCLI.md) lets users run an application defined in the configuration namespace or a separate script file. By convention, an application is named 'env.appname.app' in the configuration, or simply 'app' in a script. A script may reference shared libraries or applications defined in the configuration's 'env.\*' (via '%env.\*'), thus can compose apps.
+The [glas executable](GlasCLI.md) lets users run an application defined in the configuration namespace or a separate script file. To simplify extension and composition, each application is packaged into a single definition. To simplify sharing and integration, applications are named 'app' or 'env.appname.app'. The latter supports many applications to be named and defined within a user configuration.
 
-## Methods
+## Basic Applications
 
-Applications will provide a collection of methods to the runtime. Viable methods include:
+Basic applications are initially modeled as  `Env -> Env` functions, tagged "app". The input Env represents the runtime-provided effects API (e.g. 'sys.\*' and state), while the returned Env represents a collection of application methods. Most basic applications should implement 'settings', 'main', and 'http'. Sample methods:
 
-* 'settings' - guidance for runtime configuration. The runtime does not observe settings directly, instead providing access to settings when evaluating configuration options.
-* 'main' - a procedure representing the main application process. Is evaluated as a sequence of transactions, each using '%yield' to commit a step and '%fail' to abort a step.
-* 'http' - a flexible interface with many use cases (services, signaling, gui, etc.). The runtime opens a configurable port multiplexed with remote procedure calls. A configurable HTTP path (default "/sys/") is reserved for runtime use, e.g. built-in debug views and APIs. When composing applications, we can compose 'http' interfaces.
-* 'rpc' - (tentative) receives remote procedure calls, frequently within a distributed transaction.
-* 'gui' - see [Glas GUI](GlasGUI.md).
+* 'settings' - queried to support ad hoc, application-specific runtime configuration options.
+* 'main' - standard entry point. A procedure representing the main application process. Evaluated as a sequence of transactions, each using '%yield' to commit a step and '%fail' to abort a step. Upon return, the application halts.
+* 'http' - a flexible interface with many use cases (services, signaling, browser-based gui, etc.). The runtime opens a configurable port multiplexed with remote procedure calls. A configurable HTTP path (e.g. `"/sys/"`) is reserved for runtime use such as built-in debug views and APIs. 
+* 'rpc' - (tentative) receive remote procedure calls, more advanced protocol than HTTP (e.g. to integrate with distributed transactions, algebraic effects, and content-distribution networks).
+* 'gui' - see [Glas GUI](GlasGUI.md), i.e. GUIs integrated with transaction model
 * 'switch' - in context of live coding, runs as the first transaction when updating code. If this transaction fails, we'll retry but continue with the old code until it succeeds.
 
-Applications should define 'settings' to support application-specific configuration. Applications should define 'main' as primary behavior. Most apps should define 'http' because it's convenient. But depending on user-defined front-end syntax, these definitions might be derived automatically rather than explicitly defined by the user.
+Basic applications are not very composable. It is possible to model static 'has-a' components if we're careful to partition state resources, but features such as console IO ('sys.tty.\*') are troublesome to partition or share. Application methods such as 'http' and 'rpc' also require tend to require ad hoc overrides for routing and composite pages.
 
-*Aside:* An intriguing alternative is to express an application as a collection of aggregators, e.g. for background behavior, HTTP routes, and RPC methods. However, I imagine we'll leave this style of expression to application frameworks that ultimately define the aforementioned methods.
+Basic applications are modestly extensible. To support extension in the form of single inheritance and mixins, applications have an open fixpoint: 'app.\*' in the input Env is linked to an application's extended definitions. This is most useful where applications explicitly introduce methods in anticipation of overrides.
 
-### Composition
+## Alternative Application Models
 
-It is feasible to define new applications in terms of composition, extension, inheritance, and override of existing applications. We could develop macros to support composition. 
+It is feasible to extend basic applications with new runtime-recognized toplevel methods, perhaps enabled via 'settings'. But the greater source of extensibility is introducing tags beyond "app", e.g. to support multiple-inheritance, hardware emulation, actors model or Kahn Process Networks or flow-based programming. Alternative application models could trade flexibility for greater composability, portability, or extensibility.
 
-I imagine we'll ultimately want front-end syntax oriented around composition of applications, with great defaults for partitioning registers, routing HTTP, even composing TTY (console UI). 
+Runtimes should support a user-configurable adapter with access to runtime version info (e.g. query runtime features). A runtime may directly support some additional options, while the adapter greatly improves portability, e.g. compile an unsupported model to the closest supported model.
 
-## Standard Behavior
+## Basic Effects
 
-The runtime provides an initial namespace of registers and methods to the application:
+The runtime provides an initial namespace of registers and methods to a basic application:
 
 * 'app.\*' - Fixpoint definition of application. Useful for expressing inheritance and override when composing applications. Similar to 'self' in OOP.
 * 'g.\*' - ephemeral, 'global' registers bound to runtime instance; initially zero.
 * 'sys.\*' - system APIs, e.g. network, filesystem, clock, FFI, reflection
 * 'db.\*' - shared, persistent registers, bound to a configured database
 
-The runtime will set things up, fork a few coroutines to call 'app.main', loop 'app.http' and 'app.rpc', and handle background operations. When 'app.main' returns, the runtime will set a register to halt background processes then perform any cleanup.
 
 ## State
 
@@ -324,6 +323,7 @@ A runtime can easily provide access to OS environment variables and command-line
 * `sys.env.list : List of Text` - return the defined environment variables
 * `sys.env.get(Text) : Text` - return value for an OS environment variable
 * `sys.env.args : List of Text` - return the command-line arguments
+  * `sys.env.arg(Index) : Text` - access individual args (may simplify caching staged apps)
 
 These will simply be read-only within an application, but users could intercept 'sys.env.\*' methods when calling a subprogram.
 

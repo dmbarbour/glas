@@ -13,7 +13,7 @@ These primitives are constructors for an abstract data time, i.e. constructing a
 * `(%do P1 P2)` - execute P1 then P2 in order. Associative.
 * `%pass` - the no-op. Does nothing.
 * `%fail` - voluntary failure. Used for bracktracking a branch condition, choice, or coroutine step. (In contrast, errors are treated as divergence, i.e. infinite loops observable only via reflection APIs.)
-* `(%cond Sel)` - supports if/then/else and pattern matching. The selector, Sel, has a distinct AST structure to support sharing a common prefix. Sel constructors:
+* `(%cond Sel)` - supports if/then/else and pattern matching. The case selector, Sel, has a distinct AST structure to support sharing a common prefix. Sel constructors:
   * `(%br Cond Left Right)` - runs branch condition, Cond. If Cond fails, backtracks to run Right selector, otherwise processes Left selector. The full chain of branch conditions runs atomically.
   * `(%sel P)` - selected action. Commits prior chain of passing branch conditions, then runs P.
   * `%bt` - backtrack. Forces most recent passing Cond to fail. If no such Cond, i.e. if %bt is rightmost branch, behavior is context-dependent (e.g. error for %cond, exit for %loop). As a special rule, we optimize `(%br C %bt R) => R` regardless of whether C is divergent.
@@ -49,7 +49,7 @@ These primitives are constructors for an abstract data time, i.e. constructing a
 
 * `(%xch Register)` - exchange value of register and top item of data stack.
   * *Static analysis*: you can model this as also swapping *types* (or logical locations) between the register slot and the stack. That lets checkers propagate stack‑effect typing and enforce invariants.  
-  * *Optimization hint*: unconditional, atomic patterns such as `(%rw x; ... ; %rw x)` can be heavily optimized because logical locations are restored.
+  * *Optimization hint*: unconditional, atomic patterns such as `(%xch x; ... ; %xch x)` can be heavily optimized because logical locations are restored.
   * *Concurrency semantics*: For fine-grained conflict analysis, compiler built-in accelerators can define common patterns such as get and set, queue or bag reads and writes, indexed operations on arrays or dicts, or even support a few CRDTs. However, these interactions are not modeled as primitives.
 * `(%local RegOps)` - allocates a fresh register environment, passes it to `RegOp : Env -> Program`, runs Program, then clears the environment. The Env logically defines every Name to a unique register, but Program must use only a static, finite subset of these names.
 * `(%assoc R1 R2 RegOps)` - this binds an implicit environment of registers named by an ordered pair of registers `(R1, R2)`. The primary use case is abstract data environments: an API can use per-client space between client-provided registers and hidden API registers.

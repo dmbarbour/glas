@@ -554,11 +554,12 @@ void glas_load_script(glas*, char const* prefix, glas_file_ref const* src, glas_
  * The runtime expects callable definitions to be tagged with a calling
  * convention. Tags are a namespace-layer design pattern, i.e. functions
  * that receive a record of adapters and select one or more to adapt the
- * definition. Recognized tags:
+ * definition. Recognized callable tags:
  * 
- * - "prog" for a program definition (verify then run)
  * - "data" for embedded data (push to top of stack)
- * - "call" for Env -> callable tagged Def 
+ * - "prog" for a program definition (verify then run)
+ * - "case" for conditional body (implicit '%cond')
+ * - "call" for Env -> callable tagged Def, receive caller Env
  * 
  * Program verification should ultimately be configurable. In my vision,
  * the user configration will directly specify most verification code to

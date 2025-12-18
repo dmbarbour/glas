@@ -67,7 +67,7 @@ static_assert((sizeof(void(*)(void*, bool)) == 8),
     "glas runtime assumes 64-bit function pointers");
 static_assert((sizeof(_Atomic(void*)) == 8),
     "glas runtime assumes 64-bit atomic pointers");
-static_assert((sizeof(_Atomic(uint64_t)) == 8) && sizeof(_Atomic(uint8_t)),
+static_assert((sizeof(_Atomic(uint64_t)) == 8) && (sizeof(_Atomic(uint8_t)) == 1),
     "glas runtime assumes atomic integers don't affect size");
 static_assert((ATOMIC_POINTER_LOCK_FREE == 2) && 
               (ATOMIC_LLONG_LOCK_FREE == 2) &&
@@ -1071,6 +1071,7 @@ LOCAL glas_page* glas_allocl_try_pop(glas_alloc_l* l) {
         &page, page->next, memory_order_acquire, memory_order_acquire));
     if(NULL != page) {
         atomic_fetch_sub_explicit(&(l->page_count), 1, memory_order_relaxed);
+        page->next = NULL;
     }
     return page;
 }
@@ -2553,7 +2554,7 @@ API bool glas_step_commit(glas* g) {
     //  first and optionally do a once-over without the lock.
     glas_thread_state_checkpoints_clear(g->state);
     glas_thread_state_decref(g->committed_state);
-    g->committed_state = glas_thread_state_clone(g->state);
+    g->committed_state = glas_thread_state_clone_shallow(g->state);
     return true;
 }
 API glas* glas_thread_new() {
@@ -2561,7 +2562,7 @@ API glas* glas_thread_new() {
     atomic_fetch_add_explicit(&glas_rt.stat.g_alloc, 1, memory_order_relaxed);
     glas* const g = calloc(1,sizeof(glas));
     g->state = glas_thread_state_new();
-    g->committed_state = glas_thread_state_clone(g->state);
+    g->committed_state = glas_thread_state_clone_shallow(g->state);
     g->step_count = 0;
     g->has_abort_handlers = false; // stand-in for now
     return g;
