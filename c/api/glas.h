@@ -1009,17 +1009,10 @@ void glas_vreg_rw(glas*, char const*); // logically read and write
  *  
  */
 void glas_ref_new(glas*); // -- Ref
+void glas_ref_xch(glas*); // Data Ref -- Data  
 void glas_ref_get(glas*); // Ref -- Data
 void glas_ref_set(glas*); // Data Ref --
-void glas_ref_xch(glas*); // Data Ref -- Data  
-
-/**
- * Present reference as a register.
- * 
- * We can use a reference as a register, but this is unidirectional. The
- * glas program model conflicts with references to registers in general.
- */
-void glas_ns_reg_ref_def(glas*, char const* name); // Ref --
+void glas_ns_reg_ref(glas*, char const* name); // Ref --
 
 /**
  * Direct reference access.

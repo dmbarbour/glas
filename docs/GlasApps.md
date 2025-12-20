@@ -27,7 +27,7 @@ But an important use case is support for user-defined application models, e.g. u
 
 ### Staged Applications? TBD.
 
-A runtime can feasibly support 'staged' applications, where the application is based on command-line arguments, environment variables, or other late-bound parameters. This conflicts with ahead-of-time compilation, requiring JIT, but it may improve flexibility. We could introduce a tag like "staged" for this role, returning another application.
+A runtime can feasibly support 'staged' application models, e.g. where an application is further compiled based on command-line arguments or environment variables. This conflicts with ahead-of-time compilation, requiring the runtime include an interpreter or just-in-time compiler. The main benefit is flexibility.
 
 ## Runtime-Provided Effects
 
@@ -35,13 +35,20 @@ The runtime provides an initial namespace of registers and methods to a basic ap
 
 * 'sys.\*' - system APIs, e.g. network, filesystem, clock, FFI, reflection
 * 'db.\*' - shared, persistent registers, bound to a configured database
-* 'g.\*' - ephemeral, 'global' registers bound to runtime instance; initially zero.
+* 'g.\*' - ephemeral, 'global' registers bound to runtime instance
 
-These are provided in the input Env together with 'app.\*' for the open fixpoint. The input Env does not include program primitives such as '%\*' names.
+These are provided in the input Env (together with 'app.\*' for the open fixpoint). The 'sys.\*' APIs are described below, while 'db.\*' and 'g.\*' provide some toplevel state visible to 'http' and other methods. Although these model global state, it is possible to scope access and partition application state between subcomponents (assuming support from the front-end compiler).
 
-Database registers in 'db.\*' are bound to a configured database. This supports persistence and asynchronous, shared-memory interaction between applications. Attempting to store runtime-ephemeral data (such as open file handles) into 'db.\*' registers results in an ephemerality error, a form of type error.
+## State
 
-The 'g.\*' registers are local to the runtime instance. This could be distributed state in context of a distributed runtime, or persistent state in context of a persistent runtime. But it won't survive the application.
+The basic program model has built-in support for registers, and we provide a few registers with 'db.\*' and 'g.\*'. But it isn't difficult to support first-class, mutable references (similar to Haskell's IORef). Tentative minimal API:
+
+* `sys.ref.*` 
+  * `new(Data) : Ref` - new reference initially containing Data; runtime-ephemeral
+  * `db.new(Data) : Ref` - as 'new' but backed by the database; database-ephemeral
+  * `with(Ref) : [op]` - pop Ref from stack, run 'op' with access as register 'ref'
+
+Compared to registers, references complicate static analysis, GC, and schema change (for live coding). Database-backed references generally require distributed GC. My vision for glas systems strongly favors registers over references (thus references aren't primitive). Nonetheless, references can be very convenient.
 
 ## Concurrency
 
@@ -256,10 +263,6 @@ Potential extensions:
   * or just use JIT for this.
 
 *Note:* Full orthogonal persistence of FFI seems infeasible, but FFI as a pipe to a separate thread or process at least can clearly indicate disruption. Ideally, FFI-based APIs should be designed to recover resiliently after a disconnect, so we can support orthogonal persistence later.
-
-## API Design Policy: Avoid Abstract References
-
-Shared or aliased references complicate conflict analysis, garbage collection, and schema changes. This can be mitigated with linear types, but those awkwardly require a lot of packing and unpacking. I propose to build most APIs instead on the notion of abstract data environments. For example, the use of `[ffi]` above represents operating on data 'unpacked' into abstract, associated registers. Data may remain unpacked across multiple transactions, but must be packed for migration.
 
 ## Regarding Filesystem, Network, Native GUI, Etc.
 
