@@ -1002,16 +1002,18 @@ void glas_vreg_rw(glas*, char const*); // logically read and write
 /**
  * References, or first-class registers.
  * 
- * The glas program model does not provide first-class registers, but it
- * isn't a difficult feature for the runtime to implement, or to support
- * via effects APIs (tentatively a 'sys.ref.*' API).
+ * The glas program model does not have built-in support for first-class
+ * registers, but they may be provided through an effects API. There are
+ * two primary operations: constructing a new reference, and binding the
+ * reference to a named register in the current scope.
  * 
- *  
+ * Note that references are non-linear even if the data they contain is
+ * linear. This easily results in linearity leaks, dropping data early.
+ * But ephemerality is enforced, i.e. a database-backed reference cannot
+ * contain runtime-ephemeral data.
  */
-void glas_ref_new(glas*); // -- Ref
-void glas_ref_xch(glas*); // Data Ref -- Data  
-void glas_ref_get(glas*); // Ref -- Data
-void glas_ref_set(glas*); // Data Ref --
+void glas_ref_new(glas*); // Data -- Ref ; runtime-ephemeral
+void glas_ref_db_new(glas*); // Data -- Ref ; database-ephemeral
 void glas_ns_reg_ref(glas*, char const* name); // Ref --
 
 /**

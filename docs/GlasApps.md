@@ -37,18 +37,18 @@ The runtime provides an initial namespace of registers and methods to a basic ap
 * 'db.\*' - shared, persistent registers, bound to a configured database
 * 'g.\*' - ephemeral, 'global' registers bound to runtime instance
 
-These are provided in the input Env (together with 'app.\*' for the open fixpoint). The 'sys.\*' APIs are described below, while 'db.\*' and 'g.\*' provide some toplevel state visible to 'http' and other methods. Although these model global state, it is possible to scope access and partition application state between subcomponents (assuming support from the front-end compiler).
+These are provided in the input Env (alongside 'app.\*' for the open fixpoint). The 'sys.\*' APIs are described below, while 'db.\*' and 'g.\*' provide some toplevel state visible to 'http' and other methods. Although these model global state, it is possible to scope access and partition application state between subcomponents (assuming support from the front-end compiler).
 
 ## State
 
-The program model has built-in support for registers, and we provide a few volumes of registers to an application with 'db.\*' and 'g.\*'. But it isn't difficult to support first-class references to mutable state (like Haskell's IORef). A minimal API:
+The program model has built-in support for registers, and the application receives a few volumes of registers as 'db.\*' and 'g.\*'. But it isn't difficult to support first-class references to mutable state (like Haskell's IORef). A viable API:
 
-* `sys.ref.*` 
+* `sys.state.ref.*` - (tentative) first-class state
   * `new(Data) : Ref` - new reference initially containing Data; runtime-ephemeral
   * `db.new(Data) : Ref` - as 'new' but backed by the database; database-ephemeral
   * `with(Ref) : [op]` - pop Ref from stack, run 'op' with access as register 'ref'
 
-Compared to registers, references complicate static analysis, GC, and schema change (for live coding). Database-backed references generally require distributed GC. My vision for glas systems strongly favors registers over references, thus references aren't primitive. Nonetheless, references can be very convenient.
+Relative to second-class registers, references complicate static dataflow and conflict analysis, linear type safety, and garbage collection. They also introduce a source of hysteresis or path dependence for data schema change, e.g. in context of live coding. For these reasons, my vision for glas systems favors registers over references, and I do not provide references as a program primitive.
 
 ## Concurrency
 
@@ -94,19 +94,41 @@ The runtime may recognize queues, bags, and CRDTs based on annotations, especial
 
 ### Live Coding
 
-My vision for glas systems involves code being updated at runtime. Usefully, atomic steps allow for atomic update of code at %yield boundaries. 
+My vision for glas systems involves code being updated at runtime. Logically, code updates can be applied atomically, between %yield steps. Even in case of a distributed runtime, we can support a wavefront consistent with transactions, like updating mirrored state.
 
 Unfortunately, anonymous control-flow state, e.g. current continuation of 'main', is difficult to robustly translate. Favoring predictable update, we instead modify only named function calls. But we can recompile and typecheck the continuation in context of updated functions, seeking safe transition points.
 
 Programmers can design with live coding in mind. For example, they may favor tail-recursive loops as more amenable to live coding than a '%loop' structure for a long-running loop. To further support robust transition of code, we run 'switch' as the first operation in the updated code, retrying as needed. This provides an opportunity to defer transition or explicitly manage critical state.
 
+## Futures and Promises (Tentative)
+
+A useful pattern for asynchronous interaction is construction of `(Future<T>, Promise<T>)` pairs. The promise is linear and represents a single-assignment reference. The promised data is readable through the future. Ideally, holding the future is equivalent to holding the promised data modulo reflection APIs, thus futures are linear unless we guarantee promised data is non-linear.
+
+Compared to full references, futures and promises have simpler interaction static dataflow analysis, linear types, and garbage collection. Of course, futures and promises are also less flexible, but users can model channels, e.g. `type Chan<T> = Future<(T, Chan<T>)|()>`, or more sophisticated structures to support most asynchronous interactions.
+
+A viable API:
+* `sys.promise.*` - 
+  * `new : (Promise<T>, Future<T>)` - returns an associated promise and future pair, runtime-ephemeral. The promise is linear, but future is non-linear. Writing linear data to the promise is a type error, diverging at runtime if detected at runtime.
+  * `new.linear : (Promise<T>, Future<T>)` - As `new` but with a linear future and the promise accepts linear data when written.
+  * `read(Future<T>) : T` - await a future. This diverges unless the associated promise is assigned. 
+  * `write(Promise<T>, T)` - assign a promise. This data becomes available within the current transaction, but only becomes visible outside the current transaction after commit.
+* `sys.refl.promise.*` -
+  * `called(Promise) : Promise | FAIL` - returns argument only if the promise has been 'called', i.e. if it seems there is current demand for the promised data. Monotonic: will implicitly 'call' the associated future in case we're observing temporary demand.
+  * `call(Future) : Future` - This marks a Future as in-demand for purpose of a `called` check. Idempotent and monotonic: once committed, 'called' will always pass, and 'forgotten' will always fail.
+  * `forgotten(Promise) : () | FAIL` - allows dropping a promise if the future will not be observed. This relies on a garbage collector to decide when the future has fallen from scope.
+  * `fulfilled(Future) : Future | FAIL` - returns argument if the future is immediately available, i.e. such that 'read' returns immediately and does not diverge. This allows roughly observing the timing for when a promise is fulfilled. 
+
+In theory, we can also support database-ephemeral futures and promises. I do not recommend this because those become too awkward in context of network disruption or node failure while an application holds the promise.
+
+*Note:* It is feasible to implement futures and promises in terms of a 'sys.state.ref' API. But built-in support allows for a few optimizations.
+
 ## HTTP 
 
-The 'app.http' method receives HTTP requests not intercepted by the runtime. 
+The 'http' method receives HTTP requests not intercepted by the runtime. 
 
 Instead of operating on a raw binary, this receives an environment of methods from the runtime providing features to swiftly route on the URL and access headers, and also write a valid, structured response. For details, I intend to borrow inspiration from the huge range of existing web server frameworks.
 
-The 'app.http' method is not implicitly atomic, but it's convenient if most requests are atomic. Atomic requests are both more RESTful and more widely accessible.
+The 'http' method is not implicitly atomic, but it's convenient if most requests are atomic. Atomic requests are both more RESTful and more widely accessible.
 
 *Aside:* Based on application settings and user configuration, we could automatically open a browser window after the application starts to provide a GUI.
 
@@ -118,7 +140,7 @@ A significant benefit of built-in RPC in glas systems is the opportunity to inte
 
 A viable API:
 
-        app.rpc(MethodRef, Argument) : [cb?, bind] Result
+        rpc(MethodRef, Argument) : [cb?, bind] Result
            cb(Argument) : [cb?] Result
            bind(MethodRef) : MethodURL
 
@@ -172,7 +194,7 @@ An intriguing possibility is to compile RPC methods into scripts that partially 
 
 ## Graphical User Interface (GUI)
 
-I have an interesting [vision for GUI](GlasGUI.md) in glas systems, but it's contingent on those transaction-loop optimizations, and it will be experimental even then. Until then, use FFI for native GUI or 'app.http' for browser-based GUI.
+I have an interesting [vision for GUI](GlasGUI.md) in glas systems, but it's contingent on those transaction-loop optimizations, and it will be experimental even then. Until then, use FFI for native GUI or 'http' for browser-based GUI.
 
 ## Background Calls - Transaction Escape Hatch
 
@@ -184,6 +206,9 @@ Proposed API:
           op(Argument) : [canceled] Result
           canceled() # pass/fail
           # constraint: Argument and Result are non-linear
+
+        sys.refl.bgcall.async(Argument) : [op] Future<Result>
+          # asynchronous variant of bgcall, immediately returns
 
 In this case, the caller provides an 'op' to evaluate in a separate coroutine. That coroutine will run just within scope of op, processing Argument and returning Result. The op does not need to be atomic: it may freely yield, e.g. to await an HTTP response. After completion, Result is then returned to the caller.
 
@@ -267,40 +292,6 @@ Potential extensions:
 ## Regarding Filesystem, Network, Native GUI, Etc.
 
 I'm hoping to build most APIs above FFI and bgcall, reducing the development burden on the runtime. We should stick with the 'unpacked linear object' concept instead of references in each case.
-
-## First-Class Mutable State? Defer.
-
-Although the glas program model discourages first-class state and does not support it directly, it isn't difficult to implement an API for refs, heaps, arenas, or similar. A viable API:
-
-* `sys.ref.*` -
-  * `new() : Ref` - returns an abstract, runtime-ephemeral mutable reference or volume thereof, initially zero.
-  * `with(Ref, S) : [op(S) : [ref, ...] S', ...] S'` - apply operation after binding Ref to register 'ref', and perhaps also binding 'ref.\*' for ease of extensibility.
-
-This API binds static register names, but we could easily develop an API with dynamic keys.
-
-First-class state is convenient, but it does complicate static analysis. I'm hoping to discourage this feature until the glas system is more mature.
-
-## Futures, Promises? Tentative.
-
-A relatively useful API is to construct abstract `(Future, Promise)` pairs, such that we can defer assignment to the Promise, observe the assigned value through the Future, and also integrate nicely with GC. It is feasible to model channels in this manner, e.g. write a `(Data, Future)` pair into a promise.
-
-Unlike heaps, monotonic update gives futures a relatively simple behavior that is very amenable to parallelism and distribution. However, they're rather awkward across application boundaries - it becomes difficult to track distribution of futures, and a denial-of-service risk to assume promises are kept. Thus, I propose to restrict this API to within a runtime.
-
-A viable API:
-* `sys.promise.*` - 
-  * `new : (Promise of T, Future of T)` - returns an associated promise and a non-linear future pair, both runtime-ephemeral. The promise is always linear, i.e. it may only be written once. Writing linear data to the promise will diverge.
-  * `new.linear : (Promise of T, Future of T)` - As `new` but returns a linear future and the promise accepts linear data when written.
-  * `read(Future of T) : T` - await a future. This diverges until the associated promise is assigned. 
-  * `write(Promise of T, T)` - assign a promise. This data becomes immediately available within the current transaction (e.g. in case the associated future is read later or within a coroutine). It only becomes visible beyond the current transaction when committed.
-* `sys.refl.promise.*` -
-  * `called(Promise) : Promise | FAIL` - a pass/fail test on a Promise. Passes if a reader is diverging on the associated future, or after a 'call' operation. Otherwise fails. In context of backtracking, 'called' is weakly monotonic: it becomes 'pass' permanently only if observed to pass *and* the observing transaction commits.
-  * `call(Future) : Future` - This marks a Future as in-demand for purpose of a `called` check, even if the Future is subsequently forgotten. Idempotent and monotonic: once committed, 'called' will always pass, and 'forgotten' will always fail.
-  * `forgotten(Promise) : () | FAIL` - If a Future is garbage-collected and was never explicitly called, the associated promise is considered forgotten. Programs can drop forgotten promises as an explicit form of lazy evaluation.
-  * `fulfilled(Future) : Future | FAIL` - a pass/fail test on a Future for non-blocking reads. Passes if reading the Future will return immediately, fails otherwise. Does not otherwise observe the future.
-
-The use of linear types ensures promises aren't written more than once, and that future linear data isn't copied or dropped implicitly. Separation of promise and future provides capability security for reasoning about futures. The reflection APIs support non-blocking reads, laziness, cancellation, and integration with the garbage collector.
-
-*Note:* The 'read' and 'call' operations are pure enough for use in context of lazy evaluation, memoization, etc.. Read cannot observe the state change, and 'call' can be understood as an annotation. But everything else is stateful.
 
 ## Time
 
