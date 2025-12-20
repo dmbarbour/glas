@@ -52,27 +52,19 @@ Relative to second-class registers, references complicate static dataflow and co
 
 ## Concurrency
 
-The program model supports fork-join coroutines where each yield-to-yield step is a transaction, and scheduling is non-deterministic. This gives us a form of preemption at the cost of rework. As a variant of [optimistic concurrency control](https://en.wikipedia.org/wiki/Optimistic_concurrency_control), avoiding rework and starvation are relevant concerns.
-
-Although the schedule is non-deterministic, it isn't random. The scheduler may analyze program code and its dynamic behavior, attempting to develop a predictable schedule with high utilization, low rework, acceptable fairness, perhaps even a few step fusion optimizations. Programmers are also expected to debug performance issues, e.g. introducing intermediate steps or checkpoints, queues for high-contention resources, etc..
-
-Other than yielding, a coroutine may voluntarily fail or diverge with an error (such as an assertion failure). In these cases, we logically abort the transaction and retry. A retry may explore alternative non-deterministic choices or observe updated state. But if it's obvious that retry is unproductive, the runtime could arrange to wait for relevant changes.
-
-The fork-join structure limits expressiveness but simplifies interaction with local state and methods. It still supports many useful concurrency patterns. 
+Concurrency is built into the program model (non-deterministic coroutines, optimistic concurrency control), thus no separate effects API is required. But we can discuss some interesting patterns.
 
 ### Transaction Loops
 
-An intriguing opportunity for concurrency and reactivity arises in context of non-deterministic, atomic loop structures. For example:
+It is feasible to express an application, or a significant part of it, as a transaction loop where the same transaction is performed repeatedly with some non-deterministic choice.
 
         while (Cond) do { atomic (choice ...); yield }
 
-This loop represents sequential repetition of a yield-to-yield transaction. Isolated transactions are equivalent to sequential transactions. Thus, we can implement this loop by running many cycles simultaneously. Running the exact same operation is useless. However, with non-deterministic choice, we can run the choices concurrently with optimistic concurrency control.
+Isolated transactions are equivalent to sequential transactions. Thus, we can implement this loop by running many cycles simultaneously, each 'thread' handling a different non-deterministic choice. We can continue running the loop concurrently until Cond fails on some or all non-deterministic choices, then proceed to whatever operation follows the loop.
 
-Predictable repetition simplifies incremental computing. Instead of fully recomputing a transaction on every cycle, we can introduce checkpoints for partial rollback. With careful design, each choice should have a stable prefix but an unstable suffix where most work is performed (e.g. reading and writing queues).
+Instead of fully recomputing a transaction on every cycle, we can introduce checkpoints for partial rollback. With careful design, each choice has a stable prefix that is cached, so we're actually looping only the unstable suffix. In case of unproductive loops (i.e. failed, diverged, or idempotent), the runtime may wait for relevant state changes before recomputing, modeling reactive systems.
 
-In case of unproductive loops (failed, diverged, or idempotent), a runtime may wait for relevant state changes. This provides a simple basis for modeling reactive systems.
-
-Unfortunately, implementation of these optimizations is a daunting task. The opportunity here is not easy to grasp. My vision for glas systems benefits enormously from transaction-loop optimizations, but short term we will rely on the more conventional coroutines.
+Unfortunately, implementation of these optimizations is a daunting task. This opportunity is not easy to grasp. My vision for glas systems benefits enormously from transaction-loop optimizations, but short term we will rely on the more conventional coroutines.
 
 ### Distribution
 
@@ -102,7 +94,7 @@ Programmers can design with live coding in mind. For example, they may favor tai
 
 ## Futures and Promises (Tentative)
 
-A useful pattern for asynchronous interaction is construction of `(Future<T>, Promise<T>)` pairs. The promise is linear and represents a single-assignment reference. The promised data is readable through the future. Ideally, holding the future is equivalent to holding the promised data modulo reflection APIs, thus futures are linear unless we guarantee promised data is non-linear.
+A useful pattern for asynchronous and concurrent interaction is construction of `(Future<T>, Promise<T>)` pairs. The promise is linear and represents a single-assignment reference. The promised data is readable through the future. Ideally, holding the future is equivalent to holding the promised data modulo reflection APIs, thus futures are linear unless we guarantee promised data is non-linear.
 
 Compared to full references, futures and promises have simpler interaction static dataflow analysis, linear types, and garbage collection. Of course, futures and promises are also less flexible, but users can model channels, e.g. `type Chan<T> = Future<(T, Chan<T>)|()>`, or more sophisticated structures to support most asynchronous interactions.
 
@@ -118,9 +110,9 @@ A viable API:
   * `forgotten(Promise) : () | FAIL` - allows dropping a promise if the future will not be observed. This relies on a garbage collector to decide when the future has fallen from scope.
   * `fulfilled(Future) : Future | FAIL` - returns argument if the future is immediately available, i.e. such that 'read' returns immediately and does not diverge. This allows roughly observing the timing for when a promise is fulfilled. 
 
-In theory, we can also support database-ephemeral futures and promises. I do not recommend this because those become too awkward in context of network disruption or node failure while an application holds the promise.
+In theory, we can also support database-ephemeral futures and promises. I do not recommend this because it interacts very awkwardly with network disruption or node failure. Thus, futures and promises are currently restricted to the runtime (albeit, permitting a distributed runtime).
 
-*Note:* It is feasible to implement futures and promises in terms of a 'sys.state.ref' API. But built-in support allows for a few optimizations.
+*Note:* It is feasible to implement futures and promises in terms of mutable references, but we lose out on a few runtime optimizations based on the single assignment constraint.
 
 ## HTTP 
 
