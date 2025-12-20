@@ -2531,8 +2531,11 @@ LOCAL void glas_thread_state_checkpoints_clear(glas_thread_state* ts) {
         glas_thread_state_decref(tmp);
     }
 }
-API void glas_step_abort(glas* g) {
+API void glas_checkpoints_clear(glas* g) {
     glas_thread_state_checkpoints_clear(g->state);
+}
+API void glas_step_abort(glas* g) {
+    glas_checkpoints_clear(g);
     glas_thread_state_decref(g->state);
     // committed states should have no checkpoints, no errors
     assert(likely((GLAS_NO_ERRORS == g->committed_state->err) &&
@@ -2584,6 +2587,8 @@ API void glas_errors_write(glas* g, GLAS_ERROR_FLAGS err) {
 }
 LOCAL void glas_step_detect_conflict(glas* g) {
     debug("todo: analyze for read-write conflicts");
+    // this operation will need to compare values read to current states.
+    (void)g;
 }
 API GLAS_ERROR_FLAGS glas_errors_read(glas* g, GLAS_ERROR_FLAGS mask) {
     // conflict analysis is expensive, so perform only as needed

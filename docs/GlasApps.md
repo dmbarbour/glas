@@ -2,34 +2,34 @@
 
 The [glas executable](GlasCLI.md) lets users run an application defined in the configuration namespace or a separate script file. To simplify extension and composition, each application is packaged into a single definition. To simplify sharing and integration, applications are named 'app' or 'env.appname.app'. The latter supports many applications to be named and defined within a user configuration.
 
-## Basic Applications
+## Application Models
 
-Basic applications are initially modeled as  `Env -> Env` functions, tagged "app". The input Env represents the runtime-provided effects API (e.g. 'sys.\*' and state), while the returned Env represents a collection of application methods. Most basic applications should implement 'settings', 'main', and 'http'. Sample methods:
+Basic applications are modeled as [namespace-layer](GlasNamespaces.md) `Env -> Env` functions, tagged "app". The input Env represents a runtime-provided effects API ('sys.\*' and global state) and an open fixpoint ('app.\*'), while the returned Env represents a collection of application methods. Most basic applications should implement at least 'main', 'settings', and 'http'. Sample methods:
 
 * 'main' - a program, the standard entry point. Upon return, the application halts.
-* 'settings' - queried to guide integration and configuration prior to running 'main'
-* 'http' - a flexible interface with many use cases (services, signaling, browser-based gui, etc.). The runtime opens a configurable port multiplexed with remote procedure calls. A configurable HTTP path (e.g. `"/sys/"`) is reserved for runtime use such as built-in debug views and APIs. 
+* 'settings' - queried to guide integration and application-specific configuration.
+* 'http' - a flexible interface with many use cases (services, browser-based gui, etc.). The runtime opens a configurable port multiplexed with remote procedure calls. 
+  * *Note:* runtimes may reserve `"/sys/*"` (configurable) for debugger and administrative use.
 * 'rpc' - (tentative) receive remote procedure calls, more advanced protocol than HTTP (e.g. to integrate with distributed transactions, algebraic effects, and content-distribution networks).
 * 'gui' - see [Glas GUI](GlasGUI.md), i.e. GUIs integrated with transaction model
-* 'switch' - in context of live coding, runs as the first transaction when transitioning code.
+* 'signal' - special administrative signals, e.g. to gracefully halt or hibernate
+* 'switch' - first operation on new code in context of live coding
 
-Use of the 'main' procedure is an old convention for defining applications in procedural paradigms. Separation of 'http', 'rpc', and 'gui' methods simplifies TCP multiplexing, composition, and orthogonal persistence compared to manually opening TCP listeners. The method 'switch' supports live coding, and I'm contemplating support for orthogonal persistence.
+Use of the 'main' procedure is a familiar convention for defining applications. Separation of 'http', 'rpc', and 'gui' methods simplifies multiplexing, composition, and persistence (compared to manually opening listeners). The open fixpoint 'app.\*' contributes to extensibility, e.g. single-inheritance overrides and mixins. The 'settings', 'signal', and 'switch' operations simplify integration.
 
-Basic applications share many known weaknesses:
+This set of methods is extensible. For portability reasons, 'settings' should indicate which methods the runtime is expected to recognize and integrate. But we can also develop entirely distinct application models, recognizing tags other than "app". For example, it is feasible to model applications as constraint-logic systems, generative grammars, process networks, interaction nets, or hardware description language.
 
-Basic applications are not robustly composable. It is possible to model static 'has-a' components or widgets if we're careful to partition state resources, but some features such as console IO ('sys.tty.\*') are awkward to partition, and application methods such as 'http' may require ad hoc composite pages.
+### Application Adapter
 
-Basic applications are merely modestly extensible. Without modifying application source, we can wrap an app to add URL paths in 'http' or add a thread to 'main'. To enhance extensibility, applications do receive open fixpoint 'app.\*' via input Env, but to effectively leverage this users must explicitly define some methods in anticipation of overrides.
+The user configuration may define an application adapter. The adapter applies to an application's definition before compiling and running it. This is convenient for portability, e.g. we could adapt application 'settings' to the runtime version, or adapt a runtime effects API to the application. 
 
-Use of 'main' interacts awkwardly with live coding and projectional editing. Long-lived control flow and local variables become an implicit form of application state. We can atomically transition to new code at %yield boundaries, but we cannot easily update control flow state such as continuations.
+But an important use case is support for user-defined application models, e.g. users introduce tag "kpn" for [Kahn process networks](https://en.wikipedia.org/wiki/Kahn_process_networks), the adapter can compile to a basic "app" if the runtime does not have built-in support for "kpn". This enables users to 'run' ad hoc application models without manually wrapping them.
 
-## Alternative Application Models
+### Staged Applications? TBD.
 
-Alternative application models may favor composability, live coding, static allocation, or other features over the familiarity and flexibility of basic applications. As needed, we can introduce tags other than "app" for suitable models, e.g. Kahn process networks, Lafont interaction nets, VHDL-like hardware emulation, or constraint-logic programming. 
+A runtime can feasibly support 'staged' applications, where the application is based on command-line arguments, environment variables, or other late-bound parameters. This conflicts with ahead-of-time compilation, requiring JIT, but it may improve flexibility. We could introduce a tag like "staged" for this role, returning another application.
 
-A runtime may support some new tags directly, but other tags might be supported indirectly via user-configured adapters, e.g. compiling a Kahn process network to a basic application. Such adapters also enhance portability.
-
-## Effects and State
+## Runtime-Provided Effects
 
 The runtime provides an initial namespace of registers and methods to a basic application:
 
@@ -87,17 +87,11 @@ The runtime may recognize queues, bags, and CRDTs based on annotations, especial
 
 ### Live Coding
 
-Live coding can be understood as updating program behavior concurrently with its execution. Robust support for live coding is an essential aspects of my vision for glas systems.
+My vision for glas systems involves code being updated at runtime. Usefully, atomic steps allow for atomic update of code at %yield boundaries. 
 
-There are two elements we can reasonably update in a runtime after a source change. First, calls to names can be transferred to the new namespace. Second, existing method declarations that included names in the prior namespace can be recomputed in the new namespace. The latter includes updating the 'app' methods.
+Unfortunately, anonymous control-flow state, e.g. current continuation of 'main', is difficult to robustly translate. Favoring predictable update, we instead modify only named function calls. But we can recompile and typecheck the continuation in context of updated functions, seeking safe transition points.
 
-Coroutines are not friendly to live coding. We cannot robustly update a partially-executed procedure after its definition changes. We cannot easily introduce new coroutines for background tasks or eliminate defunct ones. But there are some mitigation strategies.
-
-Developers can architect applications and design front-end syntax with live coding in mind. For example, we may favor tail recursion for long-running loops. And syntax for user-defined data types may encourage users to track version info and provide version-to-version update operations.
-
-The runtime can support a clean transition. The 'app.switch' method runs first, providing an opportunity to perform critical state updates, run assertions and tests, observe application state to let the application control updates. The actual switch to new code is atomic, treated the same as mirrored state in case of distribution.
-
-Eventually, transaction loops should offer a far more friendly foundation than coroutines.
+Programmers can design with live coding in mind. For example, they may favor tail-recursive loops as more amenable to live coding than a '%loop' structure for a long-running loop. To further support robust transition of code, we run 'switch' as the first operation in the updated code, retrying as needed. This provides an opportunity to defer transition or explicitly manage critical state.
 
 ## HTTP 
 
@@ -261,7 +255,7 @@ Potential extensions:
 * support for structs, e.g. `"{ysw}"`
   * or just use JIT for this.
 
-*Note:* Interaction between FFI and orthogonal persistence is awkward in general, but modeling FFI as a pipe to a separate thread or process at least provides an opportunity to clearly indicate when FFI is detached due to transitioning to a new process. We can design FFI APIs to effectively recover from a disconnect.
+*Note:* Full orthogonal persistence of FFI seems infeasible, but FFI as a pipe to a separate thread or process at least can clearly indicate disruption. Ideally, FFI-based APIs should be designed to recover resiliently after a disconnect, so we can support orthogonal persistence later.
 
 ## API Design Policy: Avoid Abstract References
 

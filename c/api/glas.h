@@ -669,7 +669,7 @@ void glas_step_on_abort(glas*, void (*op)(void* arg), void* arg);
 void glas_checkpoint_push(glas*); // copy context for the checkpoint
 void glas_checkpoint_load(glas*); // 'abort', rewind to prior checkpoint
 void glas_checkpoint_drop(glas*); // 'commit' to updates since checkpoint
-void glas_checkpoint_clear(glas*); // drop all checkpoints
+void glas_checkpoints_clear(glas*); // drop all checkpoints
 
 /**
  * Reactivity.
@@ -1000,13 +1000,18 @@ void glas_vreg_write(glas*, char const*); // logically write vreg
 void glas_vreg_rw(glas*, char const*); // logically read and write
 
 /**
- * First-class registers, aka references.
+ * References, or first-class registers.
  * 
- * Although glas program model discourages first-class mutable state, it
- * remains convenient for some use cases, and especially for integration
- * of C callback APIs.
+ * The glas program model does not provide first-class registers, but it
+ * isn't a difficult feature for the runtime to implement, or to support
+ * via effects APIs (tentatively a 'sys.ref.*' API).
+ * 
+ *  
  */
 void glas_ref_new(glas*); // -- Ref
+void glas_ref_get(glas*); // Ref -- Data
+void glas_ref_set(glas*); // Data Ref --
+void glas_ref_xch(glas*); // Data Ref -- Data  
 
 /**
  * Present reference as a register.
@@ -1022,9 +1027,6 @@ void glas_ns_reg_ref_def(glas*, char const* name); // Ref --
  * Get and set a reference without binding to a name first. This offers
  * small convenience and performance benefits.
  */
-void glas_ref_get(glas*); // Ref -- Data
-void glas_ref_set(glas*); // Data Ref --
-void glas_ref_xch(glas*); // Data Ref -- Data  
 
 
 /**
