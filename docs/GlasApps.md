@@ -41,14 +41,14 @@ These are provided in the input Env (together with 'app.\*' for the open fixpoin
 
 ## State
 
-The basic program model has built-in support for registers, and we provide a few registers with 'db.\*' and 'g.\*'. But it isn't difficult to support first-class, mutable references (similar to Haskell's IORef). Tentative minimal API:
+The program model has built-in support for registers, and we provide a few volumes of registers to an application with 'db.\*' and 'g.\*'. But it isn't difficult to support first-class references to mutable state (like Haskell's IORef). A minimal API:
 
 * `sys.ref.*` 
   * `new(Data) : Ref` - new reference initially containing Data; runtime-ephemeral
   * `db.new(Data) : Ref` - as 'new' but backed by the database; database-ephemeral
   * `with(Ref) : [op]` - pop Ref from stack, run 'op' with access as register 'ref'
 
-Compared to registers, references complicate static analysis, GC, and schema change (for live coding). Database-backed references generally require distributed GC. My vision for glas systems strongly favors registers over references (thus references aren't primitive). Nonetheless, references can be very convenient.
+Compared to registers, references complicate static analysis, GC, and schema change (for live coding). Database-backed references generally require distributed GC. My vision for glas systems strongly favors registers over references, thus references aren't primitive. Nonetheless, references can be very convenient.
 
 ## Concurrency
 
