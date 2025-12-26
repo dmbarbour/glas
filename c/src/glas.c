@@ -2115,6 +2115,7 @@ LOCAL inline size_t glas_gc_dq_size(glas_gc_dq const* dq) {
 }
 LOCAL void glas_gc_dq_grow(glas_gc_dq* dq, size_t new_cap) {
     assert(likely(new_cap > glas_gc_dq_size(dq)));
+    //debug("growing decref queue: %lu -> %lu", dq->capacity, new_cap);
     glas_refct* const new_items = malloc(new_cap * sizeof(glas_refct));
     size_t new_tail = 0;
     while(dq->head != dq->tail) {
@@ -2140,7 +2141,7 @@ LOCAL void glas_gc_dq_push(glas_gc_dq* dq, glas_refct refct) {
         sem_post(&dq->wakeup);
     }
 }
-LOCAL inline bool glas_gc_dq_pop(glas_gc_dq* dq, glas_refct* refct) {
+LOCAL bool glas_gc_dq_pop(glas_gc_dq* dq, glas_refct* refct) {
     pthread_mutex_lock(&dq->mutex);
     bool const item_found = !glas_gc_dq_is_empty(dq);
     if(item_found) {
@@ -2154,10 +2155,9 @@ LOCAL inline bool glas_gc_dq_pop(glas_gc_dq* dq, glas_refct* refct) {
 }
 LOCAL void* glas_gc_dq_worker(void* addr) {
     glas_gc_dq* const dq = addr;
-    glas_refct refct;
     do {
         sem_wait(&dq->wakeup);
-        do {} while(0 == sem_trywait(&dq->wakeup)); // drain extra wakeups
+        glas_refct refct;
         while(glas_gc_dq_pop(dq, &refct)) {
             glas_decref(refct);
         }
@@ -2167,16 +2167,13 @@ LOCAL void* glas_gc_dq_worker(void* addr) {
 LOCAL void glas_gc_dq_init(glas_gc_dq* dq) {
     pthread_mutex_init(&dq->mutex, NULL);
     sem_init(&dq->wakeup, 0, 0);
-    #if DEBUG
-    dq->capacity = 1; // force growth
+    dq->capacity = 1; // forces growth
     dq->items = NULL;
-    #else
-    dq->capacity = 512; // unlikely to grow
-    dq->items = malloc(sizeof(glas_refct) * dq->capacity);
-    #endif
     dq->head = 0;
     dq->tail = 0;
-
+    #ifndef DEBUG
+    glas_gc_dq_grow(dq, 2048); // larger initial size
+    #endif
     // note: I don't want a small stack in this case because I don't
     // know what insane things the API client will do upon decref.
     pthread_create(&dq->thread, NULL, &glas_gc_dq_worker, dq);
