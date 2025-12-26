@@ -92,7 +92,7 @@ static_assert((ATOMIC_POINTER_LOCK_FREE == 2) &&
 /**
  * GC design:
  * - non-moving GC, concurrent mark + lazy sweep on alloc
- * - because all cells are 32 bytes, there is no need to compact
+ * - fixed-size cells means there is little need for compaction
  * - concurrent mark requires a write barrier
  * - snapshot at the beginning; new allocations marked but not traced
  * - double mark buffers, flip buffers after mark completes
@@ -151,7 +151,7 @@ typedef struct glas_stack glas_stack;
  * lowest few alignment bits for a pointer.
  *      
  *      Last Byte       Interpretation
- *      xxxpp000        Pointer (pp reserved - must be 00 for now)
+ *      xxxpp000        Pointer (pp reserved, 00 for now)
  *      xxxxxx01        Bitstring of 0..61 bits, also integers
  *      xxxxxx10        Shrub (tiny tree), 2..31 edges, at least one pair
  *      xxxxx011        Small rationals. 0..30 bit num, 1..30 bit denom (implicit '1' prefix in denom)
@@ -173,13 +173,13 @@ static_assert(sizeof(void*)==sizeof(uint64_t));
 
 #define GLAS_DATA_TAG_BITS UINT64_C(0b01)
 #define GLAS_DATA_TAG_SHRUB UINT64_C(0b10)
-#define GLAS_DATA_TAG_PAKRAT UINT64_C(0b011)
+#define GLAS_DATA_TAG_PACKRAT UINT64_C(0b011)
 #define GLAS_DATA_TAG_BINARY UINT64_C(0b00111)
 
 #define GLAS_DATA_IS_PTR(P) (0 == (((uint64_t)P) & 0x1F))
 #define GLAS_DATA_IS_BITS(P) (GLAS_DATA_TAG_BITS == (((uint64_t)P) & 0b11))
 #define GLAS_DATA_IS_SHRUB(P) (GLAS_DATA_TAG_SHRUB == (((uint64_t)P) & 0b11))
-#define GLAS_DATA_IS_PACKRAT(P) (GLAS_DATA_TAG_PAKRAT == (((uint64_t)P) & 0b111))
+#define GLAS_DATA_IS_PACKRAT(P) (GLAS_DATA_TAG_PACKRAT == (((uint64_t)P) & 0b111))
 #define GLAS_DATA_IS_BINARY(P) (GLAS_DATA_TAG_BINARY == (((uint64_t)P) & 0b11111))
 #define GLAS_DATA_IS_ABSTRACT_CONST(P) (0xFF == (((uint64_t)P) & 0xFF))
 #define GLAS_DATA_BINARY_LEN(P) (0b111 & (((uint64_t)P) >> 5))
@@ -349,9 +349,12 @@ struct glas_cell_hdr {
     _Atomic(uint8_t) gcbits;  // reserved for use by GC
 };
 #define GLAS_GCBITS_SCAN    0b00000111
-#define GLAS_AGGR_LINEAR_FLAG   0b0001
-#define GLAS_AGGR_ABSTRACT_FLAG 0b0010
-#define GLAS_AGGR_EPH_MASK      0b1100
+#define GLAS_AGGR_LINEAR    0b0001
+#define GLAS_AGGR_ABSTRACT  0b0010
+#define GLAS_AGGR_EPH_MASK  0b1100
+#define GLAS_AGGR_EPH_DB    0b0100
+#define GLAS_AGGR_EPH_RT    0b1000
+#define GLAS_AGGR_EPH_TN    0b1100
 
 struct glas_cell {
     glas_cell_hdr hdr;
@@ -1247,7 +1250,8 @@ LOCAL void glas_gc_register_finalizer(glas_cell* cell) {
 LOCAL inline glas_cell* glas_cell_fptr(void* ptr, glas_refct pin, bool linear) {
     glas_cell* cell = glas_cell_alloc();
     cell->hdr.type_id = GLAS_TYPE_FOREIGN_PTR;
-    cell->hdr.type_aggr = 0b1010 | (linear ? 0b0001 : 0);
+    cell->hdr.type_aggr = GLAS_AGGR_ABSTRACT | GLAS_AGGR_EPH_RT 
+                        | (linear ? GLAS_AGGR_LINEAR : 0);
     cell->hdr.type_arg = 0;
     cell->stemHd = GLAS_STEM31_EMPTY;
     cell->foreign_ptr.ptr = ptr;
@@ -1313,15 +1317,15 @@ LOCAL inline uint8_t glas_type_aggr_comp(uint8_t lhs, uint8_t rhs) {
     // xxxx - reserved (zero for now)
     // ee - max ephemerality
     // a, l - abstraction, linearity - bitwise or
-    uint8_t const le = (lhs & 0b1100);
-    uint8_t const re = (rhs & 0b1100);
-    uint8_t const ee = (le > re) ? le : re;
+    uint8_t const leph = (lhs & GLAS_AGGR_EPH_MASK);
+    uint8_t const reph = (rhs & GLAS_AGGR_EPH_MASK);
+    uint8_t const ceph = (leph > reph) ? leph : reph;
     uint8_t const al = (lhs|rhs)&(0b0011);
-    return (ee|al);
+    return (ceph|al);
 }
 LOCAL inline uint8_t glas_cell_type_aggr(glas_cell* cell) {
     return GLAS_DATA_IS_PTR(cell) ? cell->hdr.type_aggr :
-           unlikely(GLAS_DATA_IS_ABSTRACT_CONST(cell)) ? 0b1010 : 
+           unlikely(GLAS_DATA_IS_ABSTRACT_CONST(cell)) ? (GLAS_AGGR_ABSTRACT | GLAS_AGGR_EPH_RT) : 
            0;
 }
 LOCAL uint8_t glas_cell_array_type_aggr(glas_cell** data, size_t len) {
@@ -1381,33 +1385,28 @@ LOCAL inline bool glas_cell_is_short_stem(glas_cell* cell) {
             (0 == cell->hdr.type_arg));
 }
 LOCAL void glas_sc_branch_prep_extract_short_stem(glas_sc* sc) {
-    size_t const stem_shift = 1 + ctz64(sc->stem);
-    size_t const stem_len = 64 - stem_shift;
+    size_t const stem_len = 63 - ctz64(sc->stem);
     if((stem_len < 31) && glas_cell_is_short_stem(sc->cell)) {
         // we can sometimes eliminate a short GLAS_TYPE_STEM from a branch.
         size_t const short_stem_space = ctz32(sc->cell->stemHd);
         if(short_stem_space >= stem_len) {
-            uint32_t const short_stem = ((sc->cell->stemHd) >> stem_len) 
-                | (uint32_t)((sc->stem >> stem_shift) << (32 - stem_len));
-            sc->stem = ((uint64_t)short_stem) << 32; // merge stem bits
+            sc->stem = (sc->stem & (sc->stem - 1)) 
+                     | (((uint64_t)(sc->cell->stemHd)) << (32 - stem_len));
             sc->cell = sc->cell->stem.fby; // remove short GLAS_TYPE_STEM
         }
     }
 }
 LOCAL void glas_sc_branch_prep_collapse_long_stem(glas_sc* sc) {
-    glas_sc_fill_cell_stem_bits(sc); // pack bits from sc->stem into sc->cell
-    size_t const stem_shift = 1 + ctz64(sc->stem);
-    size_t const stem_len = 64 - stem_shift;
+    size_t const stem_len = 63 - ctz64(sc->stem);
     if(stem_len > 31) { // stem too large, move to heap
         sc->cell = glas_sc_to_cell(*sc);
         sc->stem = GLAS_STEM63_EMPTY;
     }
 }
 LOCAL inline void glas_sc_branch_prep(glas_sc* sc) {
-    // extract short GLAS_TYPE_STEM into sc->stem (up to 31 bits), or
-    // push a long stem into the heap (if longer than 31 bits).
-    glas_sc_branch_prep_extract_short_stem(sc);  
-    glas_sc_branch_prep_collapse_long_stem(sc);
+    glas_sc_branch_prep_extract_short_stem(sc); // expand stem if total len fits branch
+    glas_sc_fill_cell_stem_bits(sc); // compress stem bits into sc->cell
+    glas_sc_branch_prep_collapse_long_stem(sc); // oversized stems need separate node
 }
 LOCAL glas_cell* glas_cell_pair_alloc_sc(glas_sc lhs, glas_sc rhs) {
     // TBD: packed pointers for shrubs or small binaries
@@ -1433,7 +1432,7 @@ LOCAL inline glas_cell* glas_cell_pair_alloc(glas_cell* lhs, glas_cell* rhs) {
 }
 
 LOCAL void glas_os_thread_force_enter_busy(glas_os_thread* t) {
-    t->state = GLAS_OS_THREAD_WAIT; // note: GC may immediately signal wakeup.
+    t->state = GLAS_OS_THREAD_WAIT; // note: may immediately receive wakeups
     do {
         // GC doesn't wait on individual threads, only the number of busy threads.
         atomic_fetch_add_explicit(&(glas_rt.gc.busy_threads_count), 1, memory_order_relaxed);
@@ -1441,8 +1440,6 @@ LOCAL void glas_os_thread_force_enter_busy(glas_os_thread* t) {
             // set state to busy
             t->state = GLAS_OS_THREAD_BUSY;
             t->busy_depth = 1;
-            // drain the semaphore of missed signals (if any)
-            do {} while(0 == sem_trywait(&(t->wakeup)));
             return; // successfully entered busy
         }
         // otherwise, wait for GC wakeup. We'll check for GC once more to
@@ -1462,18 +1459,17 @@ LOCAL void glas_os_thread_enter_busy() {
     assert(likely(GLAS_OS_THREAD_IDLE == t->state));
     glas_os_thread_force_enter_busy(t);
 }
-LOCAL void glas_gc_busy_thread_decrement() {
+LOCAL void glas_os_thread_force_exit_busy(glas_os_thread* const t) {
+    assert(likely(GLAS_OS_THREAD_BUSY == t->state));
+    t->state = GLAS_OS_THREAD_IDLE;
+    t->busy_depth = 0;
     size_t const prior_busy_count = atomic_fetch_sub_explicit(&glas_rt.gc.busy_threads_count, 1, memory_order_release);
     if((1 == prior_busy_count) && (atomic_load_explicit(&glas_rt.gc.stopping, memory_order_relaxed))) {
         // The last thread to go IDLE while GC is STOPPING must awaken GC.
         sem_post(&glas_rt.gc.wakeup);
     }
-}
-LOCAL void glas_os_thread_force_exit_busy(glas_os_thread* const t) {
-    assert(likely(GLAS_OS_THREAD_BUSY == t->state));
-    t->busy_depth = 0;
-    t->state = GLAS_OS_THREAD_IDLE;
-    glas_gc_busy_thread_decrement();
+    // clear extra wakeups (possible due to race conditions)
+    do {} while(0 == sem_trywait(&(t->wakeup)));
 }
 LOCAL void glas_os_thread_exit_busy() {
     glas_os_thread* const t = glas_os_thread_get();
@@ -1516,9 +1512,8 @@ LOCAL void glas_os_thread_set_done(glas_os_thread* const t) {
     t->state = GLAS_OS_THREAD_DONE;
 }
 LOCAL inline bool glas_gc_has_stopped_the_world() {
-    bool const stopping = atomic_load_explicit(&glas_rt.gc.stopping, memory_order_relaxed);
-    size_t const busy_threads = atomic_load_explicit(&glas_rt.gc.busy_threads_count, memory_order_relaxed);
-    return (stopping && (0 == busy_threads));
+    return atomic_load_explicit(&glas_rt.gc.stopping, memory_order_relaxed) 
+        && (0 == atomic_load_explicit(&glas_rt.gc.busy_threads_count, memory_order_relaxed));
 }
 LOCAL void glas_gc_stop_the_world() {
     assert(likely(!atomic_load_explicit(&glas_rt.gc.stopping, memory_order_relaxed)));
@@ -1753,7 +1748,7 @@ LOCAL void glas_cell_finalize(glas_cell* cell) {
 }
 LOCAL inline bool glas_cell_is_linear(glas_cell* cell) {
     return (GLAS_DATA_IS_PTR(cell) &&
-            (0 != (GLAS_AGGR_LINEAR_FLAG & cell->hdr.type_aggr)));
+            (0 != (GLAS_AGGR_LINEAR & cell->hdr.type_aggr)));
 }
 
 
@@ -2916,12 +2911,13 @@ LOCAL uint64_t glas_cell_stem_pop(glas_cell** cell) {
         //  (n:Bits, d:Bits)
         //  'n' is ascii 0x6E or 0b0110 1 110
         //  'd' is ascii 0x64 or 0b0110 0 100
+        //  ':' is the null separator 0x00
         // we can extract these bits
-        uint64_t const num_stem = (GLAS_PACKRAT_NUM_STEM(*cell)>>3) | (UINT64_C(0b110)<<61);
-        uint64_t const den_stem = (GLAS_PACKRAT_DEN_STEM(*cell)>>3) | (UINT64_C(0b100)<<61);
+        uint64_t const num_stem = (GLAS_PACKRAT_NUM_STEM(*cell)>>11) | (UINT64_C(0b110)<<61);
+        uint64_t const den_stem = (GLAS_PACKRAT_DEN_STEM(*cell)>>11) | (UINT64_C(0b100)<<61);
         glas_cell* const num = (glas_cell*)(num_stem | 0b01);
         glas_cell* const den = (glas_cell*)(den_stem | 0b01);
-        (*cell) = glas_cell_pair_alloc(den, num); // may allocate or use shrub
+        (*cell) = glas_cell_pair_alloc(den, num); 
         return UINT64_C(0b01101)<<59; // return the four shared bits
     } else {
         return GLAS_STEM63_EMPTY; // empty stem
@@ -3140,20 +3136,21 @@ LOCAL bool glas_moves_var_index(uint8_t c, size_t* index) {
         (*index) = (size_t)(c - (uint8_t)'A');
         return true;
     } else {
-        (*index) = 63;
+        (*index) = 52;
         return false;
     }
 }
 LOCAL size_t glas_data_move_lin_ngc(glas* g, uint8_t const* const moves) {
-    uint64_t defined = 0; // bitfield
-    uint8_t copies[64];
-    glas_sc data[64];
+    uint64_t defined = 0; // bitfield for which vars are defined
+    uint8_t copies[64]; // track copy count to detect linearity errors
+    glas_sc data[64]; // using indices 0..51 ('A'-'Z' and 'a'-'z')
 
     uint8_t const* scan = moves;
     while('-' != *scan) {
         // scan to '-', record defined vars, verify structure of LHS
         size_t ix;
         if(glas_moves_var_index(*scan, &ix) && (0 == (defined & (UINT64_C(1)<<ix)))) {
+            assert(likely(52 > ix));
             defined |= (UINT64_C(1)<<ix);
         } else {
             debug("invalid moves string: %s", moves);
@@ -3162,13 +3159,13 @@ LOCAL size_t glas_data_move_lin_ngc(glas* g, uint8_t const* const moves) {
     }
     uint8_t const* const center = scan; // at '-'
     while(moves != scan) {
-        // scan backwards, popping stack into vars
+        // scan backwards, popping stack into local vars
         --scan;
         size_t ix;
-        glas_moves_var_index(*scan, &ix);
-        assert(likely((52 > ix) && (0 != (UINT64_C(1)<<ix))));
-        copies[ix] = 0;
-        data[ix] = glas_thread_stack_sc_pop(g);
+        if(glas_moves_var_index(*scan, &ix)) {
+            data[ix] = glas_thread_stack_sc_pop(g);
+            copies[ix] = 0;
+        }
     }
     scan = center + 1;
     while(0 != *scan) {
@@ -3731,13 +3728,15 @@ void test_fin_refct_upd(void* arg, bool incref) {
         atomic_fetch_sub_explicit(count, 1, memory_order_relaxed);
     }
 }
-MU_TEST(test_fin) {
+MU_TEST(test_finalizers) {
+    // this tests that items are garbage collected, that finalizers are run,
+    // and that a subset of items are held properly across GC cycles.
     static size_t const stripe_count = 4;
     static size_t const stripe_len = 40000;
     _Atomic(size_t) counts[stripe_count];
     for(size_t stripe = 0; stripe < stripe_count; ++stripe) {
         atomic_init(counts+stripe, 0);
-        glas_integer_push(test.g, 0);
+        glas_integer_push(test.g, 0); // unit
     }
     for(size_t ii = 0; ii < stripe_len; ++ii) {
         for(size_t stripe = 0; stripe < stripe_count; ++stripe) {
@@ -3750,15 +3749,27 @@ MU_TEST(test_fin) {
         }
         glas_data_stash(test.g, -(int8_t)stripe_count);
     }
-    mu_assert_int_eq(4, (int) test.g->state->stack.count);
+    mu_assert_int_eq((int) stripe_count, (int) test.g->state->stack.count);
     for(size_t stripe = 0; stripe < stripe_count; ++stripe) {
-        mu_assert_int_eq((int)stripe_len, atomic_load_explicit(counts + stripe, ))
+        mu_assert_int_eq((int) stripe_len, 
+                         (int) atomic_load_explicit(counts + stripe, memory_order_relaxed));
+        glas_data_drop(test.g, 1);
+        glas_rt_gc_trigger(GLAS_GC_FULL);
+        static size_t const GC_WAIT_STEP_USEC = 5000; // check every 5ms
+        static size_t const GC_WAIT_MAX_STEP_COUNT = 1000000 / GC_WAIT_STEP_USEC; // ~1sec
+        size_t step_count = 0;
+        do {
+            size_t elem_count = atomic_load_explicit(counts + stripe, memory_order_relaxed);
+            //debug("strip %lu at %lu items", stripe, elem_count);
+            if(0 == elem_count) {
+                break;
+            } else {
+                struct timespec tm = { .tv_sec = 0, .tv_nsec = 1000 * GC_WAIT_STEP_USEC };
+                nanosleep(&tm, NULL);
+            }
+        } while(GC_WAIT_MAX_STEP_COUNT > ++step_count);
+        mu_assert_int_eq(0, (int) atomic_load_explicit(counts + stripe, memory_order_relaxed));
     }
-
-    mu_assert(false, "todo: finish");
-
-    // striped allocations
-
 }
 
 MU_TEST_SUITE(test_glas) {
@@ -3767,7 +3778,7 @@ MU_TEST_SUITE(test_glas) {
     MU_RUN_TEST(test_uint);
     MU_RUN_TEST(test_int);
     MU_RUN_TEST(test_big_bits);
-    MU_RUN_TEST(test_fin);
+    MU_RUN_TEST(test_finalizers);
 }
 API bool glas_rt_run_builtin_tests() {
     glas_rt_init();

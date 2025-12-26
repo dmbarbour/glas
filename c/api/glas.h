@@ -848,7 +848,7 @@ bool glas_u8_peek(glas*, uint8_t*);
  * - pop: as peek then drop, can drop linear pointers
  * 
  * It is permitted to peek at a linear pointer, i.e. it does not count 
- * as a copy. But a linear pointer may be dropped only via pop.
+ * as a copy. But a linear pointer must be dropped via glas_ptr_pop.
  */
 void glas_ptr_push(glas*, void*, glas_refct, bool linear);
 bool glas_ptr_peek(glas*, void**, glas_refct*);
@@ -1000,7 +1000,7 @@ void glas_vreg_write(glas*, char const*); // logically write vreg
 void glas_vreg_rw(glas*, char const*); // logically read and write
 
 /**
- * References, or first-class registers.
+ * References, or first-class registers. (Tentative.)
  * 
  * The glas program model does not have built-in support for first-class
  * registers, but they may be provided through an effects API. There are
@@ -1009,20 +1009,12 @@ void glas_vreg_rw(glas*, char const*); // logically read and write
  * 
  * Note that references are non-linear even if the data they contain is
  * linear. This easily results in linearity leaks, dropping data early.
- * But ephemerality is enforced, i.e. a database-backed reference cannot
- * contain runtime-ephemeral data.
  */
+#if 0 
 void glas_ref_new(glas*); // Data -- Ref ; runtime-ephemeral
 void glas_ref_db_new(glas*); // Data -- Ref ; database-ephemeral
 void glas_ns_reg_ref(glas*, char const* name); // Ref --
-
-/**
- * Direct reference access.
- * 
- * Get and set a reference without binding to a name first. This offers
- * small convenience and performance benefits.
- */
-
+#endif 
 
 /**
  * TBD: Futures and promises.
@@ -1047,7 +1039,7 @@ void glas_data_swap(glas*);              // A B -- B A
  * Auxilliary stack for hiding data
  * 
  * The stash serves the role of program primitive %dip, scoping access
- * to a few elements of the data stack. If amt >= 0, transfers amt items
+ * to a few elements of the data stack. If amt > 0, transfers amt items
  * from stack to stash, otherwise |amt| is transferred in reverse. The
  * stash is not shared with callbacks or forks.
  * 
@@ -1061,13 +1053,15 @@ void glas_data_stash(glas*, int8_t amt);
  *   
  *   "abc-abcabc"   copy 3
  *   "abc-b"        drops a and c
- *   "abcd-abcab"   drops d, copies ab to top of stack
+ *   "abcd-abcab"   drops d from top of stack, copies ab to top of stack
  * 
  * This operation navigates to '-', scans leftwards, popping items into
  * local variables [a-zA-Z]. Then it scans rightwards from '-', pushing 
  * variables back onto the stack. It's an error if the string reuses a
  * variable on the left, refers to unassigned variables on the right, or
  * lacks the '-' separator. Copy or drop of linear data is detected.
+ * 
+ * Note: An invalid moves string may cause the process to abort.
  */
 void glas_data_move(glas*, char const* moves);
 

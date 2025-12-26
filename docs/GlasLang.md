@@ -6,11 +6,23 @@ The primary goal is to develop a synax *I'm* happy with, personally. I hope my t
 
 ## Design Notes
 
-- Users will mostly define operations of type `Env -> Program`. This allows the each call to receive a caller-controllable view of the caller's environment. The received arguments could either bind to a standard prefix, or be accessed via keyword.
-- It would be convenient to support lightweight binding of data stack inputs and outputs to local registers.
+- Users will mostly define operations of type `Env -> Program`. 
+  - This allows the each call to receive a caller-controlled view of the caller's environment. 
+  - The "mostly" is important. We'll want support for other 'types' of programs, e.g. macros or grammars.
+  - Use tagged definitions for adaptivity, e.g. tag "call" for `Env -> TaggedDef` and returning tagged "prog"
 
-- Avoid deep horizontal syntax and its causes:
-  - parameter lists. Parameter lists hinder refactoring within larger contexts, and also add to horizontal depth.
+- For macros or templates, we'll also need the ability to pass anonymous AST structures
+  - Church-encoded lists of ASTs for "..." var-args? 
+  - Syntax should cleanly support ASTs separated by whitespace or commas, without ambiguity.
+  - Syntax might benefit from explicit support for Church-encoded lists of ASTs.
+
+- Abstraction of pattern or case matching, grammars, etc.
+
+- Programs pass data on the stack, but users don't necessarily need to think about stacks
+  - It may be convenient to support lightweight binding of data stack inputs and outputs to local registers.
+
+- Avoid or mitigate deep horizontal syntax and its causes:
+  - parameter lists. Parameter lists hinder refactoring within larger contexts, and also add to horizontal depth. 
   - structured output, e.g. deep hierarchical configs or namespaces. Provide a lightweight means to define things and operate within a deep structure or namespace. Perhaps borrow location annotations from TOML?
 
 - Avoid explicit stack shuffling. It requires too much attention as programs grow more complicated. 

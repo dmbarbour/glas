@@ -6,7 +6,7 @@ A basic GC is not difficult to write. I can implement something simple to get st
 
 ## Data Representation
 
-It is feasible to allocate 'cons cells' the size of two pointers, like Scheme or Lisp, supporting branches and such. This would require uncomfortably squeezing a lot of data and GC logic into tagged pointers. Alternatively, we can support a more conventional tagged union, perhaps aligned to three (or four) pointers in size, providing plenty room for metadata per value. I'm inclined to the latter. 
+At least for the initial bootstrap implementation, I propose to use fixed-size allocations to simplify GC. We can use 32-byte cells. It might be more optimal to support flexible sizes, eventually, e.g. 16 byte pairs and (stem, data) or (header, data) elements could be in a separate page from 32-byte cells. But that's a problem for after bootstrap.
 
 ### Small Values
 
@@ -23,12 +23,12 @@ We can squeeze many small values into an 8-byte pointer.
 Assuming 8-byte alignment of pointers.
 
         lowbyte             interpretation
-        xxxxx000            pointer
+        xxxpp000            pointer
         xxxxxx01            bitstring (0..61 bits)
         xxxxxx10            shrubs of 0,2,4..62 bits (see below)
         xxxxx011            small rationals
         nnn00111            binary (nnn: encodes 1 to 7 bytes)
-        11111111            special constants, e.g. claimed thunks
+        11111111            abstract runtime constants, e.g. claimed thunks
 
 
 ### Linearity and Ephemerality Header Bits
