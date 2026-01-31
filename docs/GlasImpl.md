@@ -6,7 +6,7 @@ A basic GC is not difficult to write. I can implement something simple to get st
 
 ## Data Representation
 
-At least for the initial bootstrap implementation, I propose to use fixed-size allocations to simplify GC. We can use 32-byte cells. It might be more optimal to support flexible sizes, eventually, e.g. 16 byte pairs and (stem, data) or (header, data) elements could be in a separate page from 32-byte cells. But that's a problem for after bootstrap.
+At least for the initial bootstrap implementation, I propose to use fixed-size allocations to simplify GC. We can use 32-byte cells. Alternatively, use allocations sized per page, e.g. with sizes of 16, 32, 64, etc.. and everything in a page having the same size. In any case, avoid fragmentation so I don't need to consider it.
 
 ### Small Values
 
@@ -67,6 +67,10 @@ I'll probably want to model explicit thunks for at least some use cases, such as
 Ideally, GC may recognize and collapse completed thunks. GC could also recognize and complete 'selector' thunks, e.g. accessing a particular definition from an environment, or a particular field from a dict, when it is available.
 
 Waiting on thunks needs attention. In context of transactions, especially, a wait may be interrupted because we decide to backtrack. This requires some robust way to represent waits that can be canceled. Tying back directly to the host is probably a bad idea. An intermediate heap object that we can GC might work, at the cost of adding an allocation for every thunk wait.
+
+## Write Barriers
+
+For snapshot-at-the-beginning or other GC semantics, I may need write barriers during the GC mark phase. It might be useful to batch process the data stack or thread state instead of doing so per write.
 
 ## Note on callbacks
 

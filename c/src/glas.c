@@ -90,13 +90,21 @@ static_assert((ATOMIC_POINTER_LOCK_FREE == 2) &&
 #define GLAS_TIMEOUT_RES_NSEC (100 * 1000)
 
 /**
- * GC design:
+ * Current GC design:
  * - non-moving GC, concurrent mark + lazy sweep on alloc
- * - fixed-size cells means there is little need for compaction
+ *   - similar to Go's GC 
+ * - fixed-size cells, no compaction step
+ *   - potentially can change to fixed size per page
  * - concurrent mark requires a write barrier
- * - snapshot at the beginning; new allocations marked but not traced
+ *   - TODO: mark entire root state on first use in barrier
+ * - snapshot at the beginning
+ *   - new allocations are treated as already marked and traced
+ *   - current impl uses flag bits to indicate cells are traced
+ *   - TODO: drop per-field trace bits; scan full cell atomically
  * - double mark buffers, flip buffers after mark completes
- * - non-generational, at least initially. can add later.
+ *   - during concurrent mark, new allocations are marked
+ * - non-generational, at least initially
+ *   - pseudo-generational heuristic
  * 
  * As part of lazy sweep, each OS thread allocates from its own page.
  * Pages are marked for reallocation after they undergo GC unless they
@@ -338,8 +346,8 @@ static_assert(32 > GLAS_TYPEID_COUNT,
  *      special constants
  *    l: linear
  *      forbid copy and drop
- * gcbits: xxxxxsss
- *    s: once-per-slot write barrier, also update on scan
+ * gcbits: xxxxxxxt
+ *    t: tracks whether a cell has been traced (for write barrier)
  *    x: unused, tentatively could track cell age
  */
 struct glas_cell_hdr {
@@ -348,6 +356,7 @@ struct glas_cell_hdr {
     uint8_t type_aggr; // monoidal, e.g. linear, ephemeral (2+ bits), abstract
     _Atomic(uint8_t) gcbits;  // reserved for use by GC
 };
+// TODO: transition to one trace bit for full cell
 #define GLAS_GCBITS_SCAN    0b00000111
 #define GLAS_AGGR_LINEAR    0b0001
 #define GLAS_AGGR_ABSTRACT  0b0010
@@ -554,7 +563,7 @@ struct glas_os_thread {
         glas_page* page;        // owned page.
         size_t mark_word;       // offset into mark bitmap
         uint64_t free_bits;     // free bits from recent alloc
-        size_t free_count;      // t
+        size_t free_count;      // gc stat for heuristics
     } alloc;
     glas_gc_fl* fl; // recently allocated finalizers
 };
@@ -2598,17 +2607,17 @@ LOCAL glas_cell* glas_data_list_append(glas_cell* lhs, glas_cell* rhs) {
 LOCAL void glas_sc_fill_cell_stem_bits(glas_sc* sc) {
     if(GLAS_STEM63_EMPTY == sc->stem) { return; }
     // move stem bits from sc->stem to sc->cell, but without increasing
-    // depth of sc->cell. Can allocate a clone while maintaining depth.
+    // depth of sc->cell. May allocate while maintaining depth.
     size_t const shift = ctz64(sc->stem) + 1;
     size_t len = 64 - shift;
     uint64_t bits = sc->stem >> shift;
     glas_cell* cell = sc->cell;
 
     if(GLAS_DATA_IS_PTR(cell)) {
-        // pack a few more bits into clone of cell
-        bool const stem_full = (0 != (0b1 & cell->stemHd)) 
-            && !((GLAS_TYPE_STEM == cell->hdr.type_id) && (4 > cell->hdr.type_arg));
-        if(!stem_full) {
+        bool const cell_has_unused_stem_bits = (0 == (0b1 & cell->stemHd)) 
+            || ((GLAS_TYPE_STEM == cell->hdr.type_id) && (4 > cell->hdr.type_arg));
+        if(cell_has_unused_stem_bits) {
+            // pack a few more bits into clone of cell
             cell = glas_cell_clone(cell);
             do {
                 if(0 == (0b1 & cell->stemHd)) {

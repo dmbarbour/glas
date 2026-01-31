@@ -1,6 +1,18 @@
 # Program Model for Glas
 
-The [namespace](GlasNamespaces.md) supports modules and user-defined front-end syntax. Programs are compiled to an AST structure built upon '%\*' primitives. This document describes a viable set of primitives for my vision of glas systems and some motivations for them.
+The glas [namespace](GlasNamespaces.md) is based on a lambda calculus extended with translation, capture, and binding of scopes. Beyond that, I'll want primitive definitions to express runtime behavior. This runtime behavior must align (by default) with my vision for glas systems, e.g. live coding and orthogonal persistence, concurrency and distribution, backtracking and search, acceleration and transaction-loop optimizations.
+
+A relevant design concern is that first-class functions tend to interfere with live coding by entangling future program state with past versions of code. First-class mutable state has a similar problem, introducing path-dependence into schema updates. To control for troublesome entanglements, I propose to introduce an abstract data type for Programs to enforce structure and staging on program composition.
+
+Program constructors are then provided as primitives via the namespace. By convention, this is 
+
+
+
+
+# OLD CONTENT 
+
+
+Programs are compiled to an AST structure built upon '%\*' primitives. This document describes a viable set of primitives for my vision of glas systems and some motivations for them.
 
 ## Proposed Program Primitives
 
@@ -103,7 +115,7 @@ Validation:
 * `(%an.arity In Out)` - express expected data stack arity for Op. In and Out must be non-negative integers. Serves as an extremely simplistic type description. 
 * `%an.atomic.reject` - error if running Operation from within an atomic scope, including %atomic and %br conditions. Useful to detect errors early for code that diverges when run within a hierarchical transaction, e.g. waiting forever on a network response.
   * `%an.atomic.accept` - to support simulation of code containing %an.atomic.reject, e.g. with a simulated network, we can pretend that Operation is running outside a hierarchical transaction, albeit only up to external method calls.
-* `(%an.data.seal Key)` - operational support for abstract data types. For robust data sealing, Key should name a Register, Src (like '%src'), or other unforgeable identity. Sealed data cannot be observed until unsealed with a matching Key, usually symmetric. If the Key becomes unreachable (e.g. Register out of scope), the sealed data may be garbage collected, and this may be detectable via reflection APIs. Actual implementation is flexible, e.g. compile-time static analysis at one extreme, encryption at another, but simple wrappers is common.
+* `(%an.data.seal Key)` - operational support for abstract data types. For robust data sealing, Key should name a Register, Src (like '$src'), or other unforgeable identity. Sealed data cannot be observed until unsealed with a matching Key, usually symmetric. If the Key becomes unreachable (e.g. Register out of scope), the sealed data may be garbage collected, and this may be detectable via reflection APIs. Actual implementation is flexible, e.g. compile-time static analysis at one extreme, encryption at another, but simple wrappers is common.
   * `(%an.data.unseal Key)` - removes matching seal, or diverges
   * `(%an.data.seal.linear Key)` - a variant of seal that also marks sealed data as linear, i.e. no copy or drop until unsealed. Note: This does not fully guard against implicit drops, e.g. storing data into a register that falls out of scope. But a best and warnings are expected.
     * `(%an.data.unseal.linear Key)` - counterpart to a linear seal. If data is sealed linear, it must be unsealed linear.
@@ -162,7 +174,7 @@ Due to this overlay structure, it is useful to render logs as a time-varying tre
 
 Messages are computed within hierarchical transactions that are aborted after extracting the message. MsgSel may destructively inspect registers and data stack in scope, or invoke atomic operations as a 'what if'. However, data stack is a special case: it is in scope only when Operation is `%pass`, in which case MsgSel has the same access as the surrounding Program.
 
-The runtime provides the Env argument. Exact contents depend on runtime version and configuration-provided adapters, but should de facto stabilize. The role of Env is to provide reflection APIs, e.g. to read %src, inspect the call stack or data stack, or query configured Chan settings. Configured Chan settings are fully arbitrary, e.g. preferred language, accepted format, level of detail, and degree of sarcasm. Many queries can be completed at compile-time, allowing for partial evaluation and specialization of logging code.
+The runtime provides the Env argument. Exact contents depend on runtime version and configuration-provided adapters, but should de facto stabilize. The role of Env is to provide reflection APIs, e.g. to read $src, inspect the call stack or data stack, or query configured Chan settings. Configured Chan settings are fully arbitrary, e.g. preferred language, accepted format, level of detail, and degree of sarcasm. Many queries can be completed at compile-time, allowing for partial evaluation and specialization of logging code.
 
 If MsgSel uses non-deterministic choice, the runtime may generate all possible messages (subject to configuration). With runtime support, users may configure a non-deterministic choice of Chan settings, such that we log multiple versions of messages.
 
@@ -344,4 +356,10 @@ The program model provides a foundation for glas systems, but I'm interested in 
   - This solution is logistically troublesome. We'll need some way to efficiently cache definitions for macro evaluation when building a larger namespace.
 
 Of these options, I think a foundation of quotation APIs offers the more robust solution. We can tackle logistical challenges by essentially integrating a compiler as a shared library and some clever use of caching and acceleration. 
+
+## Alternative Program Models
+
+The proposed program model above is based on tacit programming with a data stack, in context of a namespace built using an extended lambda-calculus. This has some useful properties: the namespace provides a foundation for metaprogramming, but the 'program' is static at runtime.
+
+
 

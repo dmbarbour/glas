@@ -30,7 +30,7 @@ To mitigate risk of naming conflict, the runtime will recognize configuration op
 
 Applications are typically defined within the user configuration. But we'll also support scripting, where we generate applications in context of a configured environment. See [glas applications](GlasApps.md) for details on how an application is defined.
 
-* **--run AppName**: Usually refers to 'env.AppName.app' defined in the configuration namespace. As a special case, '--run .' refers to the toplevel configuration 'app'. 
+* **--run AppName**: Usually refers to 'env.AppName.app' defined in the configuration namespace. As a special case, '--run .' refers to the toplevel configuration 'app', treating a configuration as a script.
 * **--script FilePath**: Process indicated file in context of configured front-end compiler (based on file extension). The expected result is a module that defines 'app'. Link this module in context of the configured environment.
   * **--script.FileExt FilePath**: as '--script' except we select a front-end compiler based on a given file extension, ignoring the actual extension. Useful in context of Linux shebang lines.
 * **--cmd.FileExt SourceText**: as '--script.FileExt' except we also provide the script text as a command-line argument. We might present this as a read-only virtual file.

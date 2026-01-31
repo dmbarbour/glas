@@ -1,8 +1,14 @@
 # Glas Applications
 
-The [glas executable](GlasCLI.md) lets users run an application defined in the configuration namespace or a separate script file. To simplify extension and composition, each application is packaged into a single definition. To simplify sharing and integration, applications are named 'app' or 'env.appname.app'. The latter supports many applications to be named and defined within a user configuration.
+The [glas CLI](GlasCLI.md) lets users run an application defined in the configuration namespace (conventionally `env.AppName.app`) or a separate script file (must compile to a Module that defines `app`). Configured applications are more convenient as components for constructing larger apps, whereas a script file is often convenient to share between users or configurations. 
 
 ## Application Models
+
+The simplest application model is simply a module with some assumptions about definitions, such as 'start' for running the application, and 'http' to receive HTTP requests. Concretely, I propose to represent this by first taking module (e.g. tagged "module"), then further tagging it with "app". Thus, we can expect to see the equivalent to `tag<"app">(tag<"module">(Definitions))` in the initial case. The 'module' tag allows for new expressions of modules, and the 'app' tag allows for developing alternative application types.
+
+It is worth noting that applications are typically defined *within* a module according to a CLI-determined convention: `env.AppName.app` within the user configuration, or just `app` for a separate script. As a special case, the user configuration may be processed as a script if it defines `app`.
+
+
 
 Basic applications are modeled as [namespace-layer](GlasNamespaces.md) `Env -> Env` functions, tagged "app". The input Env represents a runtime-provided effects API ('sys.\*' and global state) and an open fixpoint ('app.\*'), while the returned Env represents a collection of application methods. Most basic applications should implement at least 'main', 'settings', and 'http'. Sample methods:
 
@@ -330,7 +336,7 @@ A fundamental issue with console IO is that it isn't very composable. The defaul
 
 With FFI and bgcall handling external integration, reflection remains one area where the runtime cannot effectively delegate.
 
-- sys.refl.src.\* - access to abstract '%src' metadata from compile time. 
+- sys.refl.src.\* - access to abstract '$src' metadata from compile time. 
   - Minimally, support examination of the the abstract data type, Src 
   - The `(%src.meta MetaData Src)` can bind metadata for context. 
 
