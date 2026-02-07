@@ -156,8 +156,6 @@ Instrumentation:
 
 Validation:
 * `(%an.arity In Out)` - express expected data stack arity for Op. In and Out must be non-negative integers. Serves as an extremely simplistic type description. 
-* `%an.atomic.reject` - error if running Operation from within an atomic scope, including %atomic and %br conditions. Useful to detect errors early for code that diverges when run within a hierarchical transaction, e.g. waiting forever on a network response.
-  * `%an.atomic.accept` - to support simulation of code containing %an.atomic.reject, e.g. with a simulated network, we can pretend that Operation is running outside a hierarchical transaction, albeit only up to external method calls.
 * `(%an.data.seal Key)` - operational support for abstract data types. For robust data sealing, Key should name a Register, Src (like '$src'), or other unforgeable identity. Sealed data cannot be observed until unsealed with a matching Key, usually symmetric. If the Key becomes unreachable (e.g. Register out of scope), the sealed data may be garbage collected, and this may be detectable via reflection APIs. Actual implementation is flexible, e.g. compile-time static analysis at one extreme, encryption at another, but simple wrappers is common.
   * `(%an.data.unseal Key)` - removes matching seal, or diverges
   * `(%an.data.seal.linear Key)` - a variant of seal that also marks sealed data as linear, i.e. no copy or drop until unsealed. Note: This does not fully guard against implicit drops, e.g. storing data into a register that falls out of scope. But a best and warnings are expected.
