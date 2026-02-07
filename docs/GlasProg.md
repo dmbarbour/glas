@@ -1,18 +1,16 @@
 # Program Model for Glas
 
-The glas [namespace](GlasNamespaces.md) is based on a lambda calculus extended with translation, capture, and binding of scopes. Beyond that, I'll want primitive definitions to express runtime behavior. This runtime behavior must align (by default) with my vision for glas systems, e.g. live coding and orthogonal persistence, concurrency and distribution, backtracking and search, acceleration and transaction-loop optimizations.
+## Overview
 
-A relevant design concern is that first-class functions tend to interfere with live coding by entangling future program state with past versions of code. First-class mutable state has a similar problem, introducing path-dependence into schema updates. To control for troublesome entanglements, I propose to introduce an abstract data type for Programs to enforce structure and staging on program composition.
+A glas program is represented as an abstract data type. Primitive constructors provided through the namespace by the compiler or runtime, such as '%do' for sequential composition. The program is expressed as a composition of these constructors. To simplify formal semantics, this set of primitive constructors is minimal.
 
-Program constructors are then provided as primitives via the namespace. By convention, this is 
+For performance, we rely on annotation-guided acceleration, substituting a few performance-critical subprograms with efficient built-ins. To minimize maintenance, we can accelerate a virtual CPU or GPGPU instead of individual low-level functions.
 
+A glas program operates on a data stack and named registers. The data logically consists of binary trees, but a glas runtime may support specialized representations for use with accelerators, or insert metadata to support dynamic types. There is no explicit heap, no pointers, but large trees spill into an implicit heap.
 
+Although there are no first-class functions, higher-order programming is available through the [glas namespace](GlasNamespaces.md). This covers most use cases, such as algebraic effects: a standard calling convention passes the caller's lexical environment, including access to registers and methods. If we need more flexibility, we can use '%eval' to evaluate a program AST from the data stack.
 
-
-# OLD CONTENT 
-
-
-Programs are compiled to an AST structure built upon '%\*' primitives. This document describes a viable set of primitives for my vision of glas systems and some motivations for them.
+The glas program relies on efficient transactions and backtracking. Conditionals and loops are expressed in terms of backtracking decision trees. Non-deterministic choice relies on backtracking. Modulo performance, side-effects of annotation-guided instrumentation (logging, assertions, etc.) are mitigated via backtracking. The foundation for live coding, reactivity, concurrency, and distribution in glas systems is the *transaction loop*.
 
 ## Proposed Program Primitives
 
@@ -24,28 +22,20 @@ These primitives are constructors for an abstract data time, i.e. constructing a
 
 * `(%do P1 P2)` - execute P1 then P2 in order. Associative.
 * `%pass` - the no-op. Does nothing.
-* `%fail` - voluntary failure. Used for bracktracking a branch condition, choice, or coroutine step. (In contrast, errors are treated as divergence, i.e. infinite loops observable only via reflection APIs.)
-* `(%cond Sel)` - supports if/then/else and pattern matching. The case selector, Sel, has a distinct AST structure to support sharing a common prefix. Sel constructors:
-  * `(%br Cond Left Right)` - runs branch condition, Cond. If Cond fails, backtracks to run Right selector, otherwise processes Left selector. The full chain of branch conditions runs atomically.
+* `%fail` - voluntary failure. Used for bracktracking a branch condition or coroutine step. (In contrast, errors are treated as divergence, i.e. infinite loops observable only via reflection APIs.)
+* `(%cond Sel)` - supports if/then/else and pattern matching. Error if no operation is selected. Sel is an abstract data type distinct from programs, representing a decision tree. Sel constructors:
+  * `(%br Cond Left Right)` - here Cond is a program that is generally expected to fail, Left and Right are selectors. If Cond fails (via %fail), backtrack writes from Cond then process Right. Otherwise, process Left in context of output from Cond.
   * `(%sel P)` - selected action. Commits prior chain of passing branch conditions, then runs P.
   * `%bt` - backtrack. Forces most recent passing Cond to fail. If no such Cond, i.e. if %bt is rightmost branch, behavior is context-dependent (e.g. error for %cond, exit for %loop). As a special rule, we optimize `(%br C %bt R) => R` regardless of whether C is divergent.
-* `(%loop Sel)` - Repeatedly runs Sel until it fails to select an action, then exits loop. Same Sel structure as %cond. Essentially a hybrid of while-do and pattern matching.
-* `(%co P1 P2)` - execute P1 and P2 as coroutines with a non-deterministic schedule. Associative. Each coroutine operates on its own stack but shares access to registers and methods.
-  * Preemption: scheduler may freely abort a coroutine to select another. 
-  * Parallelism: run many, abort a subset to eliminate conflicts, aka [optimistic concurrency control](https://en.wikipedia.org/wiki/Optimistic_concurrency_control).
-  * Fork-join behavior: %co yields repeatedly until coroutines terminate. We can optimize the case where %co is the final operation of a coroutine, thus no join required.
-* `%yield` - within a coroutine, commit operations since prior yield. Each yield-to-yield step is an atomic, isolated transaction that may abort via fail.
-* `(%atomic P)` - runs P within a hierarchical transaction, thus yielding within P does not yield from atomic and must be resumed within P. 
-  * *Note:* a chain of %br branch conditions, up to %sel, is implicitly atomic.
-* `(%ch P1 P2)` - non-deterministic choice of P1 or P2. Associative. Can be implemented by forking the transaction and evaluating all choices, but only one can commit. 
-  * Special case: in context of transaction loops, e.g. `while (Cond) { atomic Action; yield }`, repeated choice can optimize into a reactive form of concurrency. 
-* `%error` - explicit divergence. Logically equivalent to an infinite no-yield loop, but much easier to optimize. Please compose with `%an.error.log` to attach a message!
+* `(%loop Sel)` - Repeatedly run Sel until it fails to select an action, then exit loop. See %cond for Sel constructors.
+* `(%opt P1 P2)` - fair, non-deterministic choice of P1 or P2. Associative.
+* `%error` - explicit divergence, logically equivalent to an infinite loop, but interacts more conveniently with `%an.error.log` or backtracking a non-deterministic choice.
 
-*Note:* For %do, %co, and %ch, it is *very tempting* to support a variable number of arguments, but directly doing so complicates semantics. A viable approach to variable arguments involves a front-end language Church-encoding lists of ASTs into an argument.
+*Note:* For %do and %opt it is tempting to support a variable number of arguments, but doing so complicates semantics. Alternatively, I could use a Church-encoded list, but that isn't more concise due to encoding overheads vs. short names.
 
 ### Data Stack
 
-* `d:Data` - push data to top of data stack
+* `(%data d:Data)` - program pushes data to top of data stack
 * `(%dip P)` - run P while hiding top element of data stack
 * `%swap` - exchange top two stack elements. i.e. "ab-ba"
 * `%copy` - copy top stack element, i.e. "a-aa".
@@ -59,21 +49,21 @@ These primitives are constructors for an abstract data time, i.e. constructing a
 
 ### Registers
 
-* `(%xch Register)` - exchange value of register and top item of data stack.
+* `(%rw Register)` - register swap, exchange value in named register and top of data stack.
   * *Static analysis*: you can model this as also swapping *types* (or logical locations) between the register slot and the stack. That lets checkers propagate stack‑effect typing and enforce invariants.  
-  * *Optimization hint*: unconditional, atomic patterns such as `(%xch x; ... ; %xch x)` can be heavily optimized because logical locations are restored.
+  * *Optimization hint*: unconditional, atomic patterns such as `(%rw x; ... ; %rw x)` can be heavily optimized because logical locations are restored.
   * *Concurrency semantics*: For fine-grained conflict analysis, compiler built-in accelerators can define common patterns such as get and set, queue or bag reads and writes, indexed operations on arrays or dicts, or even support a few CRDTs. However, these interactions are not modeled as primitives.
 * `(%local RegOps)` - allocates a fresh register environment, passes it to `RegOp : Env -> Program`, runs Program, then clears the environment. The Env logically defines every Name to a unique register, but Program must use only a static, finite subset of these names.
 * `(%assoc R1 R2 RegOps)` - this binds an implicit environment of registers named by an ordered pair of registers `(R1, R2)`. The primary use case is abstract data environments: an API can use per-client space between client-provided registers and hidden API registers.
 
 ### Metaprogramming
 
-* `(%macro Builder)` - Builder represents a program of 0--1 arity, and is expected to return a closed-term AST representation on the data stack. This returned AST is validated, lazily evaluated in an empty environment, then substituted in place of the macro node. Because AST is closed term, external linking must be provided in context. 
-* `(%eval Adapter)` - pop arbitrary Data from the stack, pass to Adapter - a namespace-layer function of type `d:Data -> Program`. Adapter typically includes %macro nodes for staged compilation of Data. The Program is subject to validation in context (e.g. verify type). Although dynamic eval is feasible, glas systems frequently forbid dynamic eval, requiring static Data argument (`%an.eval.static` by default).
+* `(%macro Builder)` - Builder must be a deterministic 0--1 arity program that returns a namespace AST on the data stack. This AST must represent a closed term. We validate the AST then evaluate and return the namespace term.
+  * Further linking, including injection of program primitives, depends on macro context, e.g. `((%macro Builder) e:())` to link the current environment.
+* `(%eval Compiler)` - eval pops the data stack then passes the value to Compiler as an embedded data namespace term (`d:Data`). Compiler represents a namespace-layer function from Data to a Program. The resulting Program is further validated in context (e.g. typechecking, static assertions), then run.
+  * Note: Dynamic eval is expensive and requires a lot of runtime support. However, even static eval is useful. Static eval can be enforced case-by-case via `%an.data.static` or at subprogram scope via `%an.eval.static`.
 
-Non-deterministic metaprogramming is not *necessarily* an error, but it complicates reasoning and caching, requires expensive backtracking and heuristic search. Glas systems shall reject non-determinism in metaprogramming until they're mature enough to properly tackle these challenges.
-
-Both %macro and %eval serve at the boundary between namespace and program layers. There is also some metaprogramming possible purely in the namespace layer, e.g. we could build and process Church-encoded lists of ASTs.
+Aside from these primitive extensions, it is technically possible to metaprogram purely at the namespace layer via Church-encodings.
 
 ### Modularity Extensions
 
@@ -86,13 +76,66 @@ See [namespaces](GlasNamespaces.md) for details.
 
 Definitions in the namespace should be tagged to indicate integration. A carefully designed set of tags can significantly simplify extension and metaprogramming. Proposed:
 
-* "data" - `Data` - embedded data, can integrate as program
+* "data" - `Data` - embedded data, can adapt to a '%data' program
 * "prog" - `Program` - abstract program, can integrate as program
 * "call" - `Env -> Def` - receives caller context (algebraic effects, pass-by-ref registers, etc.), returns another tagged definition. 
   * We can develop further conventions around Env, e.g. supporting keyword or variable arguments.
-* "list" - Church-encoded list of tagged ASTs, useful for aggregations or variable arguments. Not necessarily homogeneous.
 
 In my vision, most definitions are tagged "call" and return "prog", except near the edges where we might have a lot of "prog" and "data" definitions. Use of "list" would be rare outside of aggregators and var-args, and requires specialized processing by an adapter. Eventually, we'll also have many non-callable tags, such as "type". We might also support multiple inheritance graphs in a generic way, and develop specialized tags for grammars, process networks, etc.. 
+
+
+## Transaction Loops
+
+A transaction loop is an atomic, isolated ([serializable](https://en.wikipedia.org/wiki/Isolation_(database_systems)#Serializable)) transaction, run repeatedly. This structure supports simplifications and optimizations:
+
+- *Incremental*: Instead of fully repeating a transaction, we can partially-evaluate based on stable state then repeat only unstable computations. Partial evaluation ideally aligns with dataflow instead of control flow.
+- *Reactive*: When we know repetition will be unproductive, instead of burning CPU we can install triggers to await relevant changes. With some clever API design, this includes waiting on clocks.
+- *Concurrent*: For serializable transactions, repetition and replication are equivalent. In context of non-deterministic choice, we can run a parallel transaction loop for each series of choices with [optimistic concurrency control](https://en.wikipedia.org/wiki/Optimistic_concurrency_control).
+- *Distributed*: Building on concurrency, we replicate a transaction loop across multiple nodes with a distributed runtime. To avoid unnecessary distributed transactions, we heuristically abort transactions better initiated on a remote node.
+- *Live*: We can robustly update the transaction procedure between transactional steps. We can model the transaction as reading its own procedure.
+- *Orthogonal Persistence*: Application state exists outside the loop. We can easily back application state with durable or distributed storage.
+
+A transaction-loop application can terminate based on a monotonic 'halt' request to the runtime. Aside from a main loop, a glas application may define auxilliary methods such as 'http' to handle HTTP requests or 'rpc' for remote procedure calls. Intriguingly, transactional RPC can participate in transaction loops.
+
+*Note:* In special cases, we may weaken isolation a little. For example, an HTTP GET request is presumably transaction-safe but requires request-response across multiple transactions to perform. This can be supported via runtime reflection APIs such as 'sys.refl.bgcall', which pretends a request was anticipated.
+
+## Coroutines
+
+A front-end syntax may support multi-step programs, evaluating over multiple transactions. The program is compiled to a 'coroutine' - a procedure that yields early to commit with reasonable expectation of resumption. The point of resumption should be stable across live code updates, meaningful.
+
+A significant performance challenge is to efficiently yield and resume even deeply hierarchical coroutines. It is tempting to introduce a primitive yield for O(1) yield and resume, but doing so significantly reduces semantic control over live code. Instead, I intend to build upon *incremental computing*: memoize jump into a coroutine on resume and jump out upon yield.
+
+Are there annotations that would help with coroutines? TBD
+
+## Distribution
+
+We'll start by implementing the glas runtime within a single OS process. However, it is feasible to extend the runtime to multiple OS processes, distributed across multiple nodes. We can logically mirror transaction-loop applications to every node, then heuristically optimize by simply aborting any transaction that is best initiated on another mirror (e.g. because the first resource it observes is remote).
+
+The main concerns are how to distribute application state for performance and network partitioning tolerance. We can distribute based on usage patterns. Some examples:
+
+- a read-mostly variable can be *mirrored*, while write authority is either 'owned' by one node or subject to a consensus algorithm. Updates propagate on a logical wavefront to preserve transactional isolation.
+- a read-write variable can be *migrated*, with ownership moving where the variable is needed.
+- a queue variable can be *split* between reader and writer nodes, with the writer's node opportunistically pushing updates to the reader asynchronously to write transaction.
+- a bag/multiset with non-deterministic read and write order can be further split so every node owns a partition and a runtime heuristically migrates data to the 'best' reader based on filters, load, etc..
+- a CRDT (conflict-free replicated datatype) can be replicated on every node, with each node performing reads and updates locally then synchronizing opportunistically.
+
+We would recognize a queue based on accelerators, i.e. accelerate a function for writing a queue (addend a list var), then treat a variable as a queue when we exclusively use accelerated queue functions to access. We can raise a warning or error when mixed usage hinders optimizations.
+
+*Note:* This provides a foundation for distributed programming, but we also need to carefully consider how applications interact with distributed clocks, filesystems, FFI, and other features. Distribution has a pervasive impact on API design.
+
+## Notes on Live Coding
+
+Transaction loops greatly simplify the "update the code" part of live coding. But can the program model also help with versioned data types? TBD
+
+## Design Considerations
+
+- First-class functions hinder live coding, entangling past code and future state. Stick to higher-order programming at compile-time only.
+- First-class mutable state (e.g. IORefs) is feasible, but it complicates schema updates in modular systems, and without first-class functions it feels a lot like an inconsistency.
+- Implicit control-flow within a transaction is ephemeral and causes no problems with live coding.
+- Refactoring of decision trees. I'd prefer to avoid redundant computations.
+- Built-in support for non-deterministic choice versus compile-time effect? We can use annotations to enforce determinism as needed.
+- Data stack serves as anonymous intermediate location for data, reducing number of location names required and number of registers required. OTOH, it adds a lot of extra arity considerations. OTOH, arity issues are greatly diminished without coroutines.
+
 
 ## Annotations
 
@@ -119,7 +162,7 @@ Validation:
   * `(%an.data.unseal Key)` - removes matching seal, or diverges
   * `(%an.data.seal.linear Key)` - a variant of seal that also marks sealed data as linear, i.e. no copy or drop until unsealed. Note: This does not fully guard against implicit drops, e.g. storing data into a register that falls out of scope. But a best and warnings are expected.
     * `(%an.data.unseal.linear Key)` - counterpart to a linear seal. If data is sealed linear, it must be unsealed linear.
-* `%an.data.static` - Indicates that top stack element should be statically computable. This may propagate requirements for static inputs back through a call graph. In context of conditionals, choice, coroutines, etc. the compiler can feasibly attempt to verify that all possible paths (up to a quota) share this result.
+* `%an.data.static` - Indicates that top stack element (upon return from Op) should be statically computable. Instead of analyzing for static dataflow, a glas compiler might take this as a hint for aggressive partial evaluation then directly verify.
 * `%an.eval.static` - Indicates that all '%eval' steps in Operation must receive their AST argument at compile-time. This is the default for glas systems, but it can make intentions clearer to reiterate the constraint locally.
 * `(%an.type TypeDesc)` - Describes a partial type of Operation. Not limited to programs, so namespace-layer and higher-kinded types are also relevant. Can also support type inference in the context surrounding Operation. TypeDesc will have its own abstract data constructors in '%type.\*'.
 * `%an.det` - Annotates an `Env -> Program` structure. This expresses the intention that Program should be deterministic *up to Env*. A compiler should prove this or raise an error. 
@@ -142,6 +185,7 @@ Content-addressed storage:
 Incremental computing:
 * `(%an.memo MemoHint)` - memoize a computation. Useful memoization hints may include persistent vs. ephemeral, cache-invalidation heuristics, or refinement of a 'stable name' for persistence. TBD. 
   * As a minimum viable product, we'll likely start by only supporting 'pure' functions, because that's a low-hanging, very tasty fruit.
+  * See discussion of *Accelerating Coroutines* below.
 * `(%an.checkpoint Hints)` - when retrying a transaction, instead of recomputing from the start it can be useful to rollback partially and retry from there. In this context, a checkpoint suggests a rollback boundary. A compiler may heuristically eliminate unnecessary checkpoints, and Hints may guide heuristics. 
 
 Guiding non-deterministic choice: 
@@ -257,6 +301,16 @@ Register Ops:
   * Grab
   * Peek
 * KVDB, implicit 'register' per key but dynamic
+
+### Accelerating Coroutines
+
+The '%an.memo' annotation is unsuitable for memoizing just the jump on yield/resume for a coroutine. Some ideas:
+
+* use '%an.memo.begin' and '%an.memo.end' or similar - rather awkward to maintain balance
+* use balanced '%an.memo' to '%an.memo.exclude' or similar - viable, but I don't like maintaining that all over.
+* annotate coroutines with some metadata scoping which states to be looking at, might also be useful for obtaining a debug view of the 'state machine' for a large application?
+
+
 
 ## TBD
 

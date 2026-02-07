@@ -20,11 +20,47 @@ My vision for early use of glas systems is that end users mostly operate through
 
 ## Configuration
 
-The glas executable will read a user configuration based on a `GLAS_CONF` environment variable, loading the specified file as a [namespace](GlasNamespaces.md). If unspecified, the default location is `"~/.config/glas/conf.glas"` in Linux or `"%AppData%\glas\conf.glas"` on Windows.
+The `GLAS_CONF` environment variable may specify a configuration file. If undefined, the default locations are `"~/.config/glas/conf.glas"` in Linux or `"%AppData%\glas\conf.glas"` on Windows. This configuration file is compiled and loaded, based on file extension and built-in front-end compilers. A configuration may redefine these under `env.lang.FileExt`, in which case we bootstrap: rebuild via configured compiler, repeat, verify stable fixpoint after a few cycles.
 
-A typical user configuration will inherit from a community or company configuration from DVCS, then override some definitions for the user's projects, preferences, and resources. Each DVCS repository becomes a boundary for curation, security, and version control. A community configuration will define hundreds of shared libraries and applications in 'env.\*', relying on lazy loading and shared caching for performance. 
+The main content of a configuration is an environment, 'env.\*', of shared libraries and applications. 
+
+This environment is fed back into the configuration as '%env.\*' then, by convention, piggybacks '%\*' primitives propagation across module imports, serving the role of a global namespace. With lazy evaluation of the namespace, lazy loading of imports, this environment can model full systems - tools, services, games, etc.. See [glas namespaces](GlasNamespaces.md) for how this works.
+
+Secondary outputs include ad hoc 'glas.\*' CLI or runtime configuration options, and 'app' which should define an application that implements a projectional editor and command shell for the configuration. Other definitions are ignored, serving as intermediate definitions in constructing a configuration.
+
+In my vision of glas systems, a small user (or project) configuration inherits from a large community or company configuration, then overrides a few definitions in the environment or 'glas.\*' configuration as needed. The community configuration is loaded from DVCS, and may transitively link other DVCS repositories. As a convention, links between DVCS favor hashes or stable tags to support curated, whole-system versioning.
+
+A user configuration is not *necessarily* a single file. There is a single root file, `GLAS_CONF`, that is compiled. But that root may import other files within the configuration folder. 
+
+
+
+A user configuration is relatively small - a few files within a folder: a root file, optional extras to simplify tooling.  
+
+
+ - while the community configuration may be a transitive network of linked DVCS repositories. Whole-system versioning is feasible insofar as links between DVCS favor hashes or stable version tags.
+
+
+
+
+then extends and overrides environment and configuration options. 
+
+, loading from DVCS, then extend and override definitions for a user's projects, preferences, and resources. I
+
+ DVCS repository becomes a boundary for curation, security, and version control. 
+
+A community configuration will define hundreds of shared libraries and applications in 'env.\*', relying on lazy loading and shared caching for performance. 
 
 To mitigate risk of naming conflict, the runtime will recognize configuration options under 'conf.\*'. The glas executable may expect definitions for shared heap storage, RPC registries, rooted trust for public key infrastructure, and so on. An extensible executable may support user-defined accelerators, optimizers, and typecheckers via the user configuration. We could maximize portability by asking a configuration to generate an adapter based on application settings and runtime version info.
+
+ * In my vision, community and company configurations define collections
+ * of shared libraries and applications covering complete systems. These
+ * are lazily loaded, compiled, and cached. Expanding the notion of "the
+ * system", we can compile and cache remotely and maintain a local cache
+ * for 'installed' applications, sharing work with the community.
+ * 
+ * Users inherit, override, and extend a community configuration.
+ * users will often simply use applications or share some scripts.
+
 
 ## Running Applications
 

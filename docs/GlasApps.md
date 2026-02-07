@@ -1,39 +1,73 @@
 # Glas Applications
 
-The [glas CLI](GlasCLI.md) lets users run an application defined in the configuration namespace (conventionally `env.AppName.app`) or a separate script file (must compile to a Module that defines `app`). Configured applications are more convenient as components for constructing larger apps, whereas a script file is often convenient to share between users or configurations. 
+The [glas CLI](GlasCLI.md) lets users run an application defined in the configuration namespace (`env.AppName.app`) or a separate script file that compiles to module defining `app`. 
 
-## Application Models
+## Basic Application Model
 
-The simplest application model is simply a module with some assumptions about definitions, such as 'start' for running the application, and 'http' to receive HTTP requests. Concretely, I propose to represent this by first taking module (e.g. tagged "module"), then further tagging it with "app". Thus, we can expect to see the equivalent to `tag<"app">(tag<"module">(Definitions))` in the initial case. The 'module' tag allows for new expressions of modules, and the 'app' tag allows for developing alternative application types.
+The basic application is represented by an "app"-tagged `Env -> Env` namespace term. Although structurally similar to the module type, the environments are different. 
 
-It is worth noting that applications are typically defined *within* a module according to a CLI-determined convention: `env.AppName.app` within the user configuration, or just `app` for a separate script. As a special case, the user configuration may be processed as a script if it defines `app`.
+The input environment provides access to the runtime, e.g. 'sys.\*' effects APIs and instance-specific registers. The output environment defines runtime-recognized application methods, such as:
 
-
-
-Basic applications are modeled as [namespace-layer](GlasNamespaces.md) `Env -> Env` functions, tagged "app". The input Env represents a runtime-provided effects API ('sys.\*' and global state) and an open fixpoint ('app.\*'), while the returned Env represents a collection of application methods. Most basic applications should implement at least 'main', 'settings', and 'http'. Sample methods:
-
-* 'main' - a program, the standard entry point. Upon return, the application halts.
-* 'settings' - queried to guide integration and application-specific configuration.
-* 'http' - a flexible interface with many use cases (services, browser-based gui, etc.). The runtime opens a configurable port multiplexed with remote procedure calls. 
-  * *Note:* runtimes may reserve `"/sys/*"` (configurable) for debugger and administrative use.
-* 'rpc' - (tentative) receive remote procedure calls, more advanced protocol than HTTP (e.g. to integrate with distributed transactions, algebraic effects, and content-distribution networks).
-* 'gui' - see [Glas GUI](GlasGUI.md), i.e. GUIs integrated with transaction model
-* 'signal' - special administrative signals, e.g. to gracefully halt or hibernate
+* 'step' - executed repeatedly as transaction loop
+* 'settings' - guide application-specific integration or configuration
+* 'http' - receive HTTP requests from runtime. Shares TCP port with RPC and debug APIs. 
+* 'rpc' - receive remote procedure calls; compared to 'http' shall better support transactions, transaction loops, structured data, algebraic effects, and object capability security
+* 'signal' - OS or administrative signals, mostly to gracefully halt
 * 'switch' - first operation on new code in context of live coding
 
-Use of the 'main' procedure is a familiar convention for defining applications. Separation of 'http', 'rpc', and 'gui' methods simplifies multiplexing, composition, and persistence (compared to manually opening listeners). The open fixpoint 'app.\*' contributes to extensibility, e.g. single-inheritance overrides and mixins. The 'settings', 'signal', and 'switch' operations simplify integration.
+There is no 'main' procedure. Instead, we express main-loop behavior with a transactional 'step' function, and we separate handlers for runtime-supported events like 'http' or 'rpc'. This design simplifies robust live coding, concurrency, and distribution, but requires sophisticated transaction-loop optimizations to recover performance. See the [program model](GlasProg.md).
 
-This set of methods is extensible. For portability reasons, 'settings' should indicate which methods the runtime is expected to recognize and integrate. But we can also develop entirely distinct application models, recognizing tags other than "app". For example, it is feasible to model applications as constraint-logic systems, generative grammars, process networks, interaction nets, or hardware description language.
+The application halts by calling 'sys.halt' then committing to it.
+
+*Note:* We can develop alternative application models, replacing the "app" tag.
 
 ### Application Adapter
 
-The user configuration may define an application adapter. The adapter applies to an application's definition before compiling and running it. This is convenient for portability, e.g. we could adapt application 'settings' to the runtime version, or adapt a runtime effects API to the application. 
+The user configuration may define an application adapter, i.e. an `App -> App` namespace function. This provides a final opportunity to rewrite applications for portability or other purposes. In the general case, the adapter may even 'compile' applications expressed in intermediate representations, e.g. expressing applications via [Kahn process networks](https://en.wikipedia.org/wiki/Kahn_process_networks).
 
-But an important use case is support for user-defined application models, e.g. users introduce tag "kpn" for [Kahn process networks](https://en.wikipedia.org/wiki/Kahn_process_networks), the adapter can compile to a basic "app" if the runtime does not have built-in support for "kpn". This enables users to 'run' ad hoc application models without manually wrapping them.
+### Extension
 
-### Staged Applications? TBD.
+As a final opportunity for inheritance and override, the input environment includes 'app.\*' as a fixpoint of the application definitions. 
 
-A runtime can feasibly support 'staged' application models, e.g. where an application is further compiled based on command-line arguments or environment variables. This conflicts with ahead-of-time compilation, requiring the runtime include an interpreter or just-in-time compiler. The main benefit is flexibility.
+Effectively leveraging this requires support from the front-end compiler. This could be an app-specific syntax, or a generic OOP-inspired syntax coupled with a keyword to retag a class as "app" or reverse for compatible apps.
+
+*Note:* In theory, we can extend an application indirectly by extending the module that defines the application. But this is limited by the affine file dependency constraint (never load a file twice).
+
+Module-level inheritance and override is restricted by the constraint against affine file dependencies (never load a file twice). 
+
+
+*Note:* We can also extend and override a module that defines an application. However, this is hindered by affine file dependencies (don't load a file twice). Applications are closer to OOP, instantiated many times loading files.
+
+
+This feature risks role confusion: we could instead extend a module that defines an application, leveraging the '$self.\*' fixpoint. But module-level inheritance and override is constrained by affine file dependencies, i.e. don't load a file twice. We extend and override apps more flexibly.
+
+ we don't want to load files more than once, so appl
+
+This is intended for fine-grained overrides without rebuilding entire modules. 
+
+This provides a final opportunity to 
+
+The 'app.\*' fixpoint argument to an application provides a final opportunity for inheritance and override of mutually recursive definitions. 
+
+*Note:* There isn't much benefit over inheritance and override of the *module* that defines the application. And it may prove troublesome to syntactically distinguish application methods versus module functions. But application-level 
+
+To leverage this requires careful attention from the front-end compiler to distinguish application methods from the module layer. Though, it's also useful to define applications in terms of extending
+
+But the advantage is the opportunity to instantiate applications many times with different views of system effects and stateful registers, while sharing work and structure at the module layer.
+
+
+
+The motive for this is to support inheritance, override, extension, and composition of applications. To support inheritance and override, the application type supports yet another latent fixpoint step, much like modules. Indeed, we'll essentially define the application type as a module with a few conventions on entry points and staging.
+
+
+
+### Staging
+
+Basic applications awkwardly, indirectly support staging insofar as they receive access to 'sys.\*' APIs before fully defining application methods. These APIs are then accessible via '%meta'
+
+To avoid awkward interactions with laziness, parallelism, or caching, it is recommended to limit these operations to read-only or 'safe' queries. 
+
+This mechanism for staging is likely to hinder separate compilation. The exception is if 'sys.\*' is used only to access runtime information known at compile time, such as runtime version info. In theory, the compiler can mix AOT and JIT compilation based on when definitions become available.
 
 ## Runtime-Provided Effects
 
@@ -41,9 +75,13 @@ The runtime provides an initial namespace of registers and methods to a basic ap
 
 * 'sys.\*' - system APIs, e.g. network, filesystem, clock, FFI, reflection
 * 'db.\*' - shared, persistent registers, bound to a configured database
-* 'g.\*' - ephemeral, 'global' registers bound to runtime instance
+* 'mem.\*' - ephemeral registers bound to runtime-local memory
 
-These are provided in the input Env (alongside 'app.\*' for the open fixpoint). The 'sys.\*' APIs are described below, while 'db.\*' and 'g.\*' provide some toplevel state visible to 'http' and other methods. Although these model global state, it is possible to scope access and partition application state between subcomponents (assuming support from the front-end compiler).
+The 'sys.\*' APIs are described below. The 'db.\*' and 'mem.\*' registers have relevant type distinctions: runtime-scoped data, such as FFI threads, cannot be stored to 'db.\*'. Depending on configuration, 'db.\*' may still be ephemeral. Because there are no long-running application methods, all relevant application state is held within 'db.\*' or 'mem.\*'.
+
+We also receive 'app.\*' as an open fixpoint of the application.
+
+provide some toplevel state visible to 'http' and other methods. Although these model global state, it is possible to scope access and partition application state between subcomponents (assuming support from the front-end compiler).
 
 ## State
 
@@ -60,43 +98,6 @@ Relative to second-class registers, references complicate static dataflow and co
 
 Concurrency is built into the program model (non-deterministic coroutines, optimistic concurrency control), thus no separate effects API is required. But we can discuss some interesting patterns.
 
-### Transaction Loops
-
-It is feasible to express an application, or a significant part of it, as a transaction loop where the same transaction is performed repeatedly with some non-deterministic choice.
-
-        while (Cond) do { atomic (choice ...); yield }
-
-Isolated transactions are equivalent to sequential transactions. Thus, we can implement this loop by running many cycles simultaneously, each 'thread' handling a different non-deterministic choice. We can continue running the loop concurrently until Cond fails on some or all non-deterministic choices, then proceed to whatever operation follows the loop.
-
-Instead of fully recomputing a transaction on every cycle, we can introduce checkpoints for partial rollback. With careful design, each choice has a stable prefix that is cached, so we're actually looping only the unstable suffix. In case of unproductive loops (i.e. failed, diverged, or idempotent), the runtime may wait for relevant state changes before recomputing, modeling reactive systems.
-
-Unfortunately, implementation of these optimizations is a daunting task. This opportunity is not easy to grasp. My vision for glas systems benefits enormously from transaction-loop optimizations, but short term we will rely on the more conventional coroutines.
-
-### Distribution
-
-I envision a 'runtime' distributed across networked node, and an application running upon it. This requires compatible design of effects APIs, e.g. supporting multiple filesystems, network cards, and clocks.
-
-In the worst case, we can run every application step in a distributed transaction. However, this is terribly slow and fragile to network faults. To effectively leverage a distributed runtime, we must architect applications such that most steps run on one node, and most remaining steps on two, with very few transactions touching three or more.
-
-Behavior can be distributed. Coroutines can migrate based on which physical resources a current step is accessing. A non-deterministic transaction loop can mirror choices where locality is irrelevant, and partition choices where locality is relevant.
-
-State can be distributed. Read-mostly registers can be mirrored, with updates propagated in a wavefront. Other registers may migrate to their users. Of notable interest are queues, bags, and CRDTs:
-
-* *queues* - modeled by a register containing a list. Reader takes from one end. Writer pushes to the other. (For convenience, a reader may also 'unread' data.) A runtime can split the register between reader and writer nodes, and migrate writes as part of batched node sync.
-* *bags* - modeled by a register containing a list. Reader removes a non-deterministic element. Writer inserts an element non-deterministically. A runtime can split the register across all nodes, each may read and write. Data migrates heuristically between nodes.
-* *CRDTs* (Conflict-free Replicated Data Types) - a family of types, so pick a few useful ones. A runtime can split the register such that each node maintains a local replica. Replicas are synchronized as part of node sync (we still want isolated transactions, not weaker eventual consistency).
-
-The runtime may recognize queues, bags, and CRDTs based on annotations, especially acceleration. 
-
-*Note:* It is possible to change data usage patterns at runtime. Doing so generally requires a distributed transaction to rebuild the 'complete' value. But specific cases such as queue to bag may be trivial.
-
-### Live Coding
-
-My vision for glas systems involves code being updated at runtime. Logically, code updates can be applied atomically, between %yield steps. Even in case of a distributed runtime, we can support a wavefront consistent with transactions, like updating mirrored state.
-
-Unfortunately, anonymous control-flow state, e.g. current continuation of 'main', is difficult to robustly translate. Favoring predictable update, we instead modify only named function calls. But we can recompile and typecheck the continuation in context of updated functions, seeking safe transition points.
-
-Programmers can design with live coding in mind. For example, they may favor tail-recursive loops as more amenable to live coding than a '%loop' structure for a long-running loop. To further support robust transition of code, we run 'switch' as the first operation in the updated code, retrying as needed. This provides an opportunity to defer transition or explicitly manage critical state.
 
 ## Futures and Promises (Tentative)
 
@@ -122,11 +123,9 @@ In theory, we can also support database-ephemeral futures and promises. I do not
 
 ## HTTP 
 
-The 'http' method receives HTTP requests not intercepted by the runtime. 
+The 'http' method receives HTTP requests on a runtime-configured port. This also simplifies composition of applications in contrast to each application listening directly on separate TCP sockets. TBD: How the request is input, how the response is output, how to model multi-step requests or SSE.
 
-Instead of operating on a raw binary, this receives an environment of methods from the runtime providing features to swiftly route on the URL and access headers, and also write a valid, structured response. For details, I intend to borrow inspiration from the huge range of existing web server frameworks.
-
-The 'http' method is not implicitly atomic, but it's convenient if most requests are atomic. Atomic requests are both more RESTful and more widely accessible.
+I imagine initial GUIs for glas systems will be based on HTTP. 
 
 *Aside:* Based on application settings and user configuration, we could automatically open a browser window after the application starts to provide a GUI.
 

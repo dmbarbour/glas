@@ -1,19 +1,5 @@
 /**
- * Use glas runtime as a library.
- * 
- * On `glas_thread_new`, the client (your program) receives a `glas*`
- * context. This represents a remote-controlled glas coroutine that 
- * begins with an empty namespace, stack, and auxilliary stash.
- * 
- * Efficient data exchange with the runtime is possible via zero-copy
- * binaries. Other structures may require dozens of calls to construct
- * or analyze.
- * 
- * Error handling is transactional: the client performs a sequence of
- * operations on a thread then commits the step. In case of error or
- * conflict, the step fails to commit. But the client can rewind and 
- * retry, or try something new. The on_commit and on_abort callbacks 
- * simplify integration with C.
+ * An API for the glas runtime.
  */
 #pragma once
 #ifndef GLAS_H
@@ -21,116 +7,144 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+// forward declarations
+typedef struct glas glas;
+typedef struct glas_ns_tl glas_ns_tl;
+typedef struct glas_file_ref glas_file_ref;
+
 /*******************************************
  * GLAS THREAD AND CONTEXT
  ******************************************/
-/**
- * Reference to a glas thread.
- * 
- * The glas thread is the primary context for the glas runtime. It has
- * a stack, stash, and a lexically scoped namespace, plus bookkeeping 
- * for transactions, checkpoints, and errors. The thread awaits commands
- * from the client, and most commands are synchronous (awaiting result).
- * 
- * mt-safety: Each glas thread must be used in a single-threaded manner,
- * but may be shared via mutex. Separate glas threads are fully mt-safe.
- */
-typedef struct glas glas;
 
 /**
- * Create a new glas thread.
+ * Create a fresh glas thread.
  * 
- * Starts with empty namespace, stack, and stash. The recommended next
- * step is `glas_init_default`. 
+ * A glas thread consists primarily of data stack and namespace. These
+ * are initially empty. The glas thread is NOT mt-safe but may freely 
+ * migrate between OS threads.
+ * 
+ * Error handling is transactional. The thread accumulates errors over
+ * operations then checks for errors and read-write conflicts on commit.
+ * Clear errors by reverting to a prior state.
  */
 glas* glas_thread_new();
 
 /**
- * The default initializer.
+ * Load a configuration file.
  * 
- * A user configuration is sought in:
+ * A configuration primarily defines an environment, 'env.*'. A fixpoint
+ * feeds this back into the configuration as '%env.*' for propagation
+ * alongside '%*' primitives. Primitives are implicitly provided.
+ * 
+ * The tricky part is bootstrapping. By convention, front-end compilers
+ * are defined in '%env.lang.FileExt'. Built-ins for ".glas" and ".glob"
+ * are available, but the user may redefine them, in which case we must
+ * rebuild the configuration using the front-end compiler defined within
+ * the configuration.
+ * 
+ * Other than that environment, a user configuration typically defines 
+ * ad hoc runtime options under 'glas.*': guidance for logging, caching,
+ * etc.. These options are observed later, when running applications, 
+ * and may perform queries to application 'settings'.
+ * 
+ * If the configuration file is NULL, we search for fallback locations: 
  * 
  * - GLAS_CONF environment variable     if defined
  * - ${HOME}/.config/glas/conf.glas     on Linux
- * - %AppData%\glas\conf.glas           on Windows (eventually)
+ * - %AppData%\glas\conf.glas           on Windows (if ported)
  * 
- * This initializer operates on the namespace. The data stack is not
- * modified. It binds primitives to "%", the compiled user configuration 
- * to "conf.", then rebinds "%env." to final "conf.env.". Will bootstrap 
- * %env.lang.glas if possible, otherwise leaving the built-in versions.
- * 
- * This prepares a client for running configured applications or loading 
- * scripts.
+ * If there is no error, the configuration's definitions are loaded 
+ * under a given prefix, default "conf." (if dst is NULL).
  */
-void glas_init_default(glas*);
+void glas_load_conf(glas*, char const* dst, glas_file_ref const*);
+
+/**
+ * Load a script file.
+ * 
+ * Where a configuration specifies an environment, a script assumes one.
+ * When loading a script, '%env.*' is bound to a specified environment,
+ * by default "conf.env.". The front-end compiler '%env.lang.FileExt' 
+ * is applied. There is no need to bootstrap, no risk of interdepence.
+ * Default destination prefix is "script.".
+ * 
+ * Note: There is no language distinction between configurations and 
+ * scripts. Installing a script into a configuration is essentially just
+ * importing the script as a module under 'env.Name'.
+ * 
+ * Recommendation: Favor growing community configurations over sharing
+ * scripts: the long-term maintenance story is better. But favor scripts
+ * over managing individual user configurations. 
+ */
+void glas_load_script(glas*, char const* dst, 
+    glas_file_ref const*, glas_ns_tl* const env);
+
+/**
+ * Fork a glas thread.
+ * 
+ * This can be useful for task-based concurrency. The fork receives a
+ * copy of the origin's current namespace and optionally a transfer of
+ * a few data stack elements. 
+ * 
+ * A fork begins in an 'unstable' state, meaning that it may receive a
+ * CANCELED error in the future, e.g. if origin aborts and backtracks.
+ */
+glas* glas_thread_fork(glas*, uint8_t stack_transfer);
+
+/**
+ * Test stability of a glas thread.
+ * 
+ * A glas thread is unstable if it may later observe the CANCELED error.
+ * This is possible due to aborting an operation that creates a thread.
+ * Stability is naturally monotonic: once stable, always stable.
+ * 
+ * This operation returns true if the thread is stable, false otherwise.
+ */
+bool glas_thread_is_stable(glas*);
 
 /**
  * Terminate a glas thread.
  * 
- * This tells the runtime that the client is done with this thread,
- * i.e. that no further client commands are forthcoming. Any pending
- * operations are aborted, then associated resources are recycled.
+ * Exit when finished with a thread returned by new, fork, or clone.
+ * 
+ * This tells the runtime that there will be no more operations. Any
+ * pending operations since last commit are aborted. If the thread is
+ * unstable, prior operations may be pending stabilization. Those are
+ * still applied. Memory is recycled when possible.
+ * 
+ * For threads bound to callbacks, do not use exit. Those belong to the
+ * runtime and will be managed after returning from the callback.
  */
 void glas_thread_exit(glas*);
 
 /**
- * Forking threads.
- * 
- * A glas thread may create another glas thread, sharing context. I will
- * distinguish origin (the argument) and fork (return value). 
- * 
- * Fork receives a copy of origin's namespace, and an optional transfer 
- * from origin's data stack. After construction, runtime interaction is 
- * only through shared registers, i.e. no further stack transfers. 
- * 
- * Fork is not fully stable after returning from `glas_thread_fork`. It
- * is possible origin aborts the step, in which case fork is 'canceled' 
- * and will never commit. Best practice is to defer operations on fork
- * until after commit.
- */
-glas* glas_thread_fork(glas* origin, uint8_t stack_transfer);
-
-/**
- * Set debug name for a thread.
- * 
- * Appears in warning messages, stack traces, and so on. Definitions and
- * forks may capture the current name of the thread that created them. 
+ * Set debug name for a thread. Appears in debug messages.
  */
 void glas_thread_set_debug_name(glas*, char const* debug_name);
 
+/*******************
+ * NON-DETERMINISM
+ *******************/
+
 /**
- * Concurrent search of non-deterministic choice.
+ * Concurrent search for fair non-deterministic choice.
  * 
- * A glas thread can awkwardly search non-deterministic choices, but we
- * can do a lot better with a little guidance and multi-threading. 
+ * The user provides a callback function and a number of options, N. The
+ * runtime will perform the callback at most N times, on clones, each 
+ * indexed by 0..(N-1) in pseudo-random order. When worker threads are
+ * available, these callbacks may run in parallel. 
  * 
- * I'll distinguish origin (argument to choice) and clone (argument to 
- * client callback). The runtime creates up to N clones, assigning each
- * an index in 0..(N-1). A clone receives a copy of origin's state, and
- * is evaluated within the callback.
+ * The runtime picks one clone, updates origin to match, then returns.
+ * The choice is fair modulo errors, which are strongly disfavored.
  * 
- * The final state of a chosen clone is transferred back to origin. The
- * candidates for chosen one:
- * 
- * - any clone that is about to commit successfully
- * - any clone that has returned from the callback
- * 
- * After a candidate is chosen, all running clones are canceled, which
- * serves as a signal to abandon efforts. All unchosen, returned clones
- * are aborted. And pending clones won't ever be created. After commit,
- * a chosen clone continues running until return from callback.
- * 
- * Non-deterministic choice doesn't imply random choice. The runtime may 
- * apply heuristics when choosing a candidate. The simplest heuristic is
- * a race condition: first candidate wins. However, the runtime should 
- * disfavor clones that return swiftly with an error state.
- * 
- * The runtime is expected to evaluate clones concurrently using worker
- * threads, though how many may depend on resource constraints.
+ * Implementation note: shuffle N via Feistel and cycle walking?
  */
 void glas_choice(glas* origin, size_t N, void* client_arg, 
-    void (*callback)(glas* clone, size_t index, void* client_arg));
+    void (*op)(glas* clone, size_t index, void* client_arg)
+);
 
+// TBD: unfair choice, e.g. weighted or probabilistic choice?
+//   soft constraints on final register and stack states?
+// skip for now, I think. choice is very low priority in any case.
 
 /***************************
  * MEMORY MANAGEMENT
@@ -138,17 +152,14 @@ void glas_choice(glas* origin, size_t N, void* client_arg,
 
 /**
  * Reference-counting shared objects.
+ *
+ * Used for zero-copy binaries, foreign pointers, and callbacks.
  * 
- * Abstract reference counting is used in callbacks, pointers, zero-copy
- * binaries. Reference counts shall be mt-safe, and are pre-incremented
- * before crossing the API, i.e. such that a decref indicates release of
- * the referenced resource. The `refct_obj` is separate from the target
- * to permit indirection, e.g. logical slices of binaries.
+ * The 'refct_obj' is not necessarily the shared object, only where to
+ * manage the reference count. This supports sharing of slices or views.
  * 
- * The `refct_upd` function may be NULL if an object does not need to be
- * managed. When reading data from the runtime, `glas_refct*` arguments
- * may be NULL assuming the client maintains a reference to the resource
- * on stack or in stash to guard against garbage collection.
+ * Notes: If no management is needed, set refct_upd to NULL. A refct_obj
+ * must be pre-incremented across API; recipient decrements when done.
  */
 typedef struct {
     void (*refct_upd)(void* refct_obj, bool incref);
@@ -170,14 +181,7 @@ inline void glas_incref(glas_refct c) {
  * NAMESPACES
  ************************/
 /**
- * Lexical Namespace Scope
- * 
- * The glas thread maintains a stack of namespace scopes. Push creates a
- * backup of the current namespace while pop restores to last push. This
- * is a O(1) operation via logical copy.
- * 
- * Scopes are maintained across steps, but are not shared with forks or
- * callbacks.
+ * Namespace Scopes - push and pop, like a call stack
  */
 void glas_ns_scope_push(glas*);
 void glas_ns_scope_pop(glas*);
@@ -194,7 +198,7 @@ bool glas_ns_has_def(glas*, char const* name);
  * indirectly through other definitions. Unreachable definitions may be
  * garbage collected by the runtime.
  * 
- * Note: These are simple wrappers around glas_ns_tl_apply.
+ * Note: These are essentially wrappers around glas_ns_tl_apply.
  */
 void glas_ns_hide_def(glas*, char const* name);
 void glas_ns_hide_prefix(glas*, char const* prefix);
@@ -231,9 +235,6 @@ void glas_ns_data_def(glas*, char const* name);
  * systems implicitly add a ".." suffix onto every name. This doesn't 
  * guarantee prefix-uniqueness, but it resists accident. It also enables
  * translation of "bar." to include "bar" and "bar.x".
- * 
- * Note: a NULL `glas_ns_tl const*` is equivalent to {{ NULL, NULL }},
- * i.e. the no-op or identity translation.
  */
 typedef struct { char const *lhs, *rhs; } glas_ns_tl;
 
@@ -312,237 +313,86 @@ void glas_ns_ast_mkop_seq(glas*); // op for function composition (first arg appl
  * Mechanically, wraps AST with `t:({ "" => NULL }, AST)`. This enforces
  * an assumption that an AST represents a closed term before evaluation.
  */
-void glas_ns_ast_mk_closed_term(glas*); // AST -- AST (closed)
+void glas_ns_ast_as_closed_term(glas*); // AST -- AST (closed)
+
+/*************************
+ * PROGRAMS
+ *************************/
 
 /**
  * Define programs using callbacks.
  * 
- * The callback function receives a dedicated `glas*` callback thread to
- * receive arguments and write results through data stack and namespace.
+ * The callback receives arguments and returns results via data stack.
+ * Stack arity is specified ahead of time via ar_in and ar_out. A glas
+ * thread is introduced as a scratch space.
  * 
- * The namespace has two components: closure of the host namespace where 
- * the callback is defined, and a caller-provided namespace supporting 
- * pass-by-ref registers and algebraic effects handler. Translations can
- * restrict and route these namespaces. Updates to a callback namespace
- * are localized to each callback. The glas program model does not have 
- * first-class functions, but algebraic effects serve a similar role.
+ * To keep it simple, callbacks do not receive the caller's environment.
+ * This limits expressiveness but avoids troublesome issues like escape
+ * analysis for stack-local registers in context of 'fork'. The callback
+ * does receive access to the environment where it was defined, however,
+ * including registers in scope.
  * 
- * The specified arity (ar_in, ar_out) determines how many items are
- * moved from the caller's data stack then back to the caller on return.
- * 
- * In general, callbacks may commit multiple steps. Caveats: 
- * 
- * - If a callback commits even once, it must commit just before return.
- *   This is because we cannot robustly backtrack into C functions. To 
- *   simplify, pending operations are aborted with a warning.
- * 
- * - Callbacks cannot commit within an atomic context. Attempting to do
- *   so always results in an atomicity error. If a callback must commit,
- *   use the 'non_atomic' flag to detect errors early.
- * 
- * The tradeoff is that atomic callbacks are more widely usable but rely
- * heavily on the on_commit and on_abort events, whereas non-atomic is a
- * more convenient fit for C and synchronous request-response patterns.
- * 
- * A callback may fork threads, but the caller's namespace is valid only
- * for duration of the call. To support this, the caller waits for all
- * forks to either exit or detach then commit (see below).
- * 
- * In general, a callback may be canceled because the caller has not yet
- * committed to perform the call. For non-atomic callbacks, this will be
- * resolved on first commit, which also commits to performing the call.
- * 
- * To integrate with partial evaluation, callbacks have a 'static_eval'
- * option with states reject (default), accept, or require. If accepted,
- * callbacks are opportunistically evaluated at link time if ar_in stack
- * elements are available. If required, error unless evaluated at link 
- * time. Link-time evaluation is lazy via logical background thread (see
- * refl_bgcall). Note: reject unless commutative, idempotent, cacheable!
- * 
- * Notes: If cb is NULL, treats as `%error` definition. If caller_prefix
- * is NULL, caller namespace is unavailable. If debug_name is NULL, uses 
- * function pointer as opaque stand-in.
+ * In most cases, a callback is performed from a transactional context.
+ * The thread is unstable until the hosting transaction commits. Use the
+ * on-commit and on-abort mechanisms to defer 'unsafe' effects.
  */
 typedef struct glas_prog_cb {
     bool (*cb)(glas*, void* client_arg);
     void* client_arg;           // opaque, passed to operation
     glas_refct refct;           // integrate GC for client_arg
-    char const* caller_prefix;  // e.g. "$"; hides host names
     uint8_t ar_in, ar_out;      // data stack arity (enforced!)
-    bool non_atomic;            // forbid use in atomic sections
-    uint8_t static_eval;        // 0=avoid, 1=accept, 2=require
     char const* debug_name;     // appears in stack traces, etc.
-    // for extensibility, please init unset fields to zero
+    // for extensibility, unset fields should be zeroed
 } glas_prog_cb; 
-void glas_ns_cb_def(glas*, char const* name, glas_prog_cb const*, glas_ns_tl const* host_ns);
 
-/**
- * Lazy linking for an entire namespace of callbacks.
- * 
- * A linker callback is invoked if the name is referenced from a program
- * being prepared for call. It is called at most once per name, caching 
- * results. It is not guaranteed that the function will be called.
- * 
- * Link may fail, returning false, in which case the runtime treats the
- * name as undefined and may default to a prior definition under prefix.
- * Alternatively, link may succeed but set callback function to NULL, in
- * which case we treat as linking an invalid program.
- */
-typedef struct glas_link_cb {
-    bool (*link)(char const* name, glas_prog_cb* out, void* client_arg);
-    void* client_arg;
-    glas_refct refct;
-    // for extensibility, please init unset fields to zero
-} glas_link_cb; 
-void glas_ns_cb_bind(glas*, char const* prefix, glas_link_cb const*, glas_ns_tl const* host_ns);
+void glas_ns_cb_def(glas*, char const* name, glas_prog_cb const*, glas_ns_tl const*);
 
-/**
- * TBD: staged linking? tentative
- * 
- * Can feasibly provide static parameters, e.g. generating glas_prog_cb*
- * in context of a caller_prefix. This offers an alternative approach to
- * static evaluation, albeit limited to the namespace layer.
- * 
- * But it requires a relatively sophisticated API, and benefits compared
- * static_eval (in glas_prog_cb) together with foreign pointers are very
- * limited. Essentially moves one pointer from data stack to client_arg!
- * 
- * For now, defer this feature. Reconsider later.
- */
-
-/**
- * TBD: browsing namespaces
- * 
- * We can introduce a has_prefix feature for browsing of namespaces. 
- * This requires extending glas_link_cb to support this, too. But I'm
- * not convinced this is a great idea!
- */
-
-/**
- * Detach a callback thread.
- * 
- * This detaches the `glas*` thread from the caller's namespace. Access
- * to callbacks or registers defined in the caller's namespace raises an
- * error after detach.
- * 
- * This is most useful in context of forks. Normally, glas systems have
- * fork-join semantics. The caller will wait for threads forked during a
- * callback. But the caller may also continue after forks detach and
- * commit.
- */
-void glas_thread_detach(glas*);
-
-/**
- * Fork a thread in the detached state.
- * 
- * This is useful in context of atomic operations. A detached fork still
- * cannot commit before its origin commits the fork operation. However,
- * this supports creation of threads for background tasks upon commit.
- */
-glas* glas_thread_fork_detached(glas*);
+// TBD: constructors for %do, %cond, etc.. 
 
 /*********************************
  * BULK DEFINITION AND MODULARITY
  *********************************/
 
 /**
- * Bind built-in definitions to a prefix.
+ * Access built-in primitive definitions.
  * 
- * This binds built-in definitions to a specified prefix, conventionally
- * "%". Includes annotations, accelerators, program constructors, etc..
- * Also includes built-in front-end compilers under %env.lang.* for at
- * least the 'glas' file extension.
- * 
- * Note: This doesn't include names managed by front-end compilers, such
- * as %src, %env.*, %arg.*, and %self.*. 
+ * Provides primitive definitions under a given prefix (default "%"). 
+ * This includes program constructors, annotations, and accelerators.
+ * An exception is built-in front-end compilers for bootstrapping.
  */
-void glas_load_builtins(glas*, char const* prefix);
-
+void glas_load_primitives(glas*, char const* prefix);
 
 /**
- * Glas generally views a filesystem as a binary key-value database. In
- * practice, filesystems may have permissions, special files, network
- * integration, and other features, but glas does not observe them. Any
- * access error other than does-not-exist is modeled as divergent. But a
- * compiler may handle does-not-exist specially.
+ * Access built-in front-end compilers.
  */
-typedef enum glas_load_status {
-    GLAS_LOAD_OK = 0,       // valid file or folder read
-    GLAS_LOAD_NOENT,        // specified file or folder does not exist
-    GLAS_LOAD_ERROR,        // permissions issues, unreachable, etc.
-} glas_load_status;
 
-/**
- * Logical overlay of local filesystem.
- * 
- * This allows the client to virtualize some dependencies, redirecting
- * a subset of source files to local callbacks. Uses include providing
- * files as built-ins, embeddings, or through a database. This does not
- * overlay DVCS resources, only the local host filesystem.
- * 
- * An overlay applies to a specified prefix. Files matching this prefix
- * are processed by a given loader function. Overlays may be stacked and
- * the last one wins. Best start by overlaying shorter prefixes. A NULL
- * load function implicitly selects the default loader.
- * 
- * The 'path' argument is a strict suffix of the given 'prefix'. E.g. if
- * you overlay 'foo/ba' then the runtime requests 'z.txt', this matches
- * 'foo/baz.txt'. 
- */
-typedef struct glas_file_loader {
-    void* client_arg;
-    glas_refct refct; // decref after loader becomes unreachable
-    glas_load_status (*load_file)(char const* path, 
-        uint8_t const** ppBuf, size_t* len, glas_refct*, // supports zero-copy
-        void* client_arg);
-} glas_file_loader;
-void glas_rt_file_loader(glas_file_loader const*, char const* prefix);
+// TBD: load a file as a module or AST value
 
+
+/*****************
+ * CONFIGURATION
+ *****************/
 /**
  * Flexible 'file' references.
  * 
- * - src: usually a filepath, but is file content if 'embedded'
- * - lang: NULL, or a file extension (override or embedded)
- * - embedded: if true, treat src as file content, not file name
- *
- * This is mostly intended for naming user configurations and scripts.
- * Anything more sophisticated should use glas_rt_file_loader.
+ * - src: a file path, or file content if 'embedded'
+ * - lang: NULL or file extension (override or embedded)
+ * - embedded: if true, interprets src as file content 
+ * 
+ * The front-end compiler is selected based on 'lang' or file extension
+ * if NULL. A built-in compiler exists for ".glas" and ".glob" files, 
+ * but users can override or introduce new compilers at '%env.lang.Ext'.
+ * 
+ * If 'embedded' is true, 'lang' must be set.
  */
-typedef struct {
+typedef struct glas_file_ref {
     char const* src;
     char const* lang;
     bool embedded;
 } glas_file_ref;
 
 
-/**
- * Load user configuration file.
- * 
- * A user configuration is the heart of a glas system: one big namespace
- * per user, inheriting from and extending community configurations.
- * 
- * Loading a configuration file requires special handling for bootstrap
- * of user-defined compilers and fixpoint of the environment. Otherwise,
- * it behaves as binding a script.
- * 
- * This special handling:
- * 
- * - the configuration's 'env.*' output is fed back as '%env.*' input.
- * - the runtime will attempt to bootstrap the configuration's front-end
- *   compilers, using whatever starts in '%env.lang.*' as the built-ins.
- */
-void glas_load_config(glas*, char const* prefix, glas_file_ref const* src, glas_ns_tl const*);
 
-/**
- * Load a script file.
- * 
- * After loading a configuration, script files can bind the configured
- * environment, constructing applications from a shared library. Scripts
- * receive access to their own definitions via fixpoint of `%self.*`.
- * 
- * The translation in this case should overlay config.env onto `%env.*`.
- */
-void glas_load_script(glas*, char const* prefix, glas_file_ref const* src, glas_ns_tl const*);
 
 
 /**************************
@@ -551,15 +401,16 @@ void glas_load_script(glas*, char const* prefix, glas_file_ref const* src, glas_
 /**
  * Call a defined program by name.
  * 
- * The runtime expects callable definitions to be tagged with a calling
- * convention. Tags are a namespace-layer design pattern, i.e. functions
- * that receive a record of adapters and select one or more to adapt the
- * definition. Recognized callable tags:
+ * The runtime expects user definitions to be tagged. These tags support
+ * flexible calling conventions. The default adapter supports just a few
+ * tags:
  * 
- * - "data" for embedded data (push to top of stack)
- * - "prog" for a program definition (verify then run)
- * - "case" for conditional body (implicit '%cond')
- * - "call" for Env -> callable tagged Def, receive caller Env
+ * - "prog" for a program definition, runtime verifies then runs
+ * - "data" for embedded data; call pushes to data stack (%data)
+ * - "call" for `Env -> tagged Def`, receives translated caller env 
+ * 
+ * It is possible to introduce user-defined adapters to extend this set
+ * of callable definitions. (TBD, perhaps glas_conf_call.) 
  * 
  * Program verification should ultimately be configurable. In my vision,
  * the user configration will directly specify most verification code to
@@ -1143,6 +994,9 @@ bool glas_dict_remove_label(glas*, char const* label); // Record -- Item Record'
  * Arithmetic. TBD.
  */
 
+
+
+
 /******************************
  * RUNTIME REFLECTION
  *****************************/
@@ -1187,19 +1041,27 @@ void glas_refl_bgcall(glas*, char const* op);
 
 /**
  * Run library's built-in tests.
+ * 
+ * Returns 'false' if at least one test fails. Also prints progress and
+ * pass/fail information to standard output.
  */
 bool glas_rt_run_builtin_tests();
 
 /**
  * Clear thread-local storage for calling thread.
  * 
- * The glas runtime uses thread-local storage, e.g. for a bump-pointer
- * allocator per OS thread. This API will clear the storage as if the OS
- * thread had exited. The OS thread may freely use the API again, but it 
- * will be treated as a new OS thread by the glas runtime.
+ * A few resources, especially memory allocation and GC integration, are
+ * per OS-level thread for performance reasons. A 'glas*' thread safely
+ * migrates between OS threads if used by only one OS thread at a time.
+ * 
+ * By default, the thread-local storage per OS thread remains until that
+ * OS thread exits. This operation does the same, early. Further use of 
+ * the glas API will be treated as a new OS thread.
+ * 
+ * A potential motive is to suppress complaints about memory usage when 
+ * instrumenting C code.
  */
 void glas_rt_tls_reset();
-
 
 /**
  * Trigger garbage collection.
@@ -1227,13 +1089,15 @@ void glas_rt_gc_trigger(glas_gc_flags);
 
 
 
+
+
 #define GLAS_H
 #endif
 
 /**
  *   A glas runtime api.
  * 
- *   Copyright (C) 2025 David Barbour
+ *   Copyright (C) 2025, 2026 David Barbour
  *
  *   This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by

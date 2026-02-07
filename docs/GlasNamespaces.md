@@ -70,18 +70,6 @@ Evaluation of an AST is a lazy, substitutive reduction in context of an environm
 * ifdef `c:(Name, (L, R))` - evaluates to L if Name is defined in current environment, otherwise R. 
 * fixpoint - built-in fixpoint for convenient expression and efficient evaluation
 
-
-### Reference Implementation
-
-TBD. Will write something up in Haskell or F# and get back on this.
-
-Some requirements or desiderata:
-
-* Lazy evaluation in general, necessary for lazy loading etc.
-* Memoized lazy partial evaluation within function bodies.
-
-Performance at this layer isn't essential for my use case, though no reason to avoid performance if it's a low-hanging fruit. But I'll be mostly focusing on the Program layer for performance of glas systems.
-
 ## Translation
 
 TL is a finite map of form `{ Prefix => Optional Prefix }`. To translate a name via TL, we find the longest matching prefix, then rewrite that to the output prefix. Alternatively, if the rhs has no prefix, we'll treat the name as undefined.
@@ -92,123 +80,115 @@ Sequential translations can be composed into a single map. Rough sketch: to comp
 
 ## Loading Files
 
-Files are accessible through a few provided names. Loading files is staged, separate from runtime execution of the application program unless dynamic %eval is also enabled.
+A file is loaded from an abstract source. This is supported through a few primitive definitions and conventions:
 
-* `(%load Src) : d:Data` - loads external resources at compile-time, returning opaque data. This operation may diverge if Src is malformed or unreachable.
-* `%src : Src` - by convention, this Src represents the file currently being compiled. It is expected that relative Src constructors take this Src as the root.
-* `%src.*` - constructors for abstract Src data. All constructors are relative to another Src. 
+* `(%load Src) : d:Data` - loads external resources at compile-time, returning data. This operation may diverge if Src is malformed or unreachable.
+* `$src : Src` - by convention, a module receives a '$src' argument representing its own abstract Src, providing a root for relative file paths.
+* `%src.*` - constructors for abstract Src data. All constructors are relative to another Src, thus we require an initial '$src' to get started.
   * `(%src.file FilePath Src) : Src` - evaluates to an abstract Src representing a FilePath relative to another Src. When loaded, returns an *optional binary*, treating 'does not exist' as a valid state. For other errors (e.g. unreachable, permissions issues) the loader diverges and logs a compile-time error.
-    * Note: glas systems forbid `"../"` relative paths and absolute paths relative to relative paths. See *Controlling Filesystem Entanglement* for motivations.
-    * Note: absolute paths are still contextually relative, e.g. absolute paths within DVCS repository are relative to repository root. However, initial 
-  * `(%src.dvcs.git URI Ver Src) : Src` - returns a Src representing a DVCS git repository. If loaded, returns unit. Use '%src.file' to access files starting at repo root.
+    * Note: glas systems forbid relative paths, absolute paths, and files or subfolders whose names start with ".". See *Controlling Filesystem Entanglement*.
+  * `(%src.dvcs.git URI Ver Src) : Src` - returns a Src representing a DVCS git repository. If loaded, returns a boolean (whether the DVCS is found). Use '%src.file' to access files relative to repo root.
   * `(%src.an Annotation Src) : Src` - here Annotation is represented by embedded data. It is not observed by the loader, but is available later in context of runtime reflection on sources, e.g. `sys.refl.src.*`.
-* `(%macro Program) : AST` - evaluate a pure, 0--1 arity program that returns an AST representation. The latter is validated, evaluated in an empty namespace (i.e. implicit `t:({ "" => NULL }, AST)` wrapper), then substituted for the macro node. Linking is stage-separated from macro eval, e.g. the returned AST typically has a type such as `Env -> Env` and expects a parameter for linking.
 
-It is feasible to extend Src, e.g. to include HTTP resources or content-addressed data. I might add Mercurial and other DVCS sources. But the above should be adequate for my initial use cases.
+It is feasible to extend Src, e.g. Mercurial, content-addressed globs, HTTP. Perhaps we'll eventually support extension of '%src.\*' constructors through the runtime configuration. But, for now, git and files are adequate.
 
-It is feasible to relax determinism, e.g. %load and %macro can have non-deterministic outcomes in the general case. But it is difficult to efficiently evaluate a large, non-deterministic namespace. In practice, macros and sources should be deterministic, and we'll warn in most contexts if any non-determinism is detected.
+After loading the file, it must be compiled. This is also supported through primitives and conventions:
+
+* `(%macro Builder)` - Builder must be a deterministic 0--1 arity program that returns a namespace AST on the data stack. This AST must represent a closed term. We validate the AST then evaluate and return the namespace term.
+  * Further linking, including injection of program primitives, depends on macro context, e.g. `((%macro Builder) e:())` to link the current environment.
+* `%env.lang.FileExt` - see *User-Defined Syntax*
+
+An 'import' operation might construct an AST roughly of form `(Link (%macro (%do (%data (%load (%src.file FileName $src))) (Adapt %env.lang.FileExt))))`. 
 
 ### Controlling Filesystem Entanglement
 
-Many programming languages allow messy, ad hoc relationships between module system and filesystem, e.g. with "../" paths, absolute file paths, etc.. Glas systems restrict these relationships in order to simplify refactoring, extension, and sharing of code.
+Many popular programming languages allow messy, ad hoc relationships within the filesystem with "../" paths, absolute file paths, etc.. These are convenient in the short term. Unfortunately, such dependencies complicate long-term sharing, refactoring, and local reasoning.
 
-First, we forbid parent-relative (`"../"`) paths in Src constructors, and absolute file paths may only be constructed relative to other absolute file paths (or DVCS repo root). This ensures folders can generally be treated as independent packages, easily shared by copying, excepting very few 'toplevel' folders (e.g. for the user configuration) which may reference other absolute paths within the local filesystem.
+To avoid these issues in glas, I propose to forbid absolute and parent-relative file paths in Src constructors. References outside the folder are possible only via remote DVCS links. *Note:* This slightly inconveniences local development: users must either include their projects within their configuration folder or treat the project as external scripts.
 
-Second, we hide files and subfolders whose names start with `"."`. For example, if a front-end compiler requests file `".git/config"` from a DVCS repo, this file is treated as non-existent regardless of whether it exists. This matches conventions for hidden or associated structure in the filesystem. Although front-end compilers cannot see these files and folders, a runtime may recognize and utilize `".glas/"` and `".pki/"` and so on for incremental compilation, signed manifests and certificates, etc..
+I further forbid files and subfolders whose names start with ".". These are reserved for tooling and metadata, such as ".git/config", PKI-signed manifests and certificates, cached proof hints for dependent types, or scratch spaces. This is already a popular convention; glas merely enforces it.
 
-Third, a front-end compiler cannot browse folders, cannot query folder contents. Although ability to browse is convenient for several use cases, alignment of code to folder structure eventually becomes a source of entanglement and embrittlement that hinders refactoring and non-invasive extension. Instead, users may construct indices within files.
+A tentative third constraint is to forbid browsing of filesystems: there is no '%src.dir' constructor returning a list of files. Browsing folders and doing something with each file entangles meaning with *location*, which hinders refactorings that would move or share structure between locations. Without browsing, users instead introduce intermediate files for indices, and this indirection provides an opportunity to abstract location.
 
-### Affine Files
+### Affine File Dependencies
 
-Instead of cyclic dependendencies or even directed-acyclic graphs, I propose *affine* file dependencies: each file is loaded at most once in context of an application or user configuration. When a glas compiler or runtime notices a file is loaded twice, it raises a warning or error.
+This restriction says that no file may be loaded twice. Files may be loaded at most once within a glas context. Otherwise we report an error or warning. This restriction offers many benefits for reasoning, refactoring, live coding, and metaprogramming:
 
-This restriction simplifies local reasoning, live coding, and metaprogramming. It eliminates risk that updating a file has hidden non-local consequences, and ensures the dependency graph is fully represented within the configuration namespace. The file binary can be replaced transparently by a generated binary by updating a single location, which mitigates need for metaprogramming at the filesystem layer.
+- simplifies local reasoning about how edits propagate
+- ensures files can be refactored locally
+- transparently replace files with generated code
+  - no need for metaprogramming to create intermediate files
+- all sharing is visible within configuration for analysis
+- can leverage '$src' as a robust source of uniqueness
 
-Instead of sharing at the filesystem layer, shared libraries are supported by conventions and patterns at the namespace layer. See *Shared Libraries* below.
+Instead of sharing through the filesystem, sharing is through the namespace. See *Shared Libraries and Applications*. However, we may provide a annotations to disable the warning on a case-by-case basis.
 
-## Shared Libraries
+## Shared Libraries and Applications
 
-A user configuration is a module that defines `env.*`. The namespace module type supports open fixpoint, such that modules can be defined in terms of inheriting, overriding, and extending other modules. The glas compiler or runtime further performs a toplevel fixpoint, linking `%env.*` to the configured `env.*`. This providies the configured environment as pseudo-primitives, piggybacking common `{ ..., "%" => "%" }` translation rules for propagating primitives across scopes.
+The user configuration defines 'env.\*'. The glas runtime feeds this back into the configuration as '%env.\*'. Front-end compilers treat '%\*' (which also contains primitives) as a pseudo-global namespace, transitively linking these definitions into every imported module by default.
 
-A consequence of this design is that the user configuration can easily inherit from a community or company configuration that defines most shared libraries. The user is free to tweak a few shared libraries via overrides.
+Instead of filesystem install paths, users 'install' shared libraries and applications by defining them within 'env.\*' in the user configuration. The exception is scripts, which are invoked by filepath instead of configured name.
 
-### Applications as Components
-
-In addition to libraries, applications are frequently defined within `env.*`. A naming convention `env.Appname.app` is imposed by the [glas CLI](GlasCLI.md). The CLI also supports defining applications as external scripts, outside the configuration file. But, in my vision for glas systems, most applications will ultimately be named under `env.*`.
-
-The motive for this is to support inheritance, override, extension, and composition of applications. To support inheritance and override, the application type supports yet another latent fixpoint step, much like modules. Indeed, we'll essentially define the application type as a module with a few conventions on entry points and staging.
-
-By providing applications as shared library components, and developing at least one front-end syntax for ergonomic composition of applications, glas systems should become very 'scriptable'.
+*Aside:* Sharing [applications](GlasApps.md) is convenient when we define new applications in terms of extending or composing existing applications.
 
 ## User-Defined Syntax
 
-As a supported convention, users may define front-end compilers per file extension in '%env.lang.FileExt'. To bootstrap this process, the glas executable initialy injects a built-in definition for '%env.lang.glas' for long enough to build and extract the configured 'env.lang.glas'. 
+As a convention, users can define a front-end compiler per file extension under '%env.lang.FileExt'. The glas runtime provides built-in definitions for "glas" and "glob" extensions. If the user configuration redefines these, the runtime performs a short bootstrap cycle and verifies a fixpoint.
 
-The front-end compiler is a 1--1 arity Program implementing a pure function of type `Binary -> Module`, where *Module* is described below. This compilation is performed via %macro nodes, while fetching sources is handled separately via %load.
+The front-end compiler should be modeled as a tagged *Object* (see below) that minimally defines 'compile', a 1--1 arity Program that takes loaded data and returns a *Module* AST. Front-end compilers should be designed for lightweight extensibility, e.g. expose 'parser.int' for override. Also, the object may implement additional interfaces to support tooling, such as syntax highlighting or a language server.
 
-Importantly, output of a front-end compiler is plain old data. This prevents the compiler from linking its own environment into the compiled module, forcing a stage separation between compilation and linking. Any shared definitions must either be integrated into the compiler output (per module) or provided through shared libraries in '%env.\*'.
+For concision, a front-end compiler can make reasonable assumptions about the module's link environment. For example, instead of writing out a full AST to import another file, the generated AST might alias `{ "." => "%env.lang.FileExt.utils." }` then later invoke language-specific `".import"` macros.
+
+## Tags and Adapters
+
+The glas namespace easily encodes tagged terms, where tags are represented by names.
+
+        tag TagName = f:("Body", (f:("Adapters", 
+            ((b:("", TagName), "Adapters"), "Body"))))
+        tag "prog" Definition
+
+Here, the tagged term extracts and applies an adapter based on TagName. This is analogous to Church-encoded sum types.
+
+In context of glas systems, I propose to tag all user definitions and compiled modules. This significantly improves system extensibility, allowing for multiple calling conventions, new application types, etc.. It is also feasible to support tags with fallback definitions.
+
+Sample tags:
+
+* "data" - embedded data (`d:...`)
+* "prog" - basic glas programs
+* "env" - an environment term
+* "call" - `Env -> Def` - for programs with algebraic effects; receive caller's environment, return another tagged definition
+* "obj" - a generic `Env -> Env -> Env` *Object* described below
+* "module" - a specialized `Env -> Env` *Module* detailed below
+
+Developers can introduce new tags, extend adapters, and deprecate old tags as the system develops.
+
+## Objects
+
+The glas namespace can model stateless objects via open fixpoints. The essential idea is to link object methods through a fixpoint, then defer fixpoint until after overrides are determined.
+
+The proposed object model is `Self -> Base -> Instance` each of type `Env`, tagged "obj". This supports mixin-style composition, with `Base` representing a mixin target and `Self` the final object. *Note:* This model is based on [Prototypes and Object Orientation, Functionally (2021)](http://webyrd.net/scheme_workshop_2021/scheme2021-final91.pdf), albeit leveraging reified namespaces.
+
+In context of glas systems, these objects are initially favored for applications and front-end compilers. They will likely prove more generally useful. 
+
+*Note:* This model does not support multiple inheritance (MI). MI would require an explicit inheritance graph and adequate identity for linearization. However, we could feasibly provide MI via wrapping the model.
 
 ## Modules
 
-The basic module value returned by a front-end compiler is a namespace AST representing a closed term of type `Env -> Env`. The module is 'linked' by providing the input `Env`. The returned `Env` represents exported definitions. For clarity and extensibility, the basic module is further tagged "module" (see *Tagged Definitions*), and input `Env` is structured under a few conventions:
+Modules are object-like. They must be to support inheritance and override of configurations. But they must also be parameterized by primitives and '$src'. To avoid a growing list of parameters, I propose to aggregate arguments into a parameter object, thus a module has type `Env -> Env` where the input includes '$module' as self.
 
 * '%\*' - primitive definitions are provided ad hoc prefix '%' prefix. The motive is to simplify both visual recognition of primitives and concise default propagation via `{ "%" => "%" }` translation rules.
   * '%env.\*' - initially bound to 'env.\*' in the user configuration (via fixpoint), then propagated by default alongside primitive definitions. This pseudo-global namespace provides the foundation for *Shared Libraries*.
-* '$\*' - inputs to be specialized per 'import', not propagated implicitly
-  * '$self' - open fixpoint of module exports, supports inheritance and override.
+* '$\*' - specialized inputs per 'import', not propagated implicitly
+  * '$module' - fixpoint of module 
   * '$src' - abstract data representing a source path for the module being linked. 
   * '$args' - in case a front-end compiler introduces a syntax to explicitly parameterize imports, e.g. `import foo(A,B,C) as f`, I propose to input a Church-encoded list of namespace terms via '$args' (and named args via '$kwargs').
+  * '$lang' - (tentative) the instantiated language object
 
-Similarly, it is feasible to reserve export prefixes to support *Aggregation* patterns, such as generating a table of contents for notebook applications. However, module-layer aggregation is not recommended because it conflicts with lazy loading. Instead, I anticipate aggregation at the application layer.
-
-### Inheritance and Override
-
-The '$self' argument supports expressing modules in terms of inheritance and overrides. This can be useful in many cases, though to effectively leverage it requires explicit design of modules with overrides and extensions in mind, and syntactic support from the front-end compiler (e.g. bind to '$self' names in definition bodies by default, require a keyword to refer to 'prior' definitions).
-
-### Import vs. Include
-
-We'll usually interpret `Env -> Env` as linking a module to its context. But another useful interpretation is an *environment rewrite*, where the input `Env` may directly reference and rewrite definitions in scope. A front-end compiler could easily support both integrations, perhaps distinguishing keywords 'import' (link, local fixpoint) versus 'include' (rewrite current environment). 
-
-Note that 'include' must modify '$src' in scope, but arguments such as '$self' would bind to the host's '$self'. We can conveniently express inheritance and override in terms of 'including' the module into the initially empty namespace at the start of the inheriting module. 
-
-*Note:* Beyond import and include, we could introduce specialized or user-defined link keywords to support *Aggregation* patterns, to determine which exports are implicitly integrated and how to integrate them. 
-
-## Tagged Definitions and Adapters
-
-Tags are extremely convenient for extensibility. The community can easily introduce new tags or deprecate old ones, providing a foundation for evolving systems. Tags can readily support evolving calling conventions, program types, even application models. Although less precise than type systems, it is easy to detect, report, and comprehend errors due to unhandled or incompatible tags.
-
-In my vision for glas systems, every user definition is tagged. Modules generated by front-end compilers are also tagged. (Primitives and compiler-internal definitions are not necessarily tagged.) I propose to represent tags via Church-encoding that leverages namespace extensions:
-
-        template tag<"Tag"> = 
-            f:("Body", (f:("Adapters", 
-                ((b:("", "Tag"), "Adapters"), "Body"))))
-        tag<"prog">(Definition)
-
-Basic tags select and apply an adapter function. If there is no adapter for a given tag, we can raise an appropriate error at compile time. Intriguingly, this formalization supports adaptive definitions, e.g. we could support a tag that examines the adapter then heuristically selects a 'best' definition in context. But, in practice, I'd prefer to push sophisticated analysis of context to another stage, e.g. partial evaluation with algebraic effects.
-
-A useful initial set of tags:
-
-* "data" - embedded data (`d:...`)
-* "prog" - abstract program
-* "cond" - selector, body of '%cond' or '%loop' (not a valid program by itself)
-* "call" - `Env -> Def` - receive caller's environment, return another tagged definition
-* "module" - the basic `Env -> Env` module 
-* "app" - wrap a module that defines recognized names like 'settings' and 'start' 
-  * the module is also tagged, e.g. `"app":"module":(Env -> Env)`
-
-Beyond these tags, I already anticipate a few more to support *Aggregation* patterns, *Multiple Inheritance*, or composing alternative expressions of behavior such as hardware description language, process networks, or interaction nets. Tags may be user-defined, though if only user-defined the definition will need some explicit post-processing to 'run' it. 
-
-In my vision for glas systems, tags are concise and locally meaningful such as "prog" and "app". Developers can introduce GUID or URL tags if they fear naming conflicts, but I hope communication with the community will be sufficient to mitigate conflict in most cases.
-
-I'll eventually want tags to support *Aggregation* patterns via Church-encoded lists, *Multiple Inheritance* via linearization and deduplication of inheritance graphs, and other useful features. Tags make it easy to introduce and integrate new types as needed, subject to de facto standardization.
-
-## Multiple Inheritance
-
-The basic `Env->Env` module type with '$self' easily models single inheritance, and can awkwardly model mixins. However, for complicated cases, manual linearization is painful and error-prone. Automatic linearization is feasible if we construct an intermediate 'inheritance graph' that can be composed, deduplicated, reduced, and ultimately 'compiled' to the `Env -> Env` type. This would require support from front-end compilers, but it seems technically feasible.
+When loading modules, we can distinguish 'import' and 'include'. An 'import' closes the fixpoint on the module being imported, while 'include' keeps the fixpoint open. Inheritance and override requires an open fixpoint, thus is based on 'include'.
 
 ## Controlling Shadows
 
-Shadowing of names can be useful, especially in context of *Aggregation* (see below). However, accidental shadowing can be a source of subtle errors. To mitigate this, I propose to report warnings or errors upon shadowing by default, then allow annotations to suppress warnings locally.
+Shadowing of names can be useful, but automatic shadowing can be a source of subtle errors. To mitigate this, we might report errors or warnings for shadowing by default, then introduce annotations to express deliberate shadowing.
 
 ## Incremental Compilation
 
@@ -216,20 +196,10 @@ Lazy evaluation can simplify incremental computing. Each thunk serves as a memo 
 
 For persistence, we must assign stable names to these thunks. In general, this could be a secure hash of everything potentially contributing to a given computation, e.g. code, arguments, perhaps compiler version (e.g. for built-ins). Unfortunately, it's easy to accidentally depend on irrelevant things, or to miss some implicit dependencies. To mitigate this, we must enable programmers to annotate code with a proposed stable-name generator.
 
-Whether we persist the *value* of a thunk may be heuristic, e.g. based on the relative size of that value and the estimated cost to recompute it. It's best to store small values with big compute costs, naturally. Like 42. For large values that are cheaply regenerated, we might omit the data and track some proxy for change - hash of data, ETAG, mtime for files, etc. Aside from this, we would track the set of dependent thunks that must be invalidated.
+Whether we persist the *value* of a thunk may be heuristic, e.g. based on the relative size of that value and the estimated cost to recompute it. It's best to store small values with big compute costs, naturally. For large values that are cheaply regenerated, we might omit the data and track some proxy for change - hash of data, ETAG, mtime for files, etc. Aside from this, we would track the set of dependent thunks that must be invalidated.
 
-## Aggregation
+## Hierarchy and Naming Conventions
 
-Language features such as multimethods, typeclasses, declaring HTTP routes, etc. require constructing and sharing tables. In context of functional programming, we can express iterative construction in terms of repeatedly shadowing a definition with an updated version. We can express sharing via fixpoint if we're careful to avoid datalock. 
+The proposed convention in glas systems is that dotted path names like 'foo.bar' are simply long names. The '.' is meaningful to the user, but is treated as part of the binary representation of a name. This is convenient for most use cases, and it simplifies translations and overrides across module boundaries. 
 
-An interesting opportunity is to use Church-encoded lists to aggregate tagged ASTs for later processing. This can be very flexible, and is directly analogous to the Writer monad.
-
-Aggregation across modules is hostile to lazy loading. But we could allow aggressive, automatic aggregation at the *application* layer.
-
-## Hierarchy
-
-The proposed convention in glas is to represent hierarchical structure in a 'flat' namespace. There may be dotted paths in names, such as "foo.bar", but it's just one big name. The main alternative is to define "foo" as an Env, then treat syntax "foo.bar" as extracting "bar" from that Env. However, the flat namespace greatly simplifies access control and aliasing via translations, or updating 'deep' definitions.
-
-## Indexed Modularity
-
-An interesting opportunity is to model modules as indexing other modules. This could be supported at multiple layers, e.g. a module that knows where all the good DVCS sources are, or one that provides access to a searchable collection of partially-evaluated shared libraries in in '%env.\*'. This is possible due to the first-class nature of glas modules and sources.
+However, we can introduce other syntactic forms to directly access environments or even *Objects* (instantiating them).
