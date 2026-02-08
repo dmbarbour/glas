@@ -82,21 +82,20 @@ Sequential translations can be composed into a single map. Rough sketch: to comp
 
 A file is loaded from an abstract source. This is supported through a few primitive definitions and conventions:
 
-* `(%load Src) : d:Data` - loads external resources at compile-time, returning data. This operation may diverge if Src is malformed or unreachable.
-* `$src : Src` - by convention, a module receives a '$src' argument representing its own abstract Src, providing a root for relative file paths.
-* `%src.*` - constructors for abstract Src data. All constructors are relative to another Src, thus we require an initial '$src' to get started.
-  * `(%src.file FilePath Src) : Src` - evaluates to an abstract Src representing a FilePath relative to another Src. When loaded, returns an *optional binary*, treating 'does not exist' as a valid state. For other errors (e.g. unreachable, permissions issues) the loader diverges and logs a compile-time error.
+* `(%load Src) : d:Data` - loads external resources at compile-time, returning as embedded data. This operation may diverge if Src is malformed or unreachable.
+* `%src.*` - constructors for abstract Src data. All constructors are relative to another Src. A module must be parameterized by its Src.
+  * `(%src.file FilePath Src) : Src` - evaluates to an abstract Src representing a FilePath relative to another Src. When loaded, returns an *optional binary*, treating 'does not exist' as a valid state. For other errors (e.g. unreachable, permissions issues) the loader diverges with a compile-time error.
     * Note: glas systems forbid relative paths, absolute paths, and files or subfolders whose names start with ".". See *Controlling Filesystem Entanglement*.
   * `(%src.dvcs.git URI Ver Src) : Src` - returns a Src representing a DVCS git repository. If loaded, returns a boolean (whether the DVCS is found). Use '%src.file' to access files relative to repo root.
-  * `(%src.an Annotation Src) : Src` - here Annotation is represented by embedded data. It is not observed by the loader, but is available later in context of runtime reflection on sources, e.g. `sys.refl.src.*`.
+  * `(%src.an Annotation Src) : Src` - Annotation is ignored in most contexts, but is available later when reflecting on sources for debug output or projectional editing.
+  * `(%src.an.local Src) : Src` - enforces locality, forbids restricts constructing remote sources relative to returned source.
 
 It is feasible to extend Src, e.g. Mercurial, content-addressed globs, HTTP. Perhaps we'll eventually support extension of '%src.\*' constructors through the runtime configuration. But, for now, git and files are adequate.
 
 After loading the file, it must be compiled. This is also supported through primitives and conventions:
 
-* `(%macro Builder)` - Builder must be a deterministic 0--1 arity program that returns a namespace AST on the data stack. This AST must represent a closed term. We validate the AST then evaluate and return the namespace term.
-  * Further linking, including injection of program primitives, depends on macro context, e.g. `((%macro Builder) e:())` to link the current environment.
-* `%env.lang.FileExt` - see *User-Defined Syntax*
+* `(%macro Builder)` - Builder must be a deterministic 0--1 arity program that returns a closed-term namespace AST on the data stack. Returns the evaluated namespace term.
+* `%env.lang.FileExt` - a front-end compiler; see *User-Defined Syntax* below
 
 An 'import' operation might construct an AST roughly of form `(Link (%macro (%do (%data (%load (%src.file FileName $src))) (Adapt %env.lang.FileExt))))`. 
 
@@ -108,7 +107,7 @@ To avoid these issues in glas, I propose to forbid absolute and parent-relative 
 
 I further forbid files and subfolders whose names start with ".". These are reserved for tooling and metadata, such as ".git/config", PKI-signed manifests and certificates, cached proof hints for dependent types, or scratch spaces. This is already a popular convention; glas merely enforces it.
 
-A tentative third constraint is to forbid browsing of filesystems: there is no '%src.dir' constructor returning a list of files. Browsing folders and doing something with each file entangles meaning with *location*, which hinders refactorings that would move or share structure between locations. Without browsing, users instead introduce intermediate files for indices, and this indirection provides an opportunity to abstract location.
+A tentative third constraint is to forbid browsing of filesystems: there is no '%src.dir' constructor returning a list of files. Browsing folders and iterating files unfortunately entangles meaning with *location*, which hinders refactorings that would move or share structure between locations. Without browsing, users instead introduce intermediate files for indices, and this indirection provides an opportunity to abstract location.
 
 ### Affine File Dependencies
 
@@ -119,7 +118,7 @@ This restriction says that no file may be loaded twice. Files may be loaded at m
 - transparently replace files with generated code
   - no need for metaprogramming to create intermediate files
 - all sharing is visible within configuration for analysis
-- can leverage '$src' as a robust source of uniqueness
+- can leverage '$src' and line number as uniqueness source
 
 Instead of sharing through the filesystem, sharing is through the namespace. See *Shared Libraries and Applications*. However, we may provide a annotations to disable the warning on a case-by-case basis.
 
@@ -135,9 +134,11 @@ Instead of filesystem install paths, users 'install' shared libraries and applic
 
 As a convention, users can define a front-end compiler per file extension under '%env.lang.FileExt'. The glas runtime provides built-in definitions for "glas" and "glob" extensions. If the user configuration redefines these, the runtime performs a short bootstrap cycle and verifies a fixpoint.
 
-The front-end compiler should be modeled as a tagged *Object* (see below) that minimally defines 'compile', a 1--1 arity Program that takes loaded data and returns a *Module* AST. Front-end compilers should be designed for lightweight extensibility, e.g. expose 'parser.int' for override. Also, the object may implement additional interfaces to support tooling, such as syntax highlighting or a language server.
+The front-end compiler is a tagged object that defines 'compile'. And 'compile' is a deterministic, 1--1 arity program that receives loaded data and returns a module AST. See below for *Tags*, *Objects*, and *Modules*, and separate document for [programs](GlasProg.md). The compiler will be invoked in context of a '%macro' node. 
 
-For concision, a front-end compiler can make reasonable assumptions about the module's link environment. For example, instead of writing out a full AST to import another file, the generated AST might alias `{ "." => "%env.lang.FileExt.utils." }` then later invoke language-specific `".import"` macros.
+Aside from 'compile', the front-end compiler at `%env.lang.FileExt` may implement interfaces to support syntax highlighting, language servers, and other tools. Further, it should expose features such as 'parser.int' for easy override, so developers can easily tweak a language. The 'Base' environment for the compiler is the empty environment.
+
+For concision, a front-end compiler can make reasonable assumptions about the module's link environment. For example, instead of directly writing out a full AST to import and link another file, the generated AST might alias `{ "." => "%env.lang.FileExt.utils." }` then later invoke language-specific `".import"` macros.
 
 ## Tags and Adapters
 
@@ -145,7 +146,7 @@ The glas namespace easily encodes tagged terms, where tags are represented by na
 
         tag TagName = f:("Body", (f:("Adapters", 
             ((b:("", TagName), "Adapters"), "Body"))))
-        tag "prog" Definition
+        tag "prog" Program
 
 Here, the tagged term extracts and applies an adapter based on TagName. This is analogous to Church-encoded sum types.
 
@@ -158,37 +159,31 @@ Sample tags:
 * "env" - an environment term
 * "call" - `Env -> Def` - for programs with algebraic effects; receive caller's environment, return another tagged definition
 * "obj" - a generic `Env -> Env -> Env` *Object* described below
-* "module" - a specialized `Env -> Env` *Module* detailed below
+* "module" - a basic *Module* as described below
 
 Developers can introduce new tags, extend adapters, and deprecate old tags as the system develops.
 
 ## Objects
 
-The glas namespace can model stateless objects via open fixpoints. The essential idea is to link object methods through a fixpoint, then defer fixpoint until after overrides are determined.
+As the initial object model for glas systems, I propose an "obj"-tagged `Env -> Env -> Env` namespace term, corresponding to `Self -> Base -> Instance`. This model is based on [Prototypes and Object Orientation, Functionally (2021)](http://webyrd.net/scheme_workshop_2021/scheme2021-final91.pdf).
 
-The proposed object model is `Self -> Base -> Instance` each of type `Env`, tagged "obj". This supports mixin-style composition, with `Base` representing a mixin target and `Self` the final object. *Note:* This model is based on [Prototypes and Object Orientation, Functionally (2021)](http://webyrd.net/scheme_workshop_2021/scheme2021-final91.pdf), albeit leveraging reified namespaces.
+The 'Self' argument represents an open fixpoint. The 'Base' argument supports mixin composition or late binding to a host environment, e.g. link application to 'sys.\*' effects APIs. The "obj" tag opens space for alternative models, e.g. to eventually support multiple inheritance.
 
-In context of glas systems, these objects are initially favored for applications and front-end compilers. They will likely prove more generally useful. 
+The glas system uses objects for applications, modules, and front-end compilers. Objects offer an opportunity for extensibility, but effective use requires deliberate design. For example, a front-end compiler that exposes only 'compile' is much less extensible than one that also exposes 'parse.int' for override.
 
-*Note:* This model does not support multiple inheritance (MI). MI would require an explicit inheritance graph and adequate identity for linearization. However, we could feasibly provide MI via wrapping the model.
+*Aside:* Despite wide use of objects, I hesitate to describe glas as object oriented because these objects are available only at compile-time.
 
 ## Modules
 
-Modules are object-like. They must be to support inheritance and override of configurations. But they must also be parameterized by primitives and '$src'. To avoid a growing list of parameters, I propose to aggregate arguments into a parameter object, thus a module has type `Env -> Env` where the input includes '$module' as self.
+The proposed module type is a "module"-tagged `Env -> Object`. The argument is a parameter object that should provide at least 'src', the abstract file location for the file being compiled. Front-end compilers may freely provide additional parameters to the module.
 
-* '%\*' - primitive definitions are provided ad hoc prefix '%' prefix. The motive is to simplify both visual recognition of primitives and concise default propagation via `{ "%" => "%" }` translation rules.
-  * '%env.\*' - initially bound to 'env.\*' in the user configuration (via fixpoint), then propagated by default alongside primitive definitions. This pseudo-global namespace provides the foundation for *Shared Libraries*.
-* '$\*' - specialized inputs per 'import', not propagated implicitly
-  * '$module' - fixpoint of module 
-  * '$src' - abstract data representing a source path for the module being linked. 
-  * '$args' - in case a front-end compiler introduces a syntax to explicitly parameterize imports, e.g. `import foo(A,B,C) as f`, I propose to input a Church-encoded list of namespace terms via '$args' (and named args via '$kwargs').
-  * '$lang' - (tentative) the instantiated language object
+Assuming an "obj"-tagged Object is returned, we apply the '%\*' primitives as Base. The '%' prefix is pre-inserted, and includes the configured environment via '%env.\*'.
 
-When loading modules, we can distinguish 'import' and 'include'. An 'import' closes the fixpoint on the module being imported, while 'include' keeps the fixpoint open. Inheritance and override requires an open fixpoint, thus is based on 'include'.
+*Note:* It is useful for a front-end syntax to distinguish between importing and including a module (perhaps by another name), such that 'include' applies a module object like a mixin and 'import' is closer to instantiating the module object. Inheritance and override of a community configuration is then expressed in terms of including the community configuration.
 
 ## Controlling Shadows
 
-Shadowing of names can be useful, but automatic shadowing can be a source of subtle errors. To mitigate this, we might report errors or warnings for shadowing by default, then introduce annotations to express deliberate shadowing.
+Shadowing of names can be useful, but automatic shadowing can be a source of subtle errors. To mitigate this, I propose to report errors or warnings for shadowing by default, then introduce annotations for deliberate shadowing.
 
 ## Incremental Compilation
 
@@ -200,6 +195,6 @@ Whether we persist the *value* of a thunk may be heuristic, e.g. based on the re
 
 ## Hierarchy and Naming Conventions
 
-The proposed convention in glas systems is that dotted path names like 'foo.bar' are simply long names. The '.' is meaningful to the user, but is treated as part of the binary representation of a name. This is convenient for most use cases, and it simplifies translations and overrides across module boundaries. 
+The proposed convention in glas systems is that dotted path names like 'foo.bar' are simply long names. That '.' is meaningful to the user and perhaps to tools, but it's just one big flat namespace.
 
-However, we can introduce other syntactic forms to directly access environments or even *Objects* (instantiating them).
+As for use of names to poke into environments (or even objects), we could feasibly provide syntax for that. But with '.' taken, not sure what it should look like. It might be better to insist users explicitly bind environments or objects into the current namespace to access them, e.g. with a 'using' statement.

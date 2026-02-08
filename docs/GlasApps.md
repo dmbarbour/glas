@@ -4,132 +4,53 @@ The [glas CLI](GlasCLI.md) lets users run an application defined in the configur
 
 ## Basic Application Model
 
-The basic application is represented by an "app"-tagged `Env -> Env` namespace term. Although structurally similar to the module type, the environments are different. 
+A basic application is represented in the namespace as an "app"-tagged object. In case of an "obj"-tagged object, the runtime links system effects APIs ('sys.\*' and configured registers) via the 'Base' argument. The object must define a subset of runtime-recognized methods, such as:
 
-The input environment provides access to the runtime, e.g. 'sys.\*' effects APIs and instance-specific registers. The output environment defines runtime-recognized application methods, such as:
-
-* 'step' - executed repeatedly as transaction loop
-* 'settings' - guide application-specific integration or configuration
-* 'http' - receive HTTP requests from runtime. Shares TCP port with RPC and debug APIs. 
-* 'rpc' - receive remote procedure calls; compared to 'http' shall better support transactions, transaction loops, structured data, algebraic effects, and object capability security
-* 'signal' - OS or administrative signals, mostly to gracefully halt
+* 'step' - executed repeatedly, and transactionally, as main loop
+* 'http' - receive HTTP requests
+* 'rpc' - receive transactional remote procedure calls
+* 'settings' - (tentative) guidance for runtime configuration
+* 'signal' - OS or administrative signals, e.g. to gracefully halt
 * 'switch' - first operation on new code in context of live coding
 
-There is no 'main' procedure. Instead, we express main-loop behavior with a transactional 'step' function, and we separate handlers for runtime-supported events like 'http' or 'rpc'. This design simplifies robust live coding, concurrency, and distribution, but requires sophisticated transaction-loop optimizations to recover performance. See the [program model](GlasProg.md).
+Instead of a long-running 'main' process, we evaluate a transactional 'step' method repeatedly. This has benefits for live coding, reactivity, concurrency, and distribution. But it complicates performance. See description of *Transaction Loops* in the [program model](GlasProg.md).
 
-The application halts by calling 'sys.halt' then committing to it.
+The 'http' and 'rpc' methods allow the runtime to hook things up without explicitly managing TCP listeners and connections. This simplifies sharing ports, composing apps, orthogonal persistence and distribution, and robust integration with transactions. 
 
-*Note:* We can develop alternative application models, replacing the "app" tag.
+The application halts by invoking 'sys.halt' then committing to it.
 
-### Application Adapter
+## Application Adapter
 
-The user configuration may define an application adapter, i.e. an `App -> App` namespace function. This provides a final opportunity to rewrite applications for portability or other purposes. In the general case, the adapter may even 'compile' applications expressed in intermediate representations, e.g. expressing applications via [Kahn process networks](https://en.wikipedia.org/wiki/Kahn_process_networks).
+If a user configuration specifies an application adapter, the runtime can apply this adapter to rewrite applications before running them. 
 
-### Extension
+The adapter might be parameterized by runtime version info to support portability. Adapters can support security, e.g. sandboxing. But the primary use case is extensibility: users develop alternative application models, and the configured adapter compiles them to runtime-recognized models.
 
-As a final opportunity for inheritance and override, the input environment includes 'app.\*' as a fixpoint of the application definitions. 
+The basic "app"-tagged object might not be the best way to express and compose applications. The ability to implcitly perform a final compilation step on a Kahn process network, a literate programming 'notebook', or other model could greatly improve the user experience.
 
-Effectively leveraging this requires support from the front-end compiler. This could be an app-specific syntax, or a generic OOP-inspired syntax coupled with a keyword to retag a class as "app" or reverse for compatible apps.
+## System Effects
 
-*Note:* In theory, we can extend an application indirectly by extending the module that defines the application. But this is limited by the affine file dependency constraint (never load a file twice).
+The system links the application to an initial environment:
 
-Module-level inheritance and override is restricted by the constraint against affine file dependencies (never load a file twice). 
+* 'sys.\*' - system methods, e.g. FFI and reflection APIs
+* 'db.\*' - shared, persistent registers, bound to configured database
+* 'mem.\*' - ephemeral registers scoped to application lifespan (i.e. cleared on 'sys.halt').
 
+Because this is presented as the 'Base' object from which the application inherits, it isn't difficult for application mixins to transparently extend the API. Depending on the runtime, 'Base' may partially depend on 'Self', in which case overriding some 'sys.\*' methods may affect others.
 
-*Note:* We can also extend and override a module that defines an application. However, this is hindered by affine file dependencies (don't load a file twice). Applications are closer to OOP, instantiated many times loading files.
+## State and Ephemerality
 
+The only state carried between steps is the 'db.\*' and 'mem.\*' registers and whatever runtime state might be accessed via 'sys.\*' methods. 
 
-This feature risks role confusion: we could instead extend a module that defines an application, leveraging the '$self.\*' fixpoint. But module-level inheritance and override is constrained by affine file dependencies, i.e. don't load a file twice. We extend and override apps more flexibly.
+It isn't difficult to implement a heap-like API in 'sys.\*', allocating mutable references. A viable API:
 
- we don't want to load files more than once, so appl
+- `sys.ref.new() : [arena] Ref<arena>` - 'arena' must name a register visible to the caller. This register is not modified, but serves as source of identity and ephemerality for Ref. To read a Ref requires access to the same arena.
+- `sys.ref.with(Ref<arena>) : [arena, op]` - links 'ref' to given Ref as a register, then calls 'op' with access to 'ref'.
 
-This is intended for fine-grained overrides without rebuilding entire modules. 
-
-This provides a final opportunity to 
-
-The 'app.\*' fixpoint argument to an application provides a final opportunity for inheritance and override of mutually recursive definitions. 
-
-*Note:* There isn't much benefit over inheritance and override of the *module* that defines the application. And it may prove troublesome to syntactically distinguish application methods versus module functions. But application-level 
-
-To leverage this requires careful attention from the front-end compiler to distinguish application methods from the module layer. Though, it's also useful to define applications in terms of extending
-
-But the advantage is the opportunity to instantiate applications many times with different views of system effects and stateful registers, while sharing work and structure at the module layer.
-
-
-
-The motive for this is to support inheritance, override, extension, and composition of applications. To support inheritance and override, the application type supports yet another latent fixpoint step, much like modules. Indeed, we'll essentially define the application type as a module with a few conventions on entry points and staging.
-
-
-
-### Staging
-
-Basic applications awkwardly, indirectly support staging insofar as they receive access to 'sys.\*' APIs before fully defining application methods. These APIs are then accessible via '%meta'
-
-To avoid awkward interactions with laziness, parallelism, or caching, it is recommended to limit these operations to read-only or 'safe' queries. 
-
-This mechanism for staging is likely to hinder separate compilation. The exception is if 'sys.\*' is used only to access runtime information known at compile time, such as runtime version info. In theory, the compiler can mix AOT and JIT compilation based on when definitions become available.
-
-## Runtime-Provided Effects
-
-The runtime provides an initial namespace of registers and methods to a basic application:
-
-* 'sys.\*' - system APIs, e.g. network, filesystem, clock, FFI, reflection
-* 'db.\*' - shared, persistent registers, bound to a configured database
-* 'mem.\*' - ephemeral registers bound to runtime-local memory
-
-The 'sys.\*' APIs are described below. The 'db.\*' and 'mem.\*' registers have relevant type distinctions: runtime-scoped data, such as FFI threads, cannot be stored to 'db.\*'. Depending on configuration, 'db.\*' may still be ephemeral. Because there are no long-running application methods, all relevant application state is held within 'db.\*' or 'mem.\*'.
-
-We also receive 'app.\*' as an open fixpoint of the application.
-
-provide some toplevel state visible to 'http' and other methods. Although these model global state, it is possible to scope access and partition application state between subcomponents (assuming support from the front-end compiler).
-
-## State
-
-The program model has built-in support for registers, and the application receives a few volumes of registers as 'db.\*' and 'g.\*'. But it isn't difficult to support first-class references to mutable state (like Haskell's IORef). A viable API:
-
-* `sys.state.ref.*` - (tentative) first-class state
-  * `new(Data) : Ref` - new reference initially containing Data; runtime-ephemeral
-  * `db.new(Data) : Ref` - as 'new' but backed by the database; database-ephemeral
-  * `with(Ref) : [op]` - pop Ref from stack, run 'op' with access as register 'ref'
-
-Relative to second-class registers, references complicate static dataflow and conflict analysis, linear type safety, and garbage collection. They also introduce a source of hysteresis or path dependence for data schema change, e.g. in context of live coding. For these reasons, my vision for glas systems favors registers over references, and I do not provide references as a program primitive.
-
-## Concurrency
-
-Concurrency is built into the program model (non-deterministic coroutines, optimistic concurrency control), thus no separate effects API is required. But we can discuss some interesting patterns.
-
-
-## Futures and Promises (Tentative)
-
-A useful pattern for asynchronous and concurrent interaction is construction of `(Future<T>, Promise<T>)` pairs. The promise is linear and represents a single-assignment reference. The promised data is readable through the future. Ideally, holding the future is equivalent to holding the promised data modulo reflection APIs, thus futures are linear unless we guarantee promised data is non-linear.
-
-Compared to full references, futures and promises have simpler interaction static dataflow analysis, linear types, and garbage collection. Of course, futures and promises are also less flexible, but users can model channels, e.g. `type Chan<T> = Future<(T, Chan<T>)|()>`, or more sophisticated structures to support most asynchronous interactions.
-
-A viable API:
-* `sys.promise.*` - 
-  * `new : (Promise<T>, Future<T>)` - returns an associated promise and future pair, runtime-ephemeral. The promise is linear, but future is non-linear. Writing linear data to the promise is a type error, diverging at runtime if detected at runtime.
-  * `new.linear : (Promise<T>, Future<T>)` - As `new` but with a linear future and the promise accepts linear data when written.
-  * `read(Future<T>) : T` - await a future. This diverges unless the associated promise is assigned. 
-  * `write(Promise<T>, T)` - assign a promise. This data becomes available within the current transaction, but only becomes visible outside the current transaction after commit.
-* `sys.refl.promise.*` -
-  * `called(Promise) : Promise | FAIL` - returns argument only if the promise has been 'called', i.e. if it seems there is current demand for the promised data. Monotonic: will implicitly 'call' the associated future in case we're observing temporary demand.
-  * `call(Future) : Future` - This marks a Future as in-demand for purpose of a `called` check. Idempotent and monotonic: once committed, 'called' will always pass, and 'forgotten' will always fail.
-  * `forgotten(Promise) : () | FAIL` - allows dropping a promise if the future will not be observed. This relies on a garbage collector to decide when the future has fallen from scope.
-  * `fulfilled(Future) : Future | FAIL` - returns argument if the future is immediately available, i.e. such that 'read' returns immediately and does not diverge. This allows roughly observing the timing for when a promise is fulfilled. 
-
-In theory, we can also support database-ephemeral futures and promises. I do not recommend this because it interacts very awkwardly with network disruption or node failure. Thus, futures and promises are currently restricted to the runtime (albeit, permitting a distributed runtime).
-
-*Note:* It is feasible to implement futures and promises in terms of mutable references, but we lose out on a few runtime optimizations based on the single assignment constraint.
+The runtime can enforce ephemerality types, i.e. such that short-lived data (like open file handles) cannot be stored in longer-lived registers or Refs. And even db-scoped data cannot be delivered over remote procedure calls.
 
 ## HTTP 
 
-The 'http' method receives HTTP requests on a runtime-configured port. This also simplifies composition of applications in contrast to each application listening directly on separate TCP sockets. TBD: How the request is input, how the response is output, how to model multi-step requests or SSE.
-
-I imagine initial GUIs for glas systems will be based on HTTP. 
-
-*Aside:* Based on application settings and user configuration, we could automatically open a browser window after the application starts to provide a GUI.
-
-*Note:* I am contemplating an alternative API. Instead of a toplevel 'http' method that handles routing to component methods, it seems feasible to 
+The 'http' method receives HTTP requests on a configured port. TBD: representation of request and response (e.g. callbacks instead of raw binary data); support for WebSockets or SSE. 
 
 ## Remote Procedure Calls (RPC)
 
@@ -191,7 +112,7 @@ An intriguing possibility is to compile RPC methods into scripts that partially 
 
 ## Graphical User Interface (GUI)
 
-I have an interesting [vision for GUI](GlasGUI.md) in glas systems, but it's contingent on those transaction-loop optimizations, and it will be experimental even then. Until then, use FFI for native GUI or 'http' for browser-based GUI.
+I have an interesting [vision for GUI](GlasGUI.md) in glas systems, contingent on those transaction-loop optimizations. Originally, I was considering a dedicated 'gui' method for apps, but I think it might be wiser to model GUI as a use case for RPC. We can use application settings to trigger a GUI viewer.
 
 ## Background Calls - Transaction Escape Hatch
 
@@ -203,9 +124,6 @@ Proposed API:
           op(Argument) : [canceled] Result
           canceled() # pass/fail
           # constraint: Argument and Result are non-linear
-
-        sys.refl.bgcall.async(Argument) : [op] Future<Result>
-          # asynchronous variant of bgcall, immediately returns
 
 In this case, the caller provides an 'op' to evaluate in a separate coroutine. That coroutine will run just within scope of op, processing Argument and returning Result. The op does not need to be atomic: it may freely yield, e.g. to await an HTTP response. After completion, Result is then returned to the caller.
 
@@ -284,7 +202,7 @@ Potential extensions:
 * support for structs, e.g. `"{ysw}"`
   * or just use JIT for this.
 
-*Note:* Full orthogonal persistence of FFI seems infeasible, but FFI as a pipe to a separate thread or process at least can clearly indicate disruption. Ideally, FFI-based APIs should be designed to recover resiliently after a disconnect, so we can support orthogonal persistence later.
+*Note:* Full orthogonal persistence of FFI seems infeasible, but we can kill the FFI threads and design with resilience in mind.
 
 ## Regarding Filesystem, Network, Native GUI, Etc.
 
@@ -297,22 +215,20 @@ Query the system clock.
 * `sys.time.now() : TimeStamp` - Returns a TimeStamp for estimated time of commit. By default, this timestamp is a rational number of seconds since Jan 1, 1601 UTC, i.e. the Windows NT epoch but with arbitrary precision.
 * `sys.time.after(TimeStamp)` - fails unless `sys.time.now() >= TimeStamp`. Use this if waiting on the clock, as it provides the runtime a clear hint for how long to wait.
 
-It is possible to wait on a clock and model sleeps, but not within a single transaction. Atomicity is semantic or logical instantaneity. Thus, 'yield' is always required. We can acquire time in one transaction, yield, and await that timestamp plus a sleep duration within another transaction. Timeouts can then be expressed as a non-deterministic choice between awaiting the clock and another operation.
+It is possible to wait on a clock by simply aborting until a given time is reached, via 'sys.time.after'. Modeling a sleep is possible but requires at least two separate transactions: one to record the current time, another to wait on that time plus the sleep duration. Timeouts can be expressed as a non-deterministic choice between waiting on a clock and awaiting some other observation.
 
-Later, when we develop distributed runtimes, we'll want to extend this API to support multiple clocks. Otherwise, semantics get weird due to observing clock drift on "the same" clock.  Perhaps `"sys.clock.time.now() : [clock] TimeStamp"` plus clock creation and so on. With multiple clocks, we could reasonably argue that `sys.time` represents a non-deterministic choice of clocks, allowing best effort with drift.
+To support a distributed runtime, we'll need to handle multiple clocks. We could treat 'sys.time.\*' as operating on an implicit, non-deterministic choice of clocks, then add 'sys.clock.time.\*' and some other APIs to work with specific clocks.
 
 ## Arguments and Environment Variables
 
 A runtime can easily provide access to OS environment variables and command-line arguments.
 
-* `sys.env.list : List of Text` - return the defined environment variables
-* `sys.env.get(Text) : Text` - return value for an OS environment variable
-* `sys.env.args : List of Text` - return the command-line arguments
-  * `sys.env.arg(Index) : Text` - access individual args (may simplify caching staged apps)
+* `sys.cenv.list : List of Text` - return the defined environment variables
+* `sys.cenv.get(Text) : Text` - return value for an OS environment variable
+* `sys.cenv.args : List of Text` - return the command-line arguments
+  * `sys.cenv.arg(Index) : Text` - access individual args (may simplify caching staged apps)
 
-These will simply be read-only within an application, but users could intercept 'sys.env.\*' methods when calling a subprogram.
-
-*Note:* Applications integrate the configuration environment at compile time through the namespace layer, '%env.\*'.
+These will simply be read-only within an application, but users could intercept 'sys.cenv.\*' methods when calling a subprogram.
 
 ## Console IO
 

@@ -1,20 +1,8 @@
 # Program Model for Glas
 
-## Overview
+## Proposed Primitives
 
-A glas program is represented as an abstract data type. Primitive constructors provided through the namespace by the compiler or runtime, such as '%do' for sequential composition. The program is expressed as a composition of these constructors. To simplify formal semantics, this set of primitive constructors is minimal.
-
-For performance, we rely on annotation-guided acceleration, substituting a few performance-critical subprograms with efficient built-ins. To minimize maintenance, we can accelerate a virtual CPU or GPGPU instead of individual low-level functions.
-
-A glas program operates on a data stack and named registers. The data logically consists of binary trees, but a glas runtime may support specialized representations for use with accelerators, or insert metadata to support dynamic types. There is no explicit heap, no pointers, but large trees spill into an implicit heap.
-
-Although there are no first-class functions, higher-order programming is available through the [glas namespace](GlasNamespaces.md). This covers most use cases, such as algebraic effects: a standard calling convention passes the caller's lexical environment, including access to registers and methods. If we need more flexibility, we can use '%eval' to evaluate a program AST from the data stack.
-
-The glas program relies on efficient transactions and backtracking. Conditionals and loops are expressed in terms of backtracking decision trees. Non-deterministic choice relies on backtracking. Modulo performance, side-effects of annotation-guided instrumentation (logging, assertions, etc.) are mitigated via backtracking. The foundation for live coding, reactivity, concurrency, and distribution in glas systems is the *transaction loop*.
-
-## Proposed Program Primitives
-
-These primitives are constructors for an abstract data time, i.e. constructing a program does not execute it. The %macro and %load primitives are special exceptions, lazily evaluating at the namespace layer to support metaprogramming and modularity.
+Programs are modeled as an abstract data type, and most program primitives are constructors for this type. Special exceptions are '%load' and '%macro' which support modularity and metaprogramming.
 
 *Notation:* `(F X Y Z)` desugars to `(((F,X),Y),Z)`, i.e. curried application. 
 
@@ -23,19 +11,21 @@ These primitives are constructors for an abstract data time, i.e. constructing a
 * `(%do P1 P2)` - execute P1 then P2 in order. Associative.
 * `%pass` - the no-op. Does nothing.
 * `%fail` - voluntary failure. Used for bracktracking a branch condition or coroutine step. (In contrast, errors are treated as divergence, i.e. infinite loops observable only via reflection APIs.)
-* `(%cond Sel)` - supports if/then/else and pattern matching. Error if no operation is selected. Sel is an abstract data type distinct from programs, representing a decision tree. Sel constructors:
-  * `(%br Cond Left Right)` - here Cond is a program that is generally expected to fail, Left and Right are selectors. If Cond fails (via %fail), backtrack writes from Cond then process Right. Otherwise, process Left in context of output from Cond.
-  * `(%sel P)` - selected action. Commits prior chain of passing branch conditions, then runs P.
-  * `%bt` - backtrack. Forces most recent passing Cond to fail. If no such Cond, i.e. if %bt is rightmost branch, behavior is context-dependent (e.g. error for %cond, exit for %loop). As a special rule, we optimize `(%br C %bt R) => R` regardless of whether C is divergent.
-* `(%loop Sel)` - Repeatedly run Sel until it fails to select an action, then exit loop. See %cond for Sel constructors.
+* `(%cond Sel)` - Sel is an abstract data type modeling a decision tree in terms of backtracking conditional operations. Error if no operation is selected. Sel constructors:
+  * `(%br C L R)` - here C is a program that may fail, representing a condition. We run C. On failure, we undo writes from C then evaluate selector R, otherwise continue with selector L.
+  * `(%sel Op)` - final selection, runs Op.
+  * `%bt` - backtrack. logically causes prior condition to fail. As a special rule, we can optimize `(%br C %bt R) => R` even when C is divergent.
+* `(%loop Sel)` - Repeatedly runs Sel until it fails to select an action, then exit loop. (See %cond for Sel constructors.)
 * `(%opt P1 P2)` - fair, non-deterministic choice of P1 or P2. Associative.
-* `%error` - explicit divergence, logically equivalent to an infinite loop, but interacts more conveniently with `%an.error.log` or backtracking a non-deterministic choice.
+* `%error` - explicit divergence, logically equivalent to an infinite loop. 
+  * use `%an.error.log` to attach a message to errors.
+  * as an optimization, %error can backtrack to prior %opt in context of transaction loops because the choice is repeated.
 
-*Note:* For %do and %opt it is tempting to support a variable number of arguments, but doing so complicates semantics. Alternatively, I could use a Church-encoded list, but that isn't more concise due to encoding overheads vs. short names.
+The %do and %opt constructors have exactly two arguments. It is tempting to support variable arity, but it isn't directly supported by namespace semantics. We could instead use a Church-encoded list to express variable arguments, but it won't save space.
 
 ### Data Stack
 
-* `(%data d:Data)` - program pushes data to top of data stack
+* `(%data d:Data)` - pushes Data onto stack
 * `(%dip P)` - run P while hiding top element of data stack
 * `%swap` - exchange top two stack elements. i.e. "ab-ba"
 * `%copy` - copy top stack element, i.e. "a-aa".
@@ -47,46 +37,53 @@ These primitives are constructors for an abstract data time, i.e. constructing a
 * `%unl` - undoes mkl, fails if not a left branch
 * `%unr` - undoes mkr, fails if not a right branch
 
+The glas system relies heavily on *acceleration* for performance.
+
+Data logically consists of binary trees. Large trees spill into an implicit heap. A glas runtime may support specialized representations for use with accelerators or insert metadata to enforce dynamic types. 
+
 ### Registers
 
-* `(%rw Register)` - register swap, exchange value in named register and top of data stack.
-  * *Static analysis*: you can model this as also swapping *types* (or logical locations) between the register slot and the stack. That lets checkers propagate stack‑effect typing and enforce invariants.  
-  * *Optimization hint*: unconditional, atomic patterns such as `(%rw x; ... ; %rw x)` can be heavily optimized because logical locations are restored.
-  * *Concurrency semantics*: For fine-grained conflict analysis, compiler built-in accelerators can define common patterns such as get and set, queue or bag reads and writes, indexed operations on arrays or dicts, or even support a few CRDTs. However, these interactions are not modeled as primitives.
-* `(%local RegOps)` - allocates a fresh register environment, passes it to `RegOp : Env -> Program`, runs Program, then clears the environment. The Env logically defines every Name to a unique register, but Program must use only a static, finite subset of these names.
-* `(%assoc R1 R2 RegOps)` - this binds an implicit environment of registers named by an ordered pair of registers `(R1, R2)`. The primary use case is abstract data environments: an API can use per-client space between client-provided registers and hidden API registers.
+Registers are second-class. Access is provided through the namespace. Aside from storing data, registers also serve as a source of identity and ephemerality, e.g. for data abstraction and associative structure.
+
+* `(%rw Register)` - register swap; exchange data between stack and register.
+* `(%local RegOps)` - RegOps must be a namespace term of type `Env -> Program`. This receives an environment of registers, such that every name defines a register initialized to zero. The program is run in this context, then registers are logically reset (i.e. error if registers contain linear data).
+* `(%assoc R1 R2 RegOps)` - This supports associative structure. Every directed edge between two registers is treated as naming an entire environment of registers. This is mostly useful for secure API design. 
+
+The glas system can accelerate register operations. This is expressed in terms of providing registers as a static arguments to accelerated `Env -> Program` functions. If a register is used primarily through accelerated queue operations, the compiler can treat it as a queue for optimizing concurrency or distribution.
 
 ### Metaprogramming
 
-* `(%macro Builder)` - Builder must be a deterministic 0--1 arity program that returns a namespace AST on the data stack. This AST must represent a closed term. We validate the AST then evaluate and return the namespace term.
-  * Further linking, including injection of program primitives, depends on macro context, e.g. `((%macro Builder) e:())` to link the current environment.
-* `(%eval Compiler)` - eval pops the data stack then passes the value to Compiler as an embedded data namespace term (`d:Data`). Compiler represents a namespace-layer function from Data to a Program. The resulting Program is further validated in context (e.g. typechecking, static assertions), then run.
-  * Note: Dynamic eval is expensive and requires a lot of runtime support. However, even static eval is useful. Static eval can be enforced case-by-case via `%an.data.static` or at subprogram scope via `%an.eval.static`.
+* `(%macro Builder)` - Builder must be a deterministic 0--1 arity program that returns a closed-term namespace AST on the data stack. Returns the evaluated namespace term.
+* `(%eval Compiler)` - Compiler must be be a namespace term of type `Data -> Program`. The data argument is popped from the stack then passed to Compiler as embedded data. The returned program is validated in context (e.g. static assertions, typechecks), optimized or JIT-compiled, then run.
+  * In practice, we'll often restrict %eval to compile-time via `%an.data.static` or `%an.eval.static`. Static %eval is more flexible than %macro alone insofar as program dataflow may cross namespace scopes.
+  * Although the glas program model does not support first-class functions at runtime, dynamic %eval with caching can serve a similar role.
 
-Aside from these primitive extensions, it is technically possible to metaprogram purely at the namespace layer via Church-encodings.
+A powerful design pattern is to accelerate metaprograms. For example, we can develop a memory-safe intermediate language and reference interpreter for a virtual CPU or GPGPU, then 'accelerate' by compiling for actual hardware. This pattern replaces the performance role of FFI.
+
+*Aside:* We can also do metaprogramming at the namespace layer via Church-encoded lists and data. Tags and adapters are a limited example of this.
 
 ### Modularity Extensions
 
-* `(%load Src)` - Load external resources at compile time. The result is embedded data that may be processed further via %macro. Errors are possible, e.g. if Src is malformed or unreachable, in which case this operation logically diverges.
-* `%src.*` - abstract Src constructors, e.g. to read local files, load from DVCS, search folders, possibly even look into a database.
+* `(%load Src)` - loads external resources (usually files) at compile time. Use in conjunction with %macro to actually process the data. Diverges if Src is malformed, unreachable, or there are permissions issues.
+* `%src.*` - abstract Src constructors, e.g. to specify a relative file path or DVCS repository.
 
 See [namespaces](GlasNamespaces.md) for details.
 
 ## Calling Conventions
 
-Definitions in the namespace should be tagged to indicate integration. A carefully designed set of tags can significantly simplify extension and metaprogramming. Proposed:
+Program definitions in the namespace are tagged to indicate calling conventions. The front-end compiler must insert an adapter at every call site. Initial calling conventions:
 
-* "data" - `Data` - embedded data, can adapt to a '%data' program
-* "prog" - `Program` - abstract program, can integrate as program
-* "call" - `Env -> Def` - receives caller context (algebraic effects, pass-by-ref registers, etc.), returns another tagged definition. 
-  * We can develop further conventions around Env, e.g. supporting keyword or variable arguments.
+* "data" - `Data` - embedded data, wrap %data then integrate
+* "prog" - `Program` - abstract program, directly integrate
+* "call" - `Env -> Def` - implicitly parameterized by caller namespace with syntactically specified translations, then apply adapter again to returned Def.
 
-In my vision, most definitions are tagged "call" and return "prog", except near the edges where we might have a lot of "prog" and "data" definitions. Use of "list" would be rare outside of aggregators and var-args, and requires specialized processing by an adapter. Eventually, we'll also have many non-callable tags, such as "type". We might also support multiple inheritance graphs in a generic way, and develop specialized tags for grammars, process networks, etc.. 
-
+We can gradually support more calling conventions, e.g. so we can directly 'call' grammars or logic programs. 
 
 ## Transaction Loops
 
-A transaction loop is an atomic, isolated ([serializable](https://en.wikipedia.org/wiki/Isolation_(database_systems)#Serializable)) transaction, run repeatedly. This structure supports simplifications and optimizations:
+The main loop of a [glas application](GlasApps.md) is repeating calls to a transactional 'step' method. This forms a transaction loop.
+
+A transaction loop is any atomic, isolated ([serializable](https://en.wikipedia.org/wiki/Isolation_(database_systems)#Serializable)) transaction, run repeatedly. This structure supports many simplifications and optimizations:
 
 - *Incremental*: Instead of fully repeating a transaction, we can partially-evaluate based on stable state then repeat only unstable computations. Partial evaluation ideally aligns with dataflow instead of control flow.
 - *Reactive*: When we know repetition will be unproductive, instead of burning CPU we can install triggers to await relevant changes. With some clever API design, this includes waiting on clocks.
@@ -95,51 +92,37 @@ A transaction loop is an atomic, isolated ([serializable](https://en.wikipedia.o
 - *Live*: We can robustly update the transaction procedure between transactional steps. We can model the transaction as reading its own procedure.
 - *Orthogonal Persistence*: Application state exists outside the loop. We can easily back application state with durable or distributed storage.
 
-A transaction-loop application can terminate based on a monotonic 'halt' request to the runtime. Aside from a main loop, a glas application may define auxilliary methods such as 'http' to handle HTTP requests or 'rpc' for remote procedure calls. Intriguingly, transactional RPC can participate in transaction loops.
+The system provides a mechanism to escape transactional isolation, 'sys.refl.bgcall'. This requests the runtime perform an operation *prior* to the current transactions. This is carefully designed to be compatible with transaction-loop optimizations, though it still requires ostensibly 'safe' operations like HTTP GET.
 
-*Note:* In special cases, we may weaken isolation a little. For example, an HTTP GET request is presumably transaction-safe but requires request-response across multiple transactions to perform. This can be supported via runtime reflection APIs such as 'sys.refl.bgcall', which pretends a request was anticipated.
+## State Machines and Control Flow
 
-## Coroutines
+It isn't difficult to model a multi-step process with a transaction loop. It is sufficient to explicitly maintain state about which 'step' we're on. Further, we can generalize to multi-threading, maintaining a little state about each thread and making a non-deterministic choice about which thread is scheduled.
 
-A front-end syntax may support multi-step programs, evaluating over multiple transactions. The program is compiled to a 'coroutine' - a procedure that yields early to commit with reasonable expectation of resumption. The point of resumption should be stable across live code updates, meaningful.
+But there is a significant performance overhead to repeatedly examine the current state, navigate to the correct code, perform a slice of work, then navigate back out. Especially when the process is deeply hierarchical or the slice of work is short.
 
-A significant performance challenge is to efficiently yield and resume even deeply hierarchical coroutines. It is tempting to introduce a primitive yield for O(1) yield and resume, but doing so significantly reduces semantic control over live code. Instead, I intend to build upon *incremental computing*: memoize jump into a coroutine on resume and jump out upon yield.
-
-Are there annotations that would help with coroutines? TBD
+Ideally, we can optimize this pattern to achieve something close to performance of built-in control flow. My intuition is that this is feasible with a variation on incremental computing where we maintain a cache of control-flow states as we update machine states. Doesn't seem easy to implement, however.
 
 ## Distribution
 
-We'll start by implementing the glas runtime within a single OS process. However, it is feasible to extend the runtime to multiple OS processes, distributed across multiple nodes. We can logically mirror transaction-loop applications to every node, then heuristically optimize by simply aborting any transaction that is best initiated on another mirror (e.g. because the first resource it observes is remote).
+We can develop a distributed runtime that runs on multiple nodes, multiple OS processes. This requires some careful attention to system API design, but otherwise it's just another runtime.
 
-The main concerns are how to distribute application state for performance and network partitioning tolerance. We can distribute based on usage patterns. Some examples:
+A transaction-loop application, and even runtime event handling like the 'http' and 'rpc' methods, can be mirrored on each node without affecting semantics. Of course, this may require expensive distributed transactions in many cases. But I'd rather solve a performance problem than a semantics issue.
 
-- a read-mostly variable can be *mirrored*, while write authority is either 'owned' by one node or subject to a consensus algorithm. Updates propagate on a logical wavefront to preserve transactional isolation.
-- a read-write variable can be *migrated*, with ownership moving where the variable is needed.
-- a queue variable can be *split* between reader and writer nodes, with the writer's node opportunistically pushing updates to the reader asynchronously to write transaction.
-- a bag/multiset with non-deterministic read and write order can be further split so every node owns a partition and a runtime heuristically migrates data to the 'best' reader based on filters, load, etc..
-- a CRDT (conflict-free replicated datatype) can be replicated on every node, with each node performing reads and updates locally then synchronizing opportunistically.
+One simple, effective performance heuristic is to abort any step that's better started on another mirror node. After all, the other node is also repeatedly running the step function and will do the work. At most, the runtime needs to communicate expectations. This rule eliminates most *unnecessarily* distributed transactions.
 
-We would recognize a queue based on accelerators, i.e. accelerate a function for writing a queue (addend a list var), then treat a variable as a queue when we exclusively use accelerated queue functions to access. We can raise a warning or error when mixed usage hinders optimizations.
+We can further optimize based on recognizing patterns of state usage. For example, a read-mostly register can be mirrored, while a write-heavy register might better 'migrate' to where it's currently being used. A queue's state can be divided between reader and writer nodes (reader diverges when waiting), while a bag (multiset) can be logically partitioned between any number of nodes. A conflict-free replicated datatype (CRDT) can be replicated on every node and synchronized opportunistically.
 
-*Note:* This provides a foundation for distributed programming, but we also need to carefully consider how applications interact with distributed clocks, filesystems, FFI, and other features. Distribution has a pervasive impact on API design.
+To support these optimizations, we'll rely on accelerated register operations. For example, a register accessed only via accelerated queue operations can be optimized as a queue. Of course, developers must also design for effective distribution. It could be even more expensive to repeatedly migrate queue endpoints than to access them remotely via distributed transactions.
 
-## Notes on Live Coding
-
-Transaction loops greatly simplify the "update the code" part of live coding. But can the program model also help with versioned data types? TBD
-
-## Design Considerations
-
-- First-class functions hinder live coding, entangling past code and future state. Stick to higher-order programming at compile-time only.
-- First-class mutable state (e.g. IORefs) is feasible, but it complicates schema updates in modular systems, and without first-class functions it feels a lot like an inconsistency.
-- Implicit control-flow within a transaction is ephemeral and causes no problems with live coding.
-- Refactoring of decision trees. I'd prefer to avoid redundant computations.
-- Built-in support for non-deterministic choice versus compile-time effect? We can use annotations to enforce determinism as needed.
-- Data stack serves as anonymous intermediate location for data, reducing number of location names required and number of registers required. OTOH, it adds a lot of extra arity considerations. OTOH, arity issues are greatly diminished without coroutines.
-
+*Aside:* I intend to design the system API such that we can transition to distributed runtimes with minimal changes.
 
 ## Annotations
 
-        a:(Annotation, Op)    # dedicated AST node
+Annotations are supported at the level of namespace terms, not Programs.
+
+        a:(Annotation, Op)    # namespace AST node
+
+This is important because we'll often annotate `Env -> Program` calls instead of Programs directly.
 
 Acceleration:
 * `(%an.accel Accelerator)` - performance primitives. Indicates that a compiler or interpreter should substitute Op for a built-in Accelerator. By convention, Accelerators have form `(%accel.OpName Args ...)` (or `%accel.OpName` if no arguments). Accelerators are not Programs, and are only useful in context of `%an.accel`. 
@@ -149,7 +132,7 @@ Instrumentation:
 * `(%an.error.log Chan MsgSel)` - log a message only when Operation halts due to an obvious divergence error (such as '%error', assertion failure, or a runtime type error).
 * `(%an.assert Chan ErrorMsgGen)` - assertions are structured as logging an error message. If no error message is generated, the assertion passes. May reduce to warning.
 * `(%an.assert.static Chan ErrorMsgGen)` - assertion that must be computed at compile-time, otherwise it's a compile-time error. May reduce to compile-time warning with or without a runtime error.
-* `(%an.profile Chan BucketSel)` - record performance metadata such as entries and exits, time spent, yields, fails, and rework. Profiles may be aggregated into buckets based on BucketSel. 
+* `(%an.profile Chan BucketSel)` - record performance metadata such as entries and normal exits, fails, errors, time spent, time wasted on rework, etc.. Profiles may be aggregated into buckets based on BucketSel. 
 * `(%an.trace Chan BucketSel)` - record information to support slow-motion replay of Operation. BucketSel helps control and organize traces. See *Tracing*.
 * `(%an.view Chan Viewer)` - support interactive debug views of a running application. See *Debug Views*
 * `(%an.chan.scope TL)` - apply a prefix-to-prefix translation to Chan names in Operation.
@@ -169,11 +152,11 @@ Validation:
   * Eventually, proof-of-confluence annotations may be viable. Not sure how feasible this is.
 
 Laziness:
-* `%an.lazy.thunk` - The simplest integration for lazy evaluation for laziness. Op must be pure, atomic, 1--1 arity, terminating - anything else is a type error, though perhaps only detected upon 'force'. Instead of computing immediately, we return a thunk representing the future result. 
-  * Non-deterministic Op is accepted, i.e. commit to a non-deterministic choice without observing the result. An intriguing opportunity is to only choose the value for a non-deterministic thunk after an observing transaction commits. This is formally valid with non-determinism.
-* `%an.lazy.force` - Op (usually %pass) must return a thunk at top of data stack. We force evaluation of the thunk before returning, placing the data result of evaluating that thunk on the stack. 
-  * Force diverges if computation represented by a thunk fails or diverges. This is considered a type error.
-* `%an.lazy.spark` - Op (usually %pass) must return a thunk at top of data stack. If the thunk has not already been computed or scheduled, we'll schedule that thunk for background computation by runtime worker threads. 
+* `%an.lazy.thunk` - Op must be pure, atomic, 1--1 arity. Instead of computing immediately, we return a thunk that captures Op and stack argument. 
+  * Op may be non-deterministic. If so, we'll resolve the choice lazily, based on first observer to force thunk (which picks an outcome) then successfully commit.
+  * Laziness shifts when and where errors are observed, enabling transactions to 'commit' with unobserved errors. Be careful!
+* `%an.lazy.force` - Op (usually %pass) must return thunk at top of data stack. We force evaluation of the thunk before returning. May diverge in case of error.
+* `%an.lazy.spark` - Op (usually %pass) must return a thunk at top of data stack. If not already evaluated or scheduled, schedule evaluation by background worker thread.
 
 Content-addressed storage:
 * `%an.cas.stow` - Op (usually %pass) must return data of persistent or global ephemerality at top of stack. We wrap that data then lazily move it to external storage based on size, usage, and memory pressure.
@@ -193,7 +176,7 @@ Guiding non-deterministic choice:
 
 Future development:
 * type declarations. I'd like to get bidirectional type checking working in many cases relatively early on.
-* tail-call declarations. Perhaps not per call but rather an indicator that a subroutine can be optimized for static stack usage, optionally up to method calls. 
+* tail-call declarations. Perhaps not per call but rather an indicator that a subroutine can be optimized for static stack usage. 
 * stowage. Work with larger-than-memory values via content-addressed storage.
 * debug trace. Probably should wait until we have a clear idea of what a trace should look like. 
 * debug views. Specialized projectional editors within debuggers.
@@ -201,45 +184,35 @@ Future development:
 ### Logging
 
         a:((%an.log Chan MsgSel), Operation)
-        
-        type Chan is AST of form d:Name     
-          # naming conventions apply
+        type MsgSel : Env -> Sel
+        type Chan is an embeded string 
 
-        type MsgSel : Env -> Sel                    # where
-          (%cond (%br %pass Sel %fail)) : Program   
+MsgSel can fail if there is no message, or return a primary message on the data stack. Extensible outputs are feasible through APIs in the Env argument. Instead of insisting that MsgSel is a 'pure' computation, we leverage transactions and simply undo writes performed during evaluation.  If non-deterministic, we can log multiple possible messages.
 
-        type Msg is plain old glas data, often a Text
+Note that logging overlays an Operation. If Operation is a no-op (`%pass`), this behaves like one-off logging. But, in the general case, we can 'animate' the log - recompute messages at several steps. MsgSel cannot directly view updates to the data stack, but we can provide reflection APIs through the Env argument.
 
-Logging overlays Operation. When Operation is a no-op (`%pass`), this reduces to conventional one-off logging. However, more generally, we may recompute messages when Operation yields or halts on error, heuristically at checkpoints or stable failure. Periodic or random sampling is also viable, perhaps heuristically tuning frequency based on performance. This behavior may be configurable per Chan, a precision versus performance decision.
+Instead of a flat stream of text, log output might be modeled as a stream of updates to a logical tree structure, including branches for stable non-deterministic choice. Something like this should align better with transaction loops.
 
-Due to this overlay structure, it is useful to render logs as a time-varying tree structure. Instead of a simple stream of text, a log should be serialized as a stream of events on a tree, e.g. add and remove nodes. Non-deterministic choice adds another dimension to this tree, at least insofar as options are evaluated in parallel.
-
-Messages are computed within hierarchical transactions that are aborted after extracting the message. MsgSel may destructively inspect registers and data stack in scope, or invoke atomic operations as a 'what if'. However, data stack is a special case: it is in scope only when Operation is `%pass`, in which case MsgSel has the same access as the surrounding Program.
-
-The runtime provides the Env argument. Exact contents depend on runtime version and configuration-provided adapters, but should de facto stabilize. The role of Env is to provide reflection APIs, e.g. to read $src, inspect the call stack or data stack, or query configured Chan settings. Configured Chan settings are fully arbitrary, e.g. preferred language, accepted format, level of detail, and degree of sarcasm. Many queries can be completed at compile-time, allowing for partial evaluation and specialization of logging code.
-
-If MsgSel uses non-deterministic choice, the runtime may generate all possible messages (subject to configuration). With runtime support, users may configure a non-deterministic choice of Chan settings, such that we log multiple versions of messages.
+To support ad hoc configuration, there may be per-Chan settings with guidance from both user configuration and application settings. Additionally, for dynamic settings, we could support per-Chan registers managed via 'sys.refl.log.\*' or similar. MsgSel could be conditional on these settings and registers, allowing for flexible control.
 
 ### Tracing (TBD)
 
+Instead of user-defined messages, why not record enough to fully replay an Operation? Cost. That's why. But it's still a useful tool in the box.
+
         a:((%an.trace Chan BucketSel), Operation)
 
-We can ask the runtime to record sufficient information to replay a computation. This is expensive, so we might configure tracing (per Chan) to perform random samples or something, switching between traced and untraced versions of the code.
+BucketSel roughly returns an identifier for the 'bucket' where a trace is stored, if any, so we can control tracing dynamically. 
 
 What information do we need?
 
-* input registers - initial, updates after yield
-* input register updates and return values from calling untraced methods 
-* stream of non-deterministic choices and scheduling for replay
-  * distinguish backtracked choices to allow skipping them
+* input registers and relevant stack state
+* updates to registers and stack after calls to untraced methods
+* recording of non-deterministic choices and scheduling for replay
 * for long-running traces, heuristic checkpoints for timeline scrubbing 
 * for convenience, complete representation of subprogram being traced
-  * content-addressed for structure sharing
-* consider adding contextual stack of log messages etc.
+* association with log outputs and other features
 
 I think this won't be easy to implement, but it may be worthwhile.
-
-BucketSel is just a means to conditionally disable tracing. Similar to MsgSel except only evaluated once, and the returned bucket(s) are simply dynamic indices for lookup.
 
 ### Debug Views
 
@@ -300,15 +273,13 @@ Register Ops:
   * Peek
 * KVDB, implicit 'register' per key but dynamic
 
-### Accelerating Coroutines
+## Lazy Computation and Parallel Sparks
 
-The '%an.memo' annotation is unsuitable for memoizing just the jump on yield/resume for a coroutine. Some ideas:
+I propose explicit thunks of 1--1 arity, pure but optionally non-deterministic, atomic computations. Computation may fail or diverge, in which case forcing the thunk will diverge. 
 
-* use '%an.memo.begin' and '%an.memo.end' or similar - rather awkward to maintain balance
-* use balanced '%an.memo' to '%an.memo.exclude' or similar - viable, but I don't like maintaining that all over.
-* annotate coroutines with some metadata scoping which states to be looking at, might also be useful for obtaining a debug view of the 'state machine' for a large application?
+Interaction with non-determinism is interesting. We can maintain a list of non-deterministic results for a lazy computation. When forcing the thunk, we'll pick one (non-deterministically) and save the chosen outcome. If the forcing transaction does not commit, the saved choice is also not committed, thus the thunk remains non-deterministic. Thus, non-deterministic choice is lazily resolved by observers.
 
-
+We can ask a worker thread to compute thunks in the background. In case of non-determinism, worker threads can cache outcomes but cannot commit to anything. In any case, this provides a very convenient source of parallelism orthogonal to transaction-loop optimizations.
 
 ## TBD
 
@@ -341,15 +312,6 @@ We can improve memoization by making the traces more widely applicable, abstract
 
 However, even the simplest of traces can be useful if users are careful about where they apply memoization. We can memoize a subset of procedures that represent "pure" expressions or functions to support incremental compilation, monoidal indexing of structure, and similar use cases.
 
-### Lazy Computation
-
-To get started with a simple implementation, I propose explicit thunks of 1--1 arity, pure (but optionally non-deterministic), atomic computations. Computation may fail or diverge, in which case forcing the thunk will diverge. 
-
-In case of non-deterministic lazy computations, the outcome remains non-deterministic until a thread commits AFTER force. This allows for expression of lazy choice, lazy entanglement, and searching outcomes.
-
-Eventually, we might extend laziness to multiple stack inputs or read-only snapshots of registers. But doing so is difficult with explicit thunks. And I don't feel comfortable with a move to implicit thunks without proofs of timely (e.g. polynomial) termination, static analysis of linear type dataflow, and similar features.
-
-*Note:* Because lazy annotations influence observation of divergence, I'm tempted to move from annotations to primitives.
 
 ### Futures, Promises, Channels
 
