@@ -4,7 +4,7 @@
 
 Programs are modeled as an abstract data type, and most program primitives are constructors for this type. Special exceptions are '%load' and '%macro' which support modularity and metaprogramming.
 
-*Notation:* `(F X Y Z)` desugars to `(((F,X),Y),Z)`, i.e. curried application. 
+*Notation:* `(F X Y Z)` desugars to `(((F,X),Y),Z)`, representing curried application in the [namespace AST](GlasNamespaces.md). 
 
 ### Control Flow
 
@@ -26,20 +26,18 @@ The %do and %opt constructors have exactly two arguments. It is tempting to supp
 ### Data Stack
 
 * `(%data d:Data)` - pushes Data onto stack
-* `(%dip P)` - run P while hiding top element of data stack
+* `(%dip P)` - runs P while temporarily hiding top stack item
 * `%swap` - exchange top two stack elements. i.e. "ab-ba"
 * `%copy` - copy top stack element, i.e. "a-aa".
 * `%drop` - drop top stack element, i.e. "a-".
-* `%mkp` - "ba-(a,b)" pair elements, right element starts on top
+* `%mkp` - "lr-(l,r)" make pair elements (r at top of stack) 
 * `%mkl` - rewrite top stack element to be left branch of tree
 * `%mkr` - rewrite top stack element to br right branch of tree
 * `%unp` - undoes mkp, fails if not a pair.
 * `%unl` - undoes mkl, fails if not a left branch
 * `%unr` - undoes mkr, fails if not a right branch
 
-The glas system relies heavily on *acceleration* for performance.
-
-Data logically consists of binary trees. Large trees spill into an implicit heap. A glas runtime may support specialized representations for use with accelerators or insert metadata to enforce dynamic types. 
+In practice, developers will rely on accelerated functions instead of manipulating trees one bit or branch at a time.
 
 ### Registers
 
@@ -256,6 +254,8 @@ Arithmetic
 * Product
 * Negation
 * Reciprocal
+
+Graphs? We could accelerate graph ops. May need graph canonization.
 
 Register Ops:
 
