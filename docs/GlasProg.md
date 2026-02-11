@@ -150,9 +150,9 @@ Validation:
   * Eventually, proof-of-confluence annotations may be viable. Not sure how feasible this is.
 
 Laziness:
-* `%an.lazy.thunk` - Op must be pure, atomic, 1--1 arity. Instead of computing immediately, we return a thunk that captures Op and stack argument. 
-  * Op may be non-deterministic. If so, we'll resolve the choice lazily, based on first observer to force thunk (which picks an outcome) then successfully commit.
-  * Laziness shifts when and where errors are observed, enabling transactions to 'commit' with unobserved errors. Be careful!
+* `%an.lazy.thunk` - Op must be pure, atomic, 1--1 arity, and terminating. Instead of computing immediately, we return a thunk that captures Op and stack argument. 
+  * If Op is non-deterministic, we'll resolve the choice lazily. It becomes committed choice only if an observer commits after forcing the thunk.
+  * The 'terminating' constraint is not necessarily enforced. However, annotations should not affect formal semantics of valid programs. Divergent thunks can violate this rule, thus are considered invalid.
 * `%an.lazy.force` - Op (usually %pass) must return thunk at top of data stack. We force evaluation of the thunk before returning. May diverge in case of error.
 * `%an.lazy.spark` - Op (usually %pass) must return a thunk at top of data stack. If not already evaluated or scheduled, schedule evaluation by background worker thread.
 

@@ -2,6 +2,9 @@
 
 This document describes the primary '.glas' syntax. 
 
+This syntax shall be slightly object-oriented, to account for modules, applications, and front-end compilers supporting mixins, overrides, inheritance. 
+- A relevant challenge is that, when defining one object within another, it can be difficult to determine which 'self' we should refer to (module or object layer) without clear syntactic distinctions. Might need to accept the syntactic overhead here.
+
 The primary goal is to develop a synax *I'm* happy with, personally. I hope my taste in syntax is something many others will appreciate, but user-defined syntax is available to mitigate. Anyhow, this document will be heavily driven by *feels*. 
 
 ## Design Notes

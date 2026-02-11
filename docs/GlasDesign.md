@@ -1,98 +1,80 @@
 # Glas Design
 
-Glas is named in allusion to transparency of glass, human mastery over glass as a material, and the phased liquid-to-solid creation analogous to staged metaprogramming. It can also be read as a backronym for 'general language system', which is something glas aspires to be. Design goals orient around compositionality, extensibility, scalability, live coding, staged metaprogramming, and distributed systems programming. 
+Glas is named in allusion to transparency of glass, human mastery over glass as a material, and the liquid-to-solid creation analogous to staged metaprogramming. It is also a backronym for 'general language system', something glas aspires to be. Design goals orient around compositionality, extensibility, scalability, live coding, staged metaprogramming, and distributed systems programming.
 
-Interaction with the glas system is initially through a [command line interface](GlasCLI.md).
+This document provides an overview of the main components of glas and how they fit together.
+
+## Command Line Interface (CLI)
+
+The [glas CLI](GlasCLI.md) is the initial user interface to glas systems. The primary use case is to load the user configuration then run an application defined within the configuration.
+
+## Configuration
+
+The `GLAS_CONF` environment variable may specify a configuration. If undefined, the default file location is `"~/.config/glas/conf.glas"` in Linux or `"%AppData%\glas\conf.glas"` on Windows. 
+
+The configuration file is loaded as a glas module. This module should define ad hoc 'glas.\*' runtime options and a configured environment 'env.\*'. The configured environment is fed back into the configuration as '%env.\*', serving as a pseudo-global namespace. Runtime configuration options may generally be runtime-version specific and generally receive access to runtime version info 'rt.\*' as algebraic effects.
+
+The glas system supports user-defined syntax by defining a front-end compiler at '%env.lang.FileExt'. As a special case, we'll attempt bootstrap when a configuration defines its own compiler. That is, we initially apply the the built-in, then override via the definitions at 'env.lang.FileExt'. Bootstrap must reach a fixpoint within just a few cycles.
+
+In my vision for glas systems, a small user configuration inherits from a much larger community or company configuration, applying a few overrides to account for the user's projects, preferences, or resources. The larger configuration is imported from DVCS, which may in turn link other DVCS repos. 
+
+The configured environment may be large, defining a whole system of applications and libraries. There is an opportunity for whole-system versioning, transitively linking DVCS in terms of stable tags or content-addressed hashes. But performance for extracting a specific definition or application will depend on lazy loading and caching.
+
+## User-Defined Syntax
+
+By convention, when a front-end compiler loads a file, it will process that file via front-end compiler defined at '%env.lang.FileExt' then link '%\*' names into the returned module. To get things rolling, the glas CLI provides a built-in front-end compiler for at least [".glas"](GlasLang.md) files, subject to bootstrapping.
+
+A syntax can be 'globally' installed via configuration. But project-local syntactic tweaks or even folder-local DSLs are possible by overriding '%env.lang.FileExt' in scope of performing imports. This offers a lot of flexibility. Importantly, it also mitigates potential issues that may arise as front-end languages are updated.
+
+Syntax isn't only for humans. To simplify tooling, we may attempt to load JSON, CSV, even SQLite files as program sources. Technically, we don't need to compile every file we '%load', but it is convenient to do so.
+
+A front-end compiler is modeled as an object (see below) that minimally defines a 'compile' function. The object can also implement interfaces for other tools, e.g. syntax highlighting or auto-formatting. And it may expose some internal structure for overrides, e.g. parse rules and AST generators.
+
+## Modules
+
+A front-end compiler returns a [closed-term namespace AST](GlasNamespaces.md) representing a module. A basic module is a "module"-tagged `Env -> Object` namespace term, and basic objects are described below. The AST is plain-old data, easy to cache. The module is parameterized by an abstract source then linked to '%\*' primitives as the object Base.
+
+The front-end compiler does not directly load files. Instead, it generates an AST that includes '%load' operations. This stage separation simplifies lazy loading and caching. Loading another file also involves of '%src.file' constructors relative to an abstract source. Abstraction of sources supports two design goals: control of filesystem dependencies, and location-independence of compilation.
+
+The glas system enforces two major constraints on dependencies: "../" and absolute file paths are forbidden, and a file cannot be loaded twice. These rules simplify refactoring, sharing code, metaprogramming, and live coding. Every folder becomes a package. Sharing is made explicit in the namespace, e.g. via '%env.\*'. 
+
+Modules support some OOP-like features: inheritance, override, mixins. In practice, developers can usefully distinguish between 'importing' a module like an independent object versus 'including' it like a mixin. When a user configuration inherits and overrides definitions from a community configuration, that's achieved via logical inclusion.
+
+## Namespace
+
+The [glas namespace](GlasNamespaces.md) is expressed as an extended lambda calculus, supporting reification of the environment, and explicit rules to bind and translate environments. We rely on lazy evaluation of the namespace.
+
+## Objects
+
+The [glas namespace model](GlasNamespaces.md) supports stateless objects. The basic object model is an "obj"-tagged `Env -> Env -> Env` term, with roles `Self -> Base -> Instance`. The open fixpoint 'Self' argument provides a basis for overrides, and 'Base' supports mixins or ultimately linking an object to a host.
+
+Objects offer a consistent mechanims for extensibility, but effective use requires deliberate design. The glas system uses objects for front-end compilers, modules, and applications.
+
+*Note:* Although the namespace-layer supports objects, the runtime program model does not.
+
+## Applications
+
+Applications are whatever the CLI knows how to run. 
+
+Basic applications are "app"-tagged objects that define a transactional 'step' method and recognized event handlers like 'http' or 'rpc'. The runtime will bind object Base to 'sys.\*' effects APIs and some registers, repeatedly evaluate 'step', and occasionally invoke the event handlers. This design is useful for live coding, reactivity, and distribution; see [glas applications](GlasApps.md) for details.
+
+But users may develop alternative application models, using distinct tags and configuring the application adapter to 'compile' these apps to a basic application.
+
+## Programs
+
+Modules assume access to [primitive program constructors](GlasProg.md) such as '%do', '%loop', and '%swap'. These support simple, structured procedural programs, operating on registers and data stack. Note that constructing a program does not run the program, i.e. `(%do P1 P2)` is abstract data representing a program that performs two operations when run.
+
+Compared to the namespace's extended lambda calculus, these runtime programs are less expressive. The intention is to simplify optimizations and to avoid complications with live coding. 
+
+The set of program constructors is minimal. Performance relies on acceleration, where the runtime substitutes a reference implementation of a function with an equivalent, but much faster, built-in. To ensure robust performance, acceleration is explicit, guided by annotations.
 
 ## Data
 
-The plain old data type in glas is the immutable binary tree. Trees are very convenient for modeling structured data without pointers. The runtime representation is assumed to compact non-branching sequences like a [radix trees](https://en.wikipedia.org/wiki/Radix_tree): 
-
-        type Tree = (Stem * Node)       # as struct
-        type Stem = uint64              # encodes 0..63 bits
-        type Node = 
-            | Leaf 
-            | Branch of Tree * Tree     # branch point
-            | Stem64 of uint64 * Node   # all 64 bits
-
-        Stem (0 .. 63 bits)
-            10000..0     0 bits
-            a1000..0     1 bit
-            ab100..0     2 bits
-            abc10..0     3 bits
-            abcde..1    63 bits
-            00000..0     unused
-
-A dictionary such as `(height:180, weight:100)` is directly represented as a radix tree. Labels are encoded in UTF-8, separated from data by a NULL byte. A labeled variant (aka tagged union) is encoded as a singleton dictionary with a choice of labels. The convention in glas systems is to favor labeled data for anything more sophisticated than integers and lists. 
-
-### Integers
-
-Integers are encoded as variable-length bitstrings, msb to lsb. Negative integers use ones' complement.
-
-        Integer  Bitstring
-         4       100
-         3        11
-         2        10
-         1         1
-         0               // no bits
-        -1         0
-        -2        01
-        -3        00
-        -4       011
-
-The zero value is 'punned' with the empty list or dict. It's a convenient initializer.
-
-### Lists
-
-Lists are logically encoded as simple `(head, tail)` pairs (branch nodes), terminating in a leaf node `()`. 
-
-        type List a = (a * List a) | () 
-
-         /\
-        1 /\     the list [1,2,3]
-         2 /\
-          3  ()
-
-For performance, glas systems will optimize encodings of lists, and especially of binaries (lists of 0..255). The favored representation for large lists is [finger tree](https://en.wikipedia.org/wiki/Finger_tree) [ropes](https://en.wikipedia.org/wiki/Rope_%28data_structure%29).
-
-        type Node = 
-            | ...
-            | Arr of Array<Tree>
-            | Bin of Binary
-            | Concat of LeftLen * LeftNode * RightNode
-
-This is an example of accelerated data representations. Instead of a program primitive to concatenate two lists, we annotate a reference implementation with `(%an.accel %accel.list.concat)`, then the runtime substitutes a built-in that uses Concat nodes.
-
-### Optional Data and Booleans
-
-Optional data is encoded as a list of zero or one items. Booleans are encoded as an optional unit value.
-
-### Data Abstraction
-
-The glas runtime may introduce special nodes to enforce data abstraction:
-
-        type Node = 
-            | ...
-            | Sealed of Key * Tree
-
-Use of data abstraction is guided by program annotations, e.g. `a:((%an.data.seal Key), %pass)` could seal the top value on the data stack, and a corresponding `%an.data.unseal` is necessary to view the data again. Otherwise, we raise a runtime type error. Ideally, a compiler will eliminate unnecessary seal and unseal operations to reduce the number of allocations.
-
-## Behavior
-
-The glas CLI provides built-in front-end compilers for [".glas"](GlasLang.md) and [".glob"](GlasObject.md) formats. Initially, we compile a user configuration to a [namespace AST](GlasNamespaces.md) representing a module. This module is linked against [primitive program constructors](GlasProg.md), such as '%cond' for conditional behavior. To support modularity, the linker provides '%macro' and '%load'.
-
-The configuration defines runtime options under 'glas.\*' and an environment under 'env.\*'. The latter is fed back into the configuration as '%env.\*'. Shared libraries and applications are linked through '%env.\*'. By convention, '%\*' names are propagated transitively across all modules, thus serves as a pseudo-global namespace. The configured environment becomes the basis for sharing instead of the filesystem. Performance depends on lazy loading and caching.
-
-Modules support inheritance and override similar to OOP. Typically, a small, local user configuration will inherit from a much larger community or company configuration in DVCS then override a few definitions as needed. Inheritance is also supported at the application layer.
-
-Applications are modeled as namespace objects that define a transactional 'step' method. Instead of a long-running 'main' procedure, the 'step' method is called repeatedly in separate transactions. This greatly simplifies live coding and distribution, but it requires sophisticated optimizations such as incremental computing and concurrency on non-deterministic choice. Aside from 'step' the runtime can directly support 'http' or 'rpc' events. See [applications](GlasApps.md).
-
-User-defined syntax is supported by conventions. When importing a module, we select the front-end compiler based on file extension, '%env.lang.FileExt'. If a configuration defines 'env.lang.glas' or 'env.lang.glob', we'll attempt a bootstrap.
+All [glas data](GlasData.md) is logically encoded into binary trees with edges labeled 0 or 1. The actual under-the-hood representation may be specialized for performance, guided by annotations.
 
 ## Annotations
 
-The namespace AST supports annotation nodes. The runtime provides annotation constructors supporting a variety of features, such as `(%an.log Chan Message)` for logging, `%an.lazy.spark` for parallel evaluation of thunks, or `(%an.arity 1 2)` to control a subprogram's access to the data stack. 
+Annotations are essentially structured comments embedded in the namespace AST. Annotations should not affect formal behavior of a valid program. But they may influence performance, verification, instrumentation, and reflection. The glas system relies on annotations to the extent of having far more annotation constructors than program primitives.
 
-Annotations are useful for validation, instrumentation, debugging, performance. But they must not affect semantics, modulo use of reflection APIs. It must be safe to ignore unrecognized annotations.
+A proposed set of annotation constructors are defined with the [program model](GlasProg.md), e.g. `(%an.log Chan Message)` to support debugging, `%an.lazy.spark` to guide parallelism, and `(%an.arity 1 2)` to roughly describe the stack effect of a subprogram. But a runtime is free to introduce new or deprecate old annotations. To resist silent degradation, we'll warn about undefined annotation constructors.
 
-Performance of glas systems depends heavily on annotation-guided acceleration, where a reference function is replaced by a built-in. Acceleration provides performance primitives while preserving simple semantics.
