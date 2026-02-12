@@ -10,22 +10,25 @@
 // forward declarations
 typedef struct glas glas;
 typedef struct glas_ns_tl glas_ns_tl;
+typedef struct glas_refct glas_refct;
 typedef struct glas_file_ref glas_file_ref;
 
-/*******************************************
- * GLAS THREAD AND CONTEXT
- ******************************************/
-
+/*****************
+ * GLAS THREADS
+ *****************/
 /**
  * Create a fresh glas thread.
  * 
- * A glas thread consists primarily of data stack and namespace. These
- * are initially empty. The glas thread is NOT mt-safe but may freely 
- * migrate between OS threads.
+ * A glas thread consists of data stack, stash, and namespace, initially
+ * empty. The client can transfer data to and from the stack, update the
+ * namespace, call defined programs.
  * 
- * Error handling is transactional. The thread accumulates errors over
- * operations then checks for errors and read-write conflicts on commit.
- * Clear errors by reverting to a prior state.
+ * A glas thread is NOT mt-safe. However, it may migrate freely between 
+ * OS threads. The limitation is using it from one OS thread at a time.
+ * 
+ * Error handling is transactional. After an error occurs, further steps
+ * are best-effort and may accumulate more errors. But the thread cannot
+ * commit with errors, only revert.
  */
 glas* glas_thread_new();
 
@@ -161,10 +164,10 @@ void glas_choice(glas* origin, size_t N, void* client_arg,
  * Notes: If no management is needed, set refct_upd to NULL. A refct_obj
  * must be pre-incremented across API; recipient decrements when done.
  */
-typedef struct {
+struct glas_refct {
     void (*refct_upd)(void* refct_obj, bool incref);
     void  *refct_obj;
-} glas_refct;
+};
 
 inline void glas_decref(glas_refct c) {
     if(NULL != c.refct_upd) {
@@ -181,40 +184,13 @@ inline void glas_incref(glas_refct c) {
  * NAMESPACES
  ************************/
 /**
- * Namespace Scopes - push and pop, like a call stack
+ * Namespace Scopes
+ * 
+ * Push will duplicate the current namespace. Pop will restore to the
+ * older namespace. 
  */
 void glas_ns_scope_push(glas*);
 void glas_ns_scope_pop(glas*);
-
-/**
- * Test for existence of definitions.
- */
-bool glas_ns_has_def(glas*, char const* name);
-
-/**
- * Utility. Hide names or prefixes from the thread namespace.
- * 
- * The namespace is lexically scoped, thus definitions may be reachable
- * indirectly through other definitions. Unreachable definitions may be
- * garbage collected by the runtime.
- * 
- * Note: These are essentially wrappers around glas_ns_tl_apply.
- */
-void glas_ns_hide_def(glas*, char const* name);
-void glas_ns_hide_prefix(glas*, char const* prefix);
-
-/**
- * Define data.
- * 
- * This pops non-linear data from the stack then assigns a specified 
- * name. Calling the name pushes a copy of the data onto the stack.
- * 
- * Note: The thread namespace can be useful as a logically-immutable 
- * data context. Shadowing names allows GC of the older definitions, but
- * does not affect past forks or callbacks, only future operations. If 
- * you do need mutability, see registers.
- */
-void glas_ns_data_def(glas*, char const* name);
 
 /**
  * Prefix-to-prefix Translations.
@@ -236,10 +212,10 @@ void glas_ns_data_def(glas*, char const* name);
  * guarantee prefix-uniqueness, but it resists accident. It also enables
  * translation of "bar." to include "bar" and "bar.x".
  */
-typedef struct { char const *lhs, *rhs; } glas_ns_tl;
+struct glas_ns_tl { char const *lhs, *rhs; };
 
 /**
- * Apply translation to thread namespace.
+ * Apply translation to thread's namespace.
  * 
  * This affects future operations on the glas thread. Definitions that
  * become unreachable may be garbage collected after step commit.
@@ -251,11 +227,33 @@ void glas_ns_tl_apply(glas*, glas_ns_tl const*);
  */
 void glas_ns_tl_push(glas*, glas_ns_tl const*); // -- TL
 
+
+/**
+ * Utility. Hide names or prefixes from current scope.
+ * These are lightweight wrappers around glas_ns_tl_apply.
+ */
+void glas_ns_hide_def(glas*, char const* name);
+void glas_ns_hide_prefix(glas*, char const* prefix);
+
+/**
+ * Create a "data" definition.
+ * 
+ * Pops data from stack. Wraps as "data"-tagged d:Data. Assigns to 
+ * specified name. The data must be non-linear (copyable, droppable).
+ */
+void glas_ns_data_def(glas*, char const* name);
+
+
+
+
+
+
+
 /** 
  * Define by evaluation.
  * 
- * Pop an AST representation off the stack, validate the AST structure,
- * lazily evaluate in context of a translated thread namespace. 
+ * Pop a namespace AST from the data stack. Evaluates in context of the
+ * current environment, optionally translated by eval_env. 
  * 
  * Note: ASTs become second-class in the program layer once evaluated.
  */

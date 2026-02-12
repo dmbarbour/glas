@@ -21,7 +21,7 @@ Programs are modeled as an abstract data type, and most program primitives are c
   * use `%an.error.log` to attach a message to errors.
   * as an optimization, %error can backtrack to prior %opt in context of transaction loops because the choice is repeated.
 
-The %do and %opt constructors have exactly two arguments. It is tempting to support variable arity, but it isn't directly supported by namespace semantics. We could instead use a Church-encoded list to express variable arguments, but it won't save space.
+*Note:* The %do and %opt constructors have exactly two arguments. It is feasible to support variable-arity with namespace semantics, but it would involve some variation of Church-encoded lists.
 
 ### Data Stack
 
@@ -55,6 +55,7 @@ The glas system can accelerate register operations. This is expressed in terms o
 * `(%eval Compiler)` - Compiler must be be a namespace term of type `Data -> Program`. The data argument is popped from the stack then passed to Compiler as embedded data. The returned program is validated in context (e.g. static assertions, typechecks), optimized or JIT-compiled, then run.
   * In practice, we'll often restrict %eval to compile-time via `%an.data.static` or `%an.eval.static`. Static %eval is more flexible than %macro alone insofar as program dataflow may cross namespace scopes.
   * Although the glas program model does not support first-class functions at runtime, dynamic %eval with caching can serve a similar role.
+* `(%ifdef Name P1 P2)` - Compile-time conditional behavior based on whether a name is defined in scope. Diverges if definition of Name cannot be observed.
 
 A powerful design pattern is to accelerate metaprograms. For example, we can develop a memory-safe intermediate language and reference interpreter for a virtual CPU or GPGPU, then 'accelerate' by compiling for actual hardware. This pattern replaces the performance role of FFI.
 
@@ -66,16 +67,6 @@ A powerful design pattern is to accelerate metaprograms. For example, we can dev
 * `%src.*` - abstract Src constructors, e.g. to specify a relative file path or DVCS repository.
 
 See [namespaces](GlasNamespaces.md) for details.
-
-## Calling Conventions
-
-Program definitions in the namespace are tagged to indicate calling conventions. The front-end compiler must insert an adapter at every call site. Initial calling conventions:
-
-* "data" - `Data` - embedded data, wrap %data then integrate
-* "prog" - `Program` - abstract program, directly integrate
-* "call" - `Env -> Def` - implicitly parameterized by caller namespace with syntactically specified translations, then apply adapter again to returned Def.
-
-We can gradually support more calling conventions, e.g. so we can directly 'call' grammars or logic programs. 
 
 ## Transaction Loops
 
@@ -102,28 +93,38 @@ Ideally, we can optimize this pattern to achieve something close to performance 
 
 ## Distribution
 
-We can develop a distributed runtime that runs on multiple nodes, multiple OS processes. This requires some careful attention to system API design, but otherwise it's just another runtime.
+We can develop a distributed runtime that runs on multiple nodes, multiple OS processes. A repeating 'step' transaction and event handlers like 'http' and 'rpc' can be mirrored on each node without affecting semantics. This requires expensive distributed transactions if we aren't careful. But it is possible to design with distribution in mind, limiting most transactions to just one or two nodes.
 
-A transaction-loop application, and even runtime event handling like the 'http' and 'rpc' methods, can be mirrored on each node without affecting semantics. Of course, this may require expensive distributed transactions in many cases. But I'd rather solve a performance problem than a semantics issue.
+A simple performance heuristic is to abort any step that is better started on another mirror node. Assume the other will get to it. If necessary, communicate the expectation. 
 
-One simple, effective performance heuristic is to abort any step that's better started on another mirror node. After all, the other node is also repeatedly running the step function and will do the work. At most, the runtime needs to communicate expectations. This rule eliminates most *unnecessarily* distributed transactions.
+We can further optimize based on patterns of state usage. For example, a read-mostly register can be mirrored, while a write-heavy register might 'migrate' to where it's currently being used. A queue's state can be divided between reader and writer nodes, while a bag (multiset) can be logically partitioned between any number of nodes. A conflict-free replicated datatype (CRDT) can be replicated on every node and synchronized opportunistically, when nodes interact.
 
-We can further optimize based on recognizing patterns of state usage. For example, a read-mostly register can be mirrored, while a write-heavy register might better 'migrate' to where it's currently being used. A queue's state can be divided between reader and writer nodes (reader diverges when waiting), while a bag (multiset) can be logically partitioned between any number of nodes. A conflict-free replicated datatype (CRDT) can be replicated on every node and synchronized opportunistically.
+State optimizations rely on accelerated register operations. A register accessed only via accelerated queue operations can be optimized as a queue.
 
-To support these optimizations, we'll rely on accelerated register operations. For example, a register accessed only via accelerated queue operations can be optimized as a queue. Of course, developers must also design for effective distribution. It could be even more expensive to repeatedly migrate queue endpoints than to access them remotely via distributed transactions.
+*Aside:* Distribution also require attention to system API design, e.g. a distributed runtime doesn't have just one filesystem.
 
-*Aside:* I intend to design the system API such that we can transition to distributed runtimes with minimal changes.
+## Extension
+
+The namespace supports several layers of extensibility for programs: module and application objects, tagged definitions, and introducing new program constructors. Object-layer extension is via OO-style inheritance and override. And new program constructors are rather ad hoc. 
+
+Tagged definitions support both flexible calling conventions and alternative program models. 
+
+* "data" - `Data` - embedded data, wrap %data then integrate
+* "prog" - `Program` - abstract program, directly integrate
+* "call" - `Env -> Def` - implicitly parameterized by caller namespace with syntactically specified translations, then apply adapter again to returned Def.
+
+We could introduce alternatives to "prog" for defining and composing grammars, logics, hardware description, constraint systems, process networks, interaction nets, etc.. If we decide there's a reasonable default interpretation for 'calling' a grammar, we could extend our call-site adapter. But even without that, we can explicitly integrate grammars into programs.
 
 ## Annotations
 
-Annotations are supported at the level of namespace terms, not Programs.
+Annotations are supported at the namespace layer.
 
-        a:(Annotation, Op)    # namespace AST node
+        a:(Annotation, Operation)    # namespace AST node
 
-This is important because we'll often annotate `Env -> Program` calls instead of Programs directly.
+In context, Operation will usually be an abstract `Program` or an `Env -> Program` namespace term. It's preferable to keep annotations inside any "prog" or "call" tags.
 
 Acceleration:
-* `(%an.accel Accelerator)` - performance primitives. Indicates that a compiler or interpreter should substitute Op for a built-in Accelerator. By convention, Accelerators have form `(%accel.OpName Args ...)` (or `%accel.OpName` if no arguments). Accelerators are not Programs, and are only useful in context of `%an.accel`. 
+* `(%an.accel Accelerator)` - performance primitives. Indicates that a compiler or interpreter should substitute Op for an equivalent built-in. We use `%accel.OpName` to name the accelerator. In rare cases, a generic accelerator might be parameterized `(%accel.OpName Args ...)`.
 
 Instrumentation:
 * `(%an.log Chan MsgSel)` - printf debugging! Logging will *overlay* an Operation, automatically maintaining the message. The MsgSel type is sophisticated; see *Logging*.
@@ -137,45 +138,40 @@ Instrumentation:
 
 Validation:
 * `(%an.arity In Out)` - express expected data stack arity for Op. In and Out must be non-negative integers. Serves as an extremely simplistic type description. 
-* `(%an.data.seal Key)` - operational support for abstract data types. For robust data sealing, Key should name a Register, Src (like '$src'), or other unforgeable identity. Sealed data cannot be observed until unsealed with a matching Key, usually symmetric. If the Key becomes unreachable (e.g. Register out of scope), the sealed data may be garbage collected, and this may be detectable via reflection APIs. Actual implementation is flexible, e.g. compile-time static analysis at one extreme, encryption at another, but simple wrappers is common.
-  * `(%an.data.unseal Key)` - removes matching seal, or diverges
-  * `(%an.data.seal.linear Key)` - a variant of seal that also marks sealed data as linear, i.e. no copy or drop until unsealed. Note: This does not fully guard against implicit drops, e.g. storing data into a register that falls out of scope. But a best and warnings are expected.
-    * `(%an.data.unseal.linear Key)` - counterpart to a linear seal. If data is sealed linear, it must be unsealed linear.
-* `%an.data.static` - Indicates that top stack element (upon return from Op) should be statically computable. Instead of analyzing for static dataflow, a glas compiler might take this as a hint for aggressive partial evaluation then directly verify.
-* `%an.eval.static` - Indicates that all '%eval' steps in Operation must receive their AST argument at compile-time. This is the default for glas systems, but it can make intentions clearer to reiterate the constraint locally.
-* `(%an.type TypeDesc)` - Describes a partial type of Operation. Not limited to programs, so namespace-layer and higher-kinded types are also relevant. Can also support type inference in the context surrounding Operation. TypeDesc will have its own abstract data constructors in '%type.\*'.
-* `%an.det` - Annotates an `Env -> Program` structure. This expresses the intention that Program should be deterministic *up to Env*. A compiler should prove this or raise an error. 
-  * The simplest proof is that Program doesn't use '%co' or '%choice' or interact with mutable state (even indirectly) except through Env. 
-  * Ideally, we can also recognize simple confluence patterns, e.g. Kahn Process Networks, where coroutines communicate through queues with clear ownership (no races between two readers or between two writers). 
-  * Eventually, proof-of-confluence annotations may be viable. Not sure how feasible this is.
+* `(%an.data.seal Key)` - operational support for abstract data types. For robust data sealing, Key should name a Register. If the Key becomes unreachable (e.g. Register out of scope), the sealed data may be garbage collected. Compiler can eliminate redundant seal and unseal operations if correct use is proven statically.
+  * `(%an.data.unseal Key)` - removes seal with matching Key or diverges
+  * `(%an.data.seal.linear Key)` - a variant of seal that also marks sealed data as linear, i.e. no copy or drop until unsealed.
+    * `(%an.data.unseal.linear Key)` - counterpart to a linear seal.
+* `%an.static` - Indicates that Operation should be completed at compile-time. This doesn't force early evaluation, but serves as a hint for aggressive partial evaluation optimizations or raises an error if the optimization is invalid.
+* `%an.data.static` - (Op should be '%pass') Indicates top stack element should be statically computable. 
+* `%an.eval.static` - Indicates that any '%eval' steps within Operation must receive their AST argument at compile-time.
+* `(%an.type TypeDesc)` - Describes the expected partial type of Operation. Ideally, this is verified by a typechecker. Abstract types should be supported via '%type.\*'. 
+* `%an.det` - This expresses that Operation should be deterministic. If the Operation contains '%opt' then it should be something we can eliminate, e.g. due to %error or equivalence.
+  * `%an.det.e` - A variant for `Env -> Program` that says deterministic *up to* use of methods in `Env`.
 
 Laziness:
-* `%an.lazy.thunk` - Op must be pure, atomic, 1--1 arity, and terminating. Instead of computing immediately, we return a thunk that captures Op and stack argument. 
+* `%an.lazy.thunk` - Op must be pure, atomic, 1--1 arity, terminating. Instead of computing immediately, we return a thunk that captures Op and stack argument. The thunk must be explicitly forced.
   * If Op is non-deterministic, we'll resolve the choice lazily. It becomes committed choice only if an observer commits after forcing the thunk.
-  * The 'terminating' constraint is not necessarily enforced. However, annotations should not affect formal semantics of valid programs. Divergent thunks can violate this rule, thus are considered invalid.
-* `%an.lazy.force` - Op (usually %pass) must return thunk at top of data stack. We force evaluation of the thunk before returning. May diverge in case of error.
-* `%an.lazy.spark` - Op (usually %pass) must return a thunk at top of data stack. If not already evaluated or scheduled, schedule evaluation by background worker thread.
+  * The 'terminating' constraint is not enforced by this annotation. But the rule exists because only terminating thunks have equivalent behavior across transactions. (Annotations should not affect formal behavior of valid programs.)
+* `%an.lazy.force` - Op must be %pass. Forces evaluation of thunk at top of data stack. May diverge if thunk is invalid.
+* `%an.lazy.spark` - Op must be %pass. Operates on thunk at top of data stack: if not already evaluated or scheduled, schedules evaluation by background worker thread.
 
 Content-addressed storage:
-* `%an.cas.stow` - Op (usually %pass) must return data of persistent or global ephemerality at top of stack. We wrap that data then lazily move it to external storage based on size, usage, and memory pressure.
-* `%an.cas.load` - Op (usually %pass) must return stowed data at top of stack. Loads and substitutes the actual data. Loading may be lazy, but only when the runtime is confident it can fully load the data (accounting for risks of network disruption and invalid representation). Diverges if the data cannot be loaded. Reflection APIs may offer a detailed view of errors.
-* `%an.cas.need` - Op (usually %pass) must return stowed data at top of stack. Tells runtime that this data will be needed in the near future. This enables the runtime to heuristically download, validate, etc. the data ahead of time so it's more available when needed.
+* `%an.cas.stow` - Op must be %pass. Lazily offloads data to remote storage. Actual move is heuristic, e.g. based on memory pressure and size of data.
+* `%an.cas.load` - Op must be %pass. Expects previously stowed data at top of data stack. Replaces it by referenced data. Diverges if the data cannot be loaded. (You may need 'sys.refl.cas.\*' APIs for a full diagnosis.)
+* `%an.cas.need` - Op must be %pass. Expects previously stowed data at top of data stack. Asks runtime to prepare for load in the background, caching the data. Data may be removed from cache again based on memory pressure.
 
 Incremental computing:
-* `(%an.memo MemoHint)` - memoize a computation. Useful memoization hints may include persistent vs. ephemeral, cache-invalidation heuristics, or refinement of a 'stable name' for persistence. TBD. 
-  * As a minimum viable product, we'll likely start by only supporting 'pure' functions, because that's a low-hanging, very tasty fruit.
-  * See discussion of *Accelerating Coroutines* below.
-* `(%an.checkpoint Hints)` - when retrying a transaction, instead of recomputing from the start it can be useful to rollback partially and retry from there. In this context, a checkpoint suggests a rollback boundary. A compiler may heuristically eliminate unnecessary checkpoints, and Hints may guide heuristics. 
+* `(%an.memo MemoHints)` - memoize a computation. As a minimum viable product, we'll likely start by only supporting 'pure' functions. MemoHints TBD.
+* `%an.checkpoint` - when retrying a transaction, instead of recomputing from the start it can be useful to rollback partially and retry from there. In this context, a checkpoint suggests a rollback boundary.
 
-Guiding non-deterministic choice: 
-* `(%an.cost Chan CostFn)` - (tentative) emits a heuristic 'cost'. CostFn has type `Env -> Program`, with Env providing access to Chan configuration options, ultimately returning a non-negative rational number on the data stack. Like logging, the Program also has implicit access to the host environment for dynamic costs. The only role of costs is to guide non-deterministic choice, disfavoring "high cost" options - or choices that will obviously lead to high costs later on.
-  * Beyond tweaks by CostFn based on Chan configuration, a user configuration could amplify or suppress costs per channel, enabling an encoding of purpose and preference into channel names.
-  * *Aside:* In theory, we could support non-monotonic costs to represent gains, too. But all the efficient search algorithms assume monotonicity. 
+Tail-Call Optimization:
+* `%an.tco` - indicates that Operation shall evaluate with bounded call and data stacks. (Heap isn't bounded.)
+  * `%an.tco.e` - variant for `Env -> Program`, bounded modulo use of methods in `Env`.
 
 Future development:
 * type declarations. I'd like to get bidirectional type checking working in many cases relatively early on.
-* tail-call declarations. Perhaps not per call but rather an indicator that a subroutine can be optimized for static stack usage. 
-* stowage. Work with larger-than-memory values via content-addressed storage.
+* unit types? 
 * debug trace. Probably should wait until we have a clear idea of what a trace should look like. 
 * debug views. Specialized projectional editors within debuggers.
 
@@ -226,9 +222,14 @@ The Chan can also serve a role of naming a view for discovery and integration. T
 
 ### Accelerators
 
-        (%an.accel (%accel.OpName Args))
+        (%an.accel %accel.OpName)           # built-in function 
 
-*Convention:* For pure representation transforms, such as asking a runtime to represent a list as an array under the hood, I express this as "acceleration" of a no-op. Representation transforms are naturally slower than a no-op, but exist only to support other accelerators.
+Accelerators replace a reference Operation with a built-in. Ideally, this substitution is verified, e.g. we can check types for compatibility and run a few sample tests. If it is inconvenient to immediately provide Operation, as may be the case during early development of accelerators, users may use '%error'. The runtime will recognize the user isn't even trying and report a warning instead.
+
+In a few cases, such as `%accel.list.flatten`, the accelerated Operation can be %pass because we're tuning representation instead of performing an observable computation. Flatten is reasonably part of the list accelerator family.
+
+We can accelerate Operations that expect static arguments on the data stack, or accelerate `Env -> Program` for higher-order computations. In rare cases, we might use `(%accel.OpName Args)` to construct a templated accelerator.
+
 
 List Ops:
 * len
@@ -271,7 +272,8 @@ Register Ops:
   * Put
   * Grab
   * Peek
-* KVDB, implicit 'register' per key but dynamic
+* CRDTs
+* Indexed Data (arrays, dicts)
 
 ## Lazy Computation and Parallel Sparks
 
@@ -281,99 +283,39 @@ Interaction with non-determinism is interesting. We can maintain a list of non-d
 
 We can ask a worker thread to compute thunks in the background. In case of non-determinism, worker threads can cache outcomes but cannot commit to anything. In any case, this provides a very convenient source of parallelism orthogonal to transaction-loop optimizations.
 
-## TBD
-
-
-### In-Place Update? Defer.
-
-It is possible to support in-place update of 'immutable' data if we hold the only reference to its representation. This can be understood as an opportunistic optimization of garbage-collection: allocate, transfer, and collect in one step. In glas programs, this would be feasible with accelerators, such as a list update operator could swap a list element without reallocatng the list. This is especially useful if the list is represented by an array.
-
-However, pervasive use of transactions and backtracking complicates this optimization. It is convenient to capture a snapshot of registers so we can revert if necessary. Although this snapshot isn't a logical copy and thus doesn't conflict with linear types, it is a shared representation and thus does hinder in-place update.
-
-A viable alternative is to maintain a 'log' of updates to apply later. For example, a runtime could feasibly represent the updated list as a special `(update log, original list ref)` pair within runtime. This might generalize to [log-structured merge-tree (LSM trees)](https://en.wikipedia.org/wiki/Log-structured_merge-tree) [ropes](https://en.wikipedia.org/wiki/Rope_(data_structure)).
-
-This doesn't quite support the ideal of in-place update. We must allocate that log, and perhaps some metadata to track elements to process further upon commit. But perhaps we can still perform in-place update upon commit, and benefit from editing nearer to the tree root. This seems a viable approach.
-
-Meanwhile, we'll still support decent persistent data structures by default, e.g. finger-tree ropes still support O(log(N)) updates in the center, O(1) at the edges, and we can easily use a pair as a gap buffer.
-
 ### Tail Call Optimization
 
-I'd suggest unrolling a recursive loop a few frames then determining whether we can 'recycle' the stack locations. Ideally, TCO can be enforced via annotations, e.g. by specifying that a subprogram has a finite stack, or that an `Env -> Prog` is finite-up-to Env.
+Instead of annotating individual calls to be tail-call optimized, I propose we should specify that subprogram shall be evaluated with bounded call and data stacks. We could also have a variant for `Env -> Prog` that says the Program has a bounded call stack modulo use of methods in `Env`.
+
+Performing the optimization can be difficult in context of `Env` arguments and register passing. But we can potentially unroll a recursive loop a few times, optimize, then verify that resources are recycled within just a few cycles.
+
+## TBD
+
+### In-Place Update? Seems Infeasible.
+
+In theory, we can support in-place update for 'writing' indexed elements of a large structure. In practice, support for transactions, backtracking conditions, logging, etc. means we'll often have implicit copies of data even when we don't have semantic copies. Much simpler to stick to persistent data structures.
+
+Best we can easily do: 
+
+- accelerated bulk operations can skip intermediate data representations
+- accumulate 'writes' on accelerated data then apply as a bulk operation
 
 ### Unit Types
 
-Attaching unit-types to number representations is inefficient. Recording them into type annotations makes units difficult to use, e.g. for printing values. An interesting possibility, however, is to track units for *registers*, aiming for static computation of unit registers. We could use '%assoc' to associate unit registers with a number register.
+I'd like to associate unit metadata (e.g. kilograms or meters per second) with numbers within a program. But I don't want the overhead of doing this at runtime. I also don't want pure annotations, because I'd like the ability to print unit information.
 
-### Memoization
+Use of the namespace might be feasible, but not via the basic "call"-tagged `Env -> Program`. I think we'd need something closer to a 'static' state monad, maintaining some ad hoc context across calls.
 
-In context of procedural programming, memoization involves recording a trace. This trace describes the computation performed (perhaps via hash), the data observed, and outputs written. To execute a memoized computation, we search for a matching trace then write the outputs directly. If no matching trace is found, we run the computation while recording the trace, then add it to the cache.
+Use of the data stack and partial evaluation is technically possible, but I doubt it would be pleasant. Perhaps we could bind unit data to associated registers, then verify static computation of those registers?
 
-We can improve memoization by making the traces more widely applicable, abstracting irrelevant details. For example, we might observe that a register contains 42, but a trace might match so long as a register value is greater than zero.
-
-However, even the simplest of traces can be useful if users are careful about where they apply memoization. We can memoize a subset of procedures that represent "pure" expressions or functions to support incremental compilation, monoidal indexing of structure, and similar use cases.
-
-
-### Futures, Promises, Channels
-
-It isn't difficult to extend laziness with explicit 'holes', i.e. such that a program can allocate a `(future, promise)` pair. We'll need some integration with linear and non-linear data, i.e. allowing for linear and non-linear futures. This extends very naturally to channels, e.g. via including another future in the result, or by assigning a sequence of values to a promise.
-
-It isn't difficult to present holes as a program primitive. But holes are fundamentally impure: they introduce identity. I think it's probably better to model them as part of a runtime-provided effects API.
-
-### Accelerators
-
-Essentially, primitives with a reference implementation.
-
-        (%an (%an.accel (%accel.OpName Args)) Op)
-
-Accelerators ask a compiler or interpreter to replace Op with an equivalent built-in implementation. The built-in should offer a significant performance advantage, e.g. the opportunity to leverage data representations, CPU bit-banging, SIMD, GPGPU, etc.. Arguments to an accelerator may support specialization or integration.
-
-Ideally, the compiler or interpreter should verify equivalence between Op and Accelerator through analysis or testing. However, especially in early development and experimentation phases, it can be awkward to maintain Op and Accelerator together. During this period, we may accept `()` or an undefined name as a placeholder, emitting a TODO warning.
-
-Accelerators support 'performance primitives' without introducing semantic primitives. If we build upon a minimalist set of semantic primitives, we'll be relying on accelerators for arithmetic, large lists, and many other use cases.
-
-### Breakpoints
-
-        (%an.bp Chan BucketSel)
-
-We could feasibly annotate conditional breakpoints into a program. Ideally, we'll integrate the notion of overlay breakpoints, e.g. breaking when conditions are met.
-
-Not sure exactly what I want here, however.
-
-### Content-Addressed Storage
-
-Annotations can transparently guide use of content-addressed storage for large data. The actual transition to content-addressed storage may be transparently handled by a garbage collector. Access to representation details may be available through reflection APIs but should not be primitive or pervasive.
-
-### Environment Abstraction
-
-Instead of only abstracting data, it can be useful to abstract volumes of the environment. This allows us to develop APIs where the client provides a location, but cannot access the associated data.
-
-Modeling this in names is too awkward. However, it is feasible to introduce a corollary to '%local' for binding associated names. In this case, our goal is to draw an 'arc' between two registers and treat it as a new prefix of registers.
+Either way, I expect this will require ample support from the front-end compiler.
 
 ### Type Descriptions
 
-        (%an (%an.type TypeDesc) Op)
+        (%an.type TypeDesc)
 
-We can just invent some primitive type descriptions like '%type.int' or whatever, things a typechecker is expected to understand without saying, and build up from there. It isn't a big deal if we want to experiment with alternatives later.
+I propose to develop ad hoc constructors for describing types under '%type.\*'. However, I'm not in a hurry to do so.
 
 Some thoughts:
-- Instead of hard-coding a few types like 'i64' or 'u8', consider an `(%type.int.range 0 255)` or similar. This would allow for more flexible packed representations and precise tracking of precision across arithmetic steps, e.g. adding u8 and u8 has range 0 to 510 (not quite a u9), and we can require explicit modulus or conditionals to store result back into a u8
-- we could feasibly use 'int range' types as parameters to list length types, to support vectors of exactly one size (range 32 to 32) or more sizes.
-- obviously need a const type that supports only a single value, too.
-
-### Reflection, Transpilation, Alternative Models
-
-The program model provides a foundation for glas systems, but I'm interested in exploring alternative foundations and support for compilation between them. As I see it, there are a few opportunities here:
-
-- Reflection APIs: a runtime or compile-time could provide some APIs to inspect definitions.
-  - However, this solution seems semantically troublesome because we'd either be observing recursive definitions *after* substitution of names for definitions is applied, or be observing some runtime-specific internal representation.
-- Quotation APIs: a front-end language can support quoting of definitions or expressions into an embedded data representation of an AST. Further, it could support quoted imports, i.e. load binary source code or compile to the AST representation of `Env->Env` without evaluating it.
-  - This solution is logistically troublesome. We'll need some way to efficiently cache definitions for macro evaluation when building a larger namespace.
-
-Of these options, I think a foundation of quotation APIs offers the more robust solution. We can tackle logistical challenges by essentially integrating a compiler as a shared library and some clever use of caching and acceleration. 
-
-## Alternative Program Models
-
-The proposed program model above is based on tacit programming with a data stack, in context of a namespace built using an extended lambda-calculus. This has some useful properties: the namespace provides a foundation for metaprogramming, but the 'program' is static at runtime.
-
-
-
+- Instead of hard-coding a few types like 'i64' or 'u8', consider an `(%type.int.range 0 255)` or similar.
+- need a const type that describes an expected value, too.

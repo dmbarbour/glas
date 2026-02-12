@@ -46,7 +46,7 @@ The [glas namespace](GlasNamespaces.md) is expressed as an extended lambda calcu
 
 ## Objects
 
-The [glas namespace model](GlasNamespaces.md) supports stateless objects. The basic object model is an "obj"-tagged `Env -> Env -> Env` term, with roles `Self -> Base -> Instance`. The open fixpoint 'Self' argument provides a basis for overrides, and 'Base' supports mixins or ultimately linking an object to a host.
+The [glas namespace model](GlasNamespaces.md) supports stateless objects. The basic object model is an "obj"-tagged `Env -> Env -> Env` term, with roles `Base -> Self -> Instance`. The open fixpoint 'Self' argument provides a basis for overrides, and 'Base' supports mixins or ultimately linking an object to a host.
 
 Objects offer a consistent mechanims for extensibility, but effective use requires deliberate design. The glas system uses objects for front-end compilers, modules, and applications.
 
@@ -74,7 +74,7 @@ All [glas data](GlasData.md) is logically encoded into binary trees with edges l
 
 ## Annotations
 
-Annotations are essentially structured comments embedded in the namespace AST. Annotations should not affect formal behavior of a valid program. But they may influence performance, verification, instrumentation, and reflection. The glas system relies on annotations to the extent of having far more annotation constructors than program primitives.
+Annotations are essentially structured comments embedded in the namespace AST. Annotations should not affect formal behavior of a valid program. But they may influence performance, verification, instrumentation, and reflection. The glas system relies on annotations; there are more annotation constructors than program primitives.
 
 A proposed set of annotation constructors are defined with the [program model](GlasProg.md), e.g. `(%an.log Chan Message)` to support debugging, `%an.lazy.spark` to guide parallelism, and `(%an.arity 1 2)` to roughly describe the stack effect of a subprogram. But a runtime is free to introduce new or deprecate old annotations. To resist silent degradation, we'll warn about undefined annotation constructors.
 
