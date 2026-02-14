@@ -35,29 +35,24 @@ glas* glas_thread_new();
 /**
  * Load a configuration file.
  * 
- * A configuration primarily defines an environment, 'env.*'. A fixpoint
- * feeds this back into the configuration as '%env.*' for propagation
- * alongside '%*' primitives. Primitives are implicitly provided.
+ * Loading a configuration is rather involved. A configuration defines
+ * its own environment, 'env.*', binding to '%env.*' in base. The file
+ * is initially compiled by a built-in compiler, then we bootstrap if 
+ * 'env.lang.glas' if defined. Bootstrap must reach a stable fixpoint in
+ * just a few cycles.
  * 
- * The tricky part is bootstrapping. By convention, front-end compilers
- * are defined in '%env.lang.FileExt'. Built-ins for ".glas" and ".glob"
- * are available, but the user may redefine them, in which case we must
- * rebuild the configuration using the front-end compiler defined within
- * the configuration.
+ * Note that loading a configuration doesn't observe or apply 'glas.*'
+ * options. It merely loads them into the namespace. This runtime refers 
+ * to those options only when running applications.
  * 
- * Other than that environment, a user configuration typically defines 
- * ad hoc runtime options under 'glas.*': guidance for logging, caching,
- * etc.. These options are observed later, when running applications, 
- * and may perform queries to application 'settings'.
- * 
- * If the configuration file is NULL, we search for fallback locations: 
+ * If the configuration file is NULL, we search fallback locations: 
  * 
  * - GLAS_CONF environment variable     if defined
  * - ${HOME}/.config/glas/conf.glas     on Linux
  * - %AppData%\glas\conf.glas           on Windows (if ported)
  * 
  * If there is no error, the configuration's definitions are loaded 
- * under a given prefix, default "conf." (if dst is NULL).
+ * under a specified prefix, default "conf." if dst is NULL.
  */
 void glas_load_conf(glas*, char const* dst, glas_file_ref const*);
 
@@ -65,21 +60,18 @@ void glas_load_conf(glas*, char const* dst, glas_file_ref const*);
  * Load a script file.
  * 
  * Where a configuration specifies an environment, a script assumes one.
- * When loading a script, '%env.*' is bound to a specified environment,
- * by default "conf.env.". The front-end compiler '%env.lang.FileExt' 
- * is applied. There is no need to bootstrap, no risk of interdepence.
- * Default destination prefix is "script.".
+ * The specified 'base' is passed directly as script base. Usually, this
+ * consists of '%*' outputs from a configuration, such that we can treat
+ * a script as being imported at the bottom of the configuration file.
  * 
- * Note: There is no language distinction between configurations and 
- * scripts. Installing a script into a configuration is essentially just
- * importing the script as a module under 'env.Name'.
+ * The main output from a script is (usually) a definition of 'app', an
+ * application. Though, scripts could just be used to load definitions.
  * 
- * Recommendation: Favor growing community configurations over sharing
- * scripts: the long-term maintenance story is better. But favor scripts
- * over managing individual user configurations. 
+ *   Default 'base': {{"%", "conf.%"}, {"", NULL}, {NULL, NULL}}
+ *   Default 'dst': "script."
  */
 void glas_load_script(glas*, char const* dst, 
-    glas_file_ref const*, glas_ns_tl* const env);
+    glas_file_ref const*, glas_ns_tl* const base);
 
 /**
  * Fork a glas thread.
@@ -184,15 +176,6 @@ inline void glas_incref(glas_refct c) {
  * NAMESPACES
  ************************/
 /**
- * Namespace Scopes
- * 
- * Push will duplicate the current namespace. Pop will restore to the
- * older namespace. 
- */
-void glas_ns_scope_push(glas*);
-void glas_ns_scope_pop(glas*);
-
-/**
  * Prefix-to-prefix Translations.
  * 
  * The glas namespace model uses prefix-to-prefix translations for many
@@ -208,9 +191,8 @@ void glas_ns_scope_pop(glas*);
  * 
  * Prefix-to-prefix translations have an obvious weakness: translation
  * of 'bar' to 'foo' also converts 'bard' to 'food'. To mitigate, glas
- * systems implicitly add a ".." suffix onto every name. This doesn't 
- * guarantee prefix-uniqueness, but it resists accident. It also enables
- * translation of "bar." to include "bar" and "bar.x".
+ * systems implicitly add an infinite "..." suffix to every name. This
+ * can be matched in lhs, e.g. "bar.." is unlikely to match other names.
  */
 struct glas_ns_tl { char const *lhs, *rhs; };
 
@@ -236,10 +218,10 @@ void glas_ns_hide_def(glas*, char const* name);
 void glas_ns_hide_prefix(glas*, char const* prefix);
 
 /**
- * Create a "data" definition.
+ * Creates a "data" definition.
  * 
- * Pops data from stack. Wraps as "data"-tagged d:Data. Assigns to 
- * specified name. The data must be non-linear (copyable, droppable).
+ * Pops data from stack. Wraps as "data"-tagged d:Data then assigns to
+ * indicated name. Causes linearity error if the data is linear.
  */
 void glas_ns_data_def(glas*, char const* name);
 

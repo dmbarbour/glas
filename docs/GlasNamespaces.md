@@ -53,13 +53,11 @@ It is possible to compose TLs sequentially. Rough sketch: to compute A followed-
 
 ### Tags and Adapters
 
-The glas namespace easily encodes tagged terms, encoding tags as Names.
+The glas namespace can essentially Church-encode tagged terms as Names, with adapters as reified environments. The tag selects an Adapter and applies it to a given Body.
 
-        tag TagName = f:("Body", (f:("Adapters", 
-            ((t:({""=>NULL}, b:("", TagName)), "Adapters"), "Body"))))
+        tag TagName = f:("Body", f:("Adapter", 
+           ((b:("", TagName), "Adapter"), "Body")))
         (tag "prog", ProgramBody)
-
-The tag selects an Adapter and applies it to a given Body. This is essentially a Church-encoded sum types, albeit leveraging the reified namespace. 
 
 In context of glas systems, I propose to tag all user definitions and compiled modules. This improves system extensibility, e.g. we can introduce tags for different calling conventions, alternative application models, etc..
 
@@ -72,7 +70,7 @@ Some tags currently in use:
 * "module" - a basic `Env -> Object` *Module* as described below
 * "app" - basic `Object` app, integrates object in specific manner
 
-Developers may freely introduce new tags and deprecate old ones.
+Developers can gradually introduce new tags and deprecate old ones. We might develop tags to work with DSLs like grammars, logic programs, constraint systems, process networks, hardware descriptions. Potential tags for alternative application models. An
 
 ### Objects
 
@@ -81,41 +79,6 @@ As the initial object model for glas systems, I propose an "obj"-tagged `Env -> 
 The 'Base' argument supports mixin composition and may ultimately bind the host, e.g. 'sys.\*' system effects APIs for application objects. The 'Self' argument is an open fixpoint, supporting mutual recursion with inheritance and override. The "obj" tag ensures opportunity to develop alternative object models, e.g. to eventually support multiple inheritance.
 
 The glas system uses objects for applications, modules, and front-end compilers. Objects offer an opportunity for extensibility, but effective use requires deliberate design. For example, a front-end compiler that exposes only 'compile' is less extensible than one that also exposes 'parse.int' for override.
-
-## Integration
-
-### Modules
-
-Modules are modeled as a "module"-tagged `Env -> Object`. That `Env` is a parameter object, providing 'src', an abstract location of the module's file. The Base for a module object links '%\*' primitives and a '%env.\*' shared environment. Importantly, these should include means to load further modules:
-
-- `(%src.file FilePath Src) : Src` - file in same folder or subfolder as another Src. 
-- `(%src.git URL Version Src) : Src` - remote DVCS repo; access relative '%src.file' 
-- `(%load Src) : d:Data` - load file, returns optional binary as embedded data 
-  - diverges for errors other than file does not exist
-- `(%macro P)` - P is 0--1 arity program that returns a closed-term namespace AST
-- `%env.lang.FileExt` - see *User-Defined Syntax* below
-
-To simplify sharing, refactoring, live coding, and metaprogramming, we impose some constraints:
-
-- forbid parent-relative ("../") and absolute filepaths
-- forbid files and subfolders whose names start with "."
-- warn if any file or repo is loaded more than once
-
-We might distinguish between 'importing' and 'including' a module. Importing a module will instantiate it, closing the fixpoint. Including a module is closer to applying a mixin, supporting inheritance and override of the module.
-
-### User-Defined Syntax
-
-A front-end compiler is an object that defines 'compile', a 1--1 arity program that takes an optional binary input and returns a closed-term namespace AST representing a module. Aside from 'compile', the object may provide ad hoc interfaces for tooling (e.g. syntax highlighting) or extension (e.g. override integer parser).
-
-By convention, front-end compilers should be available at '%env.lang.FileExt'. We can introduce front-end compilers globally via configured environment or override them locally, in scope of project or subfolder. This provides a simple basis for user-defined syntax.
-
-### Configuration
-
-A configuration is a module that defines a configured environment 'env.\*' and ad hoc runtime options in 'glas.\*'. When linking, we bind '%env.\*' in Base to the configured environment via fixpoint.
-
-A small, local user configuration will inherit from a large, curated community or company configuration in DVCS. The resulting environment may define hundreds of applications and libraries. Lazy evaluation and caching is essential for performance. Whole-system versioning is feasible if we use content-addressed hashes or stable tags when linking DVCS versions, or if our 'glas.\*' configuration options include rules to freeze DVCS links.
-
-When initially compiling the configuration, we supply a built-in compiler for at least '%env.lang.glas'. If the configuration defines 'env.lang.glas', we perform a bootstrap cycle to transition to the user-defined compiler.
 
 ## Safety
 

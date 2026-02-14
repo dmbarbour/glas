@@ -58,12 +58,12 @@ A significant benefit of built-in RPC in glas systems is the opportunity to inte
 
 A viable API:
 
-        rpc(MethodRef, Argument) : [cb?, bind] Result
-           cb(Argument) : [cb?] Result
+        rpc(MethodRef, Argument) : [cb, bind] Result
+           cb(Argument) : [cb] Result
            bind(MethodRef) : MethodURL
 
         sys.rpc.bind(MethodRef) : MethodURL
-        sys.rpc(MethodURL, Argument) : [cb?] Result
+        sys.rpc(MethodURL, Argument) : [cb] Result
 
         types MethodRef, Argument, Result = plain old data
         type MethodURL = friendly URL text, full URL
@@ -75,13 +75,13 @@ This API does not support discovery. It's left to the application to publish the
 
 *Aside:* MethodURL does not have a canonical representation. Each runtime may use its own encoding, compression, encryption or signature, etc.. Regardless of encoding, it's opaque in the normal mode of use. The only critical features are being unforgeable, and stable enough to not significantly harm runtime-level incremental computing.
 
-### Relative Bind for Composition
+### Hierarchical Bind for Composition
 
-The 'bind' method provided to 'rpc' initially links to 'sys.rpc.bind'. However, within a composite application, we can intercept 'bind' to wrap a MethodRef to better support routing and other features. Essentially, 'bind' is relative while 'sys.rpc.bind' is absolute. 
+The 'bind' method provided to 'rpc' initially links to 'sys.rpc.bind'. However, within a composite application, we can intercept 'bind' to wrap a MethodRef to better support routing and other features. Essentially, 'bind' is relative path while 'sys.rpc.bind' is an absolute path. 
 
 ### Revocation
 
-Users can implement revocable capabilities by including expiration times or lookup keys in MethodRef. Expiration is obvious. In case of lookup keys, the capability is disabled if the lookup fails, and we also can conveniently store a large or mutable context with a small, stable MethodURL.
+Users can implement revocable capabilities by including expiration times or lookup keys in MethodRef. In case of lookup keys, the capability is disabled if the lookup fails. We also can conveniently store a large or mutable context with a small, stable lookup key and MethodURL.
 
 We can also revoke MethodURLs by changing the cryptographic secret so they no longer authenticate. This doesn't need to be all-or-nothing. In practice, we might wish to rotate secrets so old ones remain available for several hours. A minimum viable API:
 

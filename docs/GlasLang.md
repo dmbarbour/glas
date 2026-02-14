@@ -1,6 +1,40 @@
 # Glas Language
 
-This document describes the primary '.glas' syntax. 
+This document describes the initial '.glas' syntax. I've barely started the design phase, so there's a lot more work todo here.
+
+Core Ideas:
+- Interpret file as a stream of mixins, top to bottom.
+- Easy to split file into 'sections' and compile separately.
+- Support for user-defined sections types.
+- Lightweight support for 'private' definitions. (Module-local. No overrides.)
+
+Challenges:
+- Distinguishing sections without parsing them.
+- Support for 'self' at both object and module layers without confusion.
+- tune Env - reserve parts for locals and compiler-internals
+
+A syntac
+
+
+## Modularity
+
+Some viable front-end syntax for integrating modules:
+
+        from Module [with EnvExpr] import Aliases
+        import Module [with EnvExpr] as Prefix
+        include Module 
+
+The 'import' variants instantiate the module object, closing the fixpoint. If an EnvExpr is specified we'll link it as base, otherwise we link the host's global namespace, '%\*'. For 'include', we instead apply the module object as a mixin, i.e. the module shares Self and behaves as a `Base -> Base` rewrite. We can 'include' a module to express inheritance and override.
+
+A minimum viable syntax for Module might consist of:
+
+        "foo.txt"       # files or URIs
+        (ModuleExpr)    # ad hoc macros
+
+
+# Old Content
+
+
 
 This syntax shall be slightly object-oriented, to account for modules, applications, and front-end compilers supporting mixins, overrides, inheritance. 
 - A relevant challenge is that, when defining one object within another, it can be difficult to determine which 'self' we should refer to (module or object layer) without clear syntactic distinctions. Might need to accept the syntactic overhead here.

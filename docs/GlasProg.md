@@ -44,10 +44,14 @@ In practice, developers will rely on accelerated functions instead of manipulati
 Registers are second-class. Access is provided through the namespace. Aside from storing data, registers also serve as a source of identity and ephemerality, e.g. for data abstraction and associative structure.
 
 * `(%rw Register)` - register swap; exchange data between stack and register.
-* `(%local RegOps)` - RegOps must be a namespace term of type `Env -> Program`. This receives an environment of registers, such that every name defines a register initialized to zero. The program is run in this context, then registers are logically reset (i.e. error if registers contain linear data).
-* `(%assoc R1 R2 RegOps)` - This supports associative structure. Every directed edge between two registers is treated as naming an entire environment of registers. This is mostly useful for secure API design. 
+* `(%local RegOps)` - RegOps must be a namespace term of type `Env -> Program`. Every name in Env references a register, initialized to zero. But the Program may reference only a finite subset of these registers.
+* `(%assoc R1 R2 RegOps)` - Every ordered pair of registers implicitly names another volume of registers. Mostly serves as a more static and optimizable alternative to abstract data types for securing APIs.
 
-The glas system can accelerate register operations. This is expressed in terms of providing registers as a static arguments to accelerated `Env -> Program` functions. If a register is used primarily through accelerated queue operations, the compiler can treat it as a queue for optimizing concurrency or distribution.
+Performance relies heavily on acceleration of useful `Register -> Program` operations. Even a basic 'get' `(%data 0; %rw R; %copy; %rw R; %drop)` can usefully be accelerated. 
+
+might be accelerated to avoid temporary data and touching the register twice.
+
+Even a basic register 'get' operation may be accelerated, but we can usefully accelerate queues, bags, CRDTs, etc. to optimize concurrency and distribution. For example, if we use a register only through queue ops, write transactions can use an intermediate buffer and any number of writers may commit concurrently with a single reader. Write order needs only be consistent with serializable transactions.
 
 ### Metaprogramming
 
@@ -55,7 +59,6 @@ The glas system can accelerate register operations. This is expressed in terms o
 * `(%eval Compiler)` - Compiler must be be a namespace term of type `Data -> Program`. The data argument is popped from the stack then passed to Compiler as embedded data. The returned program is validated in context (e.g. static assertions, typechecks), optimized or JIT-compiled, then run.
   * In practice, we'll often restrict %eval to compile-time via `%an.data.static` or `%an.eval.static`. Static %eval is more flexible than %macro alone insofar as program dataflow may cross namespace scopes.
   * Although the glas program model does not support first-class functions at runtime, dynamic %eval with caching can serve a similar role.
-* `(%ifdef Name P1 P2)` - Compile-time conditional behavior based on whether a name is defined in scope. Diverges if definition of Name cannot be observed.
 
 A powerful design pattern is to accelerate metaprograms. For example, we can develop a memory-safe intermediate language and reference interpreter for a virtual CPU or GPGPU, then 'accelerate' by compiling for actual hardware. This pattern replaces the performance role of FFI.
 
@@ -66,7 +69,7 @@ A powerful design pattern is to accelerate metaprograms. For example, we can dev
 * `(%load Src)` - loads external resources (usually files) at compile time. Use in conjunction with %macro to actually process the data. Diverges if Src is malformed, unreachable, or there are permissions issues.
 * `%src.*` - abstract Src constructors, e.g. to specify a relative file path or DVCS repository.
 
-See [namespaces](GlasNamespaces.md) for details.
+See [glas design](GlasDesign.md) for details.
 
 ## Transaction Loops
 
@@ -138,16 +141,16 @@ Instrumentation:
 
 Validation:
 * `(%an.arity In Out)` - express expected data stack arity for Op. In and Out must be non-negative integers. Serves as an extremely simplistic type description. 
-* `(%an.data.seal Key)` - operational support for abstract data types. For robust data sealing, Key should name a Register. If the Key becomes unreachable (e.g. Register out of scope), the sealed data may be garbage collected. Compiler can eliminate redundant seal and unseal operations if correct use is proven statically.
+* `(%an.data.seal Key)` - Operation must be %pass. Seals top item on data stack, modeling an abstract data type. Key typically names a Register. If Key becomes unreachable the sealed data may be garbage collected. A compiler may eliminate seal and unseal operations based on static analysis, effectively a form of type checking.
   * `(%an.data.unseal Key)` - removes seal with matching Key or diverges
-  * `(%an.data.seal.linear Key)` - a variant of seal that also marks sealed data as linear, i.e. no copy or drop until unsealed.
+  * `(%an.data.seal.linear Key)` - a variant of seal that also marks sealed data as linear, forbidding copy or drop of the data until unsealed. (This doesn't prevent implicit copies, e.g. for backtracking.)
     * `(%an.data.unseal.linear Key)` - counterpart to a linear seal.
-* `%an.static` - Indicates that Operation should be completed at compile-time. This doesn't force early evaluation, but serves as a hint for aggressive partial evaluation optimizations or raises an error if the optimization is invalid.
-* `%an.data.static` - (Op should be '%pass') Indicates top stack element should be statically computable. 
-* `%an.eval.static` - Indicates that any '%eval' steps within Operation must receive their AST argument at compile-time.
-* `(%an.type TypeDesc)` - Describes the expected partial type of Operation. Ideally, this is verified by a typechecker. Abstract types should be supported via '%type.\*'. 
-* `%an.det` - This expresses that Operation should be deterministic. If the Operation contains '%opt' then it should be something we can eliminate, e.g. due to %error or equivalence.
-  * `%an.det.e` - A variant for `Env -> Program` that says deterministic *up to* use of methods in `Env`.
+  * `(%key.reg RegisterName)` - construct Key based on register.
+* `%an.data.static` - Operation must be %pass. Indicates top stack element should be statically computable. Serves as a hint for partial evaluation; error if data depends on runtime input.
+* `%an.static` - Indicates subprogram must be statically computed. Serves as a hint for partial evaluation; error if computation depends on runtime input.
+* `%an.eval.static` - Indicates that all %eval steps within a program must receive their data argument at compile-time. 
+* `(%an.type TypeDesc)` - Describes the expected partial type of Operation. Ideally, this is verified by a typechecker. We'll develop '%type.\*' constructors to work with this.
+* `%an.det` - Indicates a subprogram should be observably deterministic. This isn't the same as rejecting non-deterministic choice; rather, such choices should lead to the same outcome. But without further proof hints, this effectively reduces to rejecting %opt.
 
 Laziness:
 * `%an.lazy.thunk` - Op must be pure, atomic, 1--1 arity, terminating. Instead of computing immediately, we return a thunk that captures Op and stack argument. The thunk must be explicitly forced.
@@ -162,12 +165,12 @@ Content-addressed storage:
 * `%an.cas.need` - Op must be %pass. Expects previously stowed data at top of data stack. Asks runtime to prepare for load in the background, caching the data. Data may be removed from cache again based on memory pressure.
 
 Incremental computing:
-* `(%an.memo MemoHints)` - memoize a computation. As a minimum viable product, we'll likely start by only supporting 'pure' functions. MemoHints TBD.
+* `(%an.memo MemoHints)` - memoize a computation. As a minimum viable product, we'll likely start by only supporting 'pure' functions. MemoHints TBD (likely '%memo.\*' constructors).
 * `%an.checkpoint` - when retrying a transaction, instead of recomputing from the start it can be useful to rollback partially and retry from there. In this context, a checkpoint suggests a rollback boundary.
+* *TBD* - support for memoization of control flow.
 
 Tail-Call Optimization:
-* `%an.tco` - indicates that Operation shall evaluate with bounded call and data stacks. (Heap isn't bounded.)
-  * `%an.tco.e` - variant for `Env -> Program`, bounded modulo use of methods in `Env`.
+* `%an.tco` - indicates a subprogram should evaluate with bounded data stack and call stack. Reports an error if compiler and optimizer cannot figure out how to make it happen. 
 
 Future development:
 * type declarations. I'd like to get bidirectional type checking working in many cases relatively early on.
@@ -319,3 +322,8 @@ I propose to develop ad hoc constructors for describing types under '%type.\*'. 
 Some thoughts:
 - Instead of hard-coding a few types like 'i64' or 'u8', consider an `(%type.int.range 0 255)` or similar.
 - need a const type that describes an expected value, too.
+
+### Checks Modulo Environment
+
+For a few annotations like tail-call optimizations (%an.tco) and determinism (%an.det) it seems useful to have a variant where `Env -> Program` is bounded-stack or deterministic modulo use of `Env`. 
+
