@@ -87,24 +87,9 @@ To make it more extensible and generic, "call" is tuned from `Env -> Program` to
 
 ### Positional Parameters
 
-Conventionally, procedural languages support ordered parameter lists. I'm not convinced this is a convention I want for glas systems. Named parameters are more self-documenting and extensible, safer to deprecate, and easily shared when factoring methods. Parameter lists are rigid and impose horizontal pressure on program syntax. But, in context of user-defined syntax, I anticipate someone will inevitably implement ordered parameter lists.
+Positional parameters shall be encoded into the "call" parameter object as 'args' - a "list"-tagged, Church-encoded list of tagged namespace terms. These terms aren't evaluated by the caller, thus default behavior is call-by-name. It isn't difficult to develop generic wrappers for call-by-value or call-by-need (assuming 0--1 programs).
 
-I propose that positional parameters are integrated into a "call" parameters as 'args': a "list"-tagged, Church-encoded list of tagged namespace terms. These terms do not necessarily represent program expressions and are not implicitly evaluated by the caller. They may be used for macro-like higher-order programming, but we can also develop function wrappers, e.g. for call-by-need (caching results) or eager evaluation. To avoid polluting the data stack, expression wrappers may introduce intermediate local registers. 
-
-Usefully, this design also enables the caller to abstract and refactor construction of arguments lists, i.e. positional 'args' may become a computed view of a parameter object. This mitigates many of my concerns.
-
-## Integrated Context (TBD)
-
-Idea is compile-time computations as we compose programs, observable within programs. 
-
-Motivating use cases:
-
-- Maintain metadata about unit types on numbers; print units from within the program.
-- Propagate metadata about goals backwards and adapt program behavior to future goals.
-
-Annotations are awkward for this role. They cannot feedback into a program modulo reflection. I'd prefer a more semantically robust design. 
-
-One idea is to *wrap* programs with extra metadata, then to compose this metadata in a systematic manner as we compose the wrapped programs. Associating metadata with registers may require special attention. However, this is very hand-wavy at the moment: How would we model context? How do we maintain metadata for registers? How can we express bi-directional dataflow? (multi-pass? fixpoint?)
+I hope to avoid positional parameters in glas syntax. Keyword parameters seem nicer for many use cases - easier to extend, deprecate, share when refactoring a method, etc.. But a standard approach is convenient for integration across front-end compilers. 
 
 ## Reflection
 
@@ -151,21 +136,19 @@ In context of non-deterministic choice, a divergent choice should backtrack and 
 
 ### Logging
 
-        a:((%an.log Chan LogOp), Program)
+        a:((%an.log Chan MsgSel), Program)
         type Chan = embedded String
-        type LogOp = Object -> Program 
+        type MsgSel = Object -> Sel 
 
 This annotation expresses logging *over* a Program. If Program is '%pass', we can simply print once. But if Program is a long-running loop that affects observed registers, we can feasibly 'animate' the log, maintaining the message. If the program has errors, we can attach messages to a stack trace. These are useful integrations.
 
-The Chan is a string that would be valid as a name. We can introduce `(%an.chan.scope TL)` to rewrite or disable channels within a subprogram. The LogOp receives an "obj"-tagged parameter object based on user configuration and Chan. This provides a 'log' method (1--0) to write ad hoc structured data, e.g. `(text:Message, code:42)`. In case of non-deterministic choice, the runtime will usually explore both choices to generate a set of messages. The parameter object may also provide reflection APIs, e.g. to support stack traces.
+The Chan is a string that would be valid as a name. The role of Chan is to disable some operations and precisely configure the rest. We can use `(%an.chan.scope TL)` to rewrite or disable channels within a subprogram.
 
-*Note:* A flat stream of text is an awkward UI for logging in context of transaction loops with incremental computing and concurrency on non-deterministic choice. But we could augment a stream of messages with metadata to render and update a logical tree structure.
+MsgSel receives an "obj"-tagged parameter object. This includes configuration options and some reflection APIs, e.g. to support stack traces. The returned selector (cf. '%cond' and '%loop') should model a 0--1 program, returning at most one message on the data stack. By convention, this is an ad hoc dict of form `(text:"oh no, not again!", code:42, ...)`. In case of '%opt', the runtime may evaluate both choices to generate a set of messages. MsgSel isn't necessarily 'pure', but any effects are aborted after the message is generated.
 
-### Location Mapping
+*Note:* A stream of log outputs can be augmented with metadata to maintain an animated 'tree' of messages, where the tree includes branching on non-deterministic choice. Users could view the stream or the tree.
 
-Using abstract Src and ad hoc location identifiers within a file (line, char, extent, match?)
-
-### 
+### CLEANUP NEEDED
 
 Instrumentation:
 * `(%an.assert Chan ErrorMsgGen)` - assertions are structured as logging an error message. If no error message is generated, the assertion passes. May reduce to warning.
@@ -179,7 +162,6 @@ Validation:
   * `(%an.data.unseal Key)` - removes seal with matching Key or diverges
   * `(%an.data.seal.linear Key)` - a variant of seal that also marks sealed data as linear, forbidding copy or drop of the data until unsealed. (This doesn't prevent implicit copies, e.g. for backtracking.)
     * `(%an.data.unseal.linear Key)` - counterpart to a linear seal.
-  * `(%key.reg RegisterName)` - construct Key based on register.
 * `%an.data.static` - Operation must be %pass. Indicates top stack element should be statically computable. Serves as a hint for partial evaluation; error if data depends on runtime input.
 * `%an.static` - Indicates subprogram must be statically computed. Serves as a hint for partial evaluation; error if computation depends on runtime input.
 * `%an.eval.static` - Indicates that all %eval steps within a program must receive their data argument at compile-time. 
@@ -238,40 +220,25 @@ Like logging, the viewer program runs in a hierarchical transaction. By default,
 
 The Chan can also serve a role of naming a view for discovery and integration. The compiler can warn if there is more than one view per Chan within an application. An application may serve as its own client through a reflection API (perhaps sys.refl.view.\*), thus serving debug views through non-debugger interfaces.
 
-## Lazy Computation and Parallel Sparks
-
-I propose explicit thunks of 1--1 arity, pure but optionally non-deterministic, atomic computations. Computation may fail or diverge, in which case forcing the thunk will diverge. 
-
-Interaction with non-determinism is interesting. We can maintain a list of non-deterministic results for a lazy computation. When forcing the thunk, we'll pick one (non-deterministically) and save the chosen outcome. If the forcing transaction does not commit, the saved choice is also not committed, thus the thunk remains non-deterministic. Thus, non-deterministic choice is lazily resolved by observers.
-
-We can ask a worker thread to compute thunks in the background. In case of non-determinism, worker threads can cache outcomes but cannot commit to anything. In any case, this provides a very convenient source of parallelism orthogonal to transaction-loop optimizations.
-
 ### Tail Call Optimization
 
 Instead of annotating individual calls to be tail-call optimized, I propose we should specify that subprogram shall be evaluated with bounded call and data stacks. We could also have a variant for `Env -> Prog` that says the Program has a bounded call stack modulo use of methods in `Env`.
 
 Performing the optimization can be difficult in context of `Env` arguments and register passing. But we can potentially unroll a recursive loop a few times, optimize, then verify that resources are recycled within just a few cycles.
 
+### Source Mapping
+
+It is feasible to use annotations for source mapping. Might take some work to prevent things from getting too bloated. We can leverage the abstract Src file in this context, but the front-end compiler must specify things like byte ranges or line numbers.
+
 ## Challenges TBD
 
 ### In-Place Update? Seems Infeasible.
 
-In theory, we can support in-place update for 'writing' indexed elements of a large structure. In practice, support for transactions, backtracking conditions, logging, etc. means we'll often have implicit copies of data even when we don't have semantic copies. Much simpler to stick to persistent data structures.
+If we hold a unique reference to a binary representation, we can directly mutate that binary in place. Some functional languages leverage linear types as a means to enforce unique reference. Unfortunately, linearity doesn't imply unique reference in context of backtracking. 
 
-Best we can easily do: 
+For persistent data structures, perhaps we could better utilize log-structured merge trees, maintaining a small 'working set' of updates closer to the root and propagating updates in heuristic batches. This would at least reduce the number of allocations per write.
 
-- accelerated bulk operations can skip intermediate data representations
-- accumulate 'writes' on accelerated data then apply as a bulk operation
-
-### Unit Types
-
-I'd like to associate unit metadata (e.g. kilograms or meters per second) with numbers within a program. But I don't want the overhead of doing this at runtime. I also don't want pure annotations, because I'd like the ability to print unit information.
-
-Use of the namespace might be feasible, but not via the basic "call"-tagged `Env -> Program`. I think we'd need something closer to a 'static' state monad, maintaining some ad hoc context across calls.
-
-Use of the data stack and partial evaluation is technically possible, but I doubt it would be pleasant. Perhaps we could bind unit data to associated registers, then verify static computation of those registers?
-
-Either way, I expect this will require ample support from the front-end compiler.
+For accelerated state, e.g. a register containing an array, we can at least support short-term in-place updates and maintain wide write buffers similar to cache lines, reducing need for allocations to rebuild a rope structure after each update.
 
 ### Type Descriptions
 
@@ -283,7 +250,12 @@ Some thoughts:
 - Instead of hard-coding a few types like 'i64' or 'u8', consider an `(%type.int.range 0 255)` or similar.
 - need a const type that describes an expected value, too.
 
-### Checks Modulo Environment
+### Overlay Context (TBD)
 
-For a few annotations like tail-call optimizations (%an.tco) and determinism (%an.det) it seems useful to have a variant where `Env -> Program` is bounded-stack or deterministic modulo use of `Env`. 
+I would like to wrap abstract programs with static context, i.e. metadata and dataflow, such that every subprogram has its own localized view of context. Sample use cases include support for unit types or performing modulo arithmetic based on a final modulo operation. Bi-directional dataflow seems essential, as does some form of unification (for loops and branches), and extensibility. It must be feasible to mirror local registers.
 
+My intuition is that a grammar-based model is a good fit. Grammars represent sets of sentences - where 'sentence' is rather flexible, could be structured data. Unification is encoded as an intersection of two grammars, and in practice we can unify at a point by having a gramar that is open except at that point. Usefully, we can easily obtain a local 'view' of context, i.e. a small fragment of the sentence, and we can integrate ambiguity as needed. Constraint systems are also viable, but it's less clear what a local view would look like.
+
+A grammar or constraint-system overlay can feasibly provide a robust mechanism for program search, too. Effective program search has long been a stretch goal for glas systems.
+
+The details need a lot of work. But, this should be an alternative to the "prog" tag, with front-end languages composing contexts and programs. We can readily work without overlays for now.

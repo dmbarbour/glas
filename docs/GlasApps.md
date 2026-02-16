@@ -64,18 +64,35 @@ The system links the application to an initial environment:
 
 Because this is presented as the 'Base' object from which the application inherits, it isn't difficult for application mixins to transparently extend the API. Depending on the runtime, 'Base' may partially depend on 'Self', in which case overriding some 'sys.\*' methods may affect others.
 
-## State and Ephemerality
+## State
 
-Without the implicit state from procedural control flow, application state is entirely provided through its effects API, via 'db.\*' and 'mem.\*' registers and perhaps a few 'sys.\*' APIs.
+Application state is primarily via 'mem.\*' and 'db.\*' registers. Some system APIs are stateful (e.g. filesystem), but registers are more convenient in context of structured data, content-addressed storage, and transactions. Aside from holding state, registers are useful as a stable source of identity.
 
-### Heap Refs
+### Heap-like Refs
 
-Registers are logically limited to plain old glas data. However, it isn't difficult to model a 'heap', e.g. register contains list, allocate ranges and update by index. Unfortunately, this model would not integrate nicely with runtime garbage collection. A runtime can easily provide an API for garbage-collected heaps:
+We can model heaps via indexed data structures, but built-in heaps provide superior performance and tight integration with the garbage collector. So, we'll support heap-like Refs.
 
-- `sys.ref.new() : [heap] Ref<heap>` - Returns a Ref bound to 'heap'. Here 'heap' is a register used as a source of identity and ephemerality. (The register is not modified.)
-- `sys.ref.with(Ref<heap>) : [heap, op]` - Runs 'op' parameterized by register 'ref', bound to the provided Ref. This enables Refs to have associative structure (can even use a Ref as a heap), to be used in sealing data, and to benefit from accelerated register operations.
+        sys.ref.new() : [heap] Ref<heap>
+        sys.ref.with(Ref<heap>, S) : [heap, op] S'
+          op(S) : [ref] S' 
 
-The glas runtime may broadly track lifespans of data and may enforce rules, e.g. to prevent a short-lived Ref from being stored into a longer-lived database register. Useful ephemerality scopes include: global, database, app, transaction. 
+In the proposed API, 'heap' is a register used as the source of identity and ephemerality. Refs can only be accessed in context of their heap.
+
+Instead of redundant methods to update Refs, we bind as register 'ref' in scope of 'op'. This allows us to use Refs for sealing abstract data, associative structure, even as a first-class heap. If Ref falls out of scope, all related data that becomes inaccessible (cannot be unsealed, etc.) should also be garbage collected.
+
+Refs are a potential source of linearity errors: we can easily store linear data in a Ref (or seal linear data with a Ref), then drop the Ref. This can potentially be detected by a garbage collector. If detected, the runtime should report a warning.
+
+### Acceleration
+
+A glas runtime can support accelerated register operations, e.g. for queue reads and writes. If a specific register is used only as a queue, the compiler can apply useful optimizations for concurrency and distribution. Acceleration can also reduce number of intermediate allocations when applying many small edits to large structures.
+
+Registers from Refs can also be accelerated. It is difficult to determine at compile-time whether a Ref is used through only one interface, but we can switch modes heuristically. There can be a high cost to switch modes, e.g. a distributed transaction if state is partitioned across nodes.
+
+### Ephemerality
+
+The glas system should enforce *ephemerality*: long-lived database registers cannot store short-lived data, such as an FFI thread or a Ref to 'mem.heap'. Registers hold glas data, binary trees, but *abstract* data may be marked ephemeral.
+
+It seems to be sufficient to distinguish four levels of ephemerality, at least for dynamic enforcement: global (rpc), database (db), application (mem), and transaction (local registers). That is, we cannot send db Refs over RPC, and we cannot store application-scoped data in the database. Detecting ephemerality violations for local register scopes within a transaction can be left to static analysis.
 
 ## Remote Procedure Calls (RPC)
 
