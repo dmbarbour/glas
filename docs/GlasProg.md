@@ -1,8 +1,10 @@
 # Program Model for Glas
 
-## Proposed Primitives
+This document describes the runtime program model for glas systems and several design patterns for how to use it more effectively.
 
-Programs are modeled as an abstract data type, and most program primitives are constructors for this type. Special exceptions are '%load' and '%macro' which support modularity and metaprogramming.
+## Primitive Constructors
+
+Programs are modeled as an abstract data type. For example, `(%do P1 P2)` returns an abstract program that, when executed, runs two subprograms sequentially.
 
 *Notation:* `(F X Y Z)` desugars to `(((F,X),Y),Z)`, representing curried application in the [namespace AST](GlasNamespaces.md). 
 
@@ -16,7 +18,7 @@ Programs are modeled as an abstract data type, and most program primitives are c
   * `(%sel Op)` - final selection, runs Op.
   * `%bt` - backtrack. logically causes prior condition to fail. As a special rule, we can optimize `(%br C %bt R) => R` even when C is divergent.
 * `(%loop Sel)` - Repeatedly runs Sel until it fails to select an action, then exit loop. (See %cond for Sel constructors.)
-* `(%opt P1 P2)` - fair, non-deterministic choice of P1 or P2. Associative.
+* `(%opt P1 P2)` - non-deterministic choice of P1 or P2. Associative.
 * `%error` - explicit divergence, logically equivalent to an infinite loop. 
   * use `%an.error.log` to attach a message to errors.
   * as an optimization, %error can backtrack to prior %opt in context of transaction loops because the choice is repeated.
@@ -30,14 +32,14 @@ Programs are modeled as an abstract data type, and most program primitives are c
 * `%swap` - exchange top two stack elements. i.e. "ab-ba"
 * `%copy` - copy top stack element, i.e. "a-aa".
 * `%drop` - drop top stack element, i.e. "a-".
-* `%mkp` - "lr-(l,r)" make pair elements (r at top of stack) 
+* `%mkp` - "lr-(l,r)" make pair elements (r from top of stack) 
 * `%mkl` - rewrite top stack element to be left branch of tree
 * `%mkr` - rewrite top stack element to br right branch of tree
 * `%unp` - undoes mkp, fails if not a pair.
 * `%unl` - undoes mkl, fails if not a left branch
 * `%unr` - undoes mkr, fails if not a right branch
 
-In practice, developers will rely on accelerated functions instead of manipulating trees one bit or branch at a time.
+The primitive data operations touch one bit at a time. In practice, developers will rely heavily on accelerated functions for performance, even for basic operations like inserting a label into a dictionary. 
 
 ### Registers
 
@@ -47,97 +49,129 @@ Registers are second-class. Access is provided through the namespace. Aside from
 * `(%local RegOps)` - RegOps must be a namespace term of type `Env -> Program`. Every name in Env references a register, initialized to zero. But the Program may reference only a finite subset of these registers.
 * `(%assoc R1 R2 RegOps)` - Every ordered pair of registers implicitly names another volume of registers. Mostly serves as a more static and optimizable alternative to abstract data types for securing APIs.
 
-Performance relies heavily on acceleration of useful `Register -> Program` operations. Even a basic 'get' `(%data 0; %rw R; %copy; %rw R; %drop)` can usefully be accelerated. 
-
-might be accelerated to avoid temporary data and touching the register twice.
-
-Even a basic register 'get' operation may be accelerated, but we can usefully accelerate queues, bags, CRDTs, etc. to optimize concurrency and distribution. For example, if we use a register only through queue ops, write transactions can use an intermediate buffer and any number of writers may commit concurrently with a single reader. Write order needs only be consistent with serializable transactions.
+Performance relies heavily on acceleration of useful `Register -> Program` operations. Even a basic 'get' `(%data 0; %rw R; %copy; %rw R; %drop)` can usefully be accelerated. But we'll also accelerate queues, bags, CRDTs, etc. to simplify transaction conflict analysis and optimize organization of state in distributed runtimes.
 
 ### Metaprogramming
 
-* `(%macro Builder)` - Builder must be a deterministic 0--1 arity program that returns a closed-term namespace AST on the data stack. Returns the evaluated namespace term.
-* `(%eval Compiler)` - Compiler must be be a namespace term of type `Data -> Program`. The data argument is popped from the stack then passed to Compiler as embedded data. The returned program is validated in context (e.g. static assertions, typechecks), optimized or JIT-compiled, then run.
-  * In practice, we'll often restrict %eval to compile-time via `%an.data.static` or `%an.eval.static`. Static %eval is more flexible than %macro alone insofar as program dataflow may cross namespace scopes.
-  * Although the glas program model does not support first-class functions at runtime, dynamic %eval with caching can serve a similar role.
+* `(%eval Env)` - pops a namespace AST from the data stack that, in context of provided Env, evaluates to a Program. Verifies, e.g. typechecks and static assertions in context. Runs, may involve JIT compilation.
 
-A powerful design pattern is to accelerate metaprograms. For example, we can develop a memory-safe intermediate language and reference interpreter for a virtual CPU or GPGPU, then 'accelerate' by compiling for actual hardware. This pattern replaces the performance role of FFI.
+If the AST is determined statically, the optimizer can erase '%eval' and substitute the program. We can insist on static AST via annotations, '%an.data.static' or '%an.eval.static'. For dynamic eval, we can attempt to leverage abstract interpretation and incremental computing to reduce rework.
 
-*Aside:* We can also do metaprogramming at the namespace layer via Church-encoded lists and data. Tags and adapters are a limited example of this.
+## Note on Metaprogramming
 
-### Modularity Extensions
+Aside from '%eval', we can also support metaprogramming via '%macro', or within the namespace layer (e.g. via Church-encoded lists of namespace terms). But only '%eval' supports runtime metaprogramming.
 
-* `(%load Src)` - loads external resources (usually files) at compile time. Use in conjunction with %macro to actually process the data. Diverges if Src is malformed, unreachable, or there are permissions issues.
-* `%src.*` - abstract Src constructors, e.g. to specify a relative file path or DVCS repository.
+* `(%macro P) : Any` - 0--1 arity program P must return closed-term namespace AST.
 
-See [glas design](GlasDesign.md) for details.
+Use of '%eval' is more convenient when we don't *locally* know whether an AST is static or not. Or when the dataflow to construct an AST doesn't align nicely with the lexical namespace scope.
 
-## Transaction Loops
+## Design Patterns
 
-The main loop of a [glas application](GlasApps.md) is repeating calls to a transactional 'step' method. This forms a transaction loop.
+The primitive program model is very constraining. We can leverage the namespace layer to greatly enhance expressiveness and improve the user experience.
 
-A transaction loop is any atomic, isolated ([serializable](https://en.wikipedia.org/wiki/Isolation_(database_systems)#Serializable)) transaction, run repeatedly. This structure supports many simplifications and optimizations:
+### Pass-By-Ref and Algebraic Effects
 
-- *Incremental*: Instead of fully repeating a transaction, we can partially-evaluate based on stable state then repeat only unstable computations. Partial evaluation ideally aligns with dataflow instead of control flow.
-- *Reactive*: When we know repetition will be unproductive, instead of burning CPU we can install triggers to await relevant changes. With some clever API design, this includes waiting on clocks.
-- *Concurrent*: For serializable transactions, repetition and replication are equivalent. In context of non-deterministic choice, we can run a parallel transaction loop for each series of choices with [optimistic concurrency control](https://en.wikipedia.org/wiki/Optimistic_concurrency_control).
-- *Distributed*: Building on concurrency, we replicate a transaction loop across multiple nodes with a distributed runtime. To avoid unnecessary distributed transactions, we heuristically abort transactions better initiated on a remote node.
-- *Live*: We can robustly update the transaction procedure between transactional steps. We can model the transaction as reading its own procedure.
-- *Orthogonal Persistence*: Application state exists outside the loop. We can easily back application state with durable or distributed storage.
+Instead of working directly with `Program` definitions, we can compose `Env -> Program` definitions, providing part of the caller's environment. This enables the caller to provide access to local registers or callbacks, for example. Effectively, this can support higher-order programming and algebraic effects, albeit without the ability to 'return' a function.
 
-The system provides a mechanism to escape transactional isolation, 'sys.refl.bgcall'. This requests the runtime perform an operation *prior* to the current transactions. This is carefully designed to be compatible with transaction-loop optimizations, though it still requires ostensibly 'safe' operations like HTTP GET.
+### Calling Conventions
 
-## State Machines and Control Flow
+We can freely mix `Program`, `Env -> Program`, embedded `Data`, and other definitions, within a namespace. However, doing so complicates front-end syntax, i.e. the caller must locally know and explicitly adapt each definition. This extra knowledge becomes an source of unnecessary rigidity for some program updates, e.g. a 0--1 `Program` can be trivially updated to embedded `Data` and sometimes the converse, but with explicit adapters we're always forced to edit the caller.
 
-It isn't difficult to model a multi-step process with a transaction loop. It is sufficient to explicitly maintain state about which 'step' we're on. Further, we can generalize to multi-threading, maintaining a little state about each thread and making a non-deterministic choice about which thread is scheduled.
+To mitigate this, we can tag user definitions, e.g. with "prog", "call", and "data".
 
-But there is a significant performance overhead to repeatedly examine the current state, navigate to the correct code, perform a slice of work, then navigate back out. Especially when the process is deeply hierarchical or the slice of work is short.
+* "data" - raw, embedded data of any type; program adapter via '%data'
+* "prog" - directly wraps an abstract Program; no embedding context
+* "call" - `Object -> Def`, tagged parameter object to tagged definition
 
-Ideally, we can optimize this pattern to achieve something close to performance of built-in control flow. My intuition is that this is feasible with a variation on incremental computing where we maintain a cache of control-flow states as we update machine states. Doesn't seem easy to implement, however.
+To make it more extensible and generic, "call" is tuned from `Env -> Program` to include tags on both input and output. For the input, we may initially support "env"-tagged environments or "obj"-tagged basic objects. Favoring the latter, we can conveniently support default parameters.
 
-## Distribution
+### Positional Parameters
 
-We can develop a distributed runtime that runs on multiple nodes, multiple OS processes. A repeating 'step' transaction and event handlers like 'http' and 'rpc' can be mirrored on each node without affecting semantics. This requires expensive distributed transactions if we aren't careful. But it is possible to design with distribution in mind, limiting most transactions to just one or two nodes.
+Conventionally, procedural languages support ordered parameter lists. I'm not convinced this is a convention I want for glas systems. Named parameters are more self-documenting and extensible, safer to deprecate, and easily shared when factoring methods. Parameter lists are rigid and impose horizontal pressure on program syntax. But, in context of user-defined syntax, I anticipate someone will inevitably implement ordered parameter lists.
 
-A simple performance heuristic is to abort any step that is better started on another mirror node. Assume the other will get to it. If necessary, communicate the expectation. 
+I propose that positional parameters are integrated into a "call" parameters as 'args': a "list"-tagged, Church-encoded list of tagged namespace terms. These terms do not necessarily represent program expressions and are not implicitly evaluated by the caller. They may be used for macro-like higher-order programming, but we can also develop function wrappers, e.g. for call-by-need (caching results) or eager evaluation. To avoid polluting the data stack, expression wrappers may introduce intermediate local registers. 
 
-We can further optimize based on patterns of state usage. For example, a read-mostly register can be mirrored, while a write-heavy register might 'migrate' to where it's currently being used. A queue's state can be divided between reader and writer nodes, while a bag (multiset) can be logically partitioned between any number of nodes. A conflict-free replicated datatype (CRDT) can be replicated on every node and synchronized opportunistically, when nodes interact.
+Usefully, this design also enables the caller to abstract and refactor construction of arguments lists, i.e. positional 'args' may become a computed view of a parameter object. This mitigates many of my concerns.
 
-State optimizations rely on accelerated register operations. A register accessed only via accelerated queue operations can be optimized as a queue.
+## Integrated Context (TBD)
 
-*Aside:* Distribution also require attention to system API design, e.g. a distributed runtime doesn't have just one filesystem.
+Idea is compile-time computations as we compose programs, observable within programs. 
 
-## Extension
+Motivating use cases:
 
-The namespace supports several layers of extensibility for programs: module and application objects, tagged definitions, and introducing new program constructors. Object-layer extension is via OO-style inheritance and override. And new program constructors are rather ad hoc. 
+- Maintain metadata about unit types on numbers; print units from within the program.
+- Propagate metadata about goals backwards and adapt program behavior to future goals.
 
-Tagged definitions support both flexible calling conventions and alternative program models. 
+Annotations are awkward for this role. They cannot feedback into a program modulo reflection. I'd prefer a more semantically robust design. 
 
-* "data" - `Data` - embedded data, wrap %data then integrate
-* "prog" - `Program` - abstract program, directly integrate
-* "call" - `Env -> Def` - implicitly parameterized by caller namespace with syntactically specified translations, then apply adapter again to returned Def.
+One idea is to *wrap* programs with extra metadata, then to compose this metadata in a systematic manner as we compose the wrapped programs. Associating metadata with registers may require special attention. However, this is very hand-wavy at the moment: How would we model context? How do we maintain metadata for registers? How can we express bi-directional dataflow? (multi-pass? fixpoint?)
 
-We could introduce alternatives to "prog" for defining and composing grammars, logics, hardware description, constraint systems, process networks, interaction nets, etc.. If we decide there's a reasonable default interpretation for 'calling' a grammar, we could extend our call-site adapter. But even without that, we can explicitly integrate grammars into programs.
+## Reflection
+
+When we construct a program `(%do P1 P2)`, there is no primitive mechanism to separate this back into its constituent elements. However, a runtime may provide ad hoc reflection APIs, e.g. passing 'sys.refl.\*' to an application. The view of a definition through this lens may be runtime-specific, but a viable mechanism is to return a namespace AST that can reconstruct a definition given program primitive constructors.
 
 ## Annotations
 
-Annotations are supported at the namespace layer.
+Annotations are structured comments supported in the namespace AST:
 
-        a:(Annotation, Operation)    # namespace AST node
+        a:(Annotation, Operation)
 
-In context, Operation will usually be an abstract `Program` or an `Env -> Program` namespace term. It's preferable to keep annotations inside any "prog" or "call" tags.
+Annotations should not affect formal behavior of valid programs. That is, it should be 'safe' in terms of semantics to ignore annotations. However, annotations significantly influence optimization, verification, instrumentation, and other 'non-functional' features. In practice, performance is part of correctness. Annotations aren't optional. To resist *silent* degradation of performance (and other properties), glas systems shall report warnings for unrecognized annotations.
 
-Acceleration:
-* `(%an.accel Accelerator)` - performance primitives. Indicates that a compiler or interpreter should substitute Op for an equivalent built-in. We use `%accel.OpName` to name the accelerator. In rare cases, a generic accelerator might be parameterized `(%accel.OpName Args ...)`.
+By convention, abstract annotation constructors are provided alongside program constructors, favoring names in '%an.\*'. This reduces need to 'interpret' arbitrary namespace terms as annotations. It also simplifies reporting for unrecognized or invalid annotations.
+
+Annotations aren't limited to programs. However, within this document, I'm focused on programs and program-adjacent structures (e.g. `Register->Program`). 
+
+### Acceleration
+
+        a:(%an.accel.list.concat, SlowListConcat)
+        # replaces SlowListConcat with runtime built-in
+
+Annotation-guided acceleration is a simple, effective, extensible performance solution. The essential idea is to replace a slow implementation with a fast runtime built-in. In case of list concat, the built-in should leverage specialized representations, implementing large lists as finger-tree ropes.
+
+The runtime may perform lightweight validation before substitution, e.g. typechecks and a few simple tests even if not proof-carrying code. Enough for confidence. Users are also encouraged to develop a suite of unit tests comparing SlowListConcat with the accelerated version. But, during early or experimental development of an accelerator, it is inconvenient to maintain both. In these cases, consider '%an.tbd' to convert validation errors into TBD warnings.
+
+We will accelerate several `Register->Program` operations, e.g. for queue reads and writes, bags, and CRDTs. Aside from local performance benefits, accelerated state models can simplify conflict analysis for optimistic concurrency control, or provide useful hints to effectively mirror and partition state within a distributed runtime.
+
+An especially useful pattern is to accelerate interpreters for abstract machines. For example, we could develop a memory-safe, portable subset of Vulkan or OpenCL. A runtime built-in would then 'accelerate' by compiling for CPU SIMD or GPGPU hardware. As with queues, it may be useful to bind a Register for abstract machine state. A careful choice of abstract machines enables glas systems to integrate high-performance computing without FFI.
+
+Development of accelerators is runtime specific but subject to de facto standardization.
+
+### Lazy Evaluation and Parallel Sparks
+
+        a:(%an.lazy.thunk, Program)     # Data -- Thunk
+        a:(%an.lazy.force, %pass)       # Thunk -- Data
+        a:(%an.lazy.spark, %pass)       # Thunk -- Thunk
+
+We can thunkify a pure (maybe non-deterministic), terminating 1--1 arity program. This immediately returns an abstract thunk on the data stack that captures input and program. When forced, we evaluate, cache, and return the result. We can ask the runtime to enqueue a thunk for evaluation in a worker thread, called 'sparks' here (allusion to Haskell). Sparks enable developers to separate expensive computations from transactions (reducing risks of read-write conflicts), and provide an independant mechanism for parallelism.
+
+In context of non-deterministic choice, a divergent choice should backtrack and try other paths until one succeeds. But there is an intriguing opportunity: we can defer choice. Logically, instead of committing to a choice when the thunk is created, commit when the thunk is forced and the observer commits. By deferring choice, computation with thunks implicitly becomes a constraint system, with observers refining choices. Lazy choice becomes benign instead of fair. To make this mode explicit, we could introduce '%an.lazy.opt' to annotate subprograms that create thunks.
+
+*Note:* Interaction with linear types needs attention. A thunk should be linear if the result may be linear. In theory this can be achieved via type inference, but I propose introducing '%an.lazy.thunk.linear' to explicitly construct linear thunks.
+
+### Logging
+
+        a:((%an.log Chan LogOp), Program)
+        type Chan = embedded String
+        type LogOp = Object -> Program 
+
+This annotation expresses logging *over* a Program. If Program is '%pass', we can simply print once. But if Program is a long-running loop that affects observed registers, we can feasibly 'animate' the log, maintaining the message. If the program has errors, we can attach messages to a stack trace. These are useful integrations.
+
+The Chan is a string that would be valid as a name. We can introduce `(%an.chan.scope TL)` to rewrite or disable channels within a subprogram. The LogOp receives an "obj"-tagged parameter object based on user configuration and Chan. This provides a 'log' method (1--0) to write ad hoc structured data, e.g. `(text:Message, code:42)`. In case of non-deterministic choice, the runtime will usually explore both choices to generate a set of messages. The parameter object may also provide reflection APIs, e.g. to support stack traces.
+
+*Note:* A flat stream of text is an awkward UI for logging in context of transaction loops with incremental computing and concurrency on non-deterministic choice. But we could augment a stream of messages with metadata to render and update a logical tree structure.
+
+### Location Mapping
+
+Using abstract Src and ad hoc location identifiers within a file (line, char, extent, match?)
+
+### 
 
 Instrumentation:
-* `(%an.log Chan MsgSel)` - printf debugging! Logging will *overlay* an Operation, automatically maintaining the message. The MsgSel type is sophisticated; see *Logging*.
-* `(%an.error.log Chan MsgSel)` - log a message only when Operation halts due to an obvious divergence error (such as '%error', assertion failure, or a runtime type error).
 * `(%an.assert Chan ErrorMsgGen)` - assertions are structured as logging an error message. If no error message is generated, the assertion passes. May reduce to warning.
 * `(%an.assert.static Chan ErrorMsgGen)` - assertion that must be computed at compile-time, otherwise it's a compile-time error. May reduce to compile-time warning with or without a runtime error.
 * `(%an.profile Chan BucketSel)` - record performance metadata such as entries and normal exits, fails, errors, time spent, time wasted on rework, etc.. Profiles may be aggregated into buckets based on BucketSel. 
 * `(%an.trace Chan BucketSel)` - record information to support slow-motion replay of Operation. BucketSel helps control and organize traces. See *Tracing*.
-* `(%an.view Chan Viewer)` - support interactive debug views of a running application. See *Debug Views*
-* `(%an.chan.scope TL)` - apply a prefix-to-prefix translation to Chan names in Operation.
 
 Validation:
 * `(%an.arity In Out)` - express expected data stack arity for Op. In and Out must be non-negative integers. Serves as an extremely simplistic type description. 
@@ -153,11 +187,6 @@ Validation:
 * `%an.det` - Indicates a subprogram should be observably deterministic. This isn't the same as rejecting non-deterministic choice; rather, such choices should lead to the same outcome. But without further proof hints, this effectively reduces to rejecting %opt.
 
 Laziness:
-* `%an.lazy.thunk` - Op must be pure, atomic, 1--1 arity, terminating. Instead of computing immediately, we return a thunk that captures Op and stack argument. The thunk must be explicitly forced.
-  * If Op is non-deterministic, we'll resolve the choice lazily. It becomes committed choice only if an observer commits after forcing the thunk.
-  * The 'terminating' constraint is not enforced by this annotation. But the rule exists because only terminating thunks have equivalent behavior across transactions. (Annotations should not affect formal behavior of valid programs.)
-* `%an.lazy.force` - Op must be %pass. Forces evaluation of thunk at top of data stack. May diverge if thunk is invalid.
-* `%an.lazy.spark` - Op must be %pass. Operates on thunk at top of data stack: if not already evaluated or scheduled, schedules evaluation by background worker thread.
 
 Content-addressed storage:
 * `%an.cas.stow` - Op must be %pass. Lazily offloads data to remote storage. Actual move is heuristic, e.g. based on memory pressure and size of data.
@@ -177,20 +206,6 @@ Future development:
 * unit types? 
 * debug trace. Probably should wait until we have a clear idea of what a trace should look like. 
 * debug views. Specialized projectional editors within debuggers.
-
-### Logging
-
-        a:((%an.log Chan MsgSel), Operation)
-        type MsgSel : Env -> Sel
-        type Chan is an embeded string 
-
-MsgSel can fail if there is no message, or return a primary message on the data stack. Extensible outputs are feasible through APIs in the Env argument. Instead of insisting that MsgSel is a 'pure' computation, we leverage transactions and simply undo writes performed during evaluation.  If non-deterministic, we can log multiple possible messages.
-
-Note that logging overlays an Operation. If Operation is a no-op (`%pass`), this behaves like one-off logging. But, in the general case, we can 'animate' the log - recompute messages at several steps. MsgSel cannot directly view updates to the data stack, but we can provide reflection APIs through the Env argument.
-
-Instead of a flat stream of text, log output might be modeled as a stream of updates to a logical tree structure, including branches for stable non-deterministic choice. Something like this should align better with transaction loops.
-
-To support ad hoc configuration, there may be per-Chan settings with guidance from both user configuration and application settings. Additionally, for dynamic settings, we could support per-Chan registers managed via 'sys.refl.log.\*' or similar. MsgSel could be conditional on these settings and registers, allowing for flexible control.
 
 ### Tracing (TBD)
 
@@ -223,61 +238,6 @@ Like logging, the viewer program runs in a hierarchical transaction. By default,
 
 The Chan can also serve a role of naming a view for discovery and integration. The compiler can warn if there is more than one view per Chan within an application. An application may serve as its own client through a reflection API (perhaps sys.refl.view.\*), thus serving debug views through non-debugger interfaces.
 
-### Accelerators
-
-        (%an.accel %accel.OpName)           # built-in function 
-
-Accelerators replace a reference Operation with a built-in. Ideally, this substitution is verified, e.g. we can check types for compatibility and run a few sample tests. If it is inconvenient to immediately provide Operation, as may be the case during early development of accelerators, users may use '%error'. The runtime will recognize the user isn't even trying and report a warning instead.
-
-In a few cases, such as `%accel.list.flatten`, the accelerated Operation can be %pass because we're tuning representation instead of performing an observable computation. Flatten is reasonably part of the list accelerator family.
-
-We can accelerate Operations that expect static arguments on the data stack, or accelerate `Env -> Program` for higher-order computations. In rare cases, we might use `(%accel.OpName Args)` to construct a templated accelerator.
-
-
-List Ops:
-* len
-* append
-* split
-* index get/set/swap
-
-Dict Ops:
-* insert 
-* remove
-* count
-* keys
-
-Bitstring Ops:
-* len
-* invert
-* reverse
-* split
-* append
-
-Arithmetic
-* Sum
-* Product
-* Negation
-* Reciprocal
-
-Graphs? We could accelerate graph ops. May need graph canonization.
-
-Register Ops:
-
-* Cell
-  * Get
-  * Set
-* Queue
-  * Read
-  * Peek
-  * Unread
-  * Write
-* Bag
-  * Put
-  * Grab
-  * Peek
-* CRDTs
-* Indexed Data (arrays, dicts)
-
 ## Lazy Computation and Parallel Sparks
 
 I propose explicit thunks of 1--1 arity, pure but optionally non-deterministic, atomic computations. Computation may fail or diverge, in which case forcing the thunk will diverge. 
@@ -292,7 +252,7 @@ Instead of annotating individual calls to be tail-call optimized, I propose we s
 
 Performing the optimization can be difficult in context of `Env` arguments and register passing. But we can potentially unroll a recursive loop a few times, optimize, then verify that resources are recycled within just a few cycles.
 
-## TBD
+## Challenges TBD
 
 ### In-Place Update? Seems Infeasible.
 

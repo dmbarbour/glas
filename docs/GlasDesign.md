@@ -24,23 +24,24 @@ Modularity and extensibility of glas systems relies on tags and objects. These p
 
 ## Modules and Modularity
 
-Source files are compiled into modules by a front-end compiler. Modules are expressed as a "module"-tagged `Src -> Object` namespace term. To import a module, we provide the Src used to load the file and link object base to the host's '%\*' pseudo-global namespace. This should includes program constructors and functions to transitively load and compile more modules:
+Source files are compiled into modules by a front-end compiler. Basic modules are expressed as a "module"-tagged `Src -> Object` namespace terms. To import the module, we provide Src for the module's source file, then link object base with the host's '%\*' pseudo-global namespace. This must include functions to further load and compile more modules:
 
-- `(%load Src) : optional Binary` - Load abstract source file at compile-time. 
-  - If the source does not exist, returns none. Diverges for any other error. 
+- `(%load Src) : optional Binary` - Load abstract file source at compile-time. 
+  - If the file does not exist, returns none. Diverges for any other error. 
   - Warns if any file is loaded twice, or a repo is loaded through two paths.
 - `(%macro P) : Any` - 0--1 arity program P must return closed-term namespace AST.
   - Useful for metaprogramming in general. In this case, for front-end compilers. 
 - `%env.lang.FileExt : Compiler` - convention; see *User-Defined Syntax* below. 
-- `(%src SrcPath Src) : Src` - Constructs an abstract source path. 
+- `(%src SrcArc Src) : Src` - Constructs an abstract source path. 
   - Abstracted for location independence, but accessible to reflection APIs.
   - Always relative to simplify tracing and control (e.g. DVCS redirects).
-- `(%src.file FilePath) : SrcPath` - relative to prior file or repo root. 
+- `(%src.file FilePath) : SrcArc` - relative to prior file or repo root. 
   - Forbids parent-relative ("../") and absolute filepaths.
   - Forbids files and subfolders whose names start with ".".
-- `(%src.dvcs (url:..., ref:...)) : SrcPath` - ref to DVCS repo.
-- `(%src.dvcs.redirect P) : SrcPath` - program to rewrite DVCS refs.
-- `(%src.note Data) : SrcPath` - annotations for reflection APIs.
+- `(%src.dvcs RepoRef) : SrcArc` - ad hoc ref to DVCS repo, e.g. URL and branch.
+  - RepoRef is plain old data; what is recognized depends on runtime.
+- `(%src.dvcs.redirect P) : SrcArc` - program P is RepoRef--RepoRef function.
+- `(%src.note Data) : SrcArc` - annotations for reflection APIs.
 
 The proposed restrictions on filepaths ensure folders are location-independent, easy to package and share. If the warnings discouraging filesystem-layer sharing are heeded, we mitigate need for shotgun edits to perform filesystem-layer refactoring and restructuring. DVCS redirects are useful for whole-system versioning and curation: we can redirect an unstable branch to a stable tag, content-addressed hash, or community-controlled fork.
 
@@ -60,7 +61,7 @@ Users aren't limited to textual syntax. Binary formats are useful for graphical 
 
 ## Standard Syntax
 
-To get started, the glas system specifies a [".glas" syntax](GlasLang.md). This is intended to be the primary textual syntax of glas systems, with user-defined syntax mostly supporting DSLs, graphical programming, or user extensions to this syntax. 
+The glas system specifies a [".glas" syntax](GlasLang.md). This is intended to be a primary textual syntax of glas systems, with user-defined syntax supporting DSLs, graphical programming, or user extensions to this syntax. 
 
 ## Programs
 
@@ -72,33 +73,33 @@ The program model is not wholly independent of the namespace model: registers ar
 
 Annotations are structured comments embedded in the namespace AST. Annotations should not affect formal behavior of a valid program, but they may influence performance, verification, instrumentation, and reflection. For example, we might use `(%an.log Chan Message)` for logging, `%an.lazy.spark` to guide parallelism, and `(%an.arity 1 2)` to verify data stack arity of a subprogram.
 
-Performance of glas systems relies on annotation-guided *acceleration*. An annotation such as `(%an.accel %accel.list.concat)` asks a runtime to substitute an annotated reference implementation with a built-in. The built-in can leverage hidden implementation details, e.g. representing large lists into finger-tree ropes. The runtime is encouraged to validate the reference implementation before replacing.
+Performance of glas systems relies on annotation-guided *acceleration*. An annotation such as `%an.accel.list.concat` might ask a runtime to substitute an annotated reference implementation of a list concat function with a built-in. The built-in can leverage hidden implementation details, e.g. representing large lists into finger-tree ropes. The runtime is encouraged to validate the reference implementation before replacing.
 
 By accelerating *interpreters*, e.g. for a memory-safe subset of Vulkan or OpenCL, we can integrate high-performance computing into glas systems while avoiding awkward semantics and safety concerns of FFI.
 
 Runtimes are free to develop or deprecate annotations. Several ideas are proposed in the program model document.
 
-## Configuration
-
-A configuration is a root module in a glas system. In my vision, a small, filesystem-local user configuration inherits from a large, curated community or company configuration in DVCS. The final environment may define hundreds of applications and shared libraries. Performance depends on lazy loading and incremental compilation. Correctness relies on whole-system versioning, supported by user discipline and via DVCS redirects.
-
-To initially compile the configuration file, we need a built-in compiler. To support modularity, we also link '%env.lang.glas' to the built-in. But the configuration may define its own compiler. If so, we'll attempt to bootstrap and verify a stable fixpoint is reached within a few cycles.
-
-The primary outputs from a configuration are the final '%env.\*' environment and 'glas.\*' runtime configuration options. We can configure the runtime then run an application by name.
-
 ## Applications
 
-A basic [application](GlasApps.md) is an "app"-tagged object that defines transactional methods such as 'step', 'http', 'rpc'. When instantiated, the application object is linked to state registers and 'sys.\*' effects APIs. The runtime repeatedly executes 'step', perhaps concurrently (on non-deterministic choice), but other methods are driven by based on external events.
+A basic [application](GlasApps.md) is an "app"-tagged object that defines transactional methods such as 'step', 'http', and 'rpc'. The application-object base is linked to runtime-provided state registers and 'sys.\*' effects APIs. The runtime repeatedly executes 'step' in separate transactions. Other methods, like 'http' and 'rpc', are event-driven. 
 
-The basic application model is designed to support live coding, reactivity, concurrency, and distribution. However, it performs poorly without sophisticated transaction-loop optimizations. In the short term, developers should use 'step' as a single-threaded event dispatch loop and leverage sparks for parallelism.
+This transaction-loop model is very useful for live coding, reactivity, concurrency, and distribution, but requires sophisticated optimizations for performance: replication on non-deterministic choice, optimistic concurrency control, incremental computing, memoization of control flow. Before these optimizations are implemented, developers can still use 'step' as a single-threaded event dispatch loop and leverage sparks for parallelism.
 
-Applications are often defined in the '%env.\*' environment. This is useful because we'll often want to compose applications (like shell scripts or widgets) or extend them (mixins, flavors, overrides). 
+## Configuration
+
+In my vision of glas systems, a small, filesystem-local user configuration inherits from a large, curated community or company configuration in DVCS. The full configuration defines hundreds of shared libraries and applications. Performance for running a specific application depends on lazy evaluation and incremental compilation. System stability relies on whole-system versioning, leveraging DVCS redirects.
+
+To compile the configuration file, we start a built-in compiler for at least the standard ".glas" syntax. For modularity, this compiler is injected as '%env.lang.glas'. If the configuration attempts to define '%env.lang.glas', we'll attempt to bootstrap, recompiling the configuration with the compiler it defined for itself. This bootstrap cycle may run once or twice more to verify a stable fixpoint.
+
+Primary outputs from a configuration include ad hoc runtime configuration options in 'glas.\*', and the final '%\*' namespace, especially '%env.\*' where the shared libraries and applications should be defined. Enough to select an application by name and run it, or to effectively run an external script within the configuration.
+
+*Tentative:* I could insert a rule to capture 'env.\*' defined in the configuration as the initial '%env.\*'. Uncertain if this is useful, or just a likely source of confusion. 
 
 ## Scripts
 
-A script is a glas module that defines one application, 'app'. Unlike configurations, scripts do not provide their own environments. They link the configuration's final '%\*' environment.
+A script is a glas module that does not provide its own environment. Instead, the script is logically imported into a configured environment by linking to the configuration's final '%\*' output. The script file may use any file extension or syntax supported by the configuration's '%env.lang.FileExt'. Typically, the script defines an application 'app'.
 
-*Note:* Script files are easy to share but a hassle to maintain. A tool to conveniently add DVCS repos to user configurations may prove a more robust solution.
+Scripts are easy to share, but they have a few significant weaknesses. First, it's too easy to accidentally share scripts between users with incompatible environments. This causes frustration and complicates portability. Second, scripts easily escape sight and reach, hindering maintenance. These concerns can be mitigated, but glas systems should generally favor building configurations instead of sharing scripts.
 
 ## Command Line Interface (CLI)
 

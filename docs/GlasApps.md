@@ -9,23 +9,50 @@ A basic application is represented in the namespace as an "app"-tagged object. I
 * 'step' - executed repeatedly, and transactionally, as main loop
 * 'http' - receive HTTP requests
 * 'rpc' - receive transactional remote procedure calls
-* 'settings' - (tentative) guidance for runtime configuration
+* 'settings' - for application-specific runtime configuration
 * 'signal' - OS or administrative signals, e.g. to gracefully halt
 * 'switch' - first operation on new code in context of live coding
 
-Instead of a long-running 'main' process, we evaluate a transactional 'step' method repeatedly. This has benefits for live coding, reactivity, concurrency, and distribution. But it complicates performance. See description of *Transaction Loops* in the [program model](GlasProg.md).
+Instead of a long-running 'main' process, we evaluate a transactional 'step' method repeatedly. This has benefits for live coding, reactivity, concurrency, and distribution, but complicates performance. See *Transaction Loops* below.
 
 The 'http' and 'rpc' methods allow the runtime to hook things up without explicitly managing TCP listeners and connections. This simplifies sharing ports, composing apps, orthogonal persistence and distribution, and robust integration with transactions. 
 
 The application halts by invoking 'sys.halt' then committing to it.
 
+## Transaction Loops
+
+A transaction loop is any atomic, isolated ([serializable](https://en.wikipedia.org/wiki/Isolation_(database_systems)#Serializable)) transaction, run repeatedly. This structure supports many simplifications and optimizations:
+
+- *Incremental*: Instead of fully repeating a transaction, we can partially-evaluate based on stable state then repeat only unstable computations. Partial evaluation ideally aligns with dataflow instead of control flow.
+- *Reactive*: When we know repetition will be unproductive, instead of burning CPU we can install triggers to await relevant changes. With some clever API design, this includes waiting on clocks.
+- *Concurrent*: For serializable transactions, repetition and replication are equivalent. In context of non-deterministic choice, we can run a parallel transaction loop for each series of choices with [optimistic concurrency control](https://en.wikipedia.org/wiki/Optimistic_concurrency_control).
+- *Distributed*: Building on concurrency, we replicate a transaction loop across multiple nodes with a distributed runtime. To avoid unnecessary distributed transactions, we heuristically abort transactions better initiated on a remote node.
+- *Live*: We can robustly update the transaction procedure between transactional steps. We can model the transaction as reading its own procedure.
+- *Orthogonal Persistence*: Application state exists outside the loop. We can easily back application state with durable or distributed storage.
+
+The glas system provides a mechanism to escape transactional isolation, 'sys.refl.bgcall'. This requests the runtime perform an operation *prior* to the current transactions. This is carefully designed to be compatible with transaction-loop optimizations, though it requires ostensibly 'safe' operations like HTTP GET.
+
+*Note:* Loop-fusion optimizations are theoretically possible. That is, a system can combine multiple transactions into a larger one, which can be useful when it results in partial-evaluation of dataflows, e.g. to eliminate some gatekeeping. Intriguingly, loop fusion could even be supported across application boundaries, assuming a shared, trusted runtime.
+
+### State Machines and Control Flow
+
+It isn't difficult to model a multi-step process with a transaction loop. It is sufficient to explicitly maintain state about which 'step' we're on. Further, we can generalize to multi-threading, maintaining a little state about each thread and making a non-deterministic choice about which thread is scheduled.
+
+But there is a significant performance overhead to repeatedly examine the current state, navigate to the correct code, perform a slice of work, then navigate back out. Especially when the process is deeply hierarchical or the slice of work is short.
+
+Ideally, we can optimize this pattern to achieve something close to performance of built-in control flow. My intuition is that this is feasible with a variation on incremental computing where we maintain a cache of control-flow states as we update machine states. Doesn't seem easy to implement, however.
+
+### Distribution
+
+It is possible to develop a distributed runtime that runs on multiple nodes, multiple OS processes. A repeating 'step' transaction and event handlers like 'http' and 'rpc' can easily be mirrored on each node without affecting semantics. This requires expensive distributed transactions if we aren't careful. But it is possible to design with distribution in mind, limiting most transactions to just one or two nodes. A simple performance heuristic is to abort a step that is better started on another mirror node, letting that other node start it.
+
+We can optimize based on patterns of state usage. For example, a read-mostly register can be mirrored, while a write-heavy register might 'migrate' to where it's currently being used. A queue's state can be divided between reader and writer nodes, while a bag can be logically partitioned between any number of read-write nodes. A conflict-free replicated datatype (CRDT) can be replicated on every node and synchronized opportunistically, when nodes interact. To support these patterns, we can accelerate register operations.
+
+*Note:* We must also design the system effects API for distribution. For example, an API that assumes a single, local filesystem would be awkward for the distributed runtime.
+
 ## Application Adapter
 
-If a user configuration specifies an application adapter, the runtime can apply this adapter to rewrite applications before running them. 
-
-The adapter might be parameterized by runtime version info to support portability. Adapters can support security, e.g. sandboxing. But the primary use case is extensibility: users develop alternative application models, and the configured adapter compiles them to runtime-recognized models.
-
-The basic "app"-tagged object might not be the best way to express and compose applications. The ability to implcitly perform a final compilation step on a Kahn process network, a literate programming 'notebook', or other model could greatly improve the user experience.
+A user configuration may specify an application adapter. Applied to a basic application, this function might wrap it for portability, performance, or security reasons. But this adapter also provides an opportunity to 'run' alternative application models, compiling them to a basic app or other runtime-recognized models. For example, we could support Kahn process models or literate programming notebooks as runnable.
 
 ## System Effects
 
@@ -33,24 +60,22 @@ The system links the application to an initial environment:
 
 * 'sys.\*' - system methods, e.g. FFI and reflection APIs
 * 'db.\*' - shared, persistent registers, bound to configured database
-* 'mem.\*' - ephemeral registers scoped to application lifespan (i.e. cleared on 'sys.halt').
+* 'mem.\*' - ephemeral registers scoped to application lifespan
 
 Because this is presented as the 'Base' object from which the application inherits, it isn't difficult for application mixins to transparently extend the API. Depending on the runtime, 'Base' may partially depend on 'Self', in which case overriding some 'sys.\*' methods may affect others.
 
 ## State and Ephemerality
 
-The only state carried between steps is the 'db.\*' and 'mem.\*' registers and whatever runtime state might be accessed via 'sys.\*' methods. 
+Without the implicit state from procedural control flow, application state is entirely provided through its effects API, via 'db.\*' and 'mem.\*' registers and perhaps a few 'sys.\*' APIs.
 
-It isn't difficult to implement a heap-like API in 'sys.\*', allocating mutable references. A viable API:
+### Heap Refs
 
-- `sys.ref.new() : [arena] Ref<arena>` - 'arena' must name a register visible to the caller. This register is not modified, but serves as source of identity and ephemerality for Ref. To read a Ref requires access to the same arena.
-- `sys.ref.with(Ref<arena>) : [arena, op]` - links 'ref' to given Ref as a register, then calls 'op' with access to 'ref'.
+Registers are logically limited to plain old glas data. However, it isn't difficult to model a 'heap', e.g. register contains list, allocate ranges and update by index. Unfortunately, this model would not integrate nicely with runtime garbage collection. A runtime can easily provide an API for garbage-collected heaps:
 
-The runtime can enforce ephemerality types, i.e. such that short-lived data (like open file handles) cannot be stored in longer-lived registers or Refs. And even db-scoped data cannot be delivered over remote procedure calls.
+- `sys.ref.new() : [heap] Ref<heap>` - Returns a Ref bound to 'heap'. Here 'heap' is a register used as a source of identity and ephemerality. (The register is not modified.)
+- `sys.ref.with(Ref<heap>) : [heap, op]` - Runs 'op' parameterized by register 'ref', bound to the provided Ref. This enables Refs to have associative structure (can even use a Ref as a heap), to be used in sealing data, and to benefit from accelerated register operations.
 
-## HTTP 
-
-The 'http' method receives HTTP requests on a configured port. TBD: representation of request and response (e.g. callbacks instead of raw binary data); support for WebSockets or SSE. 
+The glas runtime may broadly track lifespans of data and may enforce rules, e.g. to prevent a short-lived Ref from being stored into a longer-lived database register. Useful ephemerality scopes include: global, database, app, transaction. 
 
 ## Remote Procedure Calls (RPC)
 
@@ -112,7 +137,18 @@ An intriguing possibility is to compile RPC methods into scripts that partially 
 
 ## Graphical User Interface (GUI)
 
-I have an interesting [vision for GUI](GlasGUI.md) in glas systems, contingent on those transaction-loop optimizations. Originally, I was considering a dedicated 'gui' method for apps, but I think it might be wiser to model GUI as a use case for RPC. We can use application settings to trigger a GUI viewer.
+I have a [vision for GUI in glas](GlasGUI.md) based on the idea of users interacting *within* transactions. This relies heavily on transaction-loop optimizations. It seems wise to develop GUI above transactional RPC instead of a separate protocol. 
+
+But that's a long-term challenge. Meanwhile, any GUI for glas applications will rely either on FFI or the 'http' interface.
+
+## HTTP 
+
+API TBD!
+
+A subset of HTTP requests are routed to the runtime to support debugging, reflection, instrumentation, administrative controls, perhaps RPC-over-HTTP. The remainder are passed to the application, or perhaps divided across several applications.
+
+The 'http' method is called transactionally. However, responses cannot always be provided immediately. In those cases, an HTTP 303 response is one viable solution, but the more general solution is to capture the HTTP session for asynchronous interactions. The latter should generalize better to SSE or WebSockets.
+
 
 ## Background Calls - Transaction Escape Hatch
 

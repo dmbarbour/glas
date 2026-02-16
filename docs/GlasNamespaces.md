@@ -65,12 +65,13 @@ Some tags currently in use:
 
 * "data" - embedded data (`d:...`)
 * "prog" - basic glas programs
-* "call" - `Env -> Def`, Env is caller's environment for algebraic effects
+* "call" - `Object -> Def` for algebraic effects; returns tagged Def
+* "env" - an `Env` definition
 * "obj" - a generic `Env -> Env -> Env` *Object* described below
 * "module" - a basic `Env -> Object` *Module* as described below
-* "app" - basic `Object` app, integrates object in specific manner
+* "app" - interprets `Object` as a basic application
 
-Developers can gradually introduce new tags and deprecate old ones. We might develop tags to work with DSLs like grammars, logic programs, constraint systems, process networks, hardware descriptions. Potential tags for alternative application models. An
+Developers can gradually introduce new tags and deprecate old ones. We might develop tags to work with DSLs like grammars, logic programs, constraint systems, process networks, hardware descriptions, etc.. Tags aren't always structural, e.g. with "app" we express intended interpretation of an object.
 
 ### Objects
 

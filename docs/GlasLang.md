@@ -13,24 +13,39 @@ Challenges:
 - Support for 'self' at both object and module layers without confusion.
 - tune Env - reserve parts for locals and compiler-internals
 
-A syntac
 
 
 ## Modularity
 
 Some viable front-end syntax for integrating modules:
 
-        from Module [with EnvExpr] import Aliases
-        import Module [with EnvExpr] as Prefix
+        from Module [with Context] import Aliases
+        import Module [with Context] as Prefix
         include Module 
 
-The 'import' variants instantiate the module object, closing the fixpoint. If an EnvExpr is specified we'll link it as base, otherwise we link the host's global namespace, '%\*'. For 'include', we instead apply the module object as a mixin, i.e. the module shares Self and behaves as a `Base -> Base` rewrite. We can 'include' a module to express inheritance and override.
+The 'import' variants instantiate the module object, closing the fixpoint, providing the host's '%\*' as base. If a Context is specified, it should express a parameter object much like "call" methods, ideally using the same syntax. This allows providing some additional parameters
+
+support the syntax we use for algebraic effects and pass-by-ref, providing extra parameters as an alternative module base.
+
+
+ should be an object to which we apply Module as a mixin.
+
+
+ the same type as "call" context
+
+
+ we'll implicitly provide '%\*' definitions. We'll apply the module as a mixin to context
+
+we'll apply the module objec
+
+we'll apply it as  it as base, otherwise we link the host's global namespace, '%\*'. For 'include', we instead apply the module object as a mixin, i.e. the module shares Self and behaves as a `Base -> Base` rewrite. We can 'include' a module to express inheritance and override.
 
 A minimum viable syntax for Module might consist of:
 
         "foo.txt"       # files or URIs
         (ModuleExpr)    # ad hoc macros
 
+It's very important that we can effectively reference DVCS resources without first loading a helper library, because all the helper libraries we'll want to load are DVCS resources. This could be supported via parsing URIs and such.
 
 # Old Content
 
