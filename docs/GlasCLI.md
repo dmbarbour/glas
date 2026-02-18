@@ -1,11 +1,12 @@
 # Glas Command Line Interface
 
-The CLI shall support built-in operations distinguished by '--' prefix:
+The CLI will support ad hoc built-in operations distinguished by '--' prefix:
 
         glas --run AppName Args To App
         glas --script SourceRef Args To App
         glas --script.FileExt FilePath Args To App
         glas --cmd.FileExt "Source Text" Args To App 
+        glas --bit Optional Built-in Test Names 
         glas --conf ConfigOp
         glas --cache CacheOp
         ... etc. ...
@@ -22,14 +23,14 @@ See the [design doc](GlasDesign.md) for general overview of configurations.
 
 The CLI expects `GLAS_CONF` environment variable to specify a configuration file. If undefined, default file location is `"~/.config/glas/conf.glas"` in Linux or `"%AppData%\glas\conf.glas"` on Windows. 
 
-*Note:* Configurations have the same restrictions against importing parent-relative ("../") and absolute file paths as other glas modules. On one hand, this makes it easy to backup or share configurations. On the other, configurations cannot integrate local user projects without moving them to the configuration folder or an intermediate DVCS repo.
+*Note:* Configurations have the same restrictions against importing parent-relative ("../") and absolute file paths as other glas modules. On one hand, this makes it easy to clone or share configurations. On the other, configurations cannot integrate filesystem-local user projects without moving them into the configuration folder or introducing an intermediate DVCS repo.
 
 ## Running Applications
 
 Applications can be defined in the user configuration or as separate script files. See *Configuration* in [glas design](GlasDesign.md). See [glas applications](GlasApps.md) for details on how applications are defined. 
 
 * **--run AppName**: Refers to '%env.AppName.app' as defined in the configuration.
-  * **--run-config AppName**: refers to 'AppName', i.e. full name is required
+  * **--runfn FullAppName**: refers to 'FullAppName' as defined in the configuration. 
 * **--script FilePath**: Loads file as a glas module in context of the configuration's final '%\*' environment. This module should define an application at 'app'.
   * **--script.FileExt FilePath**: as '--script' except we select the front-end compiler based on a given file extension, ignoring actual extension. Mostly intended for Linux shebang lines so we can elide file extension.
 * **--cmd.FileExt SourceText**: as '--script.FileExt' except we directly provide script text on the command line. In this case, we treat the current working directory as our 'location' for relative file paths.
@@ -57,8 +58,12 @@ Ideally, any tool users can develop with built-ins should also be something user
 
 I have an idea for fine-grained security that I'd like to explore. We can use conventional security mechanisms in the meanwhile.
 
-When loading files, we can heuristically peek into `".pki/"` subfolders, collecting signed manifests and certificates. The user configuration may specify trusted signators and with which features (like FFI vs GUI) they're trusted. Annotations within glas programs (and within certificates) may attenuate trust. For example, a GUI API can be implemented using FFI. We must check that the code using FFI is trusted to do so, but it might permit use the API to any caller that has GUI authority.
+When loading files, we can peek into `".pki/"` subfolders, collecting signed manifests and certificates. The user and community configurations may specify trusted signators and with which authorities (like FFI vs GUI) they're trusted. 
 
-Further, we can integrate patterns based on object-capability security. For example, instead of requiring GUI authority for every GUI API call, a method to 'open' GUI may return abstract data that serves as an unforgeable bearer token. Other GUI API methods then allow anyone to call, regardless of PKI trust, contingent on providing the bearer token. In theory, this could still be enforced statically by a type system.
+Trusted code called from or calling to less-trusted code becomes less-trusted unless annotations *explicitly declare* the trust boundary is anticipated (and, thus, presumably handled). For example, a library entrusted with FFI can implement a GUI API. By annotating public API methods, the library can receive calls from untrusted code, or alternatively from callers entrusted with GUI authority. When performing API callbacks, we might annotate that the callback itself doesn't need to be trusted.
+
+With annotations, that library may locally extend its FFI authority to API clients that have GUI authority. The calling outwards case applies to callbacks or OO-style inheritance and override. We'd usually say API callbacks don't need to be trusted at all, yet overrides would require GUI authority or full FFI authority.
+
+We can model object-capability security design patterns, e.g. treating access to abstract data as an unforgeable bearer token. In this case, perhaps only 'opening' the GUI would require trust. Using other GUI APIs would require only the bearer token.
 
 This design applies to both configured applications and external scripts. That is, we don't trust an application merely because it has infiltrated a curated community configuration; we still authenticate signatures. But even untrusted scripts can do useful work if they limit themselves to a trusted sandbox.

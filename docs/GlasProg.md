@@ -6,7 +6,7 @@ This document describes the runtime program model for glas systems and several d
 
 Programs are modeled as an abstract data type. For example, `(%do P1 P2)` returns an abstract program that, when executed, runs two subprograms sequentially.
 
-*Notation:* `(F X Y Z)` desugars to `(((F,X),Y),Z)`, representing curried application in the [namespace AST](GlasNamespaces.md). 
+*Notation:* `(F X Y Z)` desugars to `c:(c:(c:(F,X),Y),Z)`, representing curried application in the [namespace AST](GlasNamespaces.md). Names become `n:"name"`. Capitalized symbols as variables.
 
 ### Control Flow
 
@@ -59,7 +59,7 @@ If the AST is determined statically, the optimizer can erase '%eval' and substit
 
 ## Note on Metaprogramming
 
-Aside from '%eval', we can also support metaprogramming via '%macro', or within the namespace layer (e.g. via Church-encoded lists of namespace terms). But only '%eval' supports runtime metaprogramming.
+Aside from '%eval', the glas system also supports metaprogramming via '%macro' or within the namespace layer, e.g. via Church-encoded lists of namespace terms. But only '%eval' supports runtime metaprogramming.
 
 * `(%macro P) : Any` - 0--1 arity program P must return closed-term namespace AST.
 
@@ -69,27 +69,30 @@ Use of '%eval' is more convenient when we don't *locally* know whether an AST is
 
 The primitive program model is very constraining. We can leverage the namespace layer to greatly enhance expressiveness and improve the user experience.
 
-### Pass-By-Ref and Algebraic Effects
+### Parameter Objects
 
-Instead of working directly with `Program` definitions, we can compose `Env -> Program` definitions, providing part of the caller's environment. This enables the caller to provide access to local registers or callbacks, for example. Effectively, this can support higher-order programming and algebraic effects, albeit without the ability to 'return' a function.
+Passing arguments via the data stack is fragile, adequate only for low-level code. An alternative is to parameterize a subprogram through the namespace, e.g. `Env -> Program`. In this case, `Env` provides ad hoc access to named registers and callbacks. However, a namespace environment is still rigid. 
+
+To further enhance flexibility, we can provide arguments as a mixin, e.g. the basic "obj"-tagged namespace object. This allows parameters to be expressed in terms of overriding default parameters, and it enables refactoring of parameters into a composition of mixins.
+
+If users insist on positional parameters, the parameter object may define 'args' as a "list"-tagged Church-encoded list. If we want to provide the caller's environment, consider an "env"-tagged `Env` named 'env'. 
+
+### Expressions
+
+Many languages introduce a concept of expressions and evaluation thereof, returning a single value. Expressions are convenient for structured composition. In context of glas programs, we can easily model expressions as 0--1 programs. Arity can be enforced by type annotations. 
 
 ### Calling Conventions
 
-We can freely mix `Program`, `Env -> Program`, embedded `Data`, and other definitions, within a namespace. However, doing so complicates front-end syntax, i.e. the caller must locally know and explicitly adapt each definition. This extra knowledge becomes an source of unnecessary rigidity for some program updates, e.g. a 0--1 `Program` can be trivially updated to embedded `Data` and sometimes the converse, but with explicit adapters we're always forced to edit the caller.
+The front-end compiler will provide adapters for integrating functions with various tags into a program. Consider an initial set of tags:
 
-To mitigate this, we can tag user definitions, e.g. with "prog", "call", and "data".
-
-* "data" - raw, embedded data of any type; program adapter via '%data'
-* "prog" - directly wraps an abstract Program; no embedding context
+* "data" - embedded data
+* "prog" - abstract program
 * "call" - `Object -> Def`, tagged parameter object to tagged definition
+  * e.g. "obj"-tagged parameter object to "prog"-tagged abstract program
 
-To make it more extensible and generic, "call" is tuned from `Env -> Program` to include tags on both input and output. For the input, we may initially support "env"-tagged environments or "obj"-tagged basic objects. Favoring the latter, we can conveniently support default parameters.
+In this case, we adapt "data" by wrapping with '%data', and we adapt "prog" by direct embedding. If non-trivial arguments are ignored, we can report an error or warning. In case of "call", we build our parameter object, apply, then integrate the resulting definition. 
 
-### Positional Parameters
-
-Positional parameters shall be encoded into the "call" parameter object as 'args' - a "list"-tagged, Church-encoded list of tagged namespace terms. These terms aren't evaluated by the caller, thus default behavior is call-by-name. It isn't difficult to develop generic wrappers for call-by-value or call-by-need (assuming 0--1 programs).
-
-I hope to avoid positional parameters in glas syntax. Keyword parameters seem nicer for many use cases - easier to extend, deprecate, share when refactoring a method, etc.. But a standard approach is convenient for integration across front-end compilers. 
+Namespace terms are naturally call-by-name, but that can be awkward to work with. Fortunately, a front-end compiler can easily implement call-by-value or call-by-need via local registers. I suggest call-by-value as the front-end default, but with lightweight syntax to indicate call-by-name or call-by-need on the level of expressions or subexpressions.
 
 ## Reflection
 
@@ -109,7 +112,7 @@ Annotations aren't limited to programs. However, within this document, I'm focus
 
 ### Acceleration
 
-        a:(%an.accel.list.concat, SlowListConcat)
+        a:((%an.accel %accel.list.concat), SlowListConcat)
         # replaces SlowListConcat with runtime built-in
 
 Annotation-guided acceleration is a simple, effective, extensible performance solution. The essential idea is to replace a slow implementation with a fast runtime built-in. In case of list concat, the built-in should leverage specialized representations, implementing large lists as finger-tree ropes.
@@ -128,11 +131,31 @@ Development of accelerators is runtime specific but subject to de facto standard
         a:(%an.lazy.force, %pass)       # Thunk -- Data
         a:(%an.lazy.spark, %pass)       # Thunk -- Thunk
 
-We can thunkify a pure (maybe non-deterministic), terminating 1--1 arity program. This immediately returns an abstract thunk on the data stack that captures input and program. When forced, we evaluate, cache, and return the result. We can ask the runtime to enqueue a thunk for evaluation in a worker thread, called 'sparks' here (allusion to Haskell). Sparks enable developers to separate expensive computations from transactions (reducing risks of read-write conflicts), and provide an independant mechanism for parallelism.
+We can safely delay some computations, and potentially discard them if their result is never needed. I propose to initially restrict this to 'pure', terminating 1--1 subprograms, returning an abstract thunk (capturing program and argument) in place of the true result. This thunk must be explicitly 'forced' to observe the data. It may also be 'sparked', asking a runtime worker thread to evaluate the thunk in the background. The result, once evaluated, is cached by the thunk.
 
-In context of non-deterministic choice, a divergent choice should backtrack and try other paths until one succeeds. But there is an intriguing opportunity: we can defer choice. Logically, instead of committing to a choice when the thunk is created, commit when the thunk is forced and the observer commits. By deferring choice, computation with thunks implicitly becomes a constraint system, with observers refining choices. Lazy choice becomes benign instead of fair. To make this mode explicit, we could introduce '%an.lazy.opt' to annotate subprograms that create thunks.
+Termination is not checked. But if computation of a thunk diverges in a later transaction, laziness annotations have influenced observable program behavior. A divergent thunk is considered an invalid program. However, there is a special case: a non-deterministic thunk can backtrack from divergence and seek another solution (just as the thunk creator would have done).
 
-*Note:* Interaction with linear types needs attention. A thunk should be linear if the result may be linear. In theory this can be achieved via type inference, but I propose introducing '%an.lazy.thunk.linear' to explicitly construct linear thunks.
+An intriguing opportunity is to defer choice for non-deterministic thunks, accepting a choice only when the observer commits. Then lazy thunks model entangled constraint systems that 'collapse' when observed (forced). To support this, we might introduce '%an.lazy.opt' to affect all lazy thunks created by a subprogram.
+
+*Note:* Interaction with linear types needs careful attention. The simplest option is to raise an error if a thunk returns linear data when forced. Or we could introduce '%an.lazy.thunk.linear'. 
+
+*Note:* In context of code updates, unevaluated thunks still refer to old code from moment of creation.
+
+### Partial Evaluation
+
+        a:(%an.data.static, %pass)      # insist top stack data element is static
+        a:(%an.static, Program)         # Program must evaluate at compile-time
+        a:(%an.eval.static, Program)    # all '%eval' in Program have static AST 
+
+Implicit partial evaluation is a fragile optimization, but that can largely be resolved by simply making intentions explicit. In case of '%an.static' we aren't forcing partial evaluation of Program, instead we're providing an optimization hint and asking the compiler to raise an error or warning when things depend on runtime inputs.
+
+This is still relatively fragile insofar as we're depending on runtime-specific implementation details in the optimizer, e.g. whether it uses abstract interpretation for partially-constant data. Porting code to another runtime may result in a deluge of errors. But at least we'll have a clear indicator!
+
+### Tail-Call Optimization
+
+        a:(%an.tco, Program)
+
+This asks the compiler to ensure Program can execute in bounded call stack and data stack space. In practice, this is generally applied to a recursive or mutually-recursive call. If the optimizing compiler cannot figure out how to make this happen, it simply reports an error.
 
 ### Logging
 
@@ -146,29 +169,71 @@ The Chan is a string that would be valid as a name. The role of Chan is to disab
 
 MsgSel receives an "obj"-tagged parameter object. This includes configuration options and some reflection APIs, e.g. to support stack traces. The returned selector (cf. '%cond' and '%loop') should model a 0--1 program, returning at most one message on the data stack. By convention, this is an ad hoc dict of form `(text:"oh no, not again!", code:42, ...)`. In case of '%opt', the runtime may evaluate both choices to generate a set of messages. MsgSel isn't necessarily 'pure', but any effects are aborted after the message is generated.
 
+Compile-time logging can be expressed via logging from a '%macro'.
+
 *Note:* A stream of log outputs can be augmented with metadata to maintain an animated 'tree' of messages, where the tree includes branching on non-deterministic choice. Users could view the stream or the tree.
+
+### Assertions
+
+        a:((%an.assert Chan MsgSel), Program)
+
+Assertions are modeled as a variation of logging where producing a message also implies an assertion failure. That is, MsgSel is returning an error message. If there is no error message, there is no assertion failure. Use '%macro' for static assertions.
+
+### Profiling
+
+        a:((%an.profile Chan BucketSel), Program)
+
+Profiling asks the runtime to record performance metadata such as:
+
+* number of entries and exits (also errors, aborts)
+* time spent, CPU spent, backtracking rework
+* memory allocated, memo-cache sizes, etc.
+
+The intention is to collect performance data without slowing things down. The BucketSel allows us to organize this data a bit, i.e. Chan and bucket determine what data is aggregated. If no bucket is selected, we might still record the data under 'no bucket'.
+
+### Source Mapping
+
+        a:((%an.src Src Range), Program)
+
+A front-end compiler can inject source location hints into the namespace AST to support debugging. In this case, Src should be the abstract file source location, while Range is glas data that indicates where to look within a file, perhaps a dict of form `(line:Int, col:Int, len:Int)`. Range may be observed by users or tools, thus align to conventions.
+
+### Data Abstraction
+
+        # seal or unseal data at top of stack
+        a:((%an.data.seal Key), %pass)
+        a:((%an.data.unseal Key), %pass)
+
+        (%key.reg Register) : Key   # use register as a Key
+        (%key.linear Key) : Key     # sealed data is linear
+
+This is an awkward approach to abstract data types in terms of sealing and unsealing data. Runtime enforcement may wrap data to seal it, unwrap on unseal. It can be enforced at compile-time in some cases, though it's difficult if using heap Refs (from 'sys.ref.\*') as first-class Keys. With '%key.linear', we can raise an error upon attempt to copy or drop the sealed data.
+
+This approach is awkward because data abstraction and linearity are much better understood as properties of subprograms rather than instrinsic properties of the data. This can result in weird alignment issues. OTOH, this approach is easy to express locally, enforce dynamically, implement without whole-system analysis.
+
+*Note:* Contemplating a namespace-layer variation. Could feasibly use Src as key.
+
+### Types
+
+        a:((%an.type TypeDesc), Term)
+        (%type.arity 1 2) : TypeDesc
+
+Type annotations in the AST are useful for guiding a type checker. Type descriptors may be partial, in the sense of leaving detail unspecified that may or may not be filled by inference or another annotation. In my vision for glas systems, type checking is something to develop gradually and opportunistically, alongside proof-carrying code.
+
+At the very least, we can get started with describing program data-stack arity, roughly the count of items popped then pushed to the data stack.
+
+### Partial Code
+
+        a:(%an.tbd, Term)
+
+If a program is expected to be full of holes (e.g. undefined names) and other errors, consider a '%an.tbd' annotation to let the compiler know that you know that work is ongoing. The compiler may heuristically be more friendly about reducing related errors to warnings and running with errors.
 
 ### CLEANUP NEEDED
 
-Instrumentation:
-* `(%an.assert Chan ErrorMsgGen)` - assertions are structured as logging an error message. If no error message is generated, the assertion passes. May reduce to warning.
-* `(%an.assert.static Chan ErrorMsgGen)` - assertion that must be computed at compile-time, otherwise it's a compile-time error. May reduce to compile-time warning with or without a runtime error.
-* `(%an.profile Chan BucketSel)` - record performance metadata such as entries and normal exits, fails, errors, time spent, time wasted on rework, etc.. Profiles may be aggregated into buckets based on BucketSel. 
-* `(%an.trace Chan BucketSel)` - record information to support slow-motion replay of Operation. BucketSel helps control and organize traces. See *Tracing*.
-
 Validation:
 * `(%an.arity In Out)` - express expected data stack arity for Op. In and Out must be non-negative integers. Serves as an extremely simplistic type description. 
-* `(%an.data.seal Key)` - Operation must be %pass. Seals top item on data stack, modeling an abstract data type. Key typically names a Register. If Key becomes unreachable the sealed data may be garbage collected. A compiler may eliminate seal and unseal operations based on static analysis, effectively a form of type checking.
-  * `(%an.data.unseal Key)` - removes seal with matching Key or diverges
-  * `(%an.data.seal.linear Key)` - a variant of seal that also marks sealed data as linear, forbidding copy or drop of the data until unsealed. (This doesn't prevent implicit copies, e.g. for backtracking.)
-    * `(%an.data.unseal.linear Key)` - counterpart to a linear seal.
-* `%an.data.static` - Operation must be %pass. Indicates top stack element should be statically computable. Serves as a hint for partial evaluation; error if data depends on runtime input.
-* `%an.static` - Indicates subprogram must be statically computed. Serves as a hint for partial evaluation; error if computation depends on runtime input.
-* `%an.eval.static` - Indicates that all %eval steps within a program must receive their data argument at compile-time. 
 * `(%an.type TypeDesc)` - Describes the expected partial type of Operation. Ideally, this is verified by a typechecker. We'll develop '%type.\*' constructors to work with this.
 * `%an.det` - Indicates a subprogram should be observably deterministic. This isn't the same as rejecting non-deterministic choice; rather, such choices should lead to the same outcome. But without further proof hints, this effectively reduces to rejecting %opt.
-
-Laziness:
+* `%an.reg.id` - When applied to a register, limits further use of that register to a source of identity. That is, we can still use the register as a Key for sealing data, or in '%assoc', but cannot perform the '%rw' via this register.
 
 Content-addressed storage:
 * `%an.cas.stow` - Op must be %pass. Lazily offloads data to remote storage. Actual move is heuristic, e.g. based on memory pressure and size of data.
@@ -184,10 +249,8 @@ Tail-Call Optimization:
 * `%an.tco` - indicates a subprogram should evaluate with bounded data stack and call stack. Reports an error if compiler and optimizer cannot figure out how to make it happen. 
 
 Future development:
-* type declarations. I'd like to get bidirectional type checking working in many cases relatively early on.
-* unit types? 
-* debug trace. Probably should wait until we have a clear idea of what a trace should look like. 
-* debug views. Specialized projectional editors within debuggers.
+
+## Challenges TBD
 
 ### Tracing (TBD)
 
@@ -225,12 +288,6 @@ The Chan can also serve a role of naming a view for discovery and integration. T
 Instead of annotating individual calls to be tail-call optimized, I propose we should specify that subprogram shall be evaluated with bounded call and data stacks. We could also have a variant for `Env -> Prog` that says the Program has a bounded call stack modulo use of methods in `Env`.
 
 Performing the optimization can be difficult in context of `Env` arguments and register passing. But we can potentially unroll a recursive loop a few times, optimize, then verify that resources are recycled within just a few cycles.
-
-### Source Mapping
-
-It is feasible to use annotations for source mapping. Might take some work to prevent things from getting too bloated. We can leverage the abstract Src file in this context, but the front-end compiler must specify things like byte ranges or line numbers.
-
-## Challenges TBD
 
 ### In-Place Update? Seems Infeasible.
 

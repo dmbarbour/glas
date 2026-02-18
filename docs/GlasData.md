@@ -3,11 +3,11 @@
 
 The plain old data type in glas is the immutable binary tree. Trees are very convenient for modeling structured data without pointers. The runtime representation is assumed to compact non-branching sequences like a [radix trees](https://en.wikipedia.org/wiki/Radix_tree): 
 
-        type Tree = (Stem * Node)       # as struct
+        type Data = (Stem * Node)       # as struct
         type Stem = uint64              # encodes 0..63 bits
         type Node = 
             | Leaf 
-            | Branch of Tree * Tree     # branch point
+            | Branch of Data * Data     # branch point
             | Stem64 of uint64 * Node   # all 64 bits
 
         Stem (0 .. 63 bits)

@@ -50,9 +50,9 @@ We can optimize based on patterns of state usage. For example, a read-mostly reg
 
 *Note:* We must also design the system effects API for distribution. For example, an API that assumes a single, local filesystem would be awkward for the distributed runtime.
 
-## Application Adapter
+## Application Adapters
 
-A user configuration may specify an application adapter. Applied to a basic application, this function might wrap it for portability, performance, or security reasons. But this adapter also provides an opportunity to 'run' alternative application models, compiling them to a basic app or other runtime-recognized models. For example, we could support Kahn process models or literate programming notebooks as runnable.
+A user configuration may specify an application adapter, i.e. a function to rewrite applications before running them. Such an adapter can serve multiple roles, e.g. runtime portability or sandbox-based security. Usefully, this also provides an opportunity to 'compile' user-defined application models into basic applications (e.g. introducing a "nb" tag for a notebook apps, or a "kpn" tag for Kahn process networks).
 
 ## System Effects
 
@@ -68,21 +68,25 @@ Because this is presented as the 'Base' object from which the application inheri
 
 Application state is primarily via 'mem.\*' and 'db.\*' registers. Some system APIs are stateful (e.g. filesystem), but registers are more convenient in context of structured data, content-addressed storage, and transactions. Aside from holding state, registers are useful as a stable source of identity.
 
-### Heap-like Refs
+### Mutable Refs
 
-We can model heaps via indexed data structures, but built-in heaps provide superior performance and tight integration with the garbage collector. So, we'll support heap-like Refs.
+It isn't difficult to explicitly model a heap, e.g. manage an array within register. But a system-supported API offers superior performance and integration. A minimal API for this purpose:
 
         sys.ref.new() : [heap] Ref<heap>
         sys.ref.with(Ref<heap>, S) : [heap, op] S'
           op(S) : [ref] S' 
 
-In the proposed API, 'heap' is a register used as the source of identity and ephemerality. Refs can only be accessed in context of their heap.
+In this API, 'heap' may be any register, but the heap register isn't modified (see *Environment Abstraction*). A `Ref<heap>` is an abstract index. The associated data may be accessed only if the associated heap is in scope. Access is modeled as binding to a register 'ref' in scope of 'op'. Effectively, a Ref serves as a first-class register and may be used any way a register is used: sealed data, environment abstraction, first-class heaps. When a Ref falls out of scope and is eventually garbage-collected, all associated state and sealed data that becomes inaccessible can also be garbage-collected. 
 
-Instead of redundant methods to update Refs, we bind as register 'ref' in scope of 'op'. This allows us to use Refs for sealing abstract data, associative structure, even as a first-class heap. If Ref falls out of scope, all related data that becomes inaccessible (cannot be unsealed, etc.) should also be garbage collected.
+Refs are a potential source of linearity errors: we can store linear data into a Ref (or seal data with a Ref, etc.), then drop the Ref. This can potentially be detected by a garbage collector. If detected, the runtime can report a warning. 
 
-Refs are a potential source of linearity errors: we can easily store linear data in a Ref (or seal linear data with a Ref), then drop the Ref. This can potentially be detected by a garbage collector. If detected, the runtime should report a warning.
+### Environment Abstraction
 
-### Acceleration
+The program model includes a '%assoc' primitive that lets us treat any ordered pair of registers, (R1,R2), as another volume of named registers. Essentially, a naming scheme where names include register pairs, e.g. `(db.foo, mem.bar).xyzzy` is another register with application lifespan.
+
+This is mostly useful in context of environment abstraction, i.e. an API can 'hide' one of the registers used in the pair, while the client provides the other. This prevents the client from directly referencing the hidden registers. And conversely, because there are no first-class register pointers in glas, the API cannot reference the hidden register either.
+
+### Concurrency and Distribution
 
 A glas runtime can support accelerated register operations, e.g. for queue reads and writes. If a specific register is used only as a queue, the compiler can apply useful optimizations for concurrency and distribution. Acceleration can also reduce number of intermediate allocations when applying many small edits to large structures.
 

@@ -35,15 +35,10 @@ glas* glas_thread_new();
 /**
  * Load a configuration file.
  * 
- * Loading a configuration is rather involved. A configuration defines
- * its own environment, 'env.*', binding to '%env.*' in base. The file
- * is initially compiled by a built-in compiler, then we bootstrap if 
- * 'env.lang.glas' if defined. Bootstrap must reach a stable fixpoint in
- * just a few cycles.
- * 
- * Note that loading a configuration doesn't observe or apply 'glas.*'
- * options. It merely loads them into the namespace. This runtime refers 
- * to those options only when running applications.
+ * This relies on a built-in front-end ".glas" compiler. If the compiler
+ * is redefined within the configuration, we attempt bootstrap. Primary
+ * outputs from a configuration are ad hoc runtime options in "glas.*"
+ * and the "%*" names (especially "%env.*").
  * 
  * If the configuration file is NULL, we search fallback locations: 
  * 
@@ -116,45 +111,19 @@ void glas_thread_exit(glas*);
  */
 void glas_thread_set_debug_name(glas*, char const* debug_name);
 
-/*******************
- * NON-DETERMINISM
- *******************/
-
-/**
- * Concurrent search for fair non-deterministic choice.
- * 
- * The user provides a callback function and a number of options, N. The
- * runtime will perform the callback at most N times, on clones, each 
- * indexed by 0..(N-1) in pseudo-random order. When worker threads are
- * available, these callbacks may run in parallel. 
- * 
- * The runtime picks one clone, updates origin to match, then returns.
- * The choice is fair modulo errors, which are strongly disfavored.
- * 
- * Implementation note: shuffle N via Feistel and cycle walking?
- */
-void glas_choice(glas* origin, size_t N, void* client_arg, 
-    void (*op)(glas* clone, size_t index, void* client_arg)
-);
-
-// TBD: unfair choice, e.g. weighted or probabilistic choice?
-//   soft constraints on final register and stack states?
-// skip for now, I think. choice is very low priority in any case.
-
 /***************************
  * MEMORY MANAGEMENT
  **************************/
-
 /**
  * Reference-counting shared objects.
  *
- * Used for zero-copy binaries, foreign pointers, and callbacks.
+ * Used for zero-copy binaries, foreign pointers, and callbacks. The 
+ * reference count may be separated from the data pointer, e.g. in case
+ * of slicing a large binary.
  * 
- * The 'refct_obj' is not necessarily the shared object, only where to
- * manage the reference count. This supports sharing of slices or views.
- * 
- * Notes: If no management is needed, set refct_upd to NULL. A refct_obj
- * must be pre-incremented across API; recipient decrements when done.
+ * Reference counts should be pre-incremented, such that the recipient
+ * needs only perform decref. If no management is needed, simply set the
+ * refct_upd function pointer to NULL.
  */
 struct glas_refct {
     void (*refct_upd)(void* refct_obj, bool incref);
@@ -180,21 +149,21 @@ inline void glas_incref(glas_refct c) {
  * 
  * The glas namespace model uses prefix-to-prefix translations for many
  * purposes. Within C, we'll simply represent these as an array of pairs
- * of strings terminating with NULL in the lhs. Example:
+ * of strings terminating with NULL in lhs. Example:
  * 
  *   { {"bar.", "foo."}, { "$", NULL }, { NULL, NULL } }
  * 
  * During lookup, the runtime will find the longest matching lhs prefix
- * then rewrite to rhs. If rhs is NULL, name is undefined. Otherwise, we
- * rewrite the matched prefix to rhs then move on. Behavior is undefined
- * if an lhs prefix appears more than once.
+ * then rewrite to rhs. If rhs is NULL, name is treated as undefined.
  * 
- * Prefix-to-prefix translations have an obvious weakness: translation
- * of 'bar' to 'foo' also converts 'bard' to 'food'. To mitigate, glas
- * systems implicitly add an infinite "..." suffix to every name. This
- * can be matched in lhs, e.g. "bar.." is unlikely to match other names.
+ * We logically extend names with an infinite suffix of "." characters.
+ * Thus, we can translate "bar." to translate both the name "bar" and 
+ * all "bar.*" components, or "bar.." for just name "bar" (assuming we
+ * avoid ".." sequences within names).
  */
 struct glas_ns_tl { char const *lhs, *rhs; };
+
+// TODO: separate eval and bind/def of namespace ASTs.
 
 /**
  * Apply translation to thread's namespace.
@@ -203,6 +172,34 @@ struct glas_ns_tl { char const *lhs, *rhs; };
  * become unreachable may be garbage collected after step commit.
  */
 void glas_ns_tl_apply(glas*, glas_ns_tl const*);
+
+/**
+ * Scoped Namespaces (via convention)
+ * 
+ * These are modeled as namespace translations:
+ * 
+ *   push - {{ "^", "" }, {NULL, NULL}}
+ *   pop  - {{ "", "^" }, {NULL, NULL}}
+ * 
+ * That is, after 'push' the name 'foo' is still available as 'foo' but
+ * also as '^foo', but a prior '^foo' is now only available as '^^foo'.
+ * Upon 'pop', the name 'foo' now refers to '^foo'.
+ */
+void glas_ns_scope_push(glas*);
+void glas_ns_scope_pop(glas*);
+
+/**
+ * Namespace AST evaluation.
+ * 
+ * This expects a valid namespace AST on the data stack. Evaluates in
+ * the current namespace, resulting in an abstract namespace term on
+ * the data stack, modulo error. The usual step after evaluation is to
+ * define or bind the term.
+ */
+
+
+
+
 
 /**
  * Push a representation of a translation onto the data stack
@@ -224,12 +221,6 @@ void glas_ns_hide_prefix(glas*, char const* prefix);
  * indicated name. Causes linearity error if the data is linear.
  */
 void glas_ns_data_def(glas*, char const* name);
-
-
-
-
-
-
 
 /** 
  * Define by evaluation.
@@ -306,15 +297,12 @@ void glas_ns_ast_as_closed_term(glas*); // AST -- AST (closed)
  * Stack arity is specified ahead of time via ar_in and ar_out. A glas
  * thread is introduced as a scratch space.
  * 
- * To keep it simple, callbacks do not receive the caller's environment.
- * This limits expressiveness but avoids troublesome issues like escape
- * analysis for stack-local registers in context of 'fork'. The callback
- * does receive access to the environment where it was defined, however,
- * including registers in scope.
- * 
  * In most cases, a callback is performed from a transactional context.
  * The thread is unstable until the hosting transaction commits. Use the
  * on-commit and on-abort mechanisms to defer 'unsafe' effects.
+ * 
+ * Note: This is modeled as a "prog" callback, so there is no access to 
+ * the caller's environment. 
  */
 typedef struct glas_prog_cb {
     bool (*cb)(glas*, void* client_arg);
@@ -365,7 +353,7 @@ void glas_load_primitives(glas*, char const* prefix);
  * 
  * If 'embedded' is true, 'lang' must be set.
  */
-typedef struct glas_file_ref {
+struct glas_file_ref {
     char const* src;
     char const* lang;
     bool embedded;
@@ -381,40 +369,18 @@ typedef struct glas_file_ref {
 /**
  * Call a defined program by name.
  * 
- * The runtime expects user definitions to be tagged. These tags support
- * flexible calling conventions. The default adapter supports just a few
- * tags:
+ * The runtime expects user definitions to be tagged. Recognized tags:
  * 
  * - "prog" for a program definition, runtime verifies then runs
  * - "data" for embedded data; call pushes to data stack (%data)
- * - "call" for `Env -> tagged Def`, receives translated caller env 
+ * - "call" for `Object -> Def`, returning "prog" or "data" Def.
  * 
- * It is possible to introduce user-defined adapters to extend this set
- * of callable definitions. (TBD, perhaps glas_conf_call.) 
- * 
- * Program verification should ultimately be configurable. In my vision,
- * the user configration will directly specify most verification code to
- * support gradual types, proof-carrying code, user-defined annotations.
- * But built-in support, e.g. arity checks and static assertions, may be
- * implemented by default.
- * 
- * Calls provide the thread's namespace translated through caller_env as
- * additional context. This supports higher-order programs, pass-by-ref
- * registers, algebraic effects. Within programs, call context is static 
- * while data stack is dynamic. But this API expresses dynamic context.
- * 
- * For non-atomic calls, there is feedback on whether the step commits.
- * This is important for backtracking: if a call commits, abort rewinds
- * and replays a program suffix to just after the call, and checkpoints 
- * are cleared. But clients may receive this feedback via step_on_commit
- * and set 'commits' to NULL.
- * 
- * Clients may request 'atomic' calls, equivalent to wrapping a program
- * with `%atomic`. This guarantees a call can be fully backtracked, but
- * may instead diverge with atomicity errors.
+ * In case of "call" we'll provide the caller's 'env' (translated). Any
+ * more than that will require defining a call adapter manually.
  */
 void glas_call(glas*, char const* name, glas_ns_tl const* caller_env, bool* commits);
-void glas_call_atomic(glas*, char const* name, glas_ns_tl const* caller_env);
+
+
 
 /**
  * Ask runtime to prepare definitions.
@@ -424,6 +390,18 @@ void glas_call_atomic(glas*, char const* name, glas_ns_tl const* caller_env);
  */
 void glas_call_prep(glas*, char const* name);
 
+/*********************************
+ * RUNNING APPLICATIONS
+ *********************************/
+
+/**
+ * TBD: Run an application.
+ * 
+ * Applications are run asynchronously, and they don't start until the
+ * caller commits the request and stabilizes. Instead, running the app
+ * immediately returns an abstract reference to interact with, wait on, 
+ * or kill the app.
+ */
 
 /*********************************
  * TRANSACTIONS AND BACKTRACKING

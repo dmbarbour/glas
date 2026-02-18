@@ -20,26 +20,25 @@ A viable solution is prefix-based bindings, something like `(νPrefix.Body Env)`
 
 ## Concrete Representation
 
-A proposed namespace AST encoded as structured [glas data](GlasData.md):
+A proposed namespace AST encoded as a labeled variant (plain old [glas data](GlasData.md)):
 
         type AST =
           # lambda calculus
-            | Name              # substitute definition
-            | (AST, AST)        # application
+            | n:Name            # substitute definition
+            | c:(AST, AST)      # construct, apply LHS to RHS
             | f:(Name, AST)     # bind name in body, aka lambda
           # namespace extensions
-            | e:()              # reifies current environment
-            | t:(TL, AST)       # modify body's view of environment
+            | e:()              # reify current environment
+            | t:(TL, AST)       # translate AST's view of environment
             | b:(Prefix, AST)   # binds environment to prefix in body
           # utility extensions
-            | d:Data            # embedded glas data, opaque to AST
-            | a:(AST, AST)      # annotation is LHS, content in RHS
+            | d:Data            # embedded data, opaque to namespace
+            | a:(AST, AST)      # annotation in LHS, content in RHS
             | y:AST             # built-in fixpoint combinator
-        type Name = binary excluding NULL # implicit, infinite "..." suffix
+        type Name = binary excluding NULL, not ending in "."
+          # names have implicit, infinite suffix of "." for translation
         type Prefix = any finite prefix of Name
         type TL = Map of Prefix to (Optional Prefix) as glas dict
-
-Beyond namespace extensions, I introduce embedded data and annotations for integration, and a built-in fixpoint for convenience and concision.
 
 ## Translations
 
@@ -56,20 +55,21 @@ It is possible to compose TLs sequentially. Rough sketch: to compute A followed-
 The glas namespace can essentially Church-encode tagged terms as Names, with adapters as reified environments. The tag selects an Adapter and applies it to a given Body.
 
         tag TagName = f:("Body", f:("Adapter", 
-           ((b:("", TagName), "Adapter"), "Body")))
+           c:(c:(b:("", n:TagName), n:"Adapter"), n:"Body")))
         (tag "prog", ProgramBody)
 
 In context of glas systems, I propose to tag all user definitions and compiled modules. This improves system extensibility, e.g. we can introduce tags for different calling conventions, alternative application models, etc..
 
-Some tags currently in use:
+Sample of tags:
 
 * "data" - embedded data (`d:...`)
 * "prog" - basic glas programs
-* "call" - `Object -> Def` for algebraic effects; returns tagged Def
 * "env" - an `Env` definition
-* "obj" - a generic `Env -> Env -> Env` *Object* described below
+* "obj" - a basic `Env -> Env -> Env` *Object* described below
 * "module" - a basic `Env -> Object` *Module* as described below
 * "app" - interprets `Object` as a basic application
+* "call" - `Object -> Def`, tagged parameter object to tagged term
+* "list" - a Church-encoded list of tagged namespace terms
 
 Developers can gradually introduce new tags and deprecate old ones. We might develop tags to work with DSLs like grammars, logic programs, constraint systems, process networks, hardware descriptions, etc.. Tags aren't always structural, e.g. with "app" we express intended interpretation of an object.
 
@@ -77,9 +77,19 @@ Developers can gradually introduce new tags and deprecate old ones. We might dev
 
 As the initial object model for glas systems, I propose an "obj"-tagged `Env -> Env -> Env` namespace term, corresponding to `Base -> Self -> Instance`. This model is based on [Prototypes and Object Orientation, Functionally (2021)](http://webyrd.net/scheme_workshop_2021/scheme2021-final91.pdf).
 
-The 'Base' argument supports mixin composition and may ultimately bind the host, e.g. 'sys.\*' system effects APIs for application objects. The 'Self' argument is an open fixpoint, supporting mutual recursion with inheritance and override. The "obj" tag ensures opportunity to develop alternative object models, e.g. to eventually support multiple inheritance.
+The 'Base' argument supports mixin composition may ultimately link a 'host' environment, e.g. '%\*' primitives for modules or 'sys.\*' system effects APIs for applications. The 'Self' argument is an open fixpoint, supporting mutual recursion with inheritance and override. The "obj" tag ensures opportunity to develop alternative object models, e.g. to eventually support multiple inheritance.
 
 The glas system uses objects for applications, modules, and front-end compilers. Objects offer an opportunity for extensibility, but effective use requires deliberate design. For example, a front-end compiler that exposes only 'compile' is less extensible than one that also exposes 'parse.int' for override.
+
+### Lists
+
+A list of namespace terms is useful when modeling positional parameters or aggregation. I propose a "list"-tagged Church encoding, [the original right-fold encoding](https://en.wikipedia.org/wiki/Church_encoding#Church_lists_%E2%80%93_right_fold_representation), as the default encoding for lists.
+
+*Aside:* If we work with lists heavily, encoding a writer monad would also be convenient.
+
+### Aggregation
+
+In context of constraint systems, logic programs, multi-method tables, etc. it is often convenient to scatter 'rules' across many modules or components that later aggregate into a holistic definition. Objects and lists serve as an effective foundation: we can leverage mixin-style overrides to add rules, and lists to accumulate rules while deferring processing.
 
 ## Safety
 

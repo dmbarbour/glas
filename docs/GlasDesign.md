@@ -89,7 +89,9 @@ This transaction-loop model is very useful for live coding, reactivity, concurre
 
 In my vision of glas systems, a small, filesystem-local user configuration inherits from a large, curated community or company configuration in DVCS. The full configuration defines hundreds of shared libraries and applications. Performance for running a specific application depends on lazy evaluation and incremental compilation. System stability relies on whole-system versioning, leveraging DVCS redirects.
 
-To compile the configuration file, we start a built-in compiler for at least the standard ".glas" syntax. For modularity, this compiler is injected as '%env.lang.glas'. If the configuration attempts to define '%env.lang.glas', we'll attempt to bootstrap, recompiling the configuration with the compiler it defined for itself. This bootstrap cycle may run once or twice more to verify a stable fixpoint.
+To compile the configuration file, we start a built-in compiler for at least the standard ".glas" syntax. The built-in is implicitly injected as a final override of '%env.lang.glas'. If the configuration attempts to define '%env.lang.glas', we'll attempt to bootstrap, recompiling with '%env.lang.glas' pointing to the user's definition.
+
+recompiling the configuration with the compiler it defined for itself. This bootstrap cycle may run once or twice more to verify a stable fixpoint.
 
 Primary outputs from a configuration include ad hoc runtime configuration options in 'glas.\*', and the final '%\*' namespace, especially '%env.\*' where the shared libraries and applications should be defined. Enough to select an application by name and run it, or to effectively run an external script within the configuration.
 

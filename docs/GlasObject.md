@@ -232,7 +232,11 @@ We could directly encode data within array slots of fixed sizes instead of offse
 
 It is feasible to record 'patches' to lazily apply into a tree or list. This can be more efficient than use of Accessors to logically 'rebuild' a tree or list. 
 
-### Templated Structs
+### Compressed Computed Structure
 
-Encode structures as an array-like structure where the header describes labels separately from the data. This allows reuse of labels for a common use case.
+The proposed glob encoding is reasonably compact, but we can do a lot better if optimizing for specific tree structures, such as namespace ASTs, or tables where every element is a dict with the same fields. An intriguing possibility is to provide some mechanism to compress tree structures that aligns with indexing. Two viable approaches:
 
+- templates. We can sort of 'index' into a template, reach special node for template vars, then swap a template argument from an array.
+- lazy rewrite. Design a computation, a simple input-bounded machine, that lazily expands into tree structure and where it's easy to save machine state. Machine state can explicitly carry some data similar to templates.
+
+I'm not convinced the compression-complexity tradeoff is worthwhile. A simple alternative is to apply a normal binary compression algorithm to the full glob binary, which in theory would handle a lot of repetitive structure like variant or dict labels.
